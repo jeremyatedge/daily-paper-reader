@@ -21,33 +21,60 @@ def _log_default(message: str) -> None:
 
 @contextmanager
 def _hf_endpoint(endpoint: Optional[str] = None):
-  had = "HF_ENDPOINT" in os.environ
-  old = os.environ.get("HF_ENDPOINT")
+  had_endpoint = "HF_ENDPOINT" in os.environ
+  old_endpoint = os.environ.get("HF_ENDPOINT")
+  had_base_url = "HF_HUB_BASE_URL" in os.environ
+  old_base_url = os.environ.get("HF_HUB_BASE_URL")
   if endpoint:
     os.environ["HF_ENDPOINT"] = endpoint
-  elif had:
-    del os.environ["HF_ENDPOINT"]
+    os.environ["HF_HUB_BASE_URL"] = endpoint
+  elif had_endpoint:
+    if "HF_ENDPOINT" in os.environ:
+      del os.environ["HF_ENDPOINT"]
+    if "HF_HUB_BASE_URL" in os.environ:
+      del os.environ["HF_HUB_BASE_URL"]
 
   try:
     yield
   finally:
-    if had:
-      os.environ["HF_ENDPOINT"] = old
+    if had_endpoint:
+      if old_endpoint is None:
+        del os.environ["HF_ENDPOINT"]
+      else:
+        os.environ["HF_ENDPOINT"] = old_endpoint
     elif "HF_ENDPOINT" in os.environ:
       del os.environ["HF_ENDPOINT"]
+    if had_base_url:
+      if old_base_url is None:
+        del os.environ["HF_HUB_BASE_URL"]
+      else:
+        os.environ["HF_HUB_BASE_URL"] = old_base_url
+    elif "HF_HUB_BASE_URL" in os.environ:
+      del os.environ["HF_HUB_BASE_URL"]
 
 
 def load_sentence_transformer(
   model_name: str,
   *,
   device: str,
-  retries: int = _DEFAULT_RETRIES,
+  retries: int | None = None,
   log: Callable[[str], None] = _log_default,
   providers: tuple[tuple[str, str], ...] = (
     ("huggingface", HUGGINGFACE_ENDPOINT),
     ("modelscope", MODELSCOPE_ENDPOINT),
   ),
 ):
+  if retries is None:
+    env_retries = os.getenv("LLM_EMBED_MODEL_RETRIES")
+    if env_retries is None:
+      retries = _DEFAULT_RETRIES
+    else:
+      try:
+        retries = int(env_retries)
+      except ValueError:
+        print(f"[WARN] 环境变量 LLM_EMBED_MODEL_RETRIES 无效：{env_retries}，回退默认 {_DEFAULT_RETRIES}")
+        retries = _DEFAULT_RETRIES
+
   attempts = max(int(retries or _DEFAULT_RETRIES), 1)
   last_err: Exception | None = None
 
