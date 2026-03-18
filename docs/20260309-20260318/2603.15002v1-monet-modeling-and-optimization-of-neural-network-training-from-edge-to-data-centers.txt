@@ -1,0 +1,618 @@
+Title: MONET: Modeling and Optimization of neural NEtwork Training from Edge to Data Centers
+
+URL Source: https://arxiv.org/pdf/2603.15002v1
+
+Published Time: Tue, 17 Mar 2026 05:18:50 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+> JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 1
+
+# MONET: Modeling and Optimization of neural NEtwork Training from Edge to Data Centers 
+
+J´ er´ emy Morlier, Arne Symons, Robin Geens, Stef Cuyckens, Marian Verhelst, Vincent Gripon, and Mathieu L´ eonardon 
+
+Abstract —While hardware-software co-design has significantly improved the efficiency of neural network inference, modeling the training phase remains a critical yet underexplored challenge. Training workloads impose distinct constraints, particularly regarding memory footprint and backpropagation complexity, which existing inference-focused tools fail to capture. This pa-per introduces MONET, a framework designed to model the training of neural networks on heterogeneous dataflow acceler-ators. MONET builds upon Stream, an experimentally verified framework that that models the inference of neural networks on heterogeneous dataflow accelerators with layer fusion. Using MONET, we explore the design space of ResNet-18 and asmall GPT-2, demonstrating the framework’s capability to model training workflows and find better hardware architectures. We then further examine problems that become more complex in neural network training due to the larger design space, such as determining the best layer-fusion configuration. Additionally, we use our framework to find interesting trade-offs in activation checkpointing, with the help of a genetic algorithm. Our findings highlight the importance of a holistic approach to hardware-software co-design for scalable and efficient deep learning de-ployment. 
+
+Index Terms —Artificial Neural Networks, Training, Hardware Design, Schedule Optimization 
+
+I. I NTRODUCTION 
+
+Deep Neural Networks (DNNs) have revolutionized fields ranging from computer vision to natural language processing. Their success hinges on the ability to learn complex patterns from large volumes of data. Although optimizing the resources needed for inference has received significant attention in recent years [1], [2], training remains underexplored yet a critical and resource-intensive phase in the life cycle of deep neural networks. Training cost is indeed substantial across a wide spectrum of deployment settings: from edge environments, such as personalized healthcare, where data privacy and real-time adaptation are essential, to large-scale datacenters training massive models like Large Language Models (LLMs) on clusters of GPUs or TPUs [3]. The rapidly increasing cost of training LLMs [4], coupled with the substantial environmental impact of the supporting infrastructure and energy consump-tion [5], has intensified the need to improve training efficiency, a key motivation for our work. This problem is inherently multi-dimensional, requiring careful consideration of factors 
+
+J. Morlier, M. L´ eonardon, and V. Gripon are with IMT Atlantique, Brest, France. R. Geens, S. Cuyckens, M. Verhelst, and A. Symons are with MICAS, KU Leuven, Leuven, Belgium. 
+
+2 3 3 4 5
+
+0
+
+1
+
+2
+
+6
+
+14 
+
+> Latency ( ×10 7 Cycles)
+
+Inference 
+
+16 
+
+80 
+
+397 
+
+1980 
+
+9864 
+
+49152 
+
+Total Computational Capacity 
+
+26 35 47 62 82 
+
+3
+
+5
+
+11 
+
+21 
+
+43 
+
+Energy ( ×10 9 pJ) 
+
+> Latency ( ×10 7 Cycles)
+
+Training 
+
+Fig. 1. Energy–latency trade-offs of a ResNet-18 across a diverse range of Edge TPU architectural configurations. Results are shown for inference (top) and training (bottom). Each point represents a distinct hardware configuration, with energy consumption (pJ) plotted against execution latency (cycles) and color-coded by total computational capacity. This highlights the energy/latency distribution difference between inference and training and the need to model hardware specifically for training purposes. 
+
+such as neural network architecture, training hyperparameters, hardware platform characteristics, and deployment strategies like data/model parallelism, scheduling, and layer fusion. Among the important dimensions, architectural innovations such as ResNet [6] to the more recent Transformer [7] and State-Space Model [8] have allowed for fast and energy-efficient training of neural networks. Additionally, hyperpa-rameter optimization [9], [10] such as tuning learning rates, batch sizes and optimizer [11], [12] plays an important role in accelerating convergence and reducing the computational cost. At the heart of efficient training on custom hardware lies the accelerator architecture. The evolution of hardware has driven the increasing demands of neural network training. GPUs ( e.g. ,NVIDIA H100 [13], AMD MI300A [14]) and TPUs ( e.g. ,
+
+0000–0000/00$00.00 © 2021 IEEE  
+
+> arXiv:2603.15002v1 [cs.LG] 16 Mar 2026 JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 2
+
+Google TPU v2 [3], TPU v4 [15]) are specifically designed to process deep learning workloads, offering massive paral-lelism and optimized dataflows for matrix operations. More recently, architectures such as the Cerebras WaferScale Engine (WSE) [2] and Groq LPU [1] have pushed the boundaries further by eliminating traditional memory bottlenecks and enabling unprecedented levels of on-chip communication and computation, making them particularly interesting for Large Language Model (LLM) decoding. Furthermore, efficient deployment of deep learning training workloads goes beyond selecting the right neural network architecture or hardware platform. It requires carefully or-chestrating computations between compute cores, and time. Key aspects of this deployment dimension include parallelism strategies (data, pipeline, and tensor parallelism), scheduling of computations to optimize hardware utilization, and mem-ory management techniques such as activation checkpointing. Together, these strategies form a crucial layer in the overall optimization of neural network training. In short, designing hardware accelerators and the associ-ated deployment strategies for neural network training inher-ently involves complex trade-offs among energy consumption, throughput, and latency. Figure 1 highlights that hardware configurations exhibit distinct energy–latency distributions de-pending on whether they are evaluated using inference or training workloads, demonstrating that conclusions drawn from inference-only analysis do not necessarily transfer to training scenarios and reinforcing the need for training-aware evaluation. Effectively navigating these trade-offs requires the ability to quickly and accurately model the corresponding performance metrics, enabling more informed hardware design and configuration decisions. In this work, we tackle the central question of how to model the most effective hardware configurations and deployment configurations for efficiently training neural networks across diverse scenarios, aiming to reduce both financial costs and energy requirements. To this aim, we make the following contributions:  
+
+> •
+
+We propose MONET, a modeling tool for training-optimized hardware by extending Stream [16], a model-ing and scheduling framework for estimating the perfor-mance of DNNs on heterogeneous dataflow accelerators, to support training workloads.  
+
+> •
+
+We illustrate the irregularity of the train-ing–hardware–deployment design space through two representative examples: ResNet-18 on an image classification task, and a small GPT-2 on an NLP task.  
+
+> •
+
+We propose a constraint optimization approach to explore the fused-layer deployment search space and discover improved configurations.  
+
+> •
+
+We leverage our extended framework to study the ac-tivation checkpointing problem and propose a genetic algorithm to efficiently solve it. The remainder of this paper is organized as follows. Sec-tion II briefly introduces the main concepts needed for this work, including neural network training, memory overheads, heterogeneous dataflow accelerators, and deployment strate-gies, and reviews related modeling frameworks. Sections III and IV introduce our extended modeling framework and characterize the joint training–hardware–deployment design space. Through two case studies (ResNet-18 and GPT-2), we illustrate the complexity and workload-dependent nature of training-aware optimization. Section V-A presents our constraint-based layer-fusion algorithm, while Section V-B addresses activation checkpointing and proposes a genetic al-gorithm to handle its inherent non-linearity. Finally, Section VI concludes the paper and outlines future work. II. B ACKGROUND 
+
+In this section, we present three key dimensions of the design space for the training of neural networks from three different angles: the training process itself, the hardware architecture and the deployment strategies. We give for each of these angles a brief overview of the key concepts and most importantly how these choices can impact the metrics we want to model: latency, throughput and energy consumption. Finally, we discuss existing DNN modeling tools and introduce Stream, which we extend to support training workloads across various hardware architectures. 
+
+A. Training 
+
+Training a neural network is a computationally intensive process comprising three fundamental steps: forward pass, backward pass, and weight update. In this paper, we model a neural network as a directed graph G = ( V, E), where V represents the set of N nodes corresponding to the network’s operators (or layers), and E
+
+denotes the set of edges representing the tensors exchanged as inputs and outputs between these operators. Given an input vector x, the forward pass computes the output of each layer sequentially using a parameterized func-tion f . For a layer l ∈ V , the output a(l) is determined as: 
+
+a(l) = f (l)(a(l−1) , θ (l)) (1) where:  
+
+> •
+
+a(0) = x is the input to the network,  
+
+> •
+
+θ(l) are the parameters (weights and biases) of layer l,Back Op 1 Back Op 2 Back Op 3 Op 1 Op 2 Op 2 Op 3 Op 4 Back Op 1 Back Op 2 Back Op 3 Op 1 Op 2 Op 3 Op 4 a) Full Activation Checkpointing b) Partial Activation Checkpointing Forward Backward Forward Backward  
+
+> Fig. 2. (a) All activations (edges) are saved during the forward pass and reused for the backward pass. (b) Some activations are discarded and recomputed during the backward pass, reducing the total memory cost. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 3
+
+Adam Adam8 SGD SGD8 
+
+0
+
+500 
+
+1,000 
+
+200 
+
+200 
+
+100 
+
+100 
+
+80 
+
+640 
+
+80 
+
+640 
+
+94 94 94 94 
+
+94 94 94 94 
+
+> Memory Consumed (MBs)
+
+Parameters Gradient Activations Optimizer           
+
+> Fig. 3. Peak memory consumption (GBs) breakdown for aResnet-50 measured on an RTX3090 with an image of size 224 by 224, with two different batch sizes, (1 and 8).
+> •
+
+f (l) is the transformation function for layer l, which may include linear transformations and activation functions. The backward pass computes the gradients of the loss function L with respect to the parameters θ(l) using backprop-agation. For a layer l, the gradient of the loss with respect to the input a(l−1) is given by: 
+
+∂L
+
+∂a(l−1) = ∂L
+
+∂a(l) · ∂f (l)(a(l−1) ; θ(l))
+
+∂a(l−1) (2) The gradient of the loss with respect to the parameters θ(l) is computed as: 
+
+∂L
+
+∂θ (l) = ∂L
+
+∂a(l) · ∂f (l)(a(l−1) , θ (l))
+
+∂θ (l) (3) The combined forward and backward passes are illustrated in Figure 2(a). The optimizer updates the parameters θ(l) using the com-puted gradients. For example, in Stochastic Gradient Descent (SGD) with learning rate η and momentum coefficient μ, the update rule for the momentum term v(l) and parameters θ(l)
+
+is: 
+
+v(l) ← μv (l) − η · ∂L
+
+∂θ (l) (4) 
+
+θ(l) ← θ(l) + v(l) (5) Furthermore, using methods such as momentum in optimiz-ers introduces additional parameters, referred to as optimizer states ( e.g. , the momentum term), for each parameter. This increases the memory cost of training neural networks. As shown in Figure 3, optimizers like ADAM [12] use even more optimizer states, further escalating memory usage beyond that of the model parameters. Several studies have addressed this memory overhead. For instance, Galore [17] reduces the memory footprint by apply-ing the optimizer to a low-rank approximation of the weight gradients rather than the gradients themselves. This approach effectively decreases the number of optimizer states required per weight, thereby lowering the overall memory cost. Another significant contributor to memory cost is the stor-age of activations. Unlike inference, where activations are typically used in subsequent layers or residual connections, training requires most activations generated during the forward pass to be retained for gradient computation, as shown in Equation (3). This results in a substantially higher memory demand compared to inference, particularly as the batch size increases, as illustrated in Figure 3. Leveraging the specific properties of gradient computation, activations can be stored in a compressed format tailored to the operation being back-propagated as studied in Gist [18]. For example, the backprop-agation of ReLU only requires the sign of its activation output to propagate the gradient, reducing the memory required for storing activations. The memory overhead associated with storing all activations for backpropagation can be mitigated through techniques such as activation checkpointing. Activation checkpointing reduces the memory footprint of activations during the training pro-cess by selectively storing only a subset of activations and recomputing others as needed. By strategically checkpointing a subset of activations and recomputing the remainder, this method significantly reduces memory consumption. Figure 2 illustrates this process: (a) depicts the conventional approach of storing all activations, while (b) demonstrates checkpoint-ing, where certain activations are discarded and recomputed, thereby reducing memory overhead. The selection of which activations to checkpoint and which to recompute is a critical aspect of activation checkpointing. This selection introduces a trade-off between memory sav-ings—achieved by recomputing a larger number of activa-tions—and the associated recomputation cost. Inductor [20], a PyTorch compiler, leverages operator characteristics to discard Off chip Memory (DRAM) Vector Unit PE (0,0) PE (1,0) PE (1,1) PE (0,1) PE (0,x) PE (y,0) PE (y,1) PE (1,x) PE (y,x) Local Memory (SRAM) Compute Lane Compute Lane Register File (SRAM) SIMD Unit SIMD Unit SIMD Unit Register File (SRAM) SIMD Unit SIMD Unit SIMD Unit nPEs LUU        
+
+> Fig. 4. EdgeTPU architecture: A set of nP Es Processing Elements (PE) is arranged in a 2D array, each capable of communicating with its neighbours and a common bus link all of them to an off-chip memory. Each PE is composed of a memory and a weight stationary accelerator composed of USIMD Units and LCompute Lanes. Adapted from [19]. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 4
+> Fig. 5. Three strategies for spatially parallelizing deep learning workloads across devices [2]: (a) Data Parallel: Distributes the batch dimension across multiple devices, with each device processing a distinct subset of samples. (b) Pipelined Parallel: Partitions the model into stages, with each device responsible for executing a specific stage of the computation. (c) Tensor Parallel: Splits individual layers or operations across devices, enabling parallel processing of a single sample.
+
+activations resulting from element-wise operators, as these operators are typically memory-bound and can be efficiently recomputed when fused with preceding operators. This ap-proach can result in a reduction of both memory cost and runtime. However, eliminating element-wise operators that require computed activations inherently limits the potential memory savings for neural network training. To formalize the activation checkpointing optimization problem, frameworks such as Dace-AD [21] and Check-mate [22] model it as a mixed integer linear program-ming (MILP) problem. In this formulation, each activa-tion—represented as an edge between the forward and back-ward passes—is associated with two primary costs: its memory cost ma (in bytes), required to store the activation, and its recompute cost ra (in floating-point operations, (FLOPs)), required to recompute it during the backward pass. For a given neural network, let A denote the set of activa-tions required for the backward pass. We introduce a binary decision variable xa ∈ { 0, 1} for each activation a ∈ A , where 
+
+xa = 1 indicates that activation a is checkpointed (saved), and 
+
+xa = 0 indicates that it is recomputed during the backward pass. The optimization objective is to minimize the total recom-pute cost while adhering to a memory budget constraint M :
+
+min 
+
+> {xa}a∈A
+
+X
+
+> a∈A
+
+ra (1 − xa)
+
+subject to X
+
+> a∈A
+
+ma xa ≤ M. (6) This MILP formulation systematically explores the trade-offs between memory usage and recomputation overhead. By solving this problem, the approach can be adapted to a wide range of hardware configurations for neural network training. However, a limitation of this model is its reliance on FLOPs as a proxy for recompute cost, which may not fully account for operator-specific characteristics, as explored by Inductor [23]. 
+
+B. Hardware 
+
+Designing modern hardware architectures for deep learning is inherently complex due to the need to precisely orchestrate how data is produced, moved, and consumed across compute and memory resources. As architectures scale and diversify, performance and efficiency are increasingly determined not only by peak compute capability, but by the chosen dataflow, 
+
+i.e. the spatial and temporal mapping of operations and data movement. Capturing this complexity while retaining analyti-cal tractability is challenging, as real systems exhibit intricate interactions between memory hierarchies, compute units, and control mechanisms. In this work, we adopt the abstraction of Heterogeneous Dataflow Accelerators (HDAs) [24] to reason about modern architectures. Under this definition, an HDA is modeled as a collection of dataflow accelerators interconnected through buses or point-to-point links, as illustrated in Figure 4 and Figure 7. Each accelerator is specialized for a particular class of workloads through a distinct dataflow and a customized memory hierarchy. Although this abstraction does not explicitly capture the full complexity of control mechanisms found in architectures such as GPUs or TPUs, it effectively represents their dom-inant computation and data-movement patterns. Prior work, such as LLMCompass [25], has demonstrated that dataflow-centric abstractions can faithfully approximate the perfor-mance characteristics of GPU-like architectures. Consequently, this modeling approach enables systematic exploration of the joint architecture–mapping design space and provides valuable insight into the fundamental trade-offs underlying modern dataflow-oriented systems. Two key components define each dataflow accelerator within an HDA:  
+
+> •
+
+Memory Hierarchy: A multi-level organization ( e.g. , reg-ister files, on-chip buffers, DRAM) designed to reduce data movement and exploit reuse. Memory levels may be shared or operand-specific (weights, inputs, outputs), with sizes and bandwidths chosen to balance on-chip capacity against off-chip access costs.  
+
+> •
+
+Spatial Array of Processing Elements (PEs): A multi-dimensional array of processing elements that execute operations such as multiply-accumulate (MAC) or any arithmetic operations according to a prescribed dataflow. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 5
+
+C. Deployment 
+
+In order to leverage the full potential of a given hard-ware, a fine-grained orchestration is required to mitigate data-movement bottlenecks and maximize resource utiliza-tion. Scheduling, in this context, refers to the organization of computations—both spatially and temporally—to optimize performance, resource utilization, and memory access patterns, as defined by frameworks such as Halide [26]. In this paper, we focus on two key aspects of scheduling: parallelism, encompassing both spatial and temporal dimen-sions, which leverages the intrinsic concurrency of hardware architectures, and layer-fused scheduling [27], which uses cross-layer data dependencies to minimize memory transfers and reduce the runtime of these layers. Additional techniques, such as tiling, are automatically handled by the framework we employ. 
+
+1) Parallelism: To fully exploit the capabilities of modern accelerators, several parallelism strategies can be employed, each with distinct trade-offs. In this context, a device can be defined either as multiple HDAs or as individual accelerators within an HDA.  
+
+> •
+
+Data Parallelism (Figure 5(a) distributes the batch dimen-sion across multiple devices. This approach minimizes inter-device communication but requires each device to store a full copy of the model parameters, which can limit scalability for large models.  
+
+> •
+
+Pipeline Parallelism [28] (Figure 5(b) partitions the model across devices, reducing the per-device memory footprint. However, it introduces the need to transfer intermediate activations between devices, which can become a bottle-neck for latency-sensitive workloads.  
+
+> •
+
+Tensor Parallelism [29] (Figure 5(c) splits individual layers across devices, maximizing parallelism but often at the cost of increased communication overhead due to frequent synchronization. These parallelism techniques are rarely used in isolation. Instead, they are jointly optimized to balance computational load, memory constraints, and communication costs. Achiev-ing optimal performance on modern accelerators thus re-quires careful co-design of algorithms, scheduling policies, and hardware-aware optimizations. 
+
+2) Layer-Fused Scheduling: Layer-fused scheduling is a set of techniques that leverages the cross-layer opportunities inherent in deep neural networks to enhance performance, reduce latency, and lower energy and memory consumption. This approach operates by computing only partial feature maps of a layer and immediately utilizing these partial results for subsequent layers. DNNFusion [31] classifies deep learn-ing operators into mapping types (One-to-One, One-to-Many, Many-to-Many, Reorganize, Shuffle) based on the relationship between input and output elements. Fusion opportunities are analyzed using a compatibility framework that categorizes operator pairs as profitable, unprofitable, or requiring profiling based on their mapping types. The operators are then merged until no more fusion is profitable. A notable application of layer-fused scheduling is Flash Attention [32], [33], which optimizes the Softmax operation in Transformer architectures through layer fusion. In train-ing scenarios, Flash Attention achieves up to 3.5x speedup compared to standard PyTorch Attention, demonstrating its significance for both inference and training workloads. This method not only improves computational efficiency but also reduces memory overhead, underscoring the broader impact of layer-fused scheduling in deep learning optimization. 
+
+D. Modeling Frameworks 
+
+As previously described, finding the correct hardware design for a workload and its mapping is a complex task. Most mod-eling frameworks used in neural network accelerator design space exploration focus on the inference part, which already represents a complex challenge. We are seeking a framework that allows for the extension of operators and mechanisms to support training workloads. Its large design space is key to discovering the best solutions. Timeloop [34] and Accelergy [35] are two complementary frameworks that can be combined to systematically explore the design space of DNN accelerators. Timeloop focuses on architectural modeling and mapping: it constructs the mapping space for a given hardware architecture by describing com-pute units, memory hierarchies, and interconnects, together with constraints such as dataflow and bandwidth. Its map-per then searches this space to identify efficient mappings using analytical performance models. Accelergy provides a          
+
+> ONNX Export
+> Backward ONNX Generation
+> ONNX Check Stream Pre-processing
+> Optimizer Pass Stream
+> Neural Network (CNN, Transformers)
+> Batch Size, Input Size
+> Loss, Frozen Weights
+> Optimizer configuration (Adam, SGD...)
+> Accelerator Mapping Layer-Fused Configurations
+> Training ONNX
+> Latency, Energy, Memory
+> Schedule
+> Fig. 6. Overview of the MONET workflow for DNN training, enabling scheduling and latency/energy efficiency analysis on heterogeneous dataflow accelerators (HDAs). Green blocks correspond to PyTorch, blue to ONNX, and yellow to Stream. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 6Off -Chip Memory Global Bu ff er Vector Unit PE PE PE PE PE PE PE PE PE PE PE PE
+
+PE Array  
+
+> Fig. 7. Stream HDA model of the FuseMax Accelerator [30].
+
+hierarchical and technology-aware methodology for estimat-ing the energy consumption of hardware components. When integrated, Timeloop leverages Accelergy’s energy models to jointly evaluate performance and energy across diverse architectural configurations and mapping strategies, enabling comprehensive design space exploration. Frameworks like ZigZag [36] expand the design space by enabling uneven operand mapping across different memory levels. However, most of these frameworks do not take into account more complex scheduling such as layer fusion and do not model the cost of data movement between operators. As previously detailed, taking into account these possibilities can be important for modeling and optimizing DNNs training workload, as the scale of computations and data movement can be a lot larger than inference workloads. In contrast, Stream [16] introduces a comprehensive design space exploration framework tailored for layer-fused DNNs on HDA architectures. Stream models the accelerator as a heterogeneous graph of cores, each with distinct dataflows and communication links, enabling a broad exploration of hard-ware configurations. By analyzing data dependencies across multiple layers, Stream determines the optimal partitioning of a DNN across the cores using a constraint optimization solver, ensuring efficient workload distribution across cores. Stream adopts ONNX as its input format, providing native support for a wide range of DNN architectures and simplify-ing the implementation of custom operators. The framework parses the ONNX graph to extract operator types, specifi-cations, and loop dimensions. This information is coupled with a mapping configuration that defines intra and inter-core partitioning, granting the user explicit control over spatial and temporal parallelism. Furthermore, Stream’s accuracy has been experimentally validated across multiple hardware platforms, ensuring its reliability in modeling real-world system perfor-mance. In addition to academic frameworks, NVArchSim [37] is an industrial-grade, system-level GPU simulator developed at NVIDIA. NVArchSim adopts a hybrid trace- and execution-driven methodology and prioritizes high simulation speed through carefully selected microarchitectural fidelity. By em-ploying loosely cycle-accurate models and component-level abstraction, NVArchSim enables the simulation of large-scale HPC and machine learning workloads, including multi-GPU systems, with turnaround times suitable for architectural explo-ration. While NVArchSim supports both inference and training workloads and captures detailed GPU memory and intercon-nect behavior, it primarily targets homogeneous GPU and multi-GPU architectures rather than heterogeneous accelerator systems. Table I summarizes and compares the main characteristics of existing DNN accelerator modeling frameworks in terms of training support, scheduling granularity, and target architec-tures. While prior approaches largely focus on operator-level inference modeling, none simultaneously address fine-grained layer fusion and full training workloads on heterogeneous DNN accelerators. III. P ROPOSED FRAMEWORK 
+
+We extend Stream [16] beyond its original inference-oriented design to enable accurate modeling of end-to-end neural network training on heterogeneous accelerators. Since Stream natively operates on ONNX as its primary neural network input format, our approach introduces a set of ONNX transformation passes that generate a complete training graph—including forward pass, backward pass, and optimizer updates—fully compatible with Stream. Importantly, these passes are modular and reusable, and can therefore be inte-grated into other ONNX-based workflows beyond Stream. Supporting training requires both workflow-level extensions and structural enhancements to Stream’s operator represen-tation. Training workloads introduce operators and dataflows absent from inference. To address this, we expand Stream’s operator library to support training-critical primitives such as ConvTranspose, and we introduce explicit modeling of gradient-specific data transformations, including tensor trans-positions, reshaping patterns, accumulation buffers, and reduc-tion operations arising during backpropagation. These addi-tions allow Stream to faithfully capture the computational and memory behavior unique to training. The workflow (Figure 6) begins by exporting a PyTorch model to ONNX. Using ONNX Runtime Training, we generate a graph containing both forward and backward computational subgraphs. However, several ONNX gradient operators ( e.g. ,ConvGrad, SoftmaxGrad) encapsulate multi-output composite computations that are incompatible with Stream’s original                          
+
+> TABLE I COMPARISON OF DNN A CCELERATOR DESIGN FRAMEWORKS
+> Framework Training Granularity Target
+> Timeloop [34] No Operator level DA + Accelergy [35] ZigZag [36] No Operator level DA Dace-AD [21] Forward Operator level CPU, GPU + Backward Stream [16] No Fine-Grained HDA Layer Fusion NVArchSim [37] Yes Warp instruction GPU, multi-GPU level MONET(Ours) Yes Fine-Grained HDA Layer Fusion JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 7
+
+abstraction. We therefore introduce dedicated ONNX passes that decompose these operators into fine-grained primitives corresponding to individual gradient components ( e.g. , input, weight, and bias gradients). This decomposition enables pre-cise scheduling, mapping, and fusion analysis within Stream. We further integrate optimizer steps, such as SGD and ADAM, directly into the ONNX graph representation. As a result, the transformed graph captures the complete training iteration, allowing Stream to estimate latency and energy consumption while generating execution schedules for a given hardware, mapping, and fusion configuration. To enable principled exploration of memory–computation trade-offs, we implement activation checkpointing as an ad-ditional ONNX transformation pass. Selected activations are replaced by recomputation subgraphs containing only the min-imal operators and intermediate tensors required for regenera-tion, enabling systematic evaluation of checkpoint placement strategies. Overall, the proposed framework preserves modularity at every stage: model specification remains in PyTorch; reusable ONNX passes generate a Stream-compatible full training graph; and hardware, mapping, and fusion parameters are provided independently for accelerator-specific performance and energy evaluation. IV. T RAINING DESIGN SPACE EXPLORATION 
+
+A large complexity characterizes the design space for train-ing neural networks, as it encompasses multiple interdependent search spaces: the hardware architecture space, the mapping space, the layer-fusion space, and the training implementation space. Each of these dimensions introduces unique challenges, and their interactions further amplify the complexity of opti-mizing training workflows. To illustrate this complexity, we analyze two representa-tive models: ResNet-18 for image classification and GPT-2 for natural language processing (NLP). For each model, we explore variations in hardware configurations. Using our extended Stream framework, we evaluate key performance metrics such as latency and energy consumption for a single training iteration. We also generate the optimal schedule of this workload that would be implemented on the hardware. 
+
+A. Image Classification 
+
+For computer vision applications, ResNet is a well-established architecture commonly employed as a backbone for tasks such as image classification and semantic seg-mentation. Comparable convolutional neural network (CNN) architectures have also demonstrated efficacy for edge training in MCUNetv3 [38]. In this part, we focus on a ResNet18 model deployed on an Edge TPU platform, as depicted in Figure 4. We select a base ResNet18 and we model its latency and energy cost on a standard CIFAR-10 image size that is (3, 32, 32). We systematically explore the hardware design space of an Edge TPU heterogeneous dataflow accelerator (HDA) model, based on the configuration defined in [19]. The baseline configuration features a 4 × 4 array of processing elements (PEs). Each PE is designed as a weight-stationary dataflow core, which is highly effective for accelerating convolutional neural network (CNN) workloads. The PE architecture in-cludes 2 MBs of memory and 4 compute lanes, with each lane comprising a 32 KBs register file and 64 4-way single instruc-tion, multiple data (SIMD) units. We explore variation of this configuration, as detailed in Table II, to discover the properties of this search space and the differences between inference and training. A manually designed layer-fusion configuration for the inference is used in both inference and training to show the different trade-offs reached in this kind of configuration. In addition, we leverage both temporal and spatial parallelism to better exploit the architectural heterogeneity between SIMD cores and weight-stationary PEs. Specifically, pipeline paral-lelism is used to map layers to the most suitable compute units according to their computational characteristics, while tensor parallelism distributes convolutional output channels across multiple weight-stationary PEs to increase concurrency and improve resource utilization. Figure 8 presents the outcomes of this exploration, illustrating latency and energy for both inference and training workloads in comparison with the total compute resources of each accelerator, U · L · nP Es , where 
+
+U · L represents the compute resource of each PE. As shown in Figure 1, the distributions of energy and latency for inference and training workloads exhibit significant structural differences. These discrepancies highlight that the hardware characteristics that favor one operational mode do not systematically benefit the other, which is a key consider-ation when targeting unified accelerators. To further analyze these trade-offs, Figure 8 represents energy and latency as functions of the total compute resource while accounting for the compute capacity per processing element (PE). This view allows us to evaluate the impact of PE granularity under fixed resource constraints. For train-ing latency, larger PEs do not appear on the Pareto front, indicating that increasing PE size does not translate into optimal latency-performance trade-offs. In contrast, for infer-ence latency, larger PEs almost always reduce execution time and are strongly associated with low-latency Pareto-optimal configurations. The energy perspective reveals a different trend. During training, larger PEs are more efficient when considering very large total compute budgets, but they are not the best designs in terms of absolute energy optimality. For inference, larger PEs are not energy-efficient and never lie on the energy Pareto front. This asymmetry between latency and energy behavior reinforces that PE scaling has workload-dependent                         
+
+> TABLE II EDGE TPU SEARCH SPACE ,BOLD DENOTES THE BASELINE CONFIGURATION ,nP Es =xP Es ·yP Es
+> Parameter Search space xPEs 1, 2, 4, 6, 8 yPEs 1, 2, 4, 6, 8 SIMD units U16, 32, 64 , 128 Compute Lanes L1, 2, 4, 8 Local Memory (MBs) 0.5, 1, 2, 3, 4 Register File (KBs) 8, 16, 32, 64 , 128 JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 8
+
+16 80 397 1980 9864 49152 
+
+2
+
+3
+
+3
+
+4
+
+5
+
+U · L · nP Es (log) 
+
+> Energy ( ×10 9 pJ)
+
+Inference Energy and Latency 
+
+16 80 397 1980 9864 49152 
+
+26 
+
+35 
+
+47 
+
+62 
+
+82 
+
+U · L · nP Es (log) 
+
+> Energy ( ×10 9 pJ)
+
+Training Energy and Latency 
+
+16 
+
+64 
+
+256 
+
+1024 
+
+U · L
+
+16 80 397 1980 9864 49152 
+
+0.4 
+
+1
+
+2
+
+6
+
+14 
+
+U · L · nP Es (log) 
+
+> Latency ( ×10 8 Cycles)
+
+16 80 397 1980 9864 49152 
+
+3
+
+5
+
+11 
+
+21 
+
+43 
+
+U · L · nP Es (log) 
+
+> Latency ( ×10 8 Cycles)
+
+16 
+
+64 
+
+256 
+
+1024 
+
+U · L  
+
+> Fig. 8. Hardware exploration of a ResNet-18 on Edge TPU hardware for inference and training. Top row: Energy vs Accelerator Compute Ressources. Bottom row: Latency vs Accelerator Compute Ressources. Each point corresponds to a different accelerator configuration and is color-coded by its per PE Compute Resource ( U·L).
+
+implications. Overall, the distribution of results differs markedly be-tween training and inference, confirming that an architecture optimized for one objective or workload does not directly generalize to the other. 
+
+B. Natural Language Processing 
+
+At the opposite end of the computational spectrum, Large Language Models (LLMs) such as GPT-2 represent the high-performance workloads typical of cloud-scale accelerators. The workload consists of a standard Transformer architec-ture configured with a fixed sequence length and a causal attention mask. For the hardware architecture, we use Fuse-Max [30] as a recent architecture that can easily be modeled in Stream [39]. A possible HDA representation is shown in Figure 7. This architecture is composed of a large array of Multiply-Accumulate (MAC) elements designed as an output-stationary dataflow accelerator and a large vector array. Both arrays’ memories are linked together and they can access a large on-chip buffer that can interact with an off-chip memory. As the architecture consists of two distinct cores, an output-stationary dataflow core and a SIMD core, we primarily employ pipeline parallelism to enable efficient operand transfer and overlap computation between them. We evaluate the latency and memory for this architecture with the variations presented in Table III. Compared to the previous scenario, both the hardware and neural network architectures have a more regular structure. The FuseMax accelerator features a more streamlined architecture relative to the Edge TPU. Similarly, the small GPT2 model is significantly more homogeneous than the ResNet-18. It con-sists of a repetition of identical Attention and Feed-Forward blocks. The structural homogeneity is reflected in Figure 7, where the performance distributions appear more concentrated and less sensitive to architectural variations. While the exploration presented in Section IV illustrates the complexity of the training design space, it also points to a practical challenge: exhaustive exploration alone does not efficiently identify optimal configurations. The interaction be-tween hardware architecture, mapping strategies, layer-fusion choices, and training-specific mechanisms creates a large combinatorial space in which manual tuning becomes difficult. To effectively navigate this complexity, targeted optimization strategies are required. In the next section, we therefore introduce methods that systematically reduce the search space while preserving high-quality solutions. Specifically, we focus on two optimization problems that we found to be particularly important for training-aware design: fused-layer scheduling and activation checkpointing. V. O PTIMIZATIONS 
+
+In this part, we propose methods to efficiently explore the fused-layer search space as well as the activation checkpoint-ing search space.           
+
+> TABLE III FUSE MAX SEARCH SPACE
+> Parameter Search space xPEs 64, 128, 256, 512 yPEs 64, 128, 256, 512 Vector PEs 32, 64, 128, 256 Buffer Bandwidth 8192, 16384 Buffer Size (MBs) 4, 8, 16, 32 Off-Chip Bandwidth 512, 1024, 2048, 4096, 8192 JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 9
+
+40 .5 41 41 .5 42 42 .5 43 
+
+3.75 
+
+3.8
+
+3.85 
+
+> Latency ( ×10 7 Cycles)
+
+Inference 
+
+200 
+
+400 
+
+600 
+
+800 
+
+1,000 
+
+Buffer Bandwidth 
+
+142 144 146 148 150 152 
+
+17 .8
+
+18 
+
+18 .2
+
+18 .4
+
+Energy ( ×10 9 pJ) 
+
+> Latency ( ×10 7 Cycles)
+
+Training  
+
+> Fig. 9. Energy–latency trade-offs of a small GPT-2 model on the FuseMax accelerator. Results are shown for inference (left) and training (right). Each point represents a distinct hardware configuration, with energy consumption (pJ) plotted against execution latency (cycles) and color-coded by buffer bandwidth (in Bytes per cycle), highlighting the impact of memory bandwidth on performance and energy efficiency.
+
+A. Layer Fusion Strategy 
+
+Determining the optimal partitioning of a workload graph into fused subgraphs is a combinatorial optimization problem. While feasible for small inference graphs with around ahundred computational nodes, it becomes significantly more complex for training workloads, which typically contain sev-eral times more nodes. Moreover, training workloads contain several properties that make layer-fusion relevant. Optimizers such as SGD or ADAM contain only element-wise operations, making them good candidates to be fused with the weight gradient computation. This fusion can reduce the memory necessary by discarding as soon as possible the saved activations. To this end, we extend the capabilities of Stream with a new fused-layer solver based on constraint optimization. 
+
+1) Problem Formulation: Consider a workload graph G =(V, E) that represents a forward pass, a combined forward-backward pass, or any neural network computation. Here, V
+
+denotes the set of operators (nodes), and E represents the tensors (edges) exchanged between them. Given an accelerator composed of a set of cores C, the goal is to partition G into a set of subgraphs S. For each node i ∈ V ′, G′ = ( V′, E′) ⊆ G ,and core c ∈ C , we define:  
+
+> •
+
+mi,c : memory required by node i on core c; 
+
+> •
+
+Ti: intra-core tiling factor of node i; 
+
+> •
+
+Mc: available local memory on core c.To determine candidate subgraphs, we perform a Breadth-First Search (BFS) from each node in G. Since this search explores all possible BFS paths from each node, it is acombinatorial problem whose complexity grows exponentially with the number of nodes. We limit the maximum length of the BFS to make the search tractable. We apply the following constraints as a backtracking approach to reduce the complexity of the search: 
+
+Memory Constraint: The total memory consumed by all nodes assigned to core c must not exceed its available capacity: 
+
+X
+
+> i∈V
+
+mi,c ≤ Mc, ∀c ∈ C 
+
+Intra-Core Tiling Constraint: For each operator in the DNN model, a subset of the loops defining its computation is designated as outer temporal loops and expressed as intra-core tilings in Stream. These tilings are used to validate operator fusion. This requirement imposes an additional constraint: within a given subgraph, all intra-core tiling factors must be mutually compatible, such that each tiling factor divides every other tiling factor in the set. 
+
+∀i, j ∈ V , Ti | Tj or Tj | Ti
+
+Operator Type Constraint: To limit the complexity of scheduling highly complex fused subgraphs, we impose a constraint on the number of convolutional and general matrix multiplication (GEMM) operations. Specifically, each sub-graph is restricted to containing no more than three convo-lutional operations and no more than two GEMM operations. This restriction ensures that the analysis cost to generate a valid schedule for the fused operators in the subgraph is not too high. This is similar to the constraints applied in DNNFusion [31] Following this search, we apply the following constraint to each subgraph: X
+
+> v∈V g
+
+ov ≤ 1
+
+where Vg is the set of nodes in subgraph g, and ov is an indicator function such that ov = 1 if node v has outgoing edges, and 0 otherwise. This ensures that the resulting fused subgraph in Stream does not produce intermediate tensors required by other subgraphs, thereby avoiding off-chip tensor storage. Finding the optimal combination of valid subgraphs that fully cover G is combinatorial in nature, with complexity 
+
+O(2 N ), making exhaustive evaluation infeasible for practical networks ( e.g. , N ≈ 500 for ResNet-18 training). We therefore employ Integer Programming (IP) with a heuristic goal to approximate the best solution. We define the binary decision variable: 
+
+xg ∈ { 0, 1}, g ∈ S 
+
+where xg = 1 if subgraph g is selected in the final partition, and 0 otherwise. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 10 
+
+The optimization objective minimizes the total number of selected subgraphs in order to maximize the fusion opportu-nities while subject to full node coverage: Minimize X
+
+> g∈S
+
+xg , subject to X
+
+> g∈S :i∈g
+
+xg = 1 , ∀i ∈ V 
+
+Base Manual Limit8 Limit6 Limit4 
+
+0
+
+0.5
+
+1
+
+1.5
+
+2
+
+> Latency ( ×10 7 Cycles)
+
+0
+
+1
+
+2
+
+3
+
+4   
+
+> Energy ( ×10 9 pJ)
+> Latency Energy
+> Fig. 10. Latency and energy for ResNet18 inference on an Edge TPU using different layer-fusion strategies. Base is the layer-by-layer approach, Manual is a manually designed fusion, and Limit4 to 8 are our algorithm with varying subgraph limits. Our approach reduces both latency and energy compared to manual fusion, enabling faster workflow iteration.
+> −2
+> 0
+> 2
+> 4
+> AC01
+> AC11
+> Latency ( ×10 6 Cycles)
+> Latency
+> −2
+> 0
+> 2
+> 4
+> AC10
+> AC01+AC10
+> Energy ( ×10 9 pJ)
+> Energy Fig. 11. ResNet18 Performance Under Activation Checkpointing: Energy and Latency Analysis. All values are relative to the baseline (saving all activations). Striped bars show energy consumption, while solid bars highlight latency for each strategy.
+
+Alternative heuristics, such as minimizing inter-subgraph tensor sizes, can also be considered to further reduce memory overhead. However, they can be very expensive, especially when considering training workloads, because the complexity grows from linear to quadratic. 
+
+2) Results: To validate our algorithm, we evaluate its performance on ResNet-18 inference using an Edge TPU. We compare our results to both baseline layer-by-layer scheduling and the manual fusion configurations from Stream. We also in-vestigate how the maximum subgraph length influences fusion efficiency. As illustrated in Figure 10, layer-fusion proves to be a highly effective technique for minimizing both latency and energy consumption in DNN model inference. Our algorithm outperforms the baseline layer-by-layer approach and most of the time the manually designed fusion configuration, achieving notable reductions in both metrics. The results reveal that the optimal performance—when operator type constraints are not enforced—is achieved with a maximum subgraph limit of 6, with a length of 4 having a similar latency. This finding underscores the efficiency of our approach, enabling users to accelerate their workflow iterations without the need to manually reconfigure layer-fusion settings for each different workload, mapping and hardware configurations. 
+
+B. Activation Checkpointing 
+
+As previously described, activation checkpointing expands the algorithmic search space during training by determining whether to checkpoint or recompute activations required for the backward pass. In this section, we focus on exploring the activation checkpointing search space and demonstrate the effectiveness of a genetic algorithm in efficiently navigating this space, particularly for layer-fused neural networks. 
+
+1) Linear Model Limits: A key challenge arises from the inadequacy of the Mixed-Integer Linear Programming (MILP) model in representing fused-layer neural networks. Specifi-cally, the recomputation of an activation can influence the contributions of other activations, rendering a linear model insufficient. To validate this claim, we apply partial activation checkpointing to a ResNet18 model on a base Edge TPU accelerator, as detailed in Section IV-A. In this experiment, we evaluate four scenarios: recomputing no activations, recomputing the first and second activations that are used during the backpropagation and that are generated by the first layers AC 10 and AC 01 , and both activations AC 11 .We maintain a consistent mapping configuration across all experiments and employ the layer-fusion algorithm proposed in Section V-A to maximize fusion potential and data reuse. The results, adjusted by subtracting the baseline scenario of recomputing no activations, are presented in Figure 11. Our findings reveal that the activation checkpointing prob-lem cannot be accurately modeled using a linear MILP ap-proach. Specifically, the recomputation cost of two activations is not equivalent to the sum of their individual recomputations. This non-linearity can stem from an improved data locality when recomputing activations immediately before gradient computation or a change in the layers that are fused together. Additionally, recomputation reduces the number of subgraphs with multiple output nodes, thereby increasing the number of layers that can be fused, as visualized in Figure 2, where Op2 and Op3 can be fused together after applying activation checkpointing, which was not the case before. A naive extension of the MILP formulation to accommodate fused-layer networks would require evaluating all possible combinations of activation orders, resulting in a combinatorial complexity of Θ( n · n!) , where n is the size of the activation set A. This complexity is prohibitive for both coefficient com-putation and solving the MILP problem itself. Alternatively, the problem could be modeled as a Mixed Integer Non-Linear Programming (MINLP) formulation but would be impractical to formulate and to solve. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 11 
+
+0 5 10 15 20 25 30 
+
+1.2
+
+1.22 
+
+1.24 
+
+1.26 
+
+Saved Memory (%) 
+
+> Energy ( ×10 11  pJ)
+
+Gen 0
+
+Gen 1
+
+Gen 2
+
+Gen 3
+
+Baseline 
+
+0 5 10 15 20 25 30 
+
+1.86 
+
+1.88 
+
+1.9
+
+1.92 
+
+1.94 
+
+1.96 
+
+1.98 
+
+Saved Memory (%) 
+
+> Latency ( ×10 8 Cycles)
+
+Gen 0
+
+Gen 1
+
+Gen 2
+
+Gen 3
+
+Baseline  
+
+> Fig. 12. Optimization of activation checkpointing for ResNet-18 training (Adam optimizer, batch size 1, 224 ×224 inputs) using a genetic algorithm. The reported memory savings correspond to the percentage of the total activation memory that is avoided by recomputing intermediate tensors during the backward pass instead of storing them.
+
+2) Proposed Solution: To address these challenges, we propose to use a genetic algorithm-based approach to generate a Pareto-optimal set of solutions, balancing memory reduction, energy consumption, and latency. This method avoids the intractable complexity of exhaustive MILP formulations while providing a practical framework for optimizing fused-layer neural networks. The energy and latency metrics are derived from Stream, and the memory metric is calculated as the sum of the activations’ memory footprint, assuming FP16 storage. The genetic algorithm is based on NSGA-II [40], a widely used multi-objective optimization algorithm that leverages elitism to preserve high-quality solutions across generations, while its crowding distance mechanism ensures diversity and a well-distributed Pareto front. This algorithm is also used in Stream for the scheduling optimization problem and makes it a good candidate to reuse. Figure 12 presents the results of this exploration for train-ing a ResNet-18 model with the ADAM optimizer, using a batch size of 1 and an image size of 224 ×224. The genetic algorithm successfully generates a Pareto front that balances energy, latency, and memory requirements. Notably, for an additional cost of 4% in latency and energy, up to 13 MBs of memory can be saved. This effect becomes more pronounced with larger batch sizes, image sizes, or sequence lengths in language models. Furthermore, specific configurations yield lower memory and latency compared to the baseline, though not always lower energy costs. These results are consistent with activation checkpointing techniques used in PyTorch [23]. This approach highlights the potential of activation check-pointing, when combined with layer fusion, to reduce the training cost of complex neural network architectures. VI. C ONCLUSION 
+
+This paper introduces MONET, which builds upon the Stream framework to enable modeling and optimization of full neural network training workloads on heterogeneous dataflow accelerators. By incorporating forward and backward execu-tion, optimizer steps, layer fusion, and activation checkpoint-ing into a unified pipeline, MONET provides accurate latency, energy, and memory estimates for training, exposing trade-offs that are not visible in inference-only analyses. Our experiments with ResNet-18 and GPT-2 demonstrate that architectures op-timized for inference are not necessarily efficient for training, underscoring the need for dedicated training-aware co-design. We further proposed optimization strategies for two key challenges in training: fused-layer partitioning and activation checkpointing. For fused-layer optimization, we introduced a constraint-based fusion solver that enables effective fusion on large training graphs and, despite using a heuristic objective, consistently discovers better solutions than manually designed fusion configurations. We also showed that the activation checkpointing problem is inherently non-linear and cannot be accurately captured by linear formulations. To address this, we employed a genetic algorithm that captures the complex trade-offs between latency, energy, and memory, leading to improved Pareto-optimal solutions. Together, these techniques reveal new operating points and highlight the importance of jointly exploring hardware, mapping, and algorithmic choices. MONET establishes a foundation for systematic training-centric accelerator design and supports future research toward more efficient deep learning systems. Future work includes validating and extending this pipeline on modern accelerator architectures such as GPUs—similarly to inference-oriented efforts like LLMCompass [25]—as well as exploring dedicated hardware designs tailored to this ap-proach. We also plan to develop more advanced optimization algorithms to improve mapping strategies for large-scale train-ing workloads. ACKNOWLEDGMENTS 
+
+This research was funded, in whole or in part, by the French National Research Agency (ANR) under the project ANR-JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 12 
+
+22-CE25-0006 and was performed using AI resources from GENCI-IDRIS. REFERENCES [1] D. Abts, G. Kimmell, A. Ling, J. Kim, M. Boyd, A. Bitar, S. Parmar, I. Ahmed, R. DiCecco, D. Han, J. Thompson, M. Bye, J. Hwang, J. Fowers, P. Lillian, A. Murthy, E. Mehtabuddin, C. Tekur, T. Sohmers, K. Kang, S. Maresh, and J. Ross, “A software-defined tensor streaming multiprocessor for large-scale machine learning,” in 
+
+Proceedings of the 49th Annual International Symposium on Computer Architecture , ser. ISCA ’22. New York, NY, USA: Association for Computing Machinery, 2022, p. 567–580. [Online]. Available: https://doi.org/10.1145/3470496.3527405 [2] S. Lie, “Cerebras architecture deep dive: First look inside the hard-ware/software co-design for deep learning,” IEEE Micro , vol. 43, no. 3, pp. 18–30, 2023. [3] N. P. Jouppi, D. H. Yoon, G. Kurian, S. Li, N. Patil, J. Laudon, C. Young, and D. Patterson, “A domain-specific supercomputer for training deep neural networks,” Commun. ACM , vol. 63, no. 7, p. 67–78, Jun. 2020. [Online]. Available: https://doi.org/10.1145/3360307 [4] B. Cottier, R. Rahman, L. Fattorini, N. Maslej, T. Besiroglu, and D. Owen, “The rising costs of training frontier ai models,” arXiv preprint arXiv:2405.21015 , 2024. [5] A. S. Luccioni, S. Viguier, and A.-L. Ligozat, “Estimating the carbon footprint of bloom, a 176b parameter language model,” Journal of machine learning research , vol. 24, no. 253, pp. 1–15, 2023. [6] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proceedings of the IEEE conference on computer vision and pattern recognition , 2016, pp. 770–778. [7] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in neural information processing systems , vol. 30, 2017. [8] A. Gu, K. Goel, and C. Re, “Efficiently modeling long sequences with structured state spaces,” in International Conference on Learning Representations .[9] L. Franceschi, M. Donini, V. Perrone, A. Klein, C. Archambeau, M. Seeger, M. Pontil, and P. Frasconi, “Hyperparameter optimization in machine learning,” arXiv preprint arXiv:2410.22854 , 2024. [10] L. Li, K. Jamieson, G. DeSalvo, A. Rostamizadeh, and A. Talwalkar, “Hyperband: A novel bandit-based approach to hyperparameter opti-mization,” Journal of Machine Learning Research , vol. 18, no. 185, pp. 1–52, 2018. [11] J. Liu, J. Su, X. Yao, Z. Jiang, G. Lai, Y. Du, Y. Qin, W. Xu, E. Lu, J. Yan et al. , “Muon is scalable for llm training,” arXiv preprint arXiv:2502.16982 , 2025. [12] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,” 
+
+arXiv preprint arXiv:1412.6980 , 2014. [13] NVIDIA Corporation, “Nvidia h100 tensor core gpu architecture whitepaper,” https://resources.nvidia.com/en-us-hopper-architecture/ nvidia-h100-tensor-c, 2024, accessed: 2025-09-05. [14] A. Smith, G. H. Loh, M. J. Schulte, M. Ignatowski, S. Naffziger, M. Mantor, M. F. N. Kalyanasundharam, V. Alla, N. Malaya, J. L. Greathouse, E. Chapman, and R. Swaminathan, “Realizing the amd exascale heterogeneous processor vision : Industry product,” in 2024 ACM/IEEE 51st Annual International Symposium on Computer Archi-tecture (ISCA) , 2024, pp. 876–889. [15] N. Jouppi, G. Kurian, S. Li, P. Ma, R. Nagarajan, L. Nai, N. Patil, S. Subramanian, A. Swing, B. Towles, C. Young, X. Zhou, Z. Zhou, and D. A. Patterson, “Tpu v4: An optically reconfigurable supercomputer for machine learning with hardware support for embeddings,” in Proceedings of the 50th Annual International Symposium on Computer Architecture , ser. ISCA ’23. New York, NY, USA: Association for Computing Machinery, 2023. [Online]. Available: https://doi.org/10.1145/3579371.3589350 [16] A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl, and M. Ver-helst, “Stream: Design space exploration of layer-fused dnns on hetero-geneous dataflow accelerators,” IEEE Transactions on Computers , 2024. [17] J. Zhao, Z. Zhang, B. Chen, Z. Wang, A. Anandkumar, and Y. Tian, “Galore: Memory-efficient llm training by gradient low-rank projection,” 2024. [18] A. Jain, A. Phanishayee, J. Mars, L. Tang, and G. Pekhimenko, “Gist: Efficient data encoding for deep neural network training,” in 
+
+2018 ACM/IEEE 45th Annual International Symposium on Computer Architecture (ISCA) , 2018, pp. 776–789. [19] Y. Zhou, X. Dong, T. Meng, M. Tan, B. Akin, D. Peng, A. Yazdanbakhsh, D. Huang, R. Narayanaswami, and J. Laudon, “Towards the co-design of neural networks and accelerators,” in 
+
+Proceedings of Machine Learning and Systems , D. Marculescu, Y. Chi, and C. Wu, Eds., vol. 4, 2022, pp. 141–152. [Online]. Available: https://proceedings.mlsys.org/paper files/paper/ 2022/file/4c430a4d0a7de11e85fa5b076e7f1895-Paper.pdf [20] PyTorch Team, “Activation checkpointing techniques,” https: //pytorch.org/blog/activation-checkpointing-techniques/, 2025, ac-cessed: 2025-12-15. [Online]. Available: https://pytorch.org/blog/ activation-checkpointing-techniques/ [21] A. Boudaoud, A. Calotoiu, M. Copik, and T. Hoefler, “Dace ad: Unifying high-performance automatic differentiation for machine learning and scientific computing,” arXiv preprint arXiv:2509.02197 , 2025. [22] P. Jain, A. Jain, A. Nrusimha, A. Gholami, P. Abbeel, J. Gonzalez, K. Keutzer, and I. Stoica, “Checkmate: Breaking the memory wall with optimal tensor rematerialization,” Proceedings of Machine Learning and Systems , vol. 2, pp. 497–511, 2020. [23] PyTorch Team, “Min-cut optimal(*) recomputation (i.e. activation checkpointing) with AOTAutograd,” Jan 2022, accessed: 2025-09-15. [Online]. Available: https://dev-discuss.pytorch.org/t/ min-cut-optimal-recomputation-i-e-activation-checkpointing-with-aotautograd/ 467 [24] H. Kwon, L. Lai, M. Pellauer, T. Krishna, Y.-H. Chen, and V. Chan-dra, “Heterogeneous dataflow accelerators for multi-dnn workloads,” in 
+
+2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2021, pp. 71–83. [25] H. Zhang, A. Ning, R. B. Prabhakar, and D. Wentzlaff, “Llmcompass: Enabling efficient hardware design for large language model inference,” in 2024 ACM/IEEE 51st Annual International Symposium on Computer Architecture (ISCA) , 2024, pp. 1080–1096. [26] R. T. Mullapudi, A. Adams, D. Sharlet, J. Ragan-Kelley, and K. Fatahalian, “Automatically scheduling halide image processing pipelines,” ACM Trans. Graph. , vol. 35, no. 4, Jul. 2016. [Online]. Available: https://doi.org/10.1145/2897824.2925952 [27] M. Alwani, H. Chen, M. Ferdman, and P. Milder, “Fused-layer cnn accelerators,” in 2016 49th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2016, pp. 1–12. [28] Y. Huang, Y. Cheng, A. Bapna, O. Firat, D. Chen, M. Chen, H. Lee, J. Ngiam, Q. V. Le, Y. Wu et al. , “Gpipe: Efficient training of giant neu-ral networks using pipeline parallelism,” Advances in neural information processing systems , vol. 32, 2019. [29] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classification with deep convolutional neural networks,” in Advances in Neural Information Processing Systems , F. Pereira, C. Burges, L. Bottou, and K. Weinberger, Eds., vol. 25. Curran Associates, Inc., 2012. [Online]. Available: https://proceedings.neurips.cc/paper files/ paper/2012/file/c399862d3b9d6b76c8436e924a68c45b-Paper.pdf [30] N. Nayak, X. Wu, T. O. Odemuyiwa, M. Pellauer, J. S. Emer, and C. W. Fletcher, “Fusemax: Leveraging extended einsums to optimize attention accelerator design,” in 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2024, pp. 1458–1473. [31] W. Niu, J. Guan, Y. Wang, G. Agrawal, and B. Ren, “Dnnfusion: accelerating deep neural networks execution with advanced operator fusion,” in Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation ,ser. PLDI 2021. New York, NY, USA: Association for Computing Machinery, 2021, p. 883–898. [Online]. Available: https://doi.org/10. 1145/3453483.3454083 [32] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R´ e, “FlashAttention: Fast and memory-efficient exact attention with IO-awareness,” in Advances in Neural Information Processing Systems (NeurIPS) , 2022. [33] T. Dao, “FlashAttention-2: Faster attention with better parallelism and work partitioning,” in International Conference on Learning Represen-tations (ICLR) , 2024. [34] A. Parashar, P. Raina, Y. S. Shao, Y.-H. Chen, V. A. Ying, A. Mukkara, R. Venkatesan, B. Khailany, S. W. Keckler, and J. Emer, “Timeloop: A systematic approach to dnn accelerator evaluation,” in 2019 IEEE inter-national symposium on performance analysis of systems and software (ISPASS) , 2019, pp. 304–315. [35] Y. N. Wu, J. S. Emer, and V. Sze, “Accelergy: An architecture-level energy estimation methodology for accelerator designs,” in 2019 IEEE/ACM International Conference on Computer-Aided Design (IC-CAD) , 2019. [36] L. Mei, P. Houshmand, V. Jain, S. Giraldo, and M. Verhelst, “Zigzag: Enlarging joint architecture-mapping design space exploration for dnn JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 13 
+
+accelerators,” IEEE Transactions on Computers , vol. 70, no. 8, pp. 1160– 1174, 2021. [37] O. Villa, D. Lustig, Z. Yan, E. Bolotin, Y. Fu, N. Chatterjee, N. Jiang, and D. Nellans, “Need for speed: Experiences building a trustworthy system-level gpu simulator,” in 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2021, pp. 868–880. [38] J. Lin, L. Zhu, W.-M. Chen, W.-C. Wang, C. Gan, and S. Han, “On-device training under 256kb memory,” Advances in Neural Information Processing Systems , vol. 35, pp. 22 941–22 954, 2022. [39] R. Geens, M. Shi, A. Symons, C. Fang, and M. Verhelst, “Energy cost modelling for optimizing large language model inference on hardware accelerators,” in 2024 IEEE 37th International System-on-Chip Confer-ence (SOCC) , 2024, pp. 1–6. [40] K. Deb, A. Pratap, S. Agarwal, and T. Meyarivan, “A fast and elitist multiobjective genetic algorithm: Nsga-ii,” IEEE Transactions on Evo-lutionary Computation , vol. 6, no. 2, pp. 182–197, 2002. 
+
+VII. B IOGRAPHY SECTION 
+
+If you have an EPS/PDF photo (graphicx package needed), extra braces are needed around the contents of the optional ar-gument to biography to prevent the LaTeX parser from getting confused when it sees the complicated \includegraphics 
+
+command within an optional argument. (You can create your own custom macro containing the \includegraphics 
+
+command to make things simpler here.)

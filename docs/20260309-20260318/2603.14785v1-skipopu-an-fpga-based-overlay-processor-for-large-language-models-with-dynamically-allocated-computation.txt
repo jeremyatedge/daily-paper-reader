@@ -1,0 +1,618 @@
+Title: SkipOPU: An FPGA-based Overlay Processor for Large Language Models with Dynamically Allocated Computation
+
+URL Source: https://arxiv.org/pdf/2603.14785v1
+
+Published Time: Tue, 17 Mar 2026 06:15:37 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# SkipOPU: An FPGA-based Overlay Processor for Large Language Models with Dynamically Allocated Computation 
+
+## ZICHENG HE ∗, University of California, Los Angeles, USA 
+
+## ANHAO ZHAO ∗, Institute of Digital Twin, Eastern Institute of Technology, China 
+
+## XIAOYU SHEN †, Ningbo Key Laboratory of Spatial Intelligence and Digital Derivative, Institute of Digital Twin, Eastern Institute of Technology, China 
+
+## CHEN WU †, Chiplet CAD and Manufacturing Engineering Research Center of Zhejiang Province, Ningbo Institute of Digital Twin, Eastern Institute of Technology, China 
+
+## HE LEI †, Eastern Institute of Technology, China 
+
+Large language models (LLMs) have achieved remarkable performance across a wide range of tasks, but their inference efficiency remains a critical bottleneck due to rapidly growing parameters. Recent advances in dynamic computation allocation address this challenge by exploiting the highly uneven contributions of different tokens and layers, enabling selective execution that significantly reduces redundant computation while preserving model accuracy. However, existing hardware platforms and accelerators are primarily optimized for uniform, static execution, limiting their ability to efficiently support such dynamic inference patterns. In this work, we propose SkipOPU , an FPGA-based overlay processor that dynamically allocates computation across tokens and layers with high flexibility through a lightweight routing mechanism. First, we decouple reduction operations from element-wise computation in nonlinear modules and perform reductions incrementally. This design enables both stages to be fused with adjacent linear operations (router or matrix multiplication), effectively hiding nonlinear latency within the pipeline. Second, motivated by asymmetric sensitivity to numerical precision between activation and weight, we design a processing element (PE) array that efficiently supports float–fixed 
+
+hybrid execution. A novel DSP overpacking technique is introduced to maximize hardware utilization while minimizing resource overhead. Finally, we develop a proactive on-chip KV history buffer that exploits cross-layer KV invariance of pruned tokens, eliminating irregular HBM accesses during decoding and supplementing off-chip bandwidth through high-locality on-chip reuse. Experimental results demonstrate that SkipOPU on an AMD U280 FPGA outperforms GPU and other FPGA-based accelerators by 
+
+1.23 ×-3.83 × in bandwidth efficiency for LLMs inference with dynamic computation allocation. Moreover, cross-layer KV reuse reduces up to 25 .4% KV storage overhead across varying sequence lengths. CCS Concepts: • Computer systems organization → Reconfigurable computing ; • Hardware → Hardware accelerators .Additional Key Words and Phrases: Large language models, Dynamic pruning, KV invariance, FPGA overlay processor 
+
+1 INTRODUCTION 
+
+Large language models (LLMs) have demonstrated unprecedented capabilities across a wide range of applications, including natural language processing [ 2, 4, 9 , 54 ], computer vision [ 11 , 33 ], and recommendation systems [ 39 , 48 ]. Such remarkable performance is largely driven by the continuous scaling of model capacity [ 19 , 24 , 38 ]. However, increasing model size also incurs substantial inference-time costs in both computation and memory, a challenge that becomes 
+
+> ∗
+
+Equal contribution. 
+
+> †
+
+Corresponding authors. Authors’ Contact Information: Zicheng He, hzc1997ece@gmail.com, University of California, Los Angeles, LA, CA, USA; Anhao Zhao, Institute of Digital Twin, Eastern Institute of Technology, Ningbo, China; Xiaoyu Shen, Ningbo Key Laboratory of Spatial Intelligence and Digital Derivative, Institute of Digital Twin, Eastern Institute of Technology, Ningbo, China, xyshen@eitech.edu.cn; Chen Wu, Chiplet CAD and Manufacturing Engineering Research Center of Zhejiang Province, Ningbo Institute of Digital Twin, Eastern Institute of Technology, Ningbo, China, cwu@idt.eitech.edu.cn; He Lei, Eastern Institute of Technology, Ningbo, China, lei.hexun@gmail.com. 
+
+1
+
+> arXiv:2603.14785v1 [cs.AR] 16 Mar 2026
+
+2 Zicheng He and Anhao Zhao, et al. particularly pronounced in settings involving multimodal inputs and multi-turn, agentic inference [ 3, 12 , 30 , 37 ]. As a result, deploying LLMs places significant pressure on memory bandwidth, storage capacity, and compute resources, especially on resource-constrained platforms. These challenges are further exacerbated by the growing demand for local deployment, motivated by requirements for offline inference, improved energy efficiency [ 50 ], and stronger data privacy guarantees [27, 36]. Model pruning has emerged as a widely adopted and effective strategy to reduce computational complexity and memory usage. Previous work has extensively explored static pruning, including both unstructured sparsity[ 47 , 56 ]and structured sparsity[ 5, 13 , 52 , 53 ]. By leveraging sparse weight patterns, these approaches typically depend on custom accelerator architectures optimized for sparse matrix multiplication (SpMM) to translate theoretical complexity reductions into practical hardware efficiency. However, the static nature of these approaches limits adaptability across diverse inputs and often results in noticeable accuracy degradation under aggressive sparsity [7, 35, 55]. To address this limitation of static pruning, dynamic computation allocation techniques have been proposed to adapt computation at runtime according to input characteristics [ 23 ]. A prominent line of work focuses on sparse attention mechanisms, which dynamically restrict the attention range during the scaled dot-product ( i.e. 𝑄𝐾 𝑇 and 𝑆𝑉 
+
+stages) based on token relevance or structural priors [ 15 , 31 , 34 , 49 ]. More recent studies go beyond attention-scope optimization and explore dynamic allocation of entire computational units, ranging from coarse-grained layers to finer-grained sub-layer components such as self-attention blocks and feed-forward network blocks within a single Transformer layer [ 23 , 35 , 46 , 51 ]. In these approaches, each computation unit is equipped with a lightweight router, typically implemented as a small MLP, that decides whether the unit should be executed or skipped for each token. In practice, important tokens are routed through most of the model’s parameters, while less informative tokens can bypass substantial computation. This adaptive execution paradigm closely mirrors human language processing, where semantically critical words receive deeper analysis, while predictable or less informative words are processed more shallowly. Among these methods, SkipGPT [ 55 ] stands out as a flexible and representative framework. It enables token-wise dynamic execution by independently routing tokens through the multi-head attention and feed-forward network submodules within each layer, thereby providing fully flexible token-level control over computation. This design contrasts with prior approaches that enforce a fixed number of participating tokens per layer block [ 35 ] or impose rigid coupling between attention and feed-forward execution [ 23 ], allowing SkipGPT to capture richer and more fine-grained token-wise computational dynamics. Despite achieving state-of-the-art accuracy–efficiency trade-offs under comparable pruning budgets, however, existing evaluations primarily report theoretical reductions in computational complexity. These gains have yet to be systematically validated on real hardware platforms. As a result, how to efficiently map SkipGPT-style dynamic execution onto modern hardware architectures while translating algorithmic savings into tangible end-to-end performance improvements remains a set of significant and largely unexplored challenges [10, 16]. Figure 1.(b) summarizes the key challenges in developing hardware accelerators for SkipGPT: (1) Long latency induced by nonlinear operations and routers. Nonlinear operations typically exhibit limited computational efficiency due to inherent data dependencies, which prevent fully pipelined dataflow and enforce serialized execution. In SkipGPT, the Gumbel-Softmax-based routing [ 22 ] introduces additional low–arithmetic-intensity operations beyond conventional nonlinearities. These control-dominant computations are inefficiently supported on conventional GPU architectures, thereby amplifying inference overhead. As a result, despite contributing a relatively small fraction of total FLOPs, nonlinear operations and routing modules can disproportionately impact end-to-end latency. (2) Hybrid precision preference and under-utilization of DSP-based PEs. Prior quantization studies, such as [ 14 , 28 ], SkipOPU 3 
+
+> Fig. 1. (a) The framework of SkipGPT models. (b) Challenges in SkipGPT computation, and the corresponding solution in SkipOPU .
+
+demonstrate that model weights can be aggressively quantized to 4-bit integers with minimal accuracy degradation. However, activations typically remain in FP16 to preserve numerical fidelity, resulting in a hybrid precision execution regime. Existing DSP-based PE arrays neither fully exploit the intrinsic multiply-accumulate capabilities of DSP blocks nor efficiently support mixed-precision computation[ 44 , 45 ]. Consequently, hybrid precision execution leads to under-utilized hardware resources and imposes a substantial computational burden on resource-constrained edge devices. (3) Incompatibility with KV-cache optimization strategies. Dynamic layer skipping introduces KV-cache inconsistencies. Existing approaches address this issue by optimizing either storage efficiency ( e.g. , KV eviction) or model fidelity ( e.g. , partial attention skipping). A particular compromise is to substitute missing KV entries with those from earlier layers, thereby preserving attention semantics with minimal storage overhead. However, such cross-layer KV reuse introduces highly irregular HBM access patterns that fragment AXI burst transactions, severely degrading memory locality and off-chip bandwidth utilization. To this end, we propose SkipOPU , an FPGA-based overlay processor designed to accelerate LLMs with dynamically allocated computation across both tokens and layers, targeting the SkipGPT framework. First, we introduce a novel dataflow architecture that effectively hides the latency of nonlinear operations interleaved between linear layers. By decoupling the numerical feature dependencies within Softmax and RMSNorm from the traditional sequential datapath, our design enables incremental computation that can be seamlessly fused with streaming outputs from PE arrays, thereby improving pipeline efficiency. Second, we develop a mixed-precision processing engine with fine-grained data packing to fully exploit the inherent multiplication and addition capabilities of FPGA DSP blocks. Inspired by the Block Floating Point (BFP) methodology [ 43 ], we replace costly floating-point accumulations with lightweight fixed-point summation combined with FP–BFP format conversion. This approach substantially reduces arithmetic overhead while maintaining numerical fidelity. Finally, we adopt a KV reuse strategy for handling missing entries and observe that the KV values of skipped tokens remain unchanged across layers until reactivated. Leveraging this invariance, we partition KV-cache read during the decode by placing pre-known invariant KV entries in on-chip URAM while retrieving the 4 Zicheng He and Anhao Zhao, et al. remaining entries in HBM. This separation transforms irregular cross-layer memory accesses into high-locality on-chip transactions, mitigating AXI-level burst fragmentation and effectively supplementing limited off-chip bandwidth. In summary, our main contributions are: 
+
+• We present the first hardware system that supports token-wise and layer-wise dynamic pruning, integrated with hybrid-precision execution and KV-aware cache management for LLM inference. 
+
+• We propose a novel latency-hiding dataflow tailored for nonlinear operations, along with a dedicated nonlinear processing engine (NPE) that supports major LLM nonlinearities( e.g. RoPE and SwiGLU) through tile-wise streaming computation. 
+
+• We design a DSP-overpacked PE array with BFP-based accumulation to efficiently enable mixed-precision computation while incurring minimal hardware overhead. 
+
+• We develop a proactive on-chip KV history buffer that exploits cross-layer KV invariance to convert irregular HBM accesses into high-locality on-chip reuse, significantly improving memory efficiency. Experimental results show that SkipOPU implemented on an AMD U280 FPGA achieves 1.23 ×-3.83 × higher bandwidth efficiency compared to GPUs and prior FPGA-based accelerators for LLM inference with dynamically allocated compu-tation. Furthermore, by applying the proposed KV reuse strategy, SkipOPU reduces KV memory storage requirements by up to 25.4% across varying input and output sequence lengths. 
+
+2 BACKGROUND AND MOTIVATIONS 
+
+This section reviews the relevant background and motivates our design by identifying key opportunities for improving computation and memory efficiency. 
+
+2.1 SkipGPT framework 
+
+Modern LLMs are typically built with a decoder-only Transformer architecture, formed by stacking multiple identical decoder layers. To start with inference, the entire input prompt is processed in parallel to generate the initial output token, a phase known as the prefill stage. Subsequently, the model enters the multi-step decode stage, where each step consumes the accumulated context to produce the next token in an auto-regressive manner. The SkipGPT framework [ 55 ] shares the same inference process, but enhances LLMs by introducing a router before each submodule per layer, as shown in Figure 1.(a). For each token 𝑥 , the router is evaluated prior to the submodule, 
+
+𝑓 𝑙 , at 𝑙 -th transformer layer to determine whether the corresponding computation should be executed or skipped. In SkipGPT, the router is implemented as a linear projection that produces a two-dimensional categorical distribution, 
+
+𝑟 𝑙 = W𝑇 𝜃 𝑥 ∈ R2, and the decision is drawn by sampling from the categorical distribution. Similar routing mechanisms are employed by other dynamic layer-pruning approaches, including MoD [ 35 ], SkipLayer [ 51 ], and D-LLM [ 23 ], which differ mainly in the specific form of the router but share the same lightweight design principle. Specially, the output of the submodule can be written as: 
+
+𝑥 𝑙 +1 =
+
+
+
+𝑓 𝑙 (𝑥 𝑙 ) + 𝑥 𝑙 , if sampled result is 1,𝑥 𝑙 , otherwise (1) While only a subset of tokens is selected to execute MHA at 𝑙 -th layer, it is common practice to preserve attention semantics by allowing each unskipped token to attend to the full token sequence. For such skipped tokens, their key and value vectors can be obtained through different strategies; a bypass approach is to reuse the most recent KV SkipOPU 5representations from the last layer where their computation was performed [16]. As a result, the unskipped attention computation for 𝑛 -th token at 𝑙 -th layer, 𝑥 𝑙,𝑛 can be formulated as Attention (𝑥 𝑙,𝑛 ) = softmax 𝑥 𝑙,𝑛 𝑊 𝑙 𝑄 · 𝐾 𝑇 𝑙 
+
+√𝑑 𝑘 
+
+!
+
+· 𝑉 𝑙 , where 𝐾 𝑙 , 𝑉 𝑙 ∈ R𝐿 ×𝑑 𝑘 (2) where 𝐿 denotes the sequence length and 𝑑 𝑘 is the dimensionality of the key and value vectors. For each position 𝑖 , the key vector is defined as 𝐾 𝑙 [𝑖, :] = 𝑥 𝑖 𝑊 𝑙 𝐾 if the routing decision for 𝑥 𝑙,𝑖 equals to 1; otherwise, it is inherited from the most recent executed layer via recursive fallback, i.e., 𝐾 𝑙 [𝑖, :] = 𝐾 𝑙 −1 [𝑖, :]. The same rule applies to the value matrix 𝑉 𝑙 .
+
+2.2 Motivation 
+
+The motivation for SkipOPU arises from the distinctive characteristics of dynmaic layer pruning methods, particularly the Gumbel-Softmax-based routing mechanism and the the disparity between KV-cache update and reuse. Although nonlinear operations account for only a small fraction of the total arithmetic operations, they contribute disproportionately to inference latency due to their complex data dependencies and multi-pass computation. Although prior designs such as MCoreOPU[ 32 ] and NPE[ 25 ] propose special function units for nonlinear operations to reduce memory traffic for intermediate results, the row-based computation still prevents effective pipelining. This challenge is exacerbated by the Grumbel-softmax based routing, which further requires joint dataflow design across linear and nonlinear kernels to enable seamless integration and effective latency hiding. Beyond nonlinear operations, the performance of matrix multiplication must also be carefully considered. Although architectures such as systolic arrays have been extensively optimized to maximize utilization for dense GEMM, the intrinsic compute capability of DSP blocks remains underexploited when supporting hybrid-precision workloads Moreover, conventional floating-point accumulation is costly in both area and power, and its overhead scales with PE-array size, directly limiting the attainable compute density on edge devices. Addressing inefficient DSP utilization and expensive floating-point accumulation is therefore critical to unleash the untapped performance potential. Another primary motivation comes from the disparsity between KV generation and consumption when applying KV reuse for attention semantics maintenance. While only a subset of tokens update their KV entries at each layer, all tokens must still be attended to by unskipped queries, forcing the model to repeatedly reuse KV entries across layers. During decoding, this mismatch translates into irregular memory accesses to off-chip HBM. As modern accelerators rely on wide, burst-based AXI transactions to achieve high bandwidth, such random accesses severely degrade spatial locality and collapse effective memory throughput. Although irregular KV accesses can be mitigated by redundantly storing identical KV entries at every layer, doing so eliminates the memory savings provided by dynamic pruning. This observation motivates a memory system that preserves the storage benefits of dynamic pruning while restoring burst-friendly, high-locality KV access for efficient attention computation. 
+
+3 DATAFLOW OPTIMIZATION 
+
+This section introduces the dataflow optimization for both the router and the self-attention under KV reuse mechanism to facilitate the latency hiding of nonlinearities lied between. 6 Zicheng He and Anhao Zhao, et al. 
+
+3.1 Fused dataflow for routing and RMSNorm 
+
+To reduce memory traffic among the router, the executed submodule, and the intervening RMSNorm while effectively hiding the latency of nonlinear operations, we introduce a fused dataflow, as illustrated in Algorithm 1, where com-putations on the PE array, NPE are indicated in yellow and green, respectively. In a conventional dataflow, routing and normalization require multiple full passes over the activation matrix, resulting in two large off-chip loads and an additional store before the subsequent submodule can begin. In contrast, our dataflow leverages the token-wise independence of routing decisions and partitions the activation matrix into on-chip tiles, allowing each slice to be reused by both the RMSNorm and the following submodule without repeated off-chip accesses. To further accelerate the multi-pass RMSNorm, we decouple its reduction phase from the element-wise normalization and execute the reduction in parallel with the linear router computation, since neither data dependency or resource conflict exists. As a result, the normalization statistics become available immediately after the routing logits are produced. After determining the routing decisions with straight-through argmax, the unskipped tokens together with their precomputed mean and variance are selected directly from the on-chip buffer to complete normalization. The resulting tile-wise normalization is seamlessly overlapped with the pipelined matrix multiplication of the following submodule, effectively hiding the latency of both the reduction and normalization stages. For energy efficiency, the normalized activations are written back to the on-chip buffer while being streamed to the PE array for matrix multiplication, overwriting the original unnormalized activations in place to avoid repeated computation. 
+
+Algorithm 1 Deep-Fused Router and RMSNorm dataflow 
+
+Require: Router parameter W𝜃 ∈ R𝐷 ×2; RMSNorm parameter, 𝛾 ∈ R𝐷 ; QKV generation weights, W𝑄 , W𝐾 , W𝑉 ∈ R𝐷 ×𝐷 ; RoPE weights, {R𝑑  
+
+> Θ,𝑚
+
+∈ R𝑑 ×𝑑 |𝑚 ∈ { 1, 2, ..., 𝐿 } } ; Activation matrix, 𝑋 ∈ R𝐿 ×𝐷 and the block size along the row 𝐵 𝑟 and column 𝐵 𝑐 
+
+respectively. Tile size along reduction dimension 𝑆  
+
+> 1:
+
+Divide activation matrix into 𝑇 𝑟 blocks,  X𝑖 ∈ R𝐵 𝑟 ×𝐷 𝑖 = 1, 2, ...𝑇 𝑟 and QKV generation weights into 𝑇 𝑐 blocks. 
+
+n
+
+W𝑖 𝑄 , W𝑖 𝐾 , W𝑖 𝑉 ∈ R𝐷 ×𝐵 𝑐 𝑖 = 1, 2, ...𝑇 𝑐 
+
+o 
+
+> 2:
+
+for 1 ≤ 𝑖 ≤ 𝑇 𝑟 do  
+
+> 3:
+
+for 1 ≤ 𝑘 ≤ 𝑇 𝑛 ,𝑇 𝑛 = 𝐷 // 𝑆 do  
+
+> 4:
+
+Load 𝑋 𝑘 𝑖 = 𝑋 𝑖 [:, 𝑘𝑆 : (𝑘 + 1)𝑆 ] ∈ R𝐵 𝑟 ×𝑆 from DDR to on-chip buffer  
+
+> 5:
+
+logit ← logit + 𝑋 𝑘 𝑖 W𝜃 [𝑘𝑆 : (𝑘 + 1)𝑆, :] ∈ R𝐵 𝑟 ×2 
+
+> 6:
+
+𝜇 ← RowSum (𝑋 𝑘 𝑖 )/ 𝐷 + 𝜇 ; 𝑣𝑎𝑟 ← 𝑣𝑎𝑟 + RowSum [ ( 𝑋 𝑘 𝑖 )2 ]/ 𝐷 − RowSum (𝑋 𝑘 𝑖 )2/𝐷 2 ∈ R𝐵 𝑟  
+
+> 7:
+
+end for  
+
+> 8:
+
+𝑑 = 1(arg max (ln (logit ) + 𝜋 ), 𝜋 ∈ 𝐺 (0, 1) 
+
+> 9:
+
+for 1 ≤ 𝑗 ≤ 𝑇 𝑐 do  
+
+> 10:
+
+for 1 ≤ 𝑘 ≤ 𝑇 𝑛 do  
+
+> 11:
+
+Load 𝑋 𝑘 𝑖  
+
+> ′
+
+= 𝑋 𝑘 𝑖 [𝑑 == 1] ∈ R𝐵 ′  
+
+> 𝑟 ×𝑆
+
+from on-chip buffer; Load W𝑗𝑘 𝑉 = W𝑗 𝑉 [𝑘𝑆 : (𝑘 + 1)𝑆, :] ∈ R𝑆 ×𝐵 𝑐 from HBM  
+
+> 12:
+
+if j == 1 then  
+
+> 13:
+
+𝜇 ′ = 𝜇 [𝑑 == 1], 𝜎 ′ = √𝑣𝑎𝑟 [𝑑 == 1]; 𝑋 𝑘 𝑖  
+
+> ′
+
+= 𝑋 𝑘 𝑖    
+
+> ′−𝜇 ′
+> 𝜎 ′
+
+× 𝛾 [𝑘𝑆 : (𝑘 + 1)𝑆 ] 
+
+> 14:
+
+Store 𝑋 𝑘 𝑖  
+
+> ′
+
+to on-chip buffer to replace the original 𝑋 𝑘 𝑖  
+
+> 15:
+
+end if  
+
+> 16:
+
+𝑉 𝑘 𝑖,𝑗 ← 𝑋 𝑘 𝑖 
+
+> ′
+
+W𝑗𝑘 𝑉 + 𝑉 𝑘 −1 
+
+> 𝑖,𝑗
+
+∈ R𝐵 ′  
+
+> 𝑟 ×𝐵 𝑐
+
+⊲ Only V generation is shown for simplicity  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for  
+
+> 19:
+
+end for SkipOPU 7
+
+3.2 Fused dataflow for self-attention mechanism 
+
+Following the same decoupling and incremental-computation paradigm, we further fuse the softmax operation with adjacent linear computation, as shown in Algorithm 2. The softmax reduction phase—specifically, the computation of row-wise numerical features (i.e., the maximum and exponential summation)—is reformulated using the update rule from FlashAttention[ 8], enabling these features to be accumulated incrementally within a single pass. This incremental formulation allows the concurrent feature updates to be tightly pipelined with the 𝑄𝐾 𝑇 computation, effectively hiding the softmax reduction latency. Once a full row of intermediate results is available, the subsequent matrix multiplication can immediately proceed by loading the value matrices from HBM and the intermediate attention scores from DDR. The intermediate tiles are then streamed through the normalization unit and seamlessly consumed by the 𝑆𝑉 computation, incurring negligible additional overhead. One subtle yet critical challenge in the fused attention dataflow stems from the head-wise execution of self-attention and the irregular HBM access patterns induced by cross-layer KV reuse for skipped tokens. The head-wise computation inherently limits arithmetic intensity, pushing the self-attention mechanism toward a memory-bound regime. This effect is further exacerbated by fragmented KV accesses across layers, making self-attention predominantly memory-bound in practice even during the prefill stage. To mitigate this bottleneck, we pack the computation of multiple attention heads within the PE array, thereby aggregating KV accesses to improve spatial locality and recover effective HBM bandwidth. However, such packing produces 𝑄𝐾 𝑇 results from multiple heads concurrently, which would otherwise require substantial on-chip storage to materialize full attention rows under a conventional softmax dataflow. Leveraging the decoupled softmax formulation, we avoids this overhead by immediately streaming raw 𝑄𝐾 𝑇 tiles to off-chip memory while retaining only the associated numerical features on-chip, enabling multi-head packing without incurring excessive on-chip memory consumption. 
+
+4 HARDWARE ARCHITECTURE 4.1 Overview 
+
+Figure 2 provides the general architecture of the proposed SkipOPU for SkipGPT-style models. It contains a CPU host that runs compiler for instruction generation and model offloading, an FPGA fabric for computation acceleration, and HBM and DDR4 as off-chip memories for storing model parameters and intermediate results. Communication between the CPU and FPGA is established via PCIe, whereas data transfers between the FPGA and peripheral memories are handled through AXI-based interconnects. To provide sufficient off-chip bandwidth, the HBM interface operates at the maximum frequency supported by the FPGA board(450MHz), while the accelerator core runs at a lower frequency to satisfy timing constraints. Asynchronous Chunk FIFOs are utilized to bridge the frequency gap between the HBM interface and the lower-frequency accelerator core. These buffers leverage embedded CDC logic to safely transfer data across domains while synchronizing multi-port HBM transfers to ensure a consistent, aligned data stream for the kernel. The accelerator is primarily composed of dedicated on-chip buffers and specialized function units to maximize data reuse and hardware utilization. Specifically, the PE array is responsible for all matrix multiplications, including both the routing mechanism and the linear transformations within each submodule. To sustain a continous datflow during PE execution, a set of small ping-pong buffers( i.e. , IFM, KER and PSUM) is employed, while a global buffer(scratchpad) is introduced to accommodate diverse data reuse patterns across different linear operations. The Bitmask module consumes router results produced by the PE array to make computation decision and selectively fetches token vectors from the global buffer to drive the execution of subsequent submodules. Tile-based NPE handles nonlinear operations 8 Zicheng He and Anhao Zhao, et al. 
+
+Algorithm 2 Deep-Fused self-attention dataflow 
+
+Require: Matrices {Q𝑖 |𝑖 = 1, 2, ..., 𝐻 } ∈ R𝐿 ′ ×𝑑 , {K𝑖 , V𝑖 |𝑖 = 1, 2, ..., 𝐻 } ∈ R𝐿 ×𝑑 , and the block size along the row, 𝐵 𝑟 and 𝐵 𝑐 
+
+1: Divide Q𝑖 into 𝑇 𝑟 blocks,  Q𝑖 ∈ R𝐵 𝑟 ×𝑑 𝑖 = 1, 2, ...𝑇 𝑟 and divide K𝑖 , V𝑖 into 𝑇 𝑐 blocks,  K𝑖 , V𝑖 ∈ R𝐵 𝑐 ×𝑑 𝑖 = 1, 2, ...𝑇 𝑐 
+
+2: for 1 ≤ ℎ ≤ 𝐻 /2 do 
+
+3: for 1 ≤ 𝑖 ≤ 𝑇 𝑟 do 
+
+4: Load Q𝑖 
+
+> 2ℎ
+
+, Q𝑖  
+
+> 2ℎ+1
+
+from DDR to on-chip buffer 
+
+5: for 1 ≤ 𝑗 ≤ 𝑇 𝑐 do 
+
+6: Load K𝑖 
+
+> 2ℎ
+
+, K𝑖  
+
+> 2ℎ+1
+
+from HBM to on-chip buffer 
+
+7: S𝑖 𝑗  
+
+> 2ℎ
+
+= Q𝑖  
+
+> 2ℎ
+
+K𝑗  
+
+> 2ℎ𝑇
+
+and S𝑖 𝑗  
+
+> 2ℎ+1
+
+= Q𝑖 
+
+> 2ℎ+1
+
+K𝑗  
+
+> 2ℎ+1
+> 𝑇
+
+∈ R𝐵 𝑟 ×𝐵 𝑐 
+
+8: ∀𝑢 ∈ { 0, 1} ˜𝑚 𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+= rowmax (S𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+) ∈ R𝐵 𝑟 , ˜P𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+= exp (𝑆 𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+− ˜𝑚 𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+), ˜ℓ𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+= rowsum ( ˜P𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+) ∈ R𝐵 𝑟 
+
+9: ∀𝑢 ∈ { 0, 1} 𝑚 𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+= max (𝑚 𝑖  
+
+> 2ℎ+𝑢
+
+, ˜𝑚 𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+), ℓ 𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+= exp (𝑚 𝑖  
+
+> 2ℎ+𝑢
+
+− 𝑚 𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+)ℓ𝑖  
+
+> 2ℎ+𝑢
+
++ exp ( ˜𝑚 𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+− 𝑚 𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+) ˜ℓ𝑖 𝑗 
+
+> 2ℎ+𝑢
+
+10: Set 𝑚 𝑖  
+
+> 2ℎ+𝑢
+
+← 𝑚 𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+, ℓ 𝑖  
+
+> 2ℎ+𝑢
+
+← ℓ𝑖,𝑛𝑒𝑤  
+
+> 2ℎ+𝑢
+
+; Store S𝑖 𝑗  
+
+> 2ℎ
+
+and S𝑖 𝑗  
+
+> 2ℎ+1
+
+back to off-chip memory 
+
+11: end for 
+
+12: for 1 ≤ 𝑗 ≤ 𝑇 𝑐 do 
+
+13: Load S𝑖 𝑗  
+
+> 2ℎ
+
+and S𝑖 𝑗  
+
+> 2ℎ+1
+
+from DDR to on-chip buffer; Load V𝑗 
+
+> 2ℎ
+
+, V𝑗  
+
+> 2ℎ+1
+
+∈ R𝐵 𝑐 ×𝑑 from HBM to on-chip buffer 
+
+14: ∀𝑢 ∈ { 0, 1} S𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+← 𝑒𝑥𝑝 (S𝑖 𝑗  
+
+> 2ℎ+𝑢
+
+− 𝑚 𝑖  
+
+> 2ℎ+𝑢
+
+)/ ℓ𝑖  
+
+> 2ℎ+𝑢
+
+∈ R𝐵 𝑟 ×𝐵 𝑐 
+
+15: O𝑖  
+
+> 2ℎ
+
+← S𝑖 𝑗  
+
+> 2ℎ
+
+V𝑗  
+
+> 2ℎ
+
++ O𝑖  
+
+> 2ℎ
+
+, O𝑖  
+
+> 2ℎ+1
+
+← S𝑖 𝑗 
+
+> 2ℎ+1
+
+V𝑗  
+
+> 2ℎ+1
+
++ O𝑖  
+
+> 2ℎ+1
+
+∈ R𝐵 𝑟 ×𝑑 
+
+16: end for 
+
+17: Store O𝑖 
+
+> 2ℎ
+
+, O𝑖  
+
+> 2ℎ+1
+
+back to DDR 
+
+18: end for 
+
+19: end for 
+
+Fig. 2. Overview of SkipOPU where HBM operates at high clock domain and accelerator operates at low clock domain 
+
+and can be flexibly inserted into the computation pipeline, either during operand preparation or result offloading. The intermediate result matrices are offloaded to DDR4 while the computed KV values are stored back to HBM. During the decoding phase, the KV invariance buffer is automatically updated to capture key–value entries that remain unchanged across adjacent layers. When self-attention computation is enabled in the next layer, the buffer outputs are concatenated with HBM-fetched data to supplement off-chip bandwidth. SkipOPU 9
+
+> Fig. 3. Comparison between differences DSP packing techniques for FP16 fraction multiplication.
+
+4.2 Mixed-precision PE array 
+
+4.2.1 Overpacking design for FP16 with truncation. Matrix multiplications on FPGAs are typically mapped to dedicated DSP blocks, whose operand bit-widths are fixed by the underlying hardware. For example, on the Xilinx U280 platform, each DSP48E2 unit natively supports a 27 -bit × 18 -bit multiplication. However, LLM inference commonly employs data-formats such as INT8 or FP16. This mismatch between the native DSP operand width and the effective precision of LLM workloads leads to systematic underutilization of the available DSP compute capacity, as only a fraction of each DSP’s arithmetic resources are exercised per operation. To address this mismatch, DSP packing techniques are commonly employed to better exploit the fixed arithmetic width of FPGA DSP blocks. A standard approach, described in Xilinx design guidelines, attempts to pack two 11-bit mantissa multiplications into a single DSP unit, as illustrated in Figure 3.(a). However, this approach is often infeasible in practice due to strict operand-width constraints imposed by the DSP48E2 architecture. To relax these constraints, overpacking techniques such as those proposed in [ 29 ] intentionally allow intermediate corruption in the DSP multiplication results and subsequently recover the correct outputs through post-processing. As shown in Figure 3.(b), this method leverages the DSP’s built-in addition path for result recovery, requiring only an additional 7-bit multiplication. Despite this improvement, the internal adder resources of the DSP remain underutilized. Observing that a multi-plication can be decomposed into a sequence of partial additions, we further exploit this structure by truncating the mantissa to reduce the effective operand bit-width. This truncation simplifies the recovery of corrupted results, while the information lost during truncation is preserved by concatenating it with the corrupted bits and injecting it through the DSP C-port. As illustrated in Figure 3.(c), we introduce several key design choices to simplify information injection and recovery within the DSP datapath. First, we truncate the least significant bit (LSB) of the right operand 𝑢 0 and the most significant bit (MSB) of the left operand 𝑢 1. This truncation pattern is carefully selected to ensure that the information associated with the truncated bits does not introduce additional cross-terms. Second, it is important to note that the corrupted terms introduced by overpacking must be eliminated via subtraction, whereas the information lost due to truncation must be restored via addition, leading to separate arithmetic operations and additional logic. To avoid this overhead, we invert the sign of the left operand through the DSP pre-adder, allowing both corruption cancellation and truncation recovery to be realized through a single additive operation using the DSP C-port. With this design, only a 5-bit overpacking of the left operand 𝑢 1 [9 : 0 ] is required, along with a corresponding 5-bit auxiliary multiplication for corruption recovery, enabling efficient utilization of the DSP’s arithmetic resources with minimal overhead. 
+
+4.2.2 Mixed-precision PE architecture. After applying overpacking techniques, each DSP unit can generate multiple partial products per cycle within the same silicon footprint, substantially increasing multiplication throughput. This 10 Zicheng He and Anhao Zhao, et al. 
+
+> Fig. 4. (a) The detailed design of mixed precision PE. (b) FP16 accumulation tree with BFP-FP convertion
+
+increased arithmetic density, however, places a correspondingly higher demand on accumulation, as more partial results must be combined within each PE. Although addition is generally less expensive than multiplication, accumulation in FP16 still incurs nontrivial overhead due to exponent alignment, normalization, and rounding, whose cost scales with the size of the PE array. To mitigate this overhead, our key insight is to decouple accumulation from full floating-point representation and to perform accumulation within a unified numerical domain. Specifically, as shown in Figure 4.(b), instead of materializing FP16 values after each DSP operation, our accumulation tree collects unnormalized partial results and converts them into BFP representation in which all mantissas share a common exponent. Accumulation is then performed using fixed-point addition within this shared-exponent domain, and floating-point reconstruction is applied only once at the end of the accumulation. This design substantially simplifies the accumulation data path and also enables a lower-cost mixed-precision PE architecture, which is shown in Figure 4.(a). By delegating the floating-point data conversion to the accumulation tree, the PE micro-architecture is streamlined to primarily consist of the DSP48E2 unit for mantissa multiplications, an auxiliary 5-bit multiplier for corruption recovery and two INT adders to produce the unnormalized exponents. In FP16-FP16 mode, the PE follows overpacking scheme by first producing corrupted significands from two concurrent FP16 multiplications and then injecting the truncated information concatenated with the result of the INT5 multiplier to recover clean intermediate fractions. The sign of each mantissa product is determined via a simple XOR operation and propagated to the mantissa accumulation tree, which uses this sign information to correctly accumulate the absolute values produced. Moreover, with high-fidelity summation for BFP data, forwarding the full 22-bit fractional product to the accumulation tree is unnecessary. A 15-bit truncated product, consistent with the multiplier output width used in the INT4–FP16 mode, is sufficient. In FP16-INT4 mode, the standard DSP packing is adopted without the introduction of overpacking and corruption recovery. The INT4 data in the 2’s complementary format are directly fed into the DSP ports and the products of the DSP units can be used in the mantissa accumulation tree without the extra sign information. 
+
+4.2.3 Validation. To validate the efficiency of our proposed scheme, we design additional sets of control experiments. In these experiments, 64 cascaded FP MAC IPs and overpacked DSPs are used as the baseline while several variants of our PE array are implemented to explore the trade-off between resource utilization and numerical fidelity. Specifically, SkipOPU 11 IMPL1 and IMPL2 correspond to PE arrays whose BFP accumulation trees are implemented using LUT-based adders that accept 22-bit and 15-bit operands, respectively. Notably, the summation of 64 signed 15-bit values produces at most a 22-bit result while each DSP adder supports up to 48-bit addition, enabling two 15-bit accumulation paths to be packed into a single DSP. Leveraging this property, the LUT consumption of the accumulation tree can be significantly reduced by implementing it using DSP resources, resulting in IMPL3. The numerical fidelity is evaluated under two input settings: randomized data and data sampled from the empirical distribution of weights and activations in the Llama-2 model. As can be seen in Table 1, our PE array design can save approximately 57 .2% LUT resources under the same DSP consumption and can always achieve better computation accuracy in random and empirical settings. 
+
+> Table 1. Performance comparison of the mixed-precision computation unit.
+
+Name Computation Error( %)LUT ∗ FF ∗ DSP ∗
+
+Random Empiricial FP16 ×FP16 FP16 ×INT4 † FP16 ×FP16 FP16 ×INT4 †
+
+IMPL1 0.035 0.035 0.065 0.036 1544+6829 3618+6043 32 IMPL2 0.064 0.074 0.116 0.067 1472+5244 3426+4850 32 IMPL3 0.064 0.074 0.116 0.067 1408+4408 3426+4138 32 + 31.5 Cascade MAC IP 0.410 0.369 0.490 0.415 13598 21138 64 Cascade Overpacked DSP 0.390 0.370 0.344 0.348 9920 7264 32   
+
+> ∗resource consumption is averaged for one column of accumulation.
+> †computation error is reported before dequantization for FP16 ×INT4 case
+
+4.3 Tile-based nonlinear processing engine 
+
+Figure 5 illustrates the micro-architecture of the proposed nonlinear processing engine (NPE), which is designed to support the decoupling and incremental computation paradigm for all nonlinearities across the SkipGPT framework. For Softmax and RMSNorm, the NPE implements the fused dataflow by concurrently updating the numerical features using two shared reduction units. These units accumulate the required statistics during the upstream linear computations, eliminating redundant passes over activation tiles. Once fully accumulated, the numerical features are written to dedicated on-chip buffers and later accessed in a row-wise sequential manner during the normalization stage. Because the numerical features for RMSNorm are computed before execution decisions are finalized, a bitmask mechanism is introduced to guide the RMSNorm unit in selectively reading only the features corresponding to unskipped tokens. Although SwiGLU and RoPE do not involve reduction operations, their dataflows are naturally integrated into the NPE pipeline with minimal structural overhead. For SwiGLU, the computation is formulated as 𝑆𝐼𝐿𝑈 (𝑋𝑊 𝑔𝑎𝑡𝑒 ) ⊙ 𝑋𝑊 𝑢𝑝 ,requiring support for the 𝑆𝑖𝐿𝑈 activation and a Hadamard product between two matrices. The 𝑆𝑖𝐿𝑈 can be simply implemented by reusing the existing exponential unit and division unit while the Hadamard product can be realized through vector-wise multiplications on a cycle-by-cycle basis, leveraging its element-wise nature. To simplify data orchestration, 𝑊 𝑢𝑝 and 𝑊 𝑔𝑎𝑡𝑒 are interleaved in off-chip memory, enabling the PE array to generate paired output tiles from 𝑋𝑊 𝑢𝑝 and 𝑋𝑊 𝑔𝑎𝑡𝑒 in each computation round on the fly. These tiles are then consumed synchronously by the NPE to generate output tiles of matching shape. For RoPE, complex-domain rotation is implemented through pair-wise transformations by partitioning each token vector into even-indexed and odd-indexed elements, with an identical reorganization applied to the rotary embedding parameters. The required multiplications and additions between the reorganized vectors are realized by further 12 Zicheng He and Anhao Zhao, et al. 
+
+> Fig. 5. The micro-architecture of nonlinear processing engine(NPE).
+
+reusing the multiplication units, producing the the correct rotated representations. The rotary embedding tensors are precomputed on the CPU host and stored in off-chip memory. During execution, the required slices are transferred into a dedicated on-chip ROT buffer. Since token indices subject to RoPE are non-contiguous due to dynamic pruning, a bitmask mechanism is again employed to control selective reading and application of rotary transformations. 
+
+4.4 Optimization with cross-layer KV reuse 
+
+4.4.1 KV memory mapping. To fully exploit the bandwidth of HBM devices through AXI interface, model parameters and KV caches must be distributed across channels in a carefully designed memory mapping scheme that enables long burst transactions and maximizes channel-level parallelism. In conventional LLM inference, KV entries are generated and consumed in a strictly sequential manner along the token dimension, making it effective to interleave KV tensors across HBM channels. Such an interleaved layout aligns consecutive KV accesses with contiguous memory regions, thereby preserving AXI burst locality while exploiting the inherent parallelism provided by multiple channels. However, this fact no longer holds under dynamic pruning with KV reuse. With token-wise layer skipping, only a subset of tokens produces new KV entries at a given layer, while missing entries are substituted with KV values reused from earlier layers to preserve attention semantics. This mismatch between KV generation and KV consumption leads to highly irregular access patterns during attention computation: KV entries corresponding to skipped tokens are fetched from different layers and non-contiguous memory locations. As a result, AXI burst transactions are frequently fragmented, severely degrading effective HBM bandwidth utilization. To address this challenge, we propose a token-wise memory mapping scheme tailored to the pruning granularity of SkipGPT-style models. As illustrated in Figure 6.(a), the KV entry of a given unskipped token is placed entirely within the local address space of a single port (pseudo-channel) on HBM AXI interface, rather than being interleaved between ports. And the KV caches of the unskipped tokens are distributed across HBM ports in a round-robin manner, allowing KV segments of multiple tokens to be fetched concurrently across ports. This layout effectively aligns the token-level parallelism of attention computation with the port-level parallelism of HBM. Moreover, KV accesses for each token can be served through long, contiguous burst reads within a port, independent of whether the KV entries originate from SkipOPU 13 
+
+> Fig. 6. (a) Token-wise memory mapping scheme for KV cache (b) Channel interference to load KV cache from previous layer.
+
+the current layer or are reused from previous layers. Specifically, the address span required per token can be calculated as 𝐷 × 𝐷𝑊 /𝐻𝐵𝑀 _𝑃𝑂𝑅𝑇 _𝑊 𝐼𝐷𝑇 𝐻 , which is sufficient to sustain large burst transactions. 
+
+4.4.2 KV invariance buffer. The token-wise memory mapping scheme could still introduce channel interference under certain access patterns, as illustrated in Figure 6.(b). During decoding at layer 𝑖 + 1, self-attention for an unskipped token requires not only the newly generated KV entries at layer 𝑖 + 1, but also KV entries of skipped tokens reused from earlier layers to preserve attention semantics. For example, fetching 𝐾 1 
+
+> 𝑖 +1
+
+and 𝐾 0 
+
+> 𝑖
+
+concurrently may target the same physical HBM channel due to the token-wise port assignment, while other HBM physical channels (e.g., physical channel associated with Port #3 in this case) remain idle. As a result, simultaneous AXI transactions contend for the same channel, degrading memory throughput despite sufficient interface-level parallelism. To mitigate this issue, we pin reused KV entries in an on-chip invariance buffer. By serving reused data directly from the on-chip buffer, off-chip HBM accesses are restricted exclusively to KV entries generated at the current layer. Under this condition, each HBM port fetches data only from its locally assigned memory region, and no cross-port physical channel conflicts are introduced. As a result, port-level parallelism directly translates into independent HBM physical channel activity, ensuring balanced channel utilization and maximizing effective bandwidth, as illustrated in Figure 6(b)(ii). We argue that managing this buffer is computationally "free" with pre-determined routing decisions. At the start of the decoding of token 𝑗 at layer 𝑖 , the routing bitmask for layer 𝑖 + 1 regarding all preceding tokens is already finalized during the generation of token 𝑗 − 1. This look-ahead information allows the controller to determine—in the background—which KV entries (whether currently being fetched from HBM or residing in the buffer) must be retained for the subsequent layer. Consequently, the buffer update for layer 𝑖 + 1 is performed concurrently with the decoding of layer 𝑖 . This ensures that buffer maintenance always incurs zero-latency overhead, as it never sits on the critical path of the AXI transaction. This "temporal-free" property provides maximum benefit during consecutive self-attention layers, where the buffer acts as the primary data source for reused KVs. In scenarios where self-attention is skipped at layer 𝑖 + 1, the invariance buffer is effectively invalidated. When self-attention eventually resumes at a later layer, cross-layer KV loads from HBM are required to restore attention correctness. However, even in this "non-consecutive" case, the proposed approach does not degrade performance; the buffer update for the next potential attention process remains an auxiliary, overlapped operation that introduces no additional contention compared to the baseline execution. By significantly accelerating 14 Zicheng He and Anhao Zhao, et al. 
+
+> Fig. 7. (a) Valid KV cache scheduling. (b) Invalid KV cache scheduling.
+
+consecutive-layer blocks—the most common pattern in our slighted pruned LLMs—we achieve a substantial increase in effective memory throughput. 
+
+4.4.3 KV Cache Scheduling. Figure 7 illustrate the cycle-accurate scheduling of KV cache access patterns under the proposed invariance buffer management system. The bitmasks ( 𝐵𝑀 𝑖 , 𝐵𝑀 𝑖 +1) represent the routing decisions for sixteen tokens (index 0 − 𝑓 ) at layer 𝑖 and layer 𝑖 + 1, respectively, where orange blocks denote active attention tokens and gray blocks represent skipped tokens whose KV entries are reused. For this visualization, we assume a hardware configuration with four HBM ports and two invariance buffer ports. The numerical indices above 𝐵𝑀 𝑖 designate the specific HBM port to which each token is mapped. Notably, while unskipped tokens are assigned to HBM ports in a deterministic round-robin manner to maximize spatial parallelism, skipped tokens exhibit no such pattern, as they are sourced from disparate preceding layers. 
+
+Case-1: Consecutive-Layer Attention Figure 7.(a) demonstrates the scheduling when the invariance buffer is valid for decoding at layer 𝑖 . By serving reused (gray) entries via the invariance buffer, the HBM interface is dedicated exclusively to the KV (orange) entries at the current layer. The scheduling width per round is governed by the structural port constraints of both the HBM and the buffer. For instance, in Round 1, the schedule is limited to two reused entries to match the two-port buffer read capacity; In Round 2, the schedule is capped at three unskipped entries. This ensures that the concurrent proactive updates for layer 𝑖 + 1 (red dashed boxes) do not exceed the buffer’s write-port capacity, thereby maintaining the zero-overhead property. 
+
+Case-2: Non-Consecutive Layer Attention Figure 7.(b) depicts the scenario where the self-attention at layer 𝑖 − 1
+
+is skipped. Under this case, the invariance buffer has been evicted prior to decoding at layer 𝑖 , forcing the accelerator to read cross-layer KV caches from HBM. The lack of a structured pattern among reused tokens leads to frequent HBM port collisions. To prevent channel contention and maintain throughput symmetry across AXI ports, the scheduling width per round is primarily restricted to ensure no channel interference occurs between concurrent tokens. The resulting serialized, lower-throughput schedule highlights how the invariance buffer effectively transforms unpatterned HBM traffic into high-bandwidth, deterministic on-chip accesses. 
+
+4.4.4 Permutation-Invariant Processing. To further minimize FPGA resource consumption, our design exploits the permutation invariance of the attention mechanism. Rather than reordering the locally permuted tokens within each fetch back into their original sequence, the concatenated data are streamed directly into the PE array for 𝑄𝐾 𝑇 and 
+
+𝑆𝑉 computation. Although the out-of-order 𝑄𝐾 𝑇 stage produces a score vector with permuted local indices, the final SkipOPU 15 attention reduction is a sum-based operation, making the result numerically invariant to the arrival sequence. Moreover, as the routing bitmasks ( 𝐵𝑀 𝑖 , 𝐵𝑀 𝑖 +1) for Key ( 𝐾 ) and Value ( 𝑉 ) entries are identical, the elements of the resulting score vector and their corresponding 𝑉 entries remain structurally coupled across the dataflow. Consequently, the subsequent value-weighting ( 𝑆𝑉 ) stage can operate on these permuted pairs to produce the correct self-attention output. This design choice eliminates the need for high-area Reorder Buffers (ROB) or complex crossbar switches to restore a strict sequential index, significantly reducing LUT and FF utilization. 
+
+5 Experiments 5.1 Experiment setup 
+
+5.1.1 Workload. We evaluate SkipOPU with Llama2[ 40 ] and apply SkipGPT methodology to prune Llama2 models with around 25% skipping probability. We then symmetrically quantize the model parameters to 4-bit fixed-point representation using GTPQ[ 14 ] while the 𝐾𝑉 cache and intermediate activation matrix remain FP16 format. The workload includes prefill stage with context in the length of 128, 256, 512, 1024 and decode stage with 512, 1024 output tokens. We use batch size 1 for evaluation as it is the most common case in the edge application. 
+
+5.1.2 Implementation. SkipOPU is written in SystemVerilog HDL, synthesized and implemented with Vivado 2020.1 on Xilinx Alveo U280. To optimize the memory hierarchy, the core logic and DDR4 interfaces operate at 225 MHz, while the HBM2 subsystem runs at 450 MHz to maximize raw off-chip throughput. A custom C++ compiler handles instruction generation and fine-grained memory mapping across the heterogeneous storage. Specifically, all weight matrices are allocated to the HBM2 to leverage its ultra-high bandwidth, while weight scales, RMSNorm parameters, RoPE constants, and router metadata are offloaded to DDR4. This dual-memory approach prevents the ultra-high-bandwidth HBM channels from being throttled by small metadata fetches and maintains high bus utilization for DDR4 even during the decoding phase where all intermediate vector results are processed on-chip. 
+
+5.2 Resource Breakdown 
+
+Table 2 summarizes the resource utilization of SkipOPU . The processing-element (PE) array integrates 4096 DSPs and, enabled by the fine-grained packing technique described earlier, sustains 64 × 128 FP16 ×FP16 or FP16 ×INT4 multiplications per cycle. To match the throughput of the PE array, a 64-way tile-wise nonlinear processing engine (NPE) is introduced, incurring an additional 16.78% LUT and 2.95% DSP overhead to support miscellaneous nonlinear operations. The DMA engine, which interfaces with both DDR4 and HBM for data movement, consumes 3.52% LUT, 2.26% FF, and 20.00% BRAM resources. To enable the KV invariance buffer, 512 URAMs, capable of storing up to 1024 tokens’ KV entries, are organized into a memory interface with 16 independent ports, each of which is designed to match the throughput of the corresponding HBM ports. Concurrent KV updates during attention computation are supported by a 48 × 16 crossbar that dynamically selects reusable KV values. Overall, this memory subsystem accounts for 8.18% LUT, 0.57% FF, and 53.33% URAM utilization. 
+
+5.3 Impact of dataflow optimization 
+
+We first focus on the computation of the multi-head attention (MHA) submodule that includes the router, RMSNorm and softmax to evaluate the performance impact of the proposed fused dataflow under the previously described workloads. Specifically, four progressively enhanced configurations are evaluated, each introducing an additional optimization on top of the previous one. 16 Zicheng He and Anhao Zhao, et al. 
+
+> Table 2. Skip-OPU resource breakdown on U280 FPGA
+
+component LUT FF DSP BRAM URAM PE array 853184 (65.44%) 1085976 (41.65%) 4096 (45.39%) 0 (0.0%) 0 (0.0%) Tile-wise NPE 218830(16.78%) 109835 (4.21%) 266 (2.95%) 29 (1.44%) 0 (0.0%) DMA Engine 45947 (3.52%) 58814 (2.26%) 0 (0.0%) 383 (20.00%) 0 (0.0%) KV BUF +Xbar 106704 (8.18%) 14928 (0.57%) 0 (0.0%) 0 (0.0%) 512 (53.33%) Total 1288673(98.85%) 1668477(63.99%) 4618 (51.17%) 775 (38.44%) 512 (53.33%) 
+
+• Baseline: This configuration strictly follows the original Llama-2 computation graph, where all tokens across all layers execute identical operations. Nonlinear operations are implemented using a conventional row-wise processing module, incurring inherent buffering stalls between linear and nonlinear stages. 
+
+• PartialSkip Attention: A linear router is inserted before the RMSNorm operation to determine whether the corresponding MHA computation should be executed or skipped on a per token-basis. To preserve attention semantics, KV caches are still generated for skipped tokens, while only the attention computation itself is conditionally bypassed. 
+
+• KV reuse: The same routing mechanism is retained, but KV caches for skipped tokens are no longer recomputed; instead, KV values from earlier layers are reused for missing entries. 
+
+• KV reuse + OPT : The proposed dataflow optimizations are applied on top of KV reuse, including nonlinear-latency hiding and multi-head packing in the fused attention dataflow. The performance of SkipOPU with incremental dataflow optimizations, where we consistently apply token-level memory mapping scheme to reused KV cache for fair comparison, is shown in Figure 8. At the prefill stage, the improvement of PartialSkip and KV Reuse stems from the reduced arithmetic complexity and remains relatively stable across sequence lengths, around 1.14 × and 1.29 ×, respectively. The fused dataflow optimization further improve the MHA throughput to 1.40 × by realizing nonlinear operations via tile-wise incremental computation, which eliminates the "pipeline bubble" typically caused by waiting for a full row-reduction. When it comes to the decoding phase, the system transitions to a memory-bound regime. Here, the primary benefit of attention skipping arises from the reduction in memory transactions for model parameters and KV entries. While the latency of nonlinear operations on a single vector is negligible in this phase, the speedup from the fused dataflow is gradually diminished as the decoding sequence length grows. A critical observation is the diminishing performance gap between PartialSkip and KV Reuse as the context length expands. This phenomenon is driven by the fact that cross-layer KV retrieval introduces persistent channel contention, even when employing a token-level memory mapping scheme. As the volume of retrieved KV entries grows, the associated memory traffic begins to dominate the total execution cost. The resulting degradation in effective memory bandwidth for KV loads effectively offsets the reduction in total memory transactions, highlighting the necessity of our KV Invariance Buffer to transforms unpatterned HBM traffic into deterministic on-chip accesses. 
+
+5.4 Impact of allocation and scheduling 
+
+Building upon our 𝐾𝑉 cache reuse and fused dataflow optimizations, we analyzed the impact of our token-level memory mapping scheme and the corresponding 𝐾𝑉 invariance buffer on effective HBM bandwidth. Our baseline evaluation focuses on dense 𝐾𝑉 cache case, where every token is processed equivalently and no sparsity is applied. In this state, the nature contiguous memory footprint allows the HBM controller to maintain highly efficient, long-burst transactions, SkipOPU 17 
+
+> Fig. 8. Normalized MHA speedup under different dataflow optimization and varying [prefill:decode]
+> Fig. 9. Effective memory bandwidth for KV cache with different mapping and scheduling options.
+
+achieving an effective bandwidth of 408.7 GB/s (88.7% of peak). As we move toward the more memory-efficient scenarios utilizing 𝐾𝑉 reuse, the total data volume is reduced by approximately 25% , which significantly lowers the HBM capacity requirement for long-context generation. However, this reduction in volume comes at the cost of a fragmented access pattern: Under the standard interleaving mapping scheme, the controller suffers from severe row-buffer thrashing as it attempts to switch between different memory region across layers. This "context-switching" tax creates severe Page Miss penalties, collapsing the effective HBM bandwidth to a worst-case performance of only 55.8%. To reclaim this lost throughput, we implemented a token-level memory mapping scheme that restores spatial locality by pinning 𝐾𝑉 entries to specific ports, ensuring 𝐾𝑉 accesses for each token are served through long, contiguous burst reads. While this mapping introduces minor inter-channel contention during concurrent reads, it successfully lifts the peak performance back to 360.2 GB/s. We further introduce our KV invariance buffer in SkipOPU case, which proactively caches reused entries in on-chip URAM during the attention phase of previous layers. By serving repeated values directly from high-speed URAM, we reduce not only redundant HBM read but also the penalties associated with cross-layer channel interference. Even the buffer cannot eliminate the cross-layer KV reads in the case of non-consecutive self-attention, which limit physical HBM utilization to 83 .1% , the synergy between the on-chip buffer and the HBM interface enables an aggregate effective bandwidth of 467.8 GB/s, effectively surpassing the physical ceiling of the HBM2 interface through architectural data reuse. 18 Zicheng He and Anhao Zhao, et al. 
+
+5.5 End-to-End performance comparison 
+
+We further evaluate SkipOPU against state-of-the-art GPU and FPGA-based accelerators, with detailed results provided in Table 3. This comparison accounts for diverse system characteristics, including hardware platforms, peak off-chip bandwidth, operating frequencies, and decoding configurations. For a fair comparison, all throughput metrics are normalized to a 7B parameter model with dense 4-bit weight quantization. Moreover, our bandwidth efficiency metric is calculated relative to the maximum achievable bandwidth supported by the design’s operating frequency, which allows us to recognize performance gains resulting from architectural dataflow optimizations. As demonstrated in Table 3, SkipOPU significantly outperforms competing designs in normalized throughput, and achieves 1.23 × − 3.83 × improvement over effective bandwidth. This performance advantage is driven by two primary factors: the superior utilization of the HBM interface and our dynamic routing mechanism, which identifies and elides redundant computations for unimportant tokens and layers. Notably, while prior FPGA accelerators often report peak throughput under restricted decoding sequences, SkipOPU maintains its competitive performance even at a 1,024-token decode length. This scalability is a direct result of our KV-reuse mechanism and the KV-invariance buffer, which simultaneously reduce the HBM memory footprint and provide high aggregate bandwidth for sparse cache accesses.   
+
+> Table 3. End-to-end performance comparison between SkipOPU and other designs on different platforms
+
+Design vLLM FlightLLM ChatOPU MCoreOPU Chen[6] DFX SkipOPU Device A100 U280 U200 U200 U280 U280 U280 Bandwidth(GB/s) 1555 460 19.2 76.8 76.8 460 460 460 Frequency(MHz) 1410 225 300 300 300 245 200 225(450) Tasks llama2-7b llama2-7b opt-350m gpt2-345m gpt2-345m gpt2-345m llama2-7b -13b Opt. for W HF16 SparseW8 SparseW16 W8 W8 HF16 W4 
+
+[prefill, decode ] [128,1024] N/A [128,64] [128, 256] N/A [128, 256] [128, 1024] Token/s 45.3 55 43.2 166.2 45.0 204 124.1 143.4 75.6 Norm Throughput 181.2 55 4.2 16.2 4.3 19.6 23.8 143.4 144.5 BW efficiency 31.5% 66% 72% 66% 70% 23% 34% 88.4% 89.1% 
+
+6 Related Work 
+
+FPGA-based LLM Accelerators. Existing FPGA accelerators for transformers generally assume a fixed execution graph [ 1, 5, 17 , 20 , 21 , 53 ]. These designs target either dense models or static parameter sparsity, and can only improve hardware efficiency for predetermined computation patterns. Some recent works begin to incorporate runtime adaptivity, such as leveraging token relevance within the attention mechanism [ 41 ]. However, they focus on sparsity within a single structural dimension and do not capture the heterogeneous importance of tokens across both layers and sequences, leaving substantial redundancy unaddressed. Our design explicitly supports token-wise and layer-wise dynamic execution, enabling the hardware to adapt its computation and memory behavior to the model’s runtime decisions and thereby providing high-performance inference for LLMs on FPGA. 
+
+Nonlinear Processing Engine. Nonlinear operations have been widely recognized as a major bottleneck in LLM inference due to their low arithmetic intensity and strong data dependencies. To alleviate this issue, VPE [ 18 ] introduces a deeply pipelined dataflow that reduces pipeline stalls caused by dependency chains. However, the row-oriented SkipOPU 19 processing pattern in VPE is mismatched with the tile-stream outputs of typical PE arrays, which introduces unavoidable buffering latency when interfacing linear and nonlinear stages. While DESA [ 42 ] and METAL [ 17 ] both utilize decoupled strategies to overlap nonlinearities, DESA relies on aggressive spatial parallelism that leads to substantial hardware overhead and underutilization. In contrast, our NPE not only maintains a resource-efficient throughput-matching design but significantly expands the functional scope beyond the BERT-focused operations of prior works. By adopting a unified tile-wise dataflow, we seamlessly integrate modern LLM-specific components like RoPE and SwiGLU into the execution pipeline under a unified tile-wise dataflow. 
+
+KV Cache Management. vLLM [ 26 ] alleviates memory fragmentation by organizing KV tensors in paged storage, whereas ChatOPU [ 56 ] improves effective off-chip bandwidth by enforcing regular AXI access patterns through coalesced spill and reload operations. Both approaches implicitly rely on relatively predictable KV access behavior. In contrast, dynamic layer skipping introduces cross-layer KV reuse, which results in irregular and contention-prone memory transactions. By exploiting the invariance of reused KV entries and maintaining them on chip, our design converts fragmented HBM accesses into localized reuse while preserving burst transfers for newly generated KV data. 
+
+7 Conclusion 
+
+This paper propose SkipOPU , an FPGA-based overlay processor for LLMs with dynamically allocated computation across both tokens and layers. At the algorithmic level, we employ KV reuse strategy for KV entries of those skipped tokens to completely bypass the MHA computation under the SkipGPT framework and further apply the fused dataflow of the router and the self-attention mechanism to facilitate the latency hiding of nonlinearities. At the hardware level, we develop a mixed precision processing engine with fine-grained packing to fully exploit the inherent DSP arithmetic capability, while the accumulation overhead is minimized through one-time FP-BFP conversion and lightweight fixed-point summation trees. In addition, cross-layer KV invariance is leveraged to proactively buffer reusable KV entries on-chip, which regularizes otherwise randomized HBM accesses and augments the aggregate memory throughput with on-chip bandwidth supply. Experiments demonstrate that our SkipOPU implemented on Xilinx U280 platform achieves 1.23 ×–3.83 × higher bandwidth efficiency than the state-of-the-art GPU application and other FPGA-based accelerators while reducing KV cache storage by up to 25.4% across varying input and output sequence lengths. 
+
+References               
+
+> [1] Yueyin Bai, Hao Zhou, Keqing Zhao, Hongji Wang, Jianli Chen, Jun Yu, and Kun Wang. 2023. FET-OPU: A Flexible and Efficient FPGA-Based Overlay Processor for Transformer Networks. In 2023 IEEE/ACM International Conference on Computer Aided Design (ICCAD) . 1–9. doi:10.1109/ ICCAD57390.2023.10323752 [2] Parishad BehnamGhader, Vaibhav Adlakha, Marius Mosbach, Dzmitry Bahdanau, Nicolas Chapados, and Siva Reddy. 2024. LLM2Vec: Large Language Models Are Secretly Powerful Text Encoders. arXiv:2404.05961 [cs.CL] https://arxiv.org/abs/2404.05961 [3] Peter Belcak, Greg Heinrich, Shizhe Diao, Yonggan Fu, Xin Dong, Saurav Muralidharan, Yingyan Celine Lin, and Pavlo Molchanov. 2025. Small language models are the future of agentic ai. arXiv preprint arXiv:2506.02153 (2025). [4] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language Models are Few-Shot Learners. In Advances in Neural Information Processing Systems , H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin (Eds.), Vol. 33. Curran Associates, Inc., 1877–1901. https://proceedings.neurips.cc/paper_files/paper/2020/file/1457c0d6bfcb4967418bfb8ac142f64a-Paper.pdf [5] Jialin Cao, Xuanda Lin, Manting Zhang, Kejia Shi, Jun Yu, and Kun Wang. 2023. PP-Transformer: Enable Efficient Deployment of Transformers Through Pattern Pruning. In 2023 IEEE/ACM International Conference on Computer Aided Design (ICCAD) . 1–9. doi:10.1109/ICCAD57390.2023.10323836 [6] Hongzheng Chen, Jiahao Zhang, Yixiao Du, Shaojie Xiang, Zichao Yue, Niansong Zhang, Yaohui Cai, and Zhiru Zhang. 2024. Understanding the Potential of FPGA-based Spatial Acceleration for Large Language Model Inference. ACM Trans. Reconfigurable Technol. Syst. 18, 1, Article 5 (Dec.
+
+20 Zicheng He and Anhao Zhao, et al. 
+
+2024), 29 pages. doi:10.1145/3656177 [7] Yuli Chen, Bo Cheng, Jiale Han, Yingying Zhang, Yingting Li, and Shuhao Zhang. 2025. DLP: Dynamic Layerwise Pruning in Large Language Models. arXiv:2505.23807 [cs.CL] https://arxiv.org/abs/2505.23807 [8] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. arXiv:2205.14135 [cs.LG] https://arxiv.org/abs/2205.14135 [9] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding. arXiv:1810.04805 [cs.CL] https://arxiv.org/abs/1810.04805 [10] Longwei Ding, Anhao Zhao, Fanghua Ye, Ziyang Chen, and Xiaoyu Shen. 2026. From LLMs to LRMs: Rethinking Pruning for Reasoning-Centric Models. arXiv preprint arXiv:2601.18091 (2026). [11] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby. 2021. An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale. arXiv:2010.11929 [cs.CV] https://arxiv.org/abs/2010.11929 [12] Yingqi Fan, Anhao Zhao, Jinlan Fu, Junlong Tong, Hui Su, Yijie Pan, Wei Zhang, and Xiaoyu Shen. 2025. VisiPruner: Decoding Discontinuous Cross-Modal Dynamics for Efficient Multimodal LLMs. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing .18896–18913. [13] Chao Fang, Aojun Zhou, and Zhongfeng Wang. 2022. An Algorithm–Hardware Co-Optimized Framework for Accelerating N:M Sparse Transformers. 
+
+IEEE Transactions on Very Large Scale Integration (VLSI) Systems 30, 11 (2022), 1573–1586. doi:10.1109/TVLSI.2022.3197282 [14] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2023. GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers. arXiv:2210.17323 [cs.LG] https://arxiv.org/abs/2210.17323 [15] Tae Jun Ham, Yejin Lee, Seong Hoon Seo, Soosung Kim, Hyunji Choi, Sung Jun Jung, and Jae W. Lee. 2021. ELSA: Hardware-Software Co-design for Efficient, Lightweight Self-Attention Mechanism in Neural Networks. In 2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA) . 692–705. doi:10.1109/ISCA52012.2021.00060 [16] Chao Han, Yijuan Liang, Zihao Xuan, Daokuan Wu, Wei Zhang, and Xiaoyu Shen. 2025. Informed Routing in LLMs: Smarter Token-Level Computation for Faster Inference. arXiv preprint arXiv:2510.13831 (2025). [17] Zicheng He, Shaoqiang Lu, Tiandong Zhao, Jinlong Yan, Chen Wu, and Lei He. 2025. METAL: A Memory-Efficient Transformer Architecture for Long-Context Inference on FPGA. 2025 IEEE 36th International Conference on Application-specific Systems, Architectures and Processors (ASAP) (2025), 93–100. https://api.semanticscholar.org/CorpusID:280696019 [18] Zicheng He, Tiandong Zhao, Siyuan Miao, Chen Wu, and Lei He. 2024. An FPGA-Based Efficient Streaming Vector Processing Engine for Transformer-Based Models. In 2024 2nd International Symposium of Electronics Design Automation (ISEDA) . 722–727. doi:10.1109/ISEDA62518.2024.10617499 [19] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, DDL Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. 2022. Training compute-optimal large language models. arXiv preprint arXiv:2203.15556 10 (2022). [20] Seongmin Hong, Seungjae Moon, Junsoo Kim, Sungjae Lee, Minsub Kim, Dongsoo Lee, and Joo-Young Kim. 2023. DFX: A Low-Latency Multi-FPGA Appliance for Accelerating Transformer-Based Text Generation. In Proceedings of the 55th Annual IEEE/ACM International Symposium on Microarchitecture (Chicago, Illinois, USA) (MICRO ’22) . IEEE Press, 616–630. doi:10.1109/MICRO56248.2022.00051 [21] Suyeon Hur, Seongmin Na, Dongup Kwon, Joonsung Kim, Andrew Boutros, Eriko Nurvitadhi, and Jangwoo Kim. 2023. A Fast and Flexible FPGA-based Accelerator for Natural Language Processing Neural Networks. ACM Trans. Archit. Code Optim. 20, 1, Article 11 (Feb. 2023), 24 pages. doi:10.1145/3564606 [22] Eric Jang, Shixiang Gu, and Ben Poole. 2017. Categorical Reparameterization with Gumbel-Softmax. arXiv:1611.01144 [stat.ML] https://arxiv.org/ abs/1611.01144 [23] Yikun Jiang, Huanyu Wang, Lei Xie, Hanbin Zhao, Chao Zhang, Hui Qian, and John C.S. Lui. 2024. D-LLM: A Token Adaptive Computing Resource Allocation Strategy for Large Language Models. In Advances in Neural Information Processing Systems , A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (Eds.), Vol. 37. Curran Associates, Inc., 1725–1749. doi:10.52202/079017-0055 [24] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 (2020). [25] Hamza Khan, Asma Khan, Zainab Khan, Lun Bin Huang, Kun Wang, and Lei He. 2021. NPE: An FPGA-based Overlay Processor for Natural Language Processing. In The 2021 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays (Virtual Event, USA) (FPGA ’21) . Association for Computing Machinery, New York, NY, USA, 227. doi:10.1145/3431920.3439477 [26] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Memory Management for Large Language Model Serving with PagedAttention. arXiv:2309.06180 [cs.LG] https://arxiv.org/abs/2309.06180 [27] Haoran Li, Yulin Chen, Jinglong Luo, Jiecong Wang, Hao Peng, Yan Kang, Xiaojin Zhang, Qi Hu, Chunkit Chan, Zenglin Xu, Bryan Hooi, and Yangqiu Song. 2024. Privacy in Large Language Models: Attacks, Defenses and Future Directions. arXiv:2310.10383 [cs.CL] https://arxiv.org/abs/2310.10383 [28] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration. arXiv:2306.00978 [cs.CL] https://arxiv.org/abs/2306.00978 [29] Jun Liu, Shulin Zeng, Li Ding, Widyadewi Soedarmadji, Hao Zhou, Zehao Wang, Jinhao Li, Jintao Li, Yadong Dai, Kairui Wen, Shan He, Yaqi Sun, Yu Wang, and Guohao Dai. 2025. FlightVGM: Efficient Video Generation Model Inference with Online Sparsification and Hybrid Precision on FPGAs. In Proceedings of the 2025 ACM/SIGDA International Symposium on Field Programmable Gate Arrays (Monterey, CA, USA) (FPGA ’25) . Association for SkipOPU 21 
+
+Computing Machinery, New York, NY, USA, 2–13. doi:10.1145/3706628.3708864 [30] Wenjie Liu, Hao Wu, Xin Qiu, Yingqi Fan, Yihan Zhang, Anhao Zhao, Yunpu Ma, and Xiaoyu Shen. 2026. ViCA: Efficient Multimodal LLMs with Vision-Only Cross-Attention. arXiv preprint arXiv:2602.07574 (2026). [31] Liqiang Lu, Yicheng Jin, Hangrui Bi, Zizhang Luo, Peng Li, Tao Wang, and Yun Liang. 2021. Sanger: A Co-Design Framework for Enabling Sparse Attention using Reconfigurable Architecture. In MICRO-54: 54th Annual IEEE/ACM International Symposium on Microarchitecture (Virtual Event, Greece) (MICRO ’21) . Association for Computing Machinery, New York, NY, USA, 977–991. doi:10.1145/3466752.3480125 [32] Shaoqiang Lu, Tiandong Zhao, Ting-Jung Lin, Rumin Zhang, Chen Wu, and Lei He. 2025. MCoreOPU: An FPGA-based Multi-Core Overlay Processor for Transformer-based Models. ACM Trans. Reconfigurable Technol. Syst. 18, 3, Article 37 (Aug. 2025), 27 pages. doi:10.1145/3742437 [33] Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, David Yan, Dhruv Choudhary, Dingkang Wang, Geet Sethi, Guan Pang, Haoyu Ma, Ishan Misra, Ji Hou, Jialiang Wang, Kiran Jagadeesh, Kunpeng Li, Luxin Zhang, Mannat Singh, Mary Williamson, Matt Le, Matthew Yu, Mitesh Kumar Singh, Peizhao Zhang, Peter Vajda, Quentin Duval, Rohit Girdhar, Roshan Sumbaly, Sai Saketh Rambhatla, Sam Tsai, Samaneh Azadi, Samyak Datta, Sanyuan Chen, Sean Bell, Sharadh Ramaswamy, Shelly Sheynin, Siddharth Bhattacharya, Simran Motwani, Tao Xu, Tianhe Li, Tingbo Hou, Wei-Ning Hsu, Xi Yin, Xiaoliang Dai, Yaniv Taigman, Yaqiao Luo, Yen-Cheng Liu, Yi-Chiao Wu, Yue Zhao, Yuval Kirstain, Zecheng He, Zijian He, Albert Pumarola, Ali Thabet, Artsiom Sanakoyeu, Arun Mallya, Baishan Guo, Boris Araya, Breena Kerr, Carleigh Wood, Ce Liu, Cen Peng, Dimitry Vengertsev, Edgar Schonfeld, Elliot Blanchard, Felix Juefei-Xu, Fraylie Nord, Jeff Liang, John Hoffman, Jonas Kohler, Kaolin Fire, Karthik Sivakumar, Lawrence Chen, Licheng Yu, Luya Gao, Markos Georgopoulos, Rashel Moritz, Sara K. Sampson, Shikai Li, Simone Parmeggiani, Steve Fine, Tara Fowler, Vladan Petrovic, and Yuming Du. 2025. Movie Gen: A Cast of Media Foundation Models. arXiv:2410.13720 [cs.CV] https://arxiv.org/abs/2410.13720 [34] Yubin Qin, Yang Wang, Dazheng Deng, Zhiren Zhao, Xiaolong Yang, Leibo Liu, Shaojun Wei, Yang Hu, and Shouyi Yin. 2023. FACT: FFN-Attention Co-optimized Transformer Architecture with Eager Correlation Prediction. In Proceedings of the 50th Annual International Symposium on Computer Architecture (Orlando, FL, USA) (ISCA ’23) . Association for Computing Machinery, New York, NY, USA, Article 22, 14 pages. doi:10.1145/3579371. 3589057 [35] David Raposo, Sam Ritter, Blake Richards, Timothy Lillicrap, Peter Conway Humphreys, and Adam Santoro. 2024. Mixture-of-Depths: Dynamically allocating compute in transformer-based language models. arXiv:2404.02258 [cs.LG] https://arxiv.org/abs/2404.02258 [36] Leo Schwinn, David Dobre, Stephan Günnemann, and Gauthier Gidel. 2023. Adversarial Attacks and Defenses in Large Language Models: Old and New Threats. arXiv:2310.19737 [cs.AI] https://arxiv.org/abs/2310.19737 [37] Yixin Song, Zhenliang Xue, Dongliang Wei, Feiyang Chen, Jianxiang Gao, Junchen Liu, Hangyu Liang, Guangshuo Qin, Chengrong Tian, Bo Wen, et al . 2025. Smallthinker: A family of efficient large language models natively trained for local deployment. arXiv preprint arXiv:2507.20984 (2025). [38] Hui Su, Zhi Tian, Xiaoyu Shen, and Xunliang Cai. 2024. Unraveling the mystery of scaling laws: Part i. arXiv preprint arXiv:2403.06563 (2024). [39] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang. 2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Representations from Transformer. In Proceedings of the 28th ACM International Conference on Information and Knowledge Management 
+
+(Beijing, China) (CIKM ’19) . Association for Computing Machinery, New York, NY, USA, 1441–1450. doi:10.1145/3357384.3357895 [40] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open Foundation and Fine-Tuned Chat Models. arXiv:2307.09288 [cs.CL] https://arxiv.org/abs/2307.09288 [41] Hanrui Wang, Zhekai Zhang, and Song Han. 2021. SpAtten: Efficient Sparse Attention Architecture with Cascade Token and Head Pruning. In 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 97–110. doi:10.1109/hpca51647.2021.00018 [42] Zhican Wang, Hongxiang Fan, and Guanghui He. 2025. DESA: Dataflow Efficient Systolic Array for Acceleration of Transformers. IEEE Trans. Comput. 74, 6 (2025), 2058–2072. doi:10.1109/TC.2025.3549621 [43] James H. Wilkinson. 1994. Rounding Errors in Algebraic Processes . Dover Publications, Inc., USA. [44] Chen Wu, Mingyu Wang, Xinyuan Chu, Kun Wang, and Lei He. 2021. Low-precision Floating-point Arithmetic for High-performance FPGA-based CNN Acceleration. ACM Trans. Reconfigurable Technol. Syst. 15, 1, Article 6 (Nov. 2021), 21 pages. doi:10.1145/3474597 [45] Chen Wu, Jinming Zhuang, Kun Wang, and Lei He. 2021. MP-OPU: A Mixed Precision FPGA-based Overlay Processor for Convolutional Neural Networks. In 2021 31st International Conference on Field-Programmable Logic and Applications (FPL) . 33–37. doi:10.1109/FPL53798.2021.00014 [46] Qiong Wu, Zhaoxi Ke, Yiyi Zhou, Xiaoshuai Sun, and Rongrong Ji. 2025. Routing experts: Learning to route dynamic experts in existing multi-modal large language models. In The Thirteenth International Conference on Learning Representations .[47] Haojun Xia, Zhen Zheng, Yuchao Li, Donglin Zhuang, Zhongzhu Zhou, Xiafei Qiu, Yong Li, Wei Lin, and Shuaiwen Leon Song. 2023. Flash-LLM: Enabling Cost-Effective and Highly-Efficient Large Generative Model Inference with Unstructured Sparsity. Proc. VLDB Endow. 17, 2 (Oct. 2023), 211–224. doi:10.14778/3626292.3626303 22 Zicheng He and Anhao Zhao, et al. 
+
+[48] Xue Xia, Pong Eksombatchai, Nikil Pancha, Dhruvil Deven Badani, Po-Wei Wang, Neng Gu, Saurabh Vishwas Joshi, Nazanin Farahpour, Zhiyuan Zhang, and Andrew Zhai. 2023. TransAct: Transformer-based Realtime User Action Model for Recommendation at Pinterest. In Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (Long Beach, CA, USA) (KDD ’23) . Association for Computing Machinery, New York, NY, USA, 5249–5259. doi:10.1145/3580305.3599918 [49] Jingyang Yuan, Huazuo Gao, Damai Dai, Junyu Luo, Liang Zhao, Zhengyan Zhang, Zhenda Xie, Yuxing Wei, Lean Wang, Zhiping Xiao, et al . 2025. Native sparse attention: Hardware-aligned and natively trainable sparse attention. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) . 23078–23097. [50] Zhengqing Yuan, Weixiang Sun, Yixin Liu, Huichi Zhou, Rong Zhou, Yiyang Li, Zheyuan Zhang, Wei Song, Yue Huang, Haolong Jia, Keerthi-ram Murugesan, Yu Wang, Lifang He, Jianfeng Gao, Lichao Sun, and Yanfang Ye. 2025. EfficientLLM: Efficiency in Large Language Models. arXiv:2505.13840 [cs.CL] https://arxiv.org/abs/2505.13840 [51] Dewen Zeng, Nan Du, Tao Wang, Yuanzhong Xu, Tao Lei, Zhifeng Chen, and Claire Cui. 2023. Learning to Skip for Language Modeling. arXiv:2311.15436 [cs.CL] https://arxiv.org/abs/2311.15436 [52] Shulin Zeng, Jun Liu, Guohao Dai, Xinhao Yang, Tianyu Fu, Hongyi Wang, Wenheng Ma, Hanbo Sun, Shiyao Li, Zixiao Huang, Yadong Dai, Jintao Li, Zehao Wang, Ruoyu Zhang, Kairui Wen, Xuefei Ning, and Yu Wang. 2024. FlightLLM: Efficient Large Language Model Inference with a Complete Mapping Flow on FPGAs. In Proceedings of the 2024 ACM/SIGDA International Symposium on Field Programmable Gate Arrays (Monterey, CA, USA) 
+
+(FPGA ’24) . Association for Computing Machinery, New York, NY, USA, 223–234. doi:10.1145/3626202.3637562 [53] Chen Zhang, Shijie Cao, Guohao Dai, Chenbo Geng, Zhuliang Yao, Wencong Xiao, Yunxin Liu, Ming Wu, Lintao Zhang, Guangyu Sun, Zhigang Ji, Runsheng Wang, and Ru Huang. 2025. Fine-Grained Structured Sparse Computing for FPGA-Based AI Inference. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems 44, 7 (2025), 2544–2557. doi:10.1109/TCAD.2024.3524356 [54] Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe, Moya Chen, Shuohui Chen, Christopher Dewan, Mona Diab, Xian Li, Xi Victoria Lin, Todor Mihaylov, Myle Ott, Sam Shleifer, Kurt Shuster, Daniel Simig, Punit Singh Koura, Anjali Sridhar, Tianlu Wang, and Luke Zettlemoyer. 2022. OPT: Open Pre-trained Transformer Language Models. arXiv:2205.01068 [cs.CL] https://arxiv.org/abs/2205.01068 [55] Anhao Zhao, Fanghua Ye, Yingqi Fan, Junlong Tong, Zhiwei Fei, Hui Su, and Xiaoyu Shen. 2025. SkipGPT: Dynamic Layer Pruning Reinvented with Token Awareness and Module Decoupling. arXiv:2506.04179 [cs.CL] https://arxiv.org/abs/2506.04179 [56] Tiandong Zhao, Shaoqiang Lu, Chen Wu, and Lei He. 2025. ChatOPU: An FPGA-based Overlay Processor for Large Language Models with Unstructured Sparsity. In Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design (Newark Liberty International Airport Marriott, New York, NY, USA) (ICCAD ’24) . Association for Computing Machinery, New York, NY, USA, Article 203, 9 pages. doi:10.1145/ 3676536.3676761
