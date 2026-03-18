@@ -1,0 +1,739 @@
+Title: AgentServe: Algorithm-System Co-Design for Efficient Agentic AI Serving on a Consumer-Grade GPU
+
+URL Source: https://arxiv.org/pdf/2603.10342v1
+
+Published Time: Thu, 12 Mar 2026 00:24:57 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+> JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 1
+
+# AgentServe: Algorithm-System Co-Design for Efficient Agentic AI Serving on a Consumer-Grade GPU 
+
+Yuning Zhang, Student Member, IEEE, Yan Yan, Nan Yang, Member, IEEE , and Dong Yuan, Member, IEEE 
+
+Abstract —Large language models (LLMs) are increasingly deployed as AI agents that operate in short reasoning–action loops, interleaving model computation with external calls. Unlike traditional chat applications, these agentic workloads require inference serving systems to balance low latency, stable token emission, and throughput under multiple request arrivals from different AI agents. Recent deployments highlight a shift toward running small language models (SLMs) locally on consumer-grade GPUs, driven by privacy, compliance, and cost constraints. When heterogeneous requests overlap on a single GPU, long prefills and short decodes contend for resources, creating head-of-line blocking that destabilizes interactive performance. By ana-lyzing agent workloads, we observe that their execution naturally separates into cold prefills, which process long system prompts, resume prefills, which append tool outputs to cached contexts, and short decodes, which are latency-critical. This mix intensifies contention compared to conventional chatbot serving. We present AgentServe, a single-GPU serving system that ensures stable multi-agent execution under such conditions by isolating prefills from decodes, applying dynamic budgeting to resume prefills, and allocating GPU resources through pre-established CUDA Green Context slots with adaptive control. Evaluation results show that AgentServe significantly improves latency stability while sustaining competitive throughput, achieving up to 2.8 ×
+
+TTFT improvement and 2.7 × TPOT improvement over state-of-the-art baselines across different settings. 
+
+Index Terms —Inference serving system, Small Language Model, AI agent, PD disaggregation, Resource constraints, Par-allel Computing, Edge Computing 
+
+I. I NTRODUCTION 
+
+Large language models (LLMs) are increasingly deployed not only as conversational agents but also as AI agents capable of planning, invoking external tools, and integrating retrieval-augmented knowledge sources [1], [2]. Unlike traditional chat applications where a user issues a long prompt and waits for a relatively slow generation, agentic systems [3] operate in short reasoning and action loops that interleave model computation with frequent external calls, thereby creating new demands on inference serving systems such as low latency, high throughput, and strict output consistency [4], [5]. Recent practice highlights a shift toward deploying small language models (SLMs) locally on consumer GPUs rather than relying 
+
+Y. Zhang, Y. Yan, N. Yang and D. Yuan are with the School of Electrical and Computer Engineering, The Uni-versity of Sydney, Darlington, NSW 2008, Australia. (Email: yuning.zhang1@sydney.edu.au; yyan0244@uni.sydney.edu.au; n.yang@sydney.edu.au; dong.yuan@sydney.edu.au). The corresponding author is D. Yuan. 
+
+solely on cloud-hosted LLMs, driven by privacy and data residency requirements that keep inputs and logs on-site [5], [6]. As a result, the consumer-level GPU multi-agent server has emerged as a default deployment unit in enterprises, robotics control centers, and vehicular systems, balancing efficiency, cost, and compliance with governance requirements [5], [7], [8]. In this work, we focus on a practical deployment regime in which tool-augmented agents run SLMs on a single consumer-grade GPU. Our objective is to improve serving stability and efficiency in this setting, rather than to claim that local SLM deployments can replace large cloud models for all tasks. To investigate efficient deployment of small language mod-els (SLMs) on a single GPU while serving multiple agents si-multaneously, we begin with the basic principle of autoregres-sive inference. Each session consists of two phases: a prefill, where the model processes the entire input sequence with full attention to produce the first token, and a decode, where tokens are generated incrementally using the cached key-value states. Prefill is compute-intensive and grows with prompt length, while decode is lightweight per token but highly sensitive to delays because the smoothness of interaction depends on regular token emission. Compared with traditional chatbot workloads that involve loosely structured prompts and long decodes, agent workloads are shaped by strict system prompts and structured outputs, which amplify the imbalance between prefills and decodes. We observe that in these workloads, the initial prefill consumes a long system prompt without prefix caching [9], which mo-nopolizes compute and memory resources. Subsequent prefills append tool outputs or steering text to the cached context, which further adds to interference. In contrast, the decode phase in agent workloads is constrained by the requirement for structured outputs. This constraint leads to decode lengths that are short and relatively stable. Because agents rely on these short decodes to complete each tool invocation before progressing, even minor stalls can break the rhythm of token emission and cascade into longer task latencies. The result is head-of-line (HoL) blocking, where a small number of expensive prefills inflate time-to-first-token (TTFT) for new requests and increase time-per-output-token (TPOT) for on-going streams. In this paper, we define cold prefill as the long uncached system prompt, resume prefill as cached-context extensions with tool outputs, and short decode as the stable structured generation phase. Figure 1 shows the agent inference workflow and the interaction of these components.  
+
+> arXiv:2603.10342v1 [cs.DC] 11 Mar 2026 JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 2
+
+Existing serving systems typically mitigate this issue using either prefill–decode (PD) disaggregation or chunked prefill. Frameworks such as vLLM, SGLang, and DistServe [10]–[12] were primarily developed for throughput-oriented chatbot-style serving, often with stronger hardware or multi-engine as-sumptions. In distributed settings, PD disaggregation amortizes KV transfer and orchestration overhead across many GPUs. In single-GPU adaptations, process separation still introduces runtime overhead and does not always guarantee strict decode isolation. Chunked prefill can reduce head-of-line blocking when decodes are long, but in agent loops decodes are often very short, so frequent chunk boundaries still perturb token emission. Therefore, the core challenge in our setting is not simply doing PD disaggregation on one GPU, but controlling interference among cold prefills , resume prefills , and short decodes under tight single-device constraints. We present AgentServe , a serving system designed for this single-GPU agent regime through an algorithm and system co-design. On the algorithmic side, AgentServe performs phase-aware request classification and TPOT-driven schedul-ing: cold prefills are isolated, resume prefills are admitted under a dynamic budget, and decodes receive protected re-sources to preserve stream stability. On the system side, AgentServe uses pre-established CUDA Green Context [13] slots and lightweight shared-memory coordination to enforce isolation within a single engine, avoiding costly inter-engine KV transfers. Together, these mechanisms maintain stable token emission and competitive utilization in consumer-GPU deployments. In summary, our paper makes the following contributions:  
+
+> •
+
+We propose a resource-aware scheduling algorithm that combines request isolation with TPOT-driven adaptation. It constrains prefill interference and protects latency-critical decodes. We further provide a profile-aware competitive-ratio analysis against an SLO-feasible offline optimum, which bounds prefill-throughput loss under decode SLO constraints.  
+
+> •
+
+We design a resource management mechanism using pre-established CUDA Green Context slots and lightweight shared-memory coordination, enabling efficient single-engine resource partitioning with low runtime overhead.  
+
+> •
+
+We present AgentServe, a single-GPU inference serving system for concurrent tool-augmented SLM agents on consumer GPU, co-optimizing scheduling and system-level resource control. Our target setting is local agent workflows with structured tool use and short interaction cycles, rather than arbitrarily compute-intensive general agents. Comprehensive evaluation across multiple models and GPUs shows that AgentServe improves TTFT by up to 2.8 × and TPOT by up to 2.7 × over state-of-the-art baselines, while ensuring stable low-latency serving under multi-agent concurrency. II. B ACKGROUND AND MOTIVATION 
+
+A. Fundamentals of Autoregressive Inference 
+
+Autoregressive language models generate tokens sequen-tially, and their inference process can be divided into two User  Prompt : What is               
+
+> the weather ?System
+> Prompt ( ReAct ): …
+> First Prompt
+> KV cache
+> Thought
+> :
+> …
+> ×N
+> Final Answer
+> Tokenization
+> 3000+ Tokens
+> Prefix Check
+> Not Cached
+> Short Decode
+> Short Decode
+> Cold Prefill
+> KV cache
+> Tokenization
+> 3050+ Tokens
+> Prefix Check
+> Prompt Cached
+> Thought: …
+> Action: …
+> Observation: …
+> Second Prompt Resume Prefill
+> User Prompt :What is
+> the weather ?System
+> Prompt ( ReAct ): …
+> …
+> ×N
+> Thought: …
+> Action: …
+> Observation: …
+> 50+ Tokens
+> Detokenization
+> Final Answer:
+> Tomorrow will
+> be partly
+> cloudy…
+> 50+ Tokens
+> Detokenization
+> Fig. 1. Illustration of cold prefill, resume prefill, and short decode cycles in agent workloads with prefix caching.
+
+stages: prefill and decode. In the prefill stage, the model con-sumes the entire input sequence with full-sequence attention to build the key-value (KV) cache, a quadratic-complexity operation that determines the time-to-first-token (TTFT). Once the first token is produced, the process enters the decode stage, where subsequent tokens are generated incrementally using the cached prefix. This reduces each step to linear complexity and makes decode lighter than prefill, though its performance governs the smoothness of interaction. The latency of this stage is often measured by the time-per-output-token (TPOT), reflecting how quickly responses are streamed. As illustrated in Figure 1, an inference session typically starts with a long and expensive cold prefill (processing the system prompt and user query), followed by multiple resume prefills triggered when short fragments such as tool outputs or retrieval results are appended. Each resume prefill is then followed by short decodes, many of which are function calls or routing tokens rather than long passages of text. To reduce repeated computation, prefix caching [10] is widely adopted. The KV cache built in the initial cold prefill can be reused across subsequent steps, avoiding recomputation of the entire input. While this optimization reduces redundant computation, it also couples prefills and decodes to the same cache memory, creating potential contention when multiple interactions are processed in parallel. 
+
+Motivation. The asymmetry between heavy prefills and lightweight but latency-sensitive decodes becomes problematic when multiple agents share a single GPU. A large prefill kernel may occupy compute and memory resources for an extended period, delaying concurrent decodes that must sustain a stable token emission rate. In agent workflows, this effect is amplified because each session repeatedly alternates between resume prefills and short decodes: a decode stall not only delays current output, but also postpones the next tool invocation and the following inference round. As a result, small per-step interference can accumulate into large end-to-end interaction delays. Therefore, the focus here is a serving-systems question: how scheduling and isolation should be designed under this JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 30 25 50 75 100       
+
+> Consecutive requests
+> 40
+> 60
+> TPOT (ms/token)
+> Qwen2.5-7B
+> 025 50 75 100
+> Consecutive requests
+> Qwen2.5-3B
+> Agent 0 Agent 1 Agent 2
+> Fig. 2. Time per output token (TPOT) of Qwen2.5-7B and Qwen2.5-3B with three concurrent agents on a single RTX A5000 GPU. Cold prefills introduce long kernels that block concurrent decodes, causing visible spikes in token emission latency.
+
+execution pattern. 
+
+B. From Chatbots to Agents 
+
+Traditional chatbots and modern agents are significantly dif-ferent in their inference patterns. A chatbot typically receives loosely structured prompts that mix user text with limited system context. The responses are long natural language pas-sages, often extending to hundreds or thousands of tokens. The length of a request is usually decided by the user, and without constraints on structured output, the response length also tends to vary. Inference in this case is dominated by decoding, and prefill is relatively short compared with the length of the generated output. The user experience therefore depends on how quickly the model can sustain a high throughput of token generation. In contrast, agents rely on highly structured system prompts. These prompts encode tool specifications, function signa-tures, parameter schemas, orchestration rules, and retrieval-augmented passages [3], [14]. As shown in Figure 1, this makes the cold prefill at the beginning of an agent session very long and computationally intensive. Once the system prompt is cached, the agent alternates between resume prefills, which integrate tool outputs or additional instructions, and very short decodes. Many of these decodes produce only function calls or routing tokens. 
+
+Motivation. Unlike chatbots, where decoding dominates computation and throughput optimizations are often sufficient, agents exhibit a fundamentally different workload profile. Prefills dominate computational cost, while decodes dominate latency perception: even small disruptions in decoding break the regular emission of tokens, and because tool invocations are sequential, such delays cascade into much longer end-to-end latencies. This prefill–decode imbalance is further mag-nified in agents, where cold prefills are long, resume prefills are frequent, and decodes are short but highly sensitive to interference. Consequently, the key design objective shifts from maximizing aggregate token throughput alone to pre-serving decode regularity under mixed-phase contention. In this paper, we target the serving-system problem in local-agent pipelines on consumer GPUs. We do not assume that one SLM can solve every task end-to-end, but rather optimize the 10 20 30 40 50 60 70 80 90 100             
+
+> SM Share (%)
+> 0.0
+> 0.5
+> 1.0
+> Normalized Throughput  Qwen2.5-7B
+> 10 20 30 40 50 60 70 80 90 100
+> SM Share (%)
+> Qwen2.5-3B
+> Decode Cold Prefill Resume Prefill
+> Fig. 3. Normalized throughput versus SM share for decode, cold prefill, and resume prefill on Qwen2.5-7B and Qwen2.5-3B (RTX 5090). Decode throughput rises quickly at low SM shares and saturates earlier, while prefill throughput increases more gradually.
+
+deployment regime where tool use and decomposition make local execution practical. 
+
+C. Multiple Agents Single-GPU Serving 
+
+When prefills and decodes run together as a mixed work-load, head-of-line blocking arises: long cold prefills monop-olize compute and memory bandwidth, delaying lightweight but time-critical decodes. This inflates the time-to-first-token (TTFT) for new requests and the time-per-output-token (TPOT) for ongoing ones. In agent workloads, where prefills are longer and decodes shorter, even a few cold prefills can stall many decodes, disrupting the emission heartbeat and compounding interactive delays across agents. Figure 2 shows this temporal effect directly, with sharp TPOT spikes appearing when heavy prefills overlap with active decode streams. Complementing this temporal view, Figure 3 profiles the throughput response to CUDA Streaming Multiprocessors (SMs) allocation for Qwen2.5-7B and Qwen2.5-3B [15]. Across both models, decode throughput increases rapidly at low SMs shares and saturates earlier than prefill throughput. Cold prefill throughput rises more gradually, while resume prefill remains between decode and cold prefill. This indicates different marginal gains across phases: at low SM shares, decode gains are steep and latency-critical; after the satura-tion knee, extra decode SMs bring diminishing returns, and allocating residual SMs to prefills is more efficient. This behavior explains why mixed prefill and decode ex-ecution is unstable in multi-agent serving and why fine-grained phase separation is necessary. Long prefills can tem-porarily dominate SMs and push decode into the steep low-share regime, where token emission quality degrades quickly. AgentServe therefore combines SM-granular decode reser-vation with budgeted resume-prefill admission, so decode remains near its efficient region while leftover capacity is reclaimed by prefills. Compared with coarse chunking or static partitioning, this fine-grained disaggregation better stabilizes TPOT without sacrificing throughput. The throughput trends in Figure 3 also provide the empirical basis for the profile-aware assumptions used later in the competitive-ratio analysis. To mitigate head-of-line (HoL) blocking from cold prefills interfering with decodes, existing systems mainly rely on PD disaggregation [12] or chunked prefill [16]. In distributed JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 4Users  Agentic  AI  Tools            
+
+> Queries
+> Results
+> Function Call
+> Output
+> Request Manager
+> Requests
+> Cold Prefill
+> Resume Prefill
+> Decode New Cached
+> Not Cached
+> ongoing
+> KV
+> cache
+> queue
+> queue
+> enqueue
+> enqueue
+> KV Cache
+> Model weights
+> Inter-Tensors
+> Batching
+> Batching
+> Decode Thread
+> Prefill Thread
+> Transformer
+> Transformer
+> Transformer
+> …
+> Context Switching
+> GPU SMs GPU SMs
+> CUDA Green Contexts
+> Decode Safety Margin
+> Kernel launch
+> Model Kernels Memory Manager
+> Memory updates
+> Requests Results
+> Profiling Feedback Input Tensor
+> Application
+> Layer
+> CPU
+> Orchestration
+> Layer
+> §3.2
+> GPU
+> Execution
+> Layer
+> §3.3
+> Higher
+> lower
+> Resource-Aware Scheduler
+> (TPOT-Driven)
+> Token budget
+> SMs Partition Computational Results
+> Fig. 4. System architecture of AgentServe. The Application Layer connects users and tools, the Orchestration Layer manages requests and resource allocation, and the Execution Layer enforces prefill–decode disaggregation with CUDA Green Contexts and memory management to ensure decode responsiveness in multiple agent settings.
+
+inference, PD disaggregation is often implemented as dual engines (or nodes) with KV transfer, and overhead can be amortized at cluster scale. In single-GPU deployments, how-ever, process-separated PD disaggregation still incurs inter-process coordination and memory-bandwidth overhead [17], while strict decode protection remains difficult under bursty workloads. Traditional resource isolation techniques such as CUDA Multi-Process Service (MPS) or CUDA multi-stream execu-tion [18], [19] depend on the default GPU scheduler and per-mit operator-level concurrency, but a single large operator can still monopolize SMs and delay decodes. Chunked prefill [16] is effective when decodes are long enough to absorb chunking overhead, but in agent workloads where many decodes are very short, interleaved chunks still disturb decode cadence and tail latency. Recent single-GPU PD disaggregation studies [20]–[22] reduce communication overhead, yet they generally treat prefills uniformly and are optimized for larger models (14B to 80B) and high-volume chatbot traffic on datacenter GPUs. In contrast, AgentServe targets consumer-GPU serving of smaller models under bursty multi-agent workflows, and explicitly separates cold prefills from resume prefills. 
+
+Motivation. These observations suggest that the key chal-lenge in our setting is not only separating prefills from decodes, but doing so in a phase-aware and lightweight manner on a single consumer-grade GPU. This calls for a design that distinguishes cold prefills from resume prefills, while pro-tecting latency-critical short decodes under dynamic resource constraints. In particular, the performance bottleneck is shaped by rapid phase transitions and bursty decode arrivals, which make coarse-grained or static partitioning less effective in agent-oriented workloads. More broadly, this setting highlights the need for a serving mechanism that can react to fine-grained workload shifts without incurring the coordination overheads typical of multi-engine designs. III. A GENT SERVE 
+
+A. System Architecture Overview 
+
+The design of AgentServe is driven by two key questions that emerged from the background analysis. Design Objectives 
+
+Algorithmic challenge : How can cold prefills, resume prefills, and decodes be disaggregated and allocated appropriate resources to avoid head-of-line blocking? 
+
+System-level challenge : How can strict resource iso-lation be achieved on a single GPU using a single-engine design, thereby preventing contention overhead without resorting to dual-engine disaggregation? To answer these questions, AgentServe introduces a single-GPU architecture that integrates request management, TPOT-driven scheduling, and dynamic resource control. As shown in Figure 4, the system is organized into three tightly connected layers. 
+
+Application Layer. Requests enter through agentic AI frameworks such as LangChain, AutoGen, or ToolBench [23]– [25], which mediate between end users and external tools. User queries and tool outputs are formatted into model requests and then forwarded to the serving backend, where the orchestration of prefills and decodes begins. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 5
+
+Orchestration Layer. This CPU-side layer coordinates request management and scheduling. The Request Manager determines whether an incoming request corresponds to a cold prefill, a resume prefill, or a decode. Cold prefills, as the primary source of head-of-line blocking, are directed to a dedicated thread and queue. Resume prefills are typically short and are merged with decodes to improve parallelism, unless they exceed a predefined token budget, in which case they are rerouted to the cold prefill queue. Each request is also associated with its KV cache status, enabling reuse of cached states when available. The Resource-Aware Scheduler (TPOT-Driven) dynamically adjusts both the prefill token budget and CUDA streaming multiprocessor (SM) reservations. It enforces a decode-priority policy by reserving a safety margin of SMs for decodes, while scaling resume prefills based on profiling feedback and runtime signals such as token through-put, queue occupancy, and utilization. Allocation decisions are then dispatched to the GPU alongside batched tokens. 
+
+Execution Layer. The GPU-side layer enforces phase dis-aggregation and resource isolation. Prefill and decode ker-nels are launched by dedicated CPU threads and executed within CUDA Green Contexts, which allow fine-grained SM partitioning and context switching. This ensures that decodes maintain uninterrupted priority access to compute and memory bandwidth even under heavy load. The Memory Manager maintains coherence between KV caches, model weights, and intermediate tensors, so that prefills can safely reuse cached states without inconsistency. Together, these mechanisms al-low prefills and decodes to share GPU resources efficiently while avoiding destructive interference. Through this design, AgentServe addresses the two guiding objectives. It stabilizes latency-sensitive decodes by isolat-ing cold prefills and regulating resume prefills under a dy-namic budget, and it achieves strict GPU resource isolation through thread-level separation and pre-established CUDA Green Contexts, enabling flexible reallocation without incur-ring cache transfer overhead. The next section (§III-B) details the scheduling algorithm that resolves the first challenge, while §III-C describes the execution mechanisms that realize the second. 
+
+B. Resource-Aware Scheduling 
+
+Single-GPU multi-agent serving requires maintaining stable decode latency while allowing prefill workloads to make progress. In agent workloads, cold prefills are computationally expensive while decodes are short but latency-sensitive. If prefills monopolize GPU resources, decode streams may suffer from large inter-token delays. To address this challenge, AgentServe introduces alightweight feedback scheduler that dynamically regulates two control variables:  
+
+> •
+
+the resume prefill token budget Bprefill (t), which deter-mines the maximum length of resume prefills that are allowed to execute together with decode requests, and  
+
+> •
+
+the minimum number of streaming multiprocessors (SMs) reserved for decoding, denoted Rmin (t).
+
+Algorithm 1 TPOT-Driven Resource Scheduling  
+
+> 1:
+
+Input: Queues QD , Q P ; parameters 
+
+Rmin , B prefill , θ low , θ high , ∆R, ∆B , ∆t; device S 
+
+> 2:
+
+while system running do  
+
+> 3:
+
+measure ∆Ldecode , ∆Kdecode  
+
+> 4:
+
+compute TPOT step = ∆ Ldecode /∆Kdecode  
+
+> 5:
+
+if TPOT step > θ high then  
+
+> 6:
+
+Bprefill ← max( Bmin , B prefill − ∆B ) 
+
+> 7:
+
+Rmin ← min( S, R min + ∆ R) 
+
+> 8:
+
+else if TPOT step < θ low then  
+
+> 9:
+
+Bprefill ← min( Bmax , B prefill + ∆ B ) 
+
+> 10:
+
+Rmin ← max( Rbase , R min − ∆R) 
+
+> 11:
+
+end if  
+
+> 12:
+
+for each req do  
+
+> 13:
+
+if req.type = decode OR req.len ≤ Bprefill then  
+
+> 14:
+
+enqueue( QD , req ) 
+
+> 15:
+
+else  
+
+> 16:
+
+enqueue( QP , req ) 
+
+> 17:
+
+end if  
+
+> 18:
+
+end for  
+
+> 19:
+
+partition SMs: Sdecode = Rmin , S prefill = S − Rmin  
+
+> 20:
+
+launch decode jobs from QD and prefill jobs from QP 
+
+> 21:
+
+wait for the next control interval ∆t 
+
+> 22:
+
+end while 
+
+Both variables are adjusted according to the observed decod-ing latency, measured using the metric time per output token (TPOT) .
+
+TPOT measurement. In streaming inference, user-perceived responsiveness is determined by TPOT. In our system, decoding proceeds in discrete decode steps , where each active stream produces at most one token. Over a control interval ∆t, the scheduler records  
+
+> •
+
+the cumulative decode time ∆Ldecode , and  
+
+> •
+
+the number of completed decode steps ∆Kdecode .The step-level TPOT is defined as TPOT step = ∆Ldecode 
+
+∆Kdecode 
+
+.
+
+When a single stream is active, TPOT step equals the inter-token latency; under multiple streams, it represents the delay experienced by each decoding round. 
+
+Algorithm explanation. Algorithm 1 implements a feed-back control loop that jointly adjusts decode protection and prefill admission. In each control interval, lines 2–3 measure decode workload and compute step-level TPOT; based on this signal, lines 4–6 enter a protection mode when TPOT step >θhigh by shrinking the allowed resume-prefill length (line 5) and increasing decode SM reservation (line 6), while lines 7–9 perform the complementary relaxation when TPOT step < θ low 
+
+by expanding Bprefill and reducing Rmin . With the updated con-trol variables, lines 10–15 classify incoming requests: decode jobs and short resume prefills are admitted to QD , whereas longer prefills are redirected to QP to avoid blocking latency-critical streams. Finally, lines 16–17 materialize the scheduling JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 6
+
+decision by partitioning SMs and launching decode/prefill jobs in their corresponding contexts. 
+
+Competitive-Ratio Analysis under Decode SLO. We now quantify how much prefill service AgentServe may lose, relative to an optimal offline scheduler that is subject to the same decode SLO constraint. Our goal is not to maximize unconstrained aggregate throughput, but to characterize the 
+
+prefill-throughput retention achieved by AgentServe among all schedulers that preserve decode responsiveness. This objective matches the design goal of AgentServe, which explicitly prioritizes TPOT stability through the joint control of Rmin (t)
+
+and Bprefill (t).Let S denote the total number of SMs on the GPU. Let μD (R) denote the decode throughput when R SMs are allocated to decode, and let μC (R) and μR(R) denote the throughputs of cold prefill and resume prefill, respectively. Motivated by the profiling trends in Figure 3, we model the effective prefill throughput in control interval t as 
+
+μP (R, t ) = ηtμC (R) + (1 − ηt)μR(R), (1) where ηt ∈ [0 , 1] captures the fraction of cold prefill work in that interval. This formulation allows the prefill mix to vary over time rather than assuming a fixed workload composition. 
+
+Definition 1 (SLO-feasible scheduler). A scheduler π is called decode-SLO-feasible if for every control interval t, its decode allocation Rπ (t) satisfies 
+
+μD (Rπ (t)) ≥ rmin , rmin = 1000 
+
+τmax 
+
+. (2) Let ΠSLO denote the set of all such schedulers. 
+
+Definition 2 (Optimal offline SLO-feasible scheduler). 
+
+Among all schedulers in ΠSLO , define 
+
+π⋆ = arg max 
+
+> π∈ΠSLO
+
+X
+
+> t
+
+μP (S − Rπ (t), t )∆ t. (3) Thus, π⋆ is the offline scheduler that maximizes total prefill service while preserving the same decode SLO as AgentServe. 
+
+Assumption 1 (Monotone profiled scaling). The profiled throughput functions μD (R), μC (R), and μR(R) are non-decreasing in R. This assumption does not require linearity, convexity, or differentiability; it only states that allocating more SMs does not reduce throughput. 
+
+Assumption 2 (Discrete allocation and bounded overshoot). 
+
+Because the execution layer allocates GPU resources through pre-established CUDA Green Contexts, decode reservations are drawn from a discrete set 
+
+G = {g, 2g, . . . , S }, (4) where g is the minimum SM allocation granularity. Assume the decode SLO is feasible under full-GPU decode allocation, i.e., 
+
+μD (S) ≥ rmin . (5) Let 
+
+R⋆g = min {R ∈ G : μD (R) ≥ rmin }. (6) We assume that the runtime controller may conservatively reserve slightly more decode SMs than R⋆g , but the excess is bounded: 
+
+RA(t) ≤ R⋆g + δ, 0 ≤ δ ≤ S − R⋆g , (7) where δ captures the combined effect of allocation granularity, control-step size, and finite control lag. 
+
+Assumption 3 (Bounded control overhead). Let εctx (t)
+
+denote the equivalent relative service loss in interval t caused by context rebinding and control synchronization, after nor-malizing any fixed overhead within the interval by ∆t. We assume 
+
+0 ≤ εctx (t) ≤ ¯ε < 1. (8) Accordingly, if the nominal prefill service in interval t is 
+
+μP (R, t )∆ t, then the realized service is lower bounded by 
+
+ 1 − εctx (t)μP (R, t )∆ t ≥ (1 − ¯ε)μP (R, t )∆ t. (9) 
+
+Proof. By definition, R⋆g is the smallest element in G such that 
+
+μD (R) ≥ rmin . If there existed a scheduler π ∈ ΠSLO and an interval t with Rπ (t) < R ⋆g , then by the minimality of R⋆g we would have 
+
+μD (Rπ (t)) < r min ,
+
+which violates the SLO-feasibility condition in (2). Therefore, every SLO-feasible scheduler must satisfy Rπ (t) ≥ R⋆g . □
+
+Lemma 2 (Instantaneous upper bound on offline prefill service). For any interval t, the optimal offline scheduler satisfies 
+
+μP (S − Rπ⋆ (t), t ) ≤ μP (S − R⋆g , t ). (10) 
+
+Proof. By Lemma 1, any SLO-feasible scheduler, including 
+
+π⋆, must allocate at least R⋆g SMs to decode. Hence its prefill partition is at most S − R⋆g . Since μP (R, t ) is non-decreasing in R by Assumption 1, the largest possible prefill throughput under the decode SLO is achieved when decode uses exactly 
+
+R⋆g SMs. Therefore, 
+
+μP (S − Rπ⋆ (t), t ) ≤ μP (S − R⋆g , t ).
+
+□
+
+Theorem 1 (Instantaneous competitive ratio). Let WA(t)
+
+and Wπ⋆ (t) denote the prefill work completed by AgentServe and π⋆, respectively, during interval t. Under Assumptions 1– 3, AgentServe satisfies 
+
+ρt ≜ WA(t)
+
+Wπ⋆ (t) ≥ (1 − ¯ε) · μP (S − R⋆g − δ, t )
+
+μP (S − R⋆g , t ) . (11) 
+
+Proof. By Assumption 2, AgentServe reserves at most R⋆g + δ
+
+SMs for decode, so its prefill partition satisfies 
+
+S − RA(t) ≥ S − R⋆g − δ. (12) Since μP (R, t ) is non-decreasing in R, we obtain 
+
+μP (S − RA(t), t ) ≥ μP (S − R⋆g − δ, t ). (13) Accounting for bounded control overhead, the completed prefill work of AgentServe in interval t is lower bounded by 
+
+WA(t) ≥ (1 − ¯ε) μP (S − R⋆g − δ, t )∆ t. (14) On the other hand, by Lemma 2, the offline optimum satisfies 
+
+Wπ⋆ (t) ≤ μP (S − R⋆g , t )∆ t. (15) Dividing (14) by (15) yields (11). □JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 7
+
+Corollary 2 (Linearized loss bound). If μP (R, t ) is Lipschitz continuous on [S−R⋆g −δ, S −R⋆g ], i.e., there exists LP (t) ≥ 0
+
+such that for all x, y ∈ [S − R⋆g − δ, S − R⋆g ],
+
+|μP (x, t ) − μP (y, t )| ≤ LP (t) |x − y|, (16) then 
+
+μP (S − R⋆g − δ, t ) ≥ μP (S − R⋆g , t ) − LP (t)δ, (17) and therefore 
+
+ρt ≥ (1 − ¯ε)
+
+
+
+1 − LP (t)δμP (S − R⋆g , t )
+
+
+
+. (18) 
+
+Remark. The bound in (11) shows that AgentServe loses prefill service relative to the offline optimum only through three bounded factors: (i) the discrete SM allocation granu-larity, (ii) controller conservatism and lag, captured by δ, and (iii) bounded context-switch/control overhead, captured by ¯ε.Therefore, as long as the prefill throughput curve around the operating point is not excessively steep and the runtime over-shoot remains small, AgentServe retains a constant fraction of the maximum prefill service achievable by any scheduler that also satisfies the decode SLO. 
+
+C. Execution System Design 
+
+The execution layer enforces the SM allocation strategy determined by the Resource-Aware Scheduler and guarantees isolation between prefills and decodes at runtime. The design is centered on two dedicated CPU threads, the Prefill Thread and the Decode Thread, which asynchronously submit kernels to the GPU. This dual-threaded submission ensures that the request pipeline remains non-blocking on the CPU side, en-abling asynchronous PD execution within a single engine. 
+
+Green Context allocation and rebinding. The GPU-side isolation is realized through CUDA Green Contexts [13], a feature introduced in recent CUDA versions that enables partitioning of GPU resources at the level of streaming multi-processors (SMs). Unlike conventional CUDA contexts, which share the full GPU in a time-sliced manner, a Green Context allows the runtime to reserve a fixed subset of SMs exclusively for kernels launched within that context. This provides spatial isolation across workloads, ensuring that latency-sensitive ker-nels are not preempted or starved by large background jobs. In the Execution Layer, this mechanism enforces a minimum reservation for decoding while leaving the remaining SMs available for prefill. To enable dynamic partitioning, we pre-establish ten dis-crete Green Contexts at system initialization, each reserving a fixed fraction of SMs ranging from 10% to 100% in increments of 10%. We choose to create these contexts offline because Green Context construction is substantially more expensive than runtime rebinding; creating or destroying contexts on demand would introduce control-path overhead directly into latency-sensitive inference. These contexts are created once before inference begins and persist throughout the system’s lifetime, allowing the Execution Layer to switch allocations without incurring the high overhead of repeated context con-struction. During inference, both the prefill and decode threads periodically report runtime statistics such as TPOT, kernel completion latency, and queue backlog to the Resource-Aware Scheduler. Based on these signals, the Resource-Aware Sched-uler computes a target allocation Rmin (t) for decoding, and the Execution Layer rebinds the decode thread to the nearest Green Context that guarantees at least Rmin (t) SMs, while assigning the complementary context to prefill. For example, if the target allocation is 37% of SMs, the Execution Layer selects the 40% context to satisfy the requirement. Because re-binding only involves switching between pre-created contexts, context switching overhead remains below 50 microseconds per rebinding, which is less than 0.1% of typical decode batch latency, enabling near-continuous control over partitioning while keeping switching overhead negligible. 
+
+Memory management. Both threads share the same GPU memory pool to avoid KV cache transfers between processes. A Memory Manager coordinates buffer allocation and ensures mutual exclusion. When a prefill completes, its KV cache region is marked read-only and is immediately available to the decode thread without duplication. To prevent race conditions during concurrent access, we employ a combination of CPU-side mutexes and GPU-side cudaEvent synchronization. The mutex guarantees exclusive access when allocating or releasing KV buffers, while cudaEvent enforces ordering between kernel completions in the prefill and decode threads. Together, these mechanisms ensure that decoding never consumes partially written KV states, enabling correct reuse while minimizing synchronization overhead. This design guarantees correctness and prevents race conditions while enabling fine-grained PD disaggregation within a single engine. 
+
+Thread cooperation. Prefill and decode threads run inde-pendently but are tightly synchronized through the Resource-Aware Scheduler’s allocation logic. Prefills are always launched in the Prefill Context with dynamically varying SM shares, while decodes are guaranteed a minimum of Rmin (t)
+
+SMs in the Decode Context. If profiling reveals that TPOT is rising, the Resource-Aware Scheduler increases the decode floor and the execution layer immediately rebinds the Decode Thread to a larger context. Conversely, when decode demand is light, the Prefill Thread can opportunistically claim more SMs to accelerate prefills. This cooperative mechanism ensures decode responsiveness while maximizing GPU utilization. IV. E XPERIMENTAL EVALUATION 
+
+A. Implementation and Experimental Setup 
+
+Implementation. We extend llama.cpp with CUDA Green Context support, using two dedicated CPU threads for prefills and decodes coordinated by the Resource-Aware Scheduler. At runtime, threads are rebound to pre-created contexts based on TPOT signals, and the KV cache manager ensures safe block reuse across threads without inter-process transfers. 
+
+Hardware Platforms. Experiments are conducted on two servers to study the impact of compute capacity. The first uses an NVIDIA RTX A5000 GPU (8192 CUDA cores, 64 SMs, 24 GB GDDR6) with an AMD Threadripper PRO 3945WX 12-Core CPU and 128 GB RAM, representing a mid-range edge deployment. The second uses an RTX 5090 GPU (16384 JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 8
+
+CUDA cores, 128 SMs, 32 GB GDDR7) with a Threadripper PRO 5955WX 16-Core CPU and 128 GB RAM, representing a next-generation high-performance GPU. Both run Ubuntu 22.04 with CUDA 12.4 and driver 550.54.15. Comparing these platforms allows us to examine how differences in SMs, CPU cores, and memory bandwidth affect system behavior under identical workloads. 
+
+Models. We evaluate three representative open-source mod-els: Qwen2.5-3B, Qwen2.5-7B [15], and LLaMA-3-8B [26]. These models represent different parameter scales, namely 3B, 7B, and 8B, and they also belong to two distinct architectural families, Qwen and LLaMA. This configuration provides a diverse and realistic testbed for single-GPU agent serving. It enables a thorough assessment of AgentServe across variations in model size and across different architectures, ensuring that the observed latency and stability improvements are not limited to a single model family. 
+
+Workloads. We construct workloads from ToolBench [25], which provides multi-step, tool-augmented agent tasks in-volving retrieval, tool invocation, and short reasoning loops. Our goal is to evaluate the serving behavior of local SLM-based agents on a single consumer GPU , rather than to emulate arbitrarily compute-intensive general agents such as large coding assistants. In practical on-device deployments, the dominant workload is typically a user-driven agent session with structured tool use, where a long initial prompt is fol-lowed by multiple short tool-return updates and brief decoding phases. This pattern matches the cold-prefill / resume-prefill / short-decode structure shown in Figure 1 and captures the serving bottlenecks that matter most in local agent execution. Within each agent session, inference proceeds sequentially: a session starts with one cold prefill and then alternates between resume prefills and short decodes as tool outputs are appended. Across sessions, however, we vary the number of concurrent agents from 3 to 6 to emulate realistic multi-agent contention on a single GPU. This setup is intention-ally scoped to consumer-hardware local agents: unlike cloud-hosted, highly elastic deployments, such systems are capacity-limited and are not expected to sustain arbitrarily deep rea-soning traces or long-form coding workloads. Instead, the key systems challenge is to preserve responsiveness and streaming smoothness under concurrent tool-augmented sessions. We evaluate two representative agent paradigms:  
+
+> •
+
+ReAct [3]: Interleaves reasoning steps with external tool calls. Characterized by frequent resume prefills and extremely short decodes (often function calls or routing tokens). This pattern stresses latency sensitivity, since even small decode delays cascade into longer end-to-end latencies.  
+
+> •
+
+Plan-and-Execute [14]: Generates an explicit plan be-fore executing actions. Characterized by long cold prefills and medium-length decodes, creating a prefill-intensive workload that stresses the system’s ability to handle large kernels without starving concurrent decodes. Together, these two paradigms capture the spectrum of agent workloads: ReAct highlights the risks of decode starvation under frequent short interactions, while Plan-and-Execute em-phasizes the computational pressure of cold prefills. In Section IV-E, we present token distribution statistics across different workloads and models, demonstrating that agent workloads consistently exhibit the pattern of cold prefill, resume prefill, and short decode. This choice is deliberate: on a single consumer GPU, the most relevant systems question is not whether every agent workload can be supported, but whether common local tool-augmented sessions can be served with stable TTFT and TPOT under contention. 
+
+Baselines. We compare our system against three represen-tative LLM serving engines. These include traditional single-GPU inference engines, chunked prefill, and PD disaggrega-tion. All baselines support prefix caching, covering mainstream single-GPU inference solutions.  
+
+> •
+
+SGLang [11]: A single-GPU inference engine with ex-plicit prefill–decode disaggregation and shared KV cache, representing PD disaggregation based scheduling solu-tions.  
+
+> •
+
+vLLM [10]: A throughput-oriented serving engine fea-turing PagedAttention, continuous batching, and chunk-based prefill, representing mixed prefill–decode optimiza-tion.  
+
+> •
+
+llama.cpp [27]: A lightweight inference framework opti-mized for single-device execution, representing a general baseline without specialized scheduling optimizations. 
+
+Metrics. We focus on four key metrics that capture both latency and efficiency. First, time-to-first-token (TTFT) mea-sures the delay experienced by new requests before the first output token is produced. Second, time-per-output-token (TPOT) quantifies the inter-token latency during ongoing decoding. We report the median (p50), which reflects typical user-perceived latency, and the 95th percentile (p95), which highlights tail behavior under load. Third, throughput measures the aggregate efficiency of the system by counting how many output tokens are generated per unit time across all concurrent sessions. This captures overall serving capacity and complements TPOT, since higher concurrency may increase per-stream token delay while still sustaining high aggregate token generation. Finally, we have the SLO attainment rate , which reflects the fraction of sessions that meet both latency requirements simultaneously. A session is deemed successful if the TTFT is within its threshold and the TPOT is also within its threshold. This joint definition ensures that the metric captures the com-plete interactive experience, where users expect both immedi-ate first response and smooth token streaming. The thresholds 
+
+τTTFT and τTPOT are determined for each model–device pair by profiling their isolated performance and scaling with a constant factor, such that the SLO bounds adapt to different hardware capacities and model sizes while remaining aligned with interactive requirements. 
+
+B. Performance Analysis 
+
+TTFT. Time-to-first-token directly reflects user-perceived responsiveness, since it determines how quickly the system starts streaming output after receiving a query. As shown in Figure 5, AgentServe consistently achieves the lowest TTFT across all settings. Compared to SGLang, median TTFT is JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 920                        
+
+> 40
+> TTFT p50
+> Latency (ms)  3B-A5000
+> 10
+> 20
+> 3B-5090
+> 25
+> 50
+> 75 7B-A5000
+> 10
+> 20
+> 7B-5090
+> 25
+> 50
+> 75
+> 8B-A5000
+> 10
+> 20
+> 8B-5090
+> 500
+> 1000
+> 1500
+> TTFT p95
+> Latency (ms)
+> 150
+> 200
+> 250
+> 1000
+> 2000
+> 200
+> 300
+> 1000
+> 2000
+> 200
+> 300
+> 10
+> 20
+> TPOT p50
+> Latency (ms)
+> 5
+> 10
+> 10
+> 20
+> 30
+> 5
+> 10
+> 10
+> 20
+> 30
+> 5
+> 10
+> 25
+> 50
+> TPOT p95
+> Latency (ms)
+> 10
+> 20
+> 50
+> 100
+> 150
+> 10
+> 20
+> 100
+> 200
+> 10
+> 20
+> 3456
+> Agents (N)
+> 100
+> 200
+> 300
+> Throughput
+> (tokens/s)
+> 3456
+> Agents (N)
+> 250
+> 500
+> 3456
+> Agents (N)
+> 100
+> 200
+> 3456
+> Agents (N)
+> 200
+> 400
+> 3456
+> Agents (N)
+> 100
+> 150
+> 3456
+> Agents (N)
+> 200
+> 300
+> AgentServe SGLang vLLM llama.cpp
+> Fig. 5. Latency and throughput under different model–device settings. AgentServe consistently achieves the lowest TTFT and TPOT across concurrency levels, while also sustaining competitive throughput compared with baselines. Results are shown for Qwen2.5-3B/7B and Llama-3-8B on both A5000 and 5090 GPUs.
+
+typically 1.1–1.3 × faster, while tail latency (p95) shows up to 1.3 × improvement. Against vLLM, the advantage grows to 1.5–1.8 ×, and relative to llama.cpp the margin is the largest, reaching up to 2.8 × faster in heavy-load conditions. These improvements are preserved on both A5000 and 5090 GPUs, though the absolute latency is naturally lower on the 5090 due to its larger compute and memory capacity. Importantly, under the 7B model with long prompts, prefill contention is more severe, and AgentServe becomes especially effective, further widening the performance gap. This shows that our approach not only lowers average latency but also controls long-tail delays, which are the most disruptive to interactive applications. A similar trend is observed for the Llama-3-8B model. Even with its larger architecture, AgentServe maintains consistent margins over all baselines, showing that our approach generalizes well across model families. 
+
+TPOT. Time-per-output-token reflects the smoothness of token streaming and the stability of inter-token gaps. As shown in Figure 5, AgentServe again demonstrates clear benefits. Median TPOT improves by around 1.1–1.2 × over SGLang, 1.3–1.8 × over vLLM, and more than 1.5 × over llama.cpp. At the p95 tail, AgentServe reduces latency by up to 1.3 × compared with SGLang, nearly 2.0 × compared with vLLM, and up to 2.7 × compared with llama.cpp. The relative improvements are more pronounced on the A5000, where limited compute resources make contention between prefill and decode more visible. On the 5090, stronger hard-ware lowers overall latency, but AgentServe still maintains consistent margins. These results confirm that resource-aware scheduling effectively stabilizes token emission, ensuring that streaming remains fluid even under varying workloads. With the Llama-3-8B model, the advantage is particularly clear. Even as absolute TPOT increases with model size, AgentServe controls long-tail variability and keeps streaming smooth, un-derscoring the robustness of resource-aware scheduling across architectures. 
+
+Throughput. Throughput quantifies the overall serving ef-ficiency by measuring the number of tokens generated per sec-ond across all concurrent sessions. As illustrated in Figure 5, across all model–device pairs, AgentServe improves through-put by 1.2–1.5 × over vLLM, 1.3–1.5 × over SGLang, and up to 2.0–2.2 × over llama.cpp at high concurrency, while si-multaneously preserving latency stability. AgentServe achieves the most stable throughput across different model–device settings, maintaining high aggregate production while effec-tively bounding token latency. Compared with vLLM, which employs chunked prefill to sustain GPU utilization but expe-riences higher token-level delay, AgentServe provides com-parable or higher throughput while simultaneously preserving latency stability. SGLang benefits from prefill–decode disag-gregation, which improves latency, but its process isolation overhead reduces aggregate throughput. Llama.cpp exhibits the weakest scalability, as prefill–decode interference substantially diminishes overall token generation. On larger models such as Llama-3-8B, throughput curves saturate earlier due to heavier prefills. Nevertheless, AgentServe continues to retain a clear JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 10 0.0             
+
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> SLO Attainment  3B-A5000 3B-5090
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> SLO Attainment  7B-A5000 7B-5090
+> 3456
+> Concurrent Agents (N)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> SLO Attainment  8B-A5000
+> 3456
+> Concurrent Agents (N)
+> 8B-5090
+> AgentServe SGLang vLLM llama.cpp
+> Fig. 6. Session-Level SLO Attainment Rate under Varying Agent Concur-rency across Models and Devices.
+
+margin over baselines, underscoring the robustness of the scheduling strategy across both architectures and hardware capacities. 
+
+C. SLO Attainment 
+
+While latency metrics such as TTFT and TPOT provide valuable insights into instantaneous performance, they do not fully capture whether a system can sustain user-perceivable re-sponsiveness throughout an entire agent session. We therefore evaluate the session-level SLO attainment rate, defined as the fraction of sessions that simultaneously satisfy both the TTFT and TPOT bounds. These bounds are calibrated separately for each model–device pair to reflect realistic expectations in on-device agent scenarios. By adopting a joint session-level criterion, we treat any violation in either initial response delay or inter-token pacing as a service-level failure. Figure 6 shows SLO attainment across different concurrency levels and model–device settings on both RTX A5000 and RTX 5090. AgentServe achieves the highest compliance, ap-proaching perfect attainment on the RTX 5090 and remaining resilient on the RTX A5000 even for larger models. Its advan-tage comes from dynamic prefill–decode partitioning, which isolates latency-sensitive decodes and prevents starvation dur-ing heavy prefills. In contrast, llama.cpp, lacking prefill– decode optimizations, suffers sharp declines as concurrency grows, with both TTFT and TPOT vulnerable to interference. vLLM mitigates head-of-line blocking with chunked prefill but struggles to balance cold and short resume prefills in agent workloads, leading to suboptimal SLO rates. SGLang, which applies prefill–decode disaggregation but still shares memory, offers better stability than vLLM yet degrades under high concurrency due to contention and lack of strict isola-tion. On LLaMA3-8B specifically, baseline systems on the A5000 drop quickly once concurrency exceeds four, whereas Full No-Alg No-Green            
+
+> 0
+> 200
+> 400
+> TTFT (ms)
+> 3B-A5000
+> Full No-Alg No-Green
+> 0
+> 100
+> 200
+> 3B-5090
+> Full No-Alg No-Green
+> 0
+> 500
+> 1000
+> TTFT (ms)
+> 7B-A5000
+> Full No-Alg No-Green
+> 0
+> 100
+> 200
+> 7B-5090
+> Full No-Alg No-Green
+> 0
+> 500
+> 1000
+> TTFT (ms)
+> 8B-A5000
+> Full No-Alg No-Green
+> 0
+> 100
+> 200
+> 8B-5090
+> 0
+> 10
+> 20
+> 30
+> 0
+> 5
+> 10
+> TPOT (ms)
+> 0
+> 20
+> 40
+> 60
+> 0
+> 5
+> 10
+> 15
+> TPOT (ms)
+> 0
+> 20
+> 40
+> 60
+> 0
+> 5
+> 10
+> 15
+> TPOT (ms)
+> Fig. 7. Ablation Study of AgentServe Showing TTFT and TPOT Under Different Scheduling and Resource Isolation Settings.
+
+AgentServe remains stable up to six concurrent agents; on the 5090, AgentServe sustains near-optimal attainment across the tested range. Overall, while existing methods partially address latency issues, only AgentServe’s resource-aware disaggrega-tion consistently translates low-level improvements into strong session-level guarantees across hardware and workloads. 
+
+D. Ablation Study 
+
+We conduct ablation experiments under four concurrent agents (N=4), reporting p95 tail latency for both TTFT and TPOT. Two simplified variants are compared against the full AgentServe: ( i) No-Alg , which disables the resource-aware scheduling and statically partitions SMs between prefills and decodes, removing dynamic adaptation. ( ii ) No-Green , which eliminates pre-established CUDA Green Context slots and relies on on-demand stream allocation, providing no decode reservations. As shown in Figure 7, both ablations significantly worsen tail behavior. No-Alg increases TTFT by 15–25% and de-grades TPOT p95 up to 1.4 × due to long prefills starving decodes on Qwen model family. No-Green further destabilizes latency, with TTFT spikes and TPOT variance rising by 20– 30%. In contrast, full AgentServe maintains stable TTFT and TPOT across 3B/7B models and both A5000/5090 GPUs. The same trend holds for LLaMA3-8B: on the A5000, removing either component increases TTFT by 500–1000 ms and TPOT by 5–10 ms; on the 5090, both ablations still degrade TTFT by more than 100 ms and inflate TPOT by 2–4 ms. These results confirm that both the algorithmic and GPU-level mechanisms are indispensable, and that AgentServe’s gains stem from the co-design of the two rather than from a single optimization. These ablations also clarify the terms in our competitive-ratio bound: removing TPOT-driven control effectively increases reservation overshoot and lag (larger δ), while removing Green JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 11 
+
+Context isolation weakens the discrete allocation guarantee and increases runtime interference, thereby reducing the re-tained fraction of prefill service. 
+
+E. Token Distribution Analysis                 
+
+> TABLE I TOKEN DISTRIBUTION ACROSS WORKLOADS AND MODELS . F OR PREFILLS ,THE NUMBERS INDICATE INPUT TOKENS ,AND FOR DECODES ,
+> THE NUMBERS INDICATE OUTPUT TOKENS . T HE RANGES REPRESENT MINIMUM TO MAXIMUM VALUES ,AND THE VALUES IN PARENTHESES REPRESENT THE AVERAGES .
+> Stage Qwen2.5-3B Qwen2.5-7B Llama3-8B
+> ReAct  Cold Prefill 2.5k–3.5k tokens Resume Prefill 30–127(56) Decode 27-99(37) 21-127(45) 32-101(38) P&E  Cold Prefill 2.5k–3.5k tokens Resume Prefill 125–421(251) Decode 41-125(55) 33-141(62) 22–116(64)
+
+In this section we provide token-level statistics for the two representative workloads, ReAct and Plan-and-Execute, evaluated on three models: Qwen2.5-3B, Qwen2.5-7B, and LLaMA3-8B. The purpose of this experiment is to verify empirically that agent workloads can be decomposed into three distinct execution modes, namely cold prefill, resume prefill, and decode, which are substantially different in their token scales. A second purpose is to demonstrate that these structural differences are consistent across models of different sizes. The results reveal several clear patterns. Cold prefills are primarily composed of the system prompt and tool descrip-tions, and therefore their length is relatively fixed. They always correspond to the longest input sequences, with lengths around 2.5k to 3.5k tokens, and they dominate the overall input regardless of workload type. Resume prefills are shorter in length, but in the ReAct workload they appear frequently with lengths between 30 and 127 tokens (average 56), while in the Plan-and-Execute workload they occur less often but are considerably longer, ranging from 125 to 421 tokens (average 251). Decodes are consistently short outputs. In ReAct the decodes are extremely short, typically a few dozen tokens, whereas in Plan-and-Execute the decodes are moderately longer, between several dozen and just over one hundred tokens. These findings validate the workload characterization dis-cussed in the main body of the paper. Cold prefills intro-duce risks of head-of-line blocking, frequent resume prefills interfere with the stability of decode performance, and short decodes amplify sensitivity to latency variations. The distri-butions therefore provide quantitative evidence that motivates the design of the isolation and scheduling mechanisms in AgentServe. V. R ELATED WORK 
+
+LLM Inference Serving. vLLM with PagedAttention in-troduces paging-style memory allocation to address fragmen-tation and enable continuous batching [10]. RadixAttention in SGLang reuses cached prefixes across multi-turn and tool-invoking workloads [11], while StreamingLLM proposes rolling retention for streaming contexts [28]. Other prefix caching methods such as CacheGen [29], Marconi [9], and Specache [30] accelerate repeated prompts and reduce redun-dant computation. InfiniGen and FixGen selectively prefetch KV states and model weights to reduce CPU–GPU trans-fer overhead [31], [32], and vAttention introduces dynamic memory management for long-context decoding [33]. Com-plementary quantization schemes such as GPTQ, and AWQ compress KV storage without significant quality loss [34], [35]. Together, these methods address memory, computation, and bandwidth bottlenecks for scalable serving. 
+
+Prefill and Decode Optimization Methods. A second line of work focuses on the heterogeneity of prefill and decode. Sarathi-Serve proposes chunked prefill to mitigate head-of-line blocking [16], while FastServe uses token-level preemption to reduce latency tails [36]. Duoserve-Moe [37] employs different scheduling approaches to handle expert models during prefill and decode. DistServe disaggregates prefill and decode across GPUs [12], and Nexus explores intra-GPU disaggregation to avoid inter-device overhead [20]. POD-Attention introduces adaptive kernels and hybrid scheduling for mixed workloads [38], and FlashDecoding++ demonstrates asynchronous decod-ing pipelines for better per-device efficiency [39]. Although effective at the cluster scale, these approaches are less suitable for single-GPU agent workloads where requests are short and tightly interleaved. 
+
+Agentic AI and System-level Approaches. Recent research has examined supporting LLM agents that interleave inference with tool use. Reasoning paradigms include ReAct, Plan-and-Execute, and multi-agent collaboration [3], [14], [40]. Bench-marks such as AgentBench evaluate reasoning and retrieval-intensive tasks [41]. Frameworks like AutoGen, LangChain, and LangGraph enable structured multi-agent orchestration [23], [24], while Autellix optimizes agent scheduling as general program execution [42]. System-level support has also been studied for retrieval-augmented generation through methods like RAGCache and CacheBlend [43], [44]. These studies highlight infrastructure adaptations for agent and RAG paradigms that complement the challenges targeted by AgentServe. VI. C ONCLUSION 
+
+This paper presented AgentServe, a single-GPU inference serving system designed for agentic workloads. By com-bining request isolation, TPOT-driven scheduling, and GPU-level resource partitioning, AgentServe achieves stable latency and efficient throughput under high concurrency. The design isolates cold prefills into dedicated queues, regulates resume prefills under a dynamic token budget, and enforces decode priority through fine-grained SM partitioning with CUDA Green Contexts. Our evaluation demonstrates that the system sustains scalability across different model sizes and hardware generations, delivering up to 2.8 × TTFT improvement and 2.7 × TPOT improvement over state-of-the-art baselines across different experimental settings. JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 12 
+
+REFERENCES [1] OpenAI, “Chatgpt,” https://chat.openai.com/, 2022, accessed: 2025-09-29. [2] M. Arslan, H. Ghanem, S. Munawar, and C. Cruz, “A survey on rag with llms,” Procedia computer science , vol. 246, pp. 3781–3790, 2024. [3] S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao, “React: Synergizing reasoning and acting in language models,” in 
+
+International Conference on Learning Representations (ICLR) , 2023. [4] T. Schick, J. Dwivedi-Yu, R. Dess` ı, R. Raileanu, M. Lomeli, E. Hambro, L. Zettlemoyer, N. Cancedda, and T. Scialom, “Toolformer: Language models can teach themselves to use tools,” Advances in Neural Infor-mation Processing Systems , vol. 36, pp. 68 539–68 551, 2023. [5] P. Belcak, G. Heinrich, S. Diao, Y. Fu, X. Dong, S. Muralidharan, Y. C. Lin, and P. Molchanov, “Small language models are the future of agentic ai,” arXiv preprint arXiv:2506.02153 , 2025. [6] E. A. I. Act, “The eu artificial intelligence act,” European Union , 2024. [7] Z. Durante, R. Gong, B. Sarkar, N. Wake, R. Taori, P. Tang, S. Laksh-mikanth, K. Schulman, A. Milstein, H. Vo, E. Adeli, D. Terzopoulos, L. Fei-Fei, and J. Gao, “An interactive agent foundation model,” in 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops , June 2025, pp. 3661–3671. [8] S. Yang, O. Nachum, Y. Du, J. Wei, P. Abbeel, and D. Schuurmans, “Foundation models for decision making: Problems, methods, and opportunities,” arXiv preprint arXiv:2303.04129 , 2023. [9] R. Pan, Z. Wang, Z. Jia, C. Karakus, L. Zancato, T. Dao, Y. Wang, and R. Netravali, “Marconi: Prefix caching for the era of hybrid LLMs,” in 
+
+Eighth Conference on Machine Learning and Systems , 2025. [Online]. Available: https://openreview.net/forum?id=RUaMUu7vMX [10] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez, H. Zhang, and I. Stoica, “Efficient memory management for large language model serving with pagedattention,” in Proceedings of the 29th symposium on operating systems principles , 2023, pp. 611–626. [11] L. Zheng, L. Yin, Z. Xie, C. Sun, J. Huang, C. H. Yu, S. Cao, C. Kozyrakis, I. Stoica, J. E. Gonzalez, C. Barrett, and Y. Sheng, “Sglang: Efficient execution of structured language model programs,” in Advances in Neural Information Processing Systems , A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, Eds., vol. 37. Curran Associates, Inc., 2024, pp. 62 557–62 583. [12] Y. Zhong, S. Liu, J. Chen, J. Hu, Y. Zhu, X. Liu, X. Jin, and H. Zhang, “DistServe: Disaggregating prefill and decoding for goodput-optimized large language model serving,” in 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) . Santa Clara, CA: USENIX Association, Jul. 2024, pp. 193–210. [Online]. Available: https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin [13] NVIDIA Corporation, “Cuda driver api: Green contexts,” https://docs.nvidia.com/cuda/cuda-driver-api/group CUDA GREEN CONTEXTS.html, 2025, accessed: 29 September 2025. [14] L. Wang, W. Xu, Y. Lan, Z. Hu, Y. Lan, R. K.-W. Lee, and E.-P. Lim, “Plan-and-solve prompting: Improving zero-shot chain-of-thought reasoning by large language models,” in Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , A. Rogers, J. Boyd-Graber, and N. Okazaki, Eds. Toronto, Canada: Association for Computational Linguistics, Jul. 2023, pp. 2609–2634. [Online]. Available: https: //aclanthology.org/2023.acl-long.147/ [15] A. Yang, B. Yu, C. Li, D. Liu, F. Huang, H. Huang, J. Jiang, J. Tu, J. Zhang, J. Zhou, J. Lin, K. Dang, K. Yang, L. Yu, M. Li, M. Sun, Q. Zhu, R. Men, T. He, W. Xu, W. Yin, W. Yu, X. Qiu, X. Ren, X. Yang, Y. Li, Z. Xu, and Z. Zhang, “Qwen2.5-1m technical report,” 2025. [Online]. Available: https://arxiv.org/abs/2501.15383 [16] A. Agrawal, N. Kedia, A. Panwar, J. Mohan, N. Kwatra, B. Gulavani, A. Tumanov, and R. Ramjee, “Taming Throughput-Latency tradeoff in LLM inference with Sarathi-Serve,” in 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) . Santa Clara, CA: USENIX Association, Jul. 2024, pp. 117–134. [Online]. Available: https://www.usenix.org/conference/osdi24/presentation/agrawal [17] NVIDIA Corporation, “Nvidia cuda toolkit,” 2020, version 12.0. [Online]. Available: https://developer.nvidia.com/cuda-toolkit [18] ——, “Cuda multi process service overview,” 2021. [Online]. Available: https://docs.nvidia.com/pdf/CUDA Multi Process Service Overview.pdf [19] ——, “Nvidia cuda c/c++ streams and concurrency,” 2021. [Online]. Available: http://on-demand.gputechconf.com/gtc-express/ 2011/presentations/StreamsAndConcurrencyWebinar.pdf [20] X. Shi, C. Cai, J. Du, and Z. Jia, “Nexus: Proactive intra-gpu dis-aggregation of prefill and decode in llm serving,” arXiv preprint arXiv:2507.06608 , 2025. [21] K. Hong, L. Chen, Z. Wang, X. Li, Q. Mao, J. Ma, C. Xiong, G. Wu, B. Han, G. Dai, Y. Liang, and Y. Wang, “semi-pd: Towards efficient llm serving via phase-wise disaggregated computation and unified storage,” 2025. [Online]. Available: https://arxiv.org/abs/2504.19867 [22] W. Cui, Y. Chen, H. Zhao, Z. Xu, Q. Chen, X. Chen, Y. Zhou, S. Sun, and M. Guo, “Optimizing slo-oriented llm serving with pd-multiplexing,” arXiv preprint arXiv:2504.14489 , 2025. [23] L. AI, “Langchain,” https://github.com/langchain-ai/langchain, 2023, accessed: 2025-09-24. [24] Q. Wu, G. Bansal, J. Zhang, Y. Wu, B. Li, E. Zhu, L. Jiang, X. Zhang, S. Zhang, J. Liu, A. H. Awadallah, R. W. White, D. Burger, and C. Wang, “Autogen: Enabling next-gen LLM applications via multi-agent conversations,” in First Conference on Language Modeling , 2024. [Online]. Available: https://openreview.net/forum?id=BAakY1hNKS [25] Z. Guo, S. Cheng, H. Wang, S. Liang, Y. Qin, P. Li, Z. Liu, M. Sun, and Y. Liu, “Stabletoolbench: Towards stable large-scale benchmarking on tool learning of large language models,” in ACL (Findings) , 2024, pp. 11 143–11 156. [Online]. Available: https://doi.org/10.18653/v1/2024.findings-acl.664 [26] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten, A. Vaughan et al. , “The llama 3 herd of models,” arXiv preprint arXiv:2407.21783 , 2024. [27] G. Gerganov and the llama.cpp community, “llama.cpp: Llm inference in c/c++,” https://github.com/ggml-org/llama.cpp, 2023, mIT License, accessed 2025-09-24. [28] G. Xiao, Y. Tian, B. Chen, S. Han, and M. Lewis, “Efficient streaming language models with attention sinks,” in The Twelfth International Conference on Learning Representations , 2024. [Online]. Available: https://openreview.net/forum?id=NG7sS51zVF [29] Y. Liu, H. Li, Y. Cheng, S. Ray, Y. Huang, Q. Zhang, K. Du, J. Yao, S. Lu, G. Ananthanarayanan, M. Maire, H. Hoffmann, A. Holtzman, and J. Jiang, “Cachegen: Kv cache compression and streaming for fast large language model serving,” in Proceedings of the ACM SIGCOMM 2024 Conference , ser. ACM SIGCOMM ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 38–56. [Online]. Available: https://doi.org/10.1145/3651890.3672274 [30] S. Jie, Y. Tang, K. Han, Z.-H. Deng, and J. Han, “Specache: Speculative key-value caching for efficient generation of llms,” in 
+
+Forty-second International Conference on Machine Learning , 2025. [Online]. Available: https://openreview.net/forum?id=PQIrsaIQdn [31] W. Lee, J. Lee, J. Seo, and J. Sim, “Infinigen: Efficient generative inference of large language models with dynamic kv cache manage-ment,” in 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) , 2024, pp. 155–172. [32] Y. Shen, Y. Zhang, and D. Yuan, “A hybrid online and offline requests inference serving system for llm in private computer environment,” IEEE Transactions on Computers , vol. 75, no. 3, pp. 888–900, 2026. [33] R. Prabhu, A. Nayak, J. Mohan, R. Ramjee, and A. Panwar, “vattention: Dynamic memory management for serving llms without pagedattention,” in Proceedings of the 30th ACM International Conference on Archi-tectural Support for Programming Languages and Operating Systems, Volume 1 , 2025, pp. 1133–1150. [34] E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh, “Optq: Accurate quantization for generative pre-trained transformers,” in The Eleventh International Conference on Learning Representations , 2023. [Online]. Available: https://openreview.net/forum?id=tcbBPnfwxS [35] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao, X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quanti-zation for on-device llm compression and acceleration,” Proceedings of machine learning and systems , vol. 6, pp. 87–100, 2024. [36] B. Wu, Y. Zhong, Z. Zhang, S. Liu, F. Liu, Y. Sun, G. Huang, X. Liu, and X. Jin, “Fast distributed inference serving for large language models,” 
+
+arXiv preprint arXiv:2305.05920 , 2023. [37] Y. Zhang, G. Pinkert, N. Yang, Y. Li, and D. Yuan, “Duoserve-moe: Dual-phase expert prefetch and cache scheduling for efficient moe llm inference,” arXiv preprint arXiv:2509.07379 , 2025. [38] A. K. Kamath, R. Prabhu, J. Mohan, S. Peter, R. Ramjee, and A. Panwar, “Pod-attention: Unlocking full prefill-decode overlap for faster llm inference,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , 2025, pp. 897–912. [39] K. Hong, G. Dai, J. Xu, Q. Mao, X. Li, J. Liu, K. Chen, Y. Dong, and Y. Wang, “Flashdecoding++: Faster large language model inference with JOURNAL OF L ATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 13 
+
+asynchronization, flat gemm optimization, and heuristics,” Proceedings of Machine Learning and Systems , vol. 6, pp. 148–161, 2024. [40] A. Madaan, N. Tandon, P. Gupta, S. Hallinan, L. Gao, S. Wiegreffe, U. Alon, N. Dziri, S. Prabhumoye, Y. Yang, S. Gupta, B. P. Majumder, K. Hermann, S. Welleck, A. Yazdanbakhsh, and P. Clark, “Self-refine: Iterative refinement with self-feedback,” in Thirty-seventh Conference on Neural Information Processing Systems , 2023. [Online]. Available: https://openreview.net/forum?id=S37hOerQLB [41] X. Liu, H. Yu, H. Zhang, Y. Xu, X. Lei, H. Lai, Y. Gu, H. Ding, K. Men, K. Yang, S. Zhang, X. Deng, A. Zeng, Z. Du, C. Zhang, S. Shen, T. Zhang, Y. Su, H. Sun, M. Huang, Y. Dong, and J. Tang, “Agentbench: Evaluating llms as agents,” in The Twelfth International Conference on Learning Representations , 2024. [Online]. Available: https://openreview.net/forum?id=zAdUB0aCTQ [42] M. Luo, X. Shi, C. Cai, T. Zhang, J. Wong, Y. Wang, C. Wang, Y. Huang, Z. Chen, J. E. Gonzalez, and I. Stoica, “Autellix: An efficient serving engine for llm agents as general programs,” 2025. [Online]. Available: https://arxiv.org/abs/2502.13965 [43] C. Jin, Z. Zhang, X. Jiang, F. Liu, S. Liu, X. Liu, and X. Jin, “Ragcache: Efficient knowledge caching for retrieval-augmented generation,” ACM Transactions on Computer Systems , 2024. [44] J. Yao, H. Li, Y. Liu, S. Ray, Y. Cheng, Q. Zhang, K. Du, S. Lu, and J. Jiang, “Cacheblend: Fast large language model serving for rag with cached knowledge fusion,” in Proceedings of the Twentieth European Conference on Computer Systems , 2025, pp. 94–109.
