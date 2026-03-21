@@ -1,0 +1,994 @@
+Title: Swarm: Co-Activation Aware KVCache Offloading Across Multiple SSDs
+
+URL Source: https://arxiv.org/pdf/2603.17803v1
+
+Published Time: Thu, 19 Mar 2026 01:30:43 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# SWARM : Co-Activation Aware KVCache Offloading Across Multiple SSDs 
+
+# Tuowei Wang ∗
+
+# Tsinghua University 
+
+# Liyun Chu ∗
+
+# Tsinghua University 
+
+# Ruwen Fan 
+
+# Tsinghua University 
+
+# Ju Ren †
+
+# Tsinghua University 
+
+# Abstract 
+
+The key-value (KV) cache has become the dominant contrib-utor to memory consumption in large language model (LLM) inference. Although offloading KVCache from GPU high-bandwidth memory (HBM) to CPU DRAM alleviates device memory pressure, DRAM remains capacity-limited and costly for large, persistent workloads. Solid-state drives (SSDs) pro-vide a cost-effective alternative, but naive SSD-based pag-ing is fundamentally bandwidth-bound due to limited PCIe throughput and per-device bandwidth constraints. In this paper, we observe that KVCache activations in real-world workloads exhibit strong and stable correlations. We term this phenomenon KVCache Co-Activation , where ac-cessing a KV entry is often accompanied by a stable and re-curring set of other KV entries. Leveraging this property, we present SWARM , an SSD-based KVCache offloading system that converts bandwidth-bound single-device access into par-allel I/O across multiple SSDs. Specifically, S WARM clusters co-activated KV entries offline and distributes the resulting clusters across SSDs using graph-based placement with se-lective replication to maximize parallel I/O bandwidth. At runtime, S WARM performs load-balanced cluster retrieval and dynamically adapts clustering and caching decisions to sus-tain high bandwidth utilization under evolving access patterns. Evaluations show that S WARM reduces I/O time by 2.41 ×
+
+and improves effective bandwidth utilization by 2 .72 ×.
+
+# 1 Introduction 
+
+The key-value (KV) cache is a central component of modern large language model (LLM) inference. By storing previously computed keys and values, it eliminates redundant computa-tion and enables efficient autoregressive decoding. However, KVCache grows monotonically with sequence length and model depth, with a lifetime that extends far beyond a single decoding step. As context lengths expand [22, 27, 48] and models deepen [17, 28, 42, 45], KVCache has emerged as the 
+
+dominant contributor to inference-time memory footprint. Beyond its per-request footprint, KVCache increasingly persists across requests and sessions. For example, long docu-ments or videos are commonly queried repeatedly with dif-ferent questions [6, 11]. Similarly, agentic-style interactions 
+
+> ∗These authors contributed equally.
+> †Corresponding author (renju@tsinghua.edu.cn)
+
+often reuse tool instructions [18,40] and contexts [50,51] from previous steps. Real-world production deployments [3, 36] have reported the widespread presence of long and shared KV-Cache. Consequently, KVCache has evolved from a transient artifact into a long-lived data structure, making it a natural and compelling candidate for persistent storage. As a result, designing a scalable and efficient storage system tailored for KVCache management has become increasingly critical. Given the limited capacity and high cost of GPU-side high-bandwidth memory (HBM), KVCache is typically offloaded to CPU-side dynamic random-access memory (DRAM) [16, 23, 41]. To reduce the I/O overhead between DRAM and HBM, recent work [44,47,53,54] exploits the inherent sparsity of attention by selectively activating and transferring only the most relevant KVs for computation. Nevertheless, DRAM capacity remains limited and expensive [24, 43], rendering it insufficient for hosting large, persistent KVCache at scale. In this context, solid-state drives (SSDs) offer an attrac-tive alternative for KVCache offloading. Compared to DRAM, SSDs provide orders-of-magnitude higher capacity at lower cost per bit, making them well-suited for hosting large, per-sistent KVCache states. This cost-capacity advantage has motivated growing interest in SSD-based KVCache storage as a path toward scalable inference [7, 12, 14, 39]. Unfortu-nately, naively paging KVCache between SSDs and DRAM proves ineffective [20,37]. Unlike DRAM, SSDs are accessed through relatively narrow PCIe interfaces and provide limited per-device bandwidth [7]. As a result, KVCache accesses served from SSDs become bandwidth-bound , stalling atten-tion computation and increasing inference latency. In this paper, we present a key observation that KVCache in LLMs exhibits strong correlations in their activation patterns, a phenomenon we term KVCache Co-Activation . This prop-erty, prevalent in LLM workloads yet largely underexplored, can be strategically leveraged to alleviate SSD bandwidth bottlenecks during KVCache offloading. Specifically, when processing real-world datasets, the activation of an individual KV pair is consistently accompanied by a stable and recurring set of other KV pairs. These co-activated KVs can be fetched simultaneously, naturally exposing I/O parallelism that can be exploited to improve effective SSD bandwidth. Motivated by this observation, we propose SWARM , a novel SSD-based solution for KVCache offloading. Rather than re-lying on a single SSD and being constrained by per-device bandwidth, S WARM offloads KVCache across multiple SSDs 
+
+1           
+
+> arXiv:2603.17803v1 [cs.PF] 18 Mar 2026 GPU
+> CPU
+> HBM ( ~10 GB)
+> DRAM ( ~100 GB)
+> SSD (> 1 TB)
+> 2
+> 1
+> 8 GB/s ( ×!SSD in Swarm)
+> 32 GB/s
+> 3
+> 4Scalability
+> Performance
+> Cost
+> Efficiency
+> 1HBM 2HBM -DRAM 3HBM -DRAM -SSD 4Swarm
+> Bottleneck!
+
+Figure 1: Memory hierarchy for KVCache offloading. SWARM exploits KVCache co-activation to aggregate multi-SSD bandwidth for better performance–scalability trade-offs. and strategically aggregates bandwidth across all devices. A key idea in S WARM is to align KVCache co-activation pat-terns with multi-SSD I/O parallelism: KV pairs that are fre-quently co-activated are identified, distributed, retrieved, and updated across SSDs to maximize parallel reads . As shown in Figure 1, S WARM transforms SSD-based KVCache offload-ing from a bandwidth-bound, single-device operation into a highly parallel, multi-device data path, enabling efficient and scalable KVCache management. SWARM employs a two-phase design that incorporates hi-erarchical optimizations performed both offline and online: 
+
+In the offline phase , S WARM captures KVCache co-activation patterns and organizes KV entries into correlation-aware clusters, while building a lightweight DRAM-resident index using cluster medoids as representatives. Guided by this clustered layout, it partitions KVCache across the DRAM-SSD hierarchy by retaining medoids, local-window entries, and hot clusters in DRAM, and distributing the remaining clustered entries across SSDs to enable parallel retrieval. 
+
+In the online phase , S WARM uses load-balanced schedul-ing to retrieve the selected clusters efficiently under the multi-SSD layout with negligible overhead. It also dynamically adapts cluster membership and caching decisions as decoding progresses, thereby sustaining high bandwidth utilization and retrieval efficiency under evolving access patterns. We evaluate S WARM on four real-world datasets with two types of SSDs, benchmarking five representative LLMs. The results demonstrate that S WARM achieves an average 2.41 ×
+
+reduction in I/O time and an average 2.72 × improvement in effective bandwidth utilization. Notably, when scaled to eight SSDs, S WARM attains a bandwidth of up to 37 .67 GB/s, comparable to that between GPU HBM and CPU DRAM. We summarize the contributions of this paper as follows: • We identify a prevalent yet underexplored phenomenon in LLM inference, KVCache Co-Activation, and show how it can be exploited to mitigate the primary band-width bottleneck in SSD-based KVCache offloading. • We design a two-phase solution that systematically models, places, retrieves, and updates co-activated KVs across SSDs, maximizing bandwidth utilization. • We conduct extensive evaluations across diverse LLMs, datasets and hardware configurations, achieving perfor-mance and cost improvements over existing solutions. 
+
+# 2 Background 2.1 KVCache in Autoregressive Generation 
+
+State-of-the-art LLMs predominantly adopt autoregressive decoding, where tokens are generated sequentially and each new token attends to all previous tokens. This mechanism is implemented by multi-head attention (MHA) [46]. For each attention head, the input token embedding is projected into three components: Query ( Q), Key ( K), and Value ( V ). The attention computation is defined as follows: Attention (Q, K,V ) = softmax ( QK T
+
+√dk
+
+)V (1) where dk denotes the dimensionality of the key vectors. At decoding step t, the current query qt attends to all pre-viously generated keys ( K<t ) and values ( V<t ). Since these historical tensors remain unchanged once computed, recom-puting them at every step results in considerable and unnec-essary overhead. This redundancy severely inflates response-generation latency, complicating adherence to service-level objectives (SLOs) [39]. To eliminate this inefficiency, modern inference systems store and reuse previously computed keys and values, collectively referred to as the KVCache .In practice, KVCache exhibits two defining features: 
+
+Feature #1: Massive Footprint. For a model with L layers and hidden dimension d, the KVCache memory footprint for a sequence of length S scales as O(L × S × d). As models become deeper and context windows expand to accommodate long documents, code repositories, and multimodal inputs (e.g., images and videos), the KVCache can easily exceed the size of the model parameters themselves. As shown in Table 1, under long-context settings, the total KVCache footprint may reach hundreds or thousands of gigabytes, imposing severe memory pressure during LLM inference. 
+
+Feature #2: Temporal Persistence. The lifetime of the KV-Cache extends beyond a single decoding step and often even Table 1: KVCache memory footprint relative to the model weights of GPT-3 (in FP16) across sequence lengths.                          
+
+> Weights s=32 Ks=64 Ks=128 Ks=256 Ks=512 K
+> 326 GB 144 GB 288 GB 576 GB 1.13 TB 2.25 TB -0.44 ×0.88 ×1.77 ×3.53 ×7.07 ×
+
+2TTFT (ms)       
+
+> 0
+> 100
+> 200
+> 300
+> 1000
+> 2000
+> 3000
+> Prefix length (in tokens)
+> 128 256 512 1K 2K 4K
+> w/o KVCache
+> TTFT (ms)
+
+w/o KVCache 
+
+KVCache-SSD 
+
+KVCache-DRAM 
+
+IO-SSD 
+
+IO-DRAM 
+
+0
+
+100 
+
+200 
+
+300 
+
+1000 
+
+2000 
+
+3000 
+
+Prefix length (in tokens) 
+
+128 256 512 1K 2K 4K 
+
+> Computation
+> TTFT (ms)
+
+w/o KVCache 
+
+KVCache-SSD 
+
+KVCache-DRAM 
+
+IO-SSD 
+
+IO-DRAM 
+
+0
+
+100 
+
+200 
+
+300 
+
+1000 
+
+2000 
+
+3000 
+
+Prefix length (in tokens) 
+
+128 256 512 1K 2K 4K 
+
+> I/O SSD -DRAM
+> I/O DRAM -HBM
+> TTFT (ms)
+
+w/o KVCache 
+
+KVCache-SSD 
+
+KVCache-DRAM 
+
+IO-SSD 
+
+IO-DRAM 
+
+0
+
+100 
+
+200 
+
+300 
+
+1000 
+
+2000 
+
+3000 
+
+Prefix length (in tokens) 
+
+128 256 512 1K 2K 4K 
+
+> TTFT (ms)
+
+w/o KVCache 
+
+KVCache-SSD 
+
+KVCache-DRAM 
+
+IO-SSD 
+
+IO-DRAM 
+
+0
+
+100 
+
+200 
+
+300 
+
+1000 
+
+2000 
+
+3000 
+
+Prefix length (in tokens) 
+
+128 256 512 1K 2K 4K Figure 2: TTFT breakdown for Qwen3-4B with no KVCache, SSD-based KVCache, and DRAM-based KVCache. beyond an individual request. On the one hand, a long docu-ment or video may be queried repeatedly with different ques-tions while the underlying context remains unchanged. On the other hand, real-world workloads, such as multi-turn agents and iterative coding assistants, continuously reuse historical context across successive interactions. In both cases, discard-ing and recomputing the KVCache not only wastes compu-tation but also introduces avoidable latency. As shown in Figure 2, effectively reusing the KVCache can significantly re-duce time-to-first-token (TTFT), particularly in long-context settings where prefix processing dominates latency. 
+
+# 2.2 Three-Tier KVCache Offloading 
+
+The massive footprint and temporal persistence of KVCache challenge existing memory hierarchies. In practice, GPU high-bandwidth memory (HBM) serves as the first tier , providing low latency and high throughput, but with limited capacity and high cost. To extend available memory pool, CPU DRAM is commonly employed as a secondary tier for offloading, offering an order of magnitude greater capacity than HBM. During inference, KVCache entries are transferred on demand from CPU to GPU through the PCIe interface. Thanks to the high bandwidth of modern PCIe links [38] and software-level optimizations such as prefetching [10,52] and caching [12,14], this data transfer overhead is generally manageable. Nevertheless, DRAM capacity remains fundamentally con-strained and expensive at scale. As KVCache grows in both size and lifetime, relying solely on HBM and DRAM be-comes economically and practically unsustainable. In this context, solid-state drivers (SSDs) are emerging as a cost-effective third tier for KVCache offloading. Built on NAND flash memory [25], SSDs provide much larger capacity than DRAM, scaling to terabyte levels at lower cost per bit. More-over, modern server platforms support multiple SSDs to be attached to a single CPU via independent PCIe lanes, enabling flexible capacity expansion and device-level parallelism. However, incorporating SSDs into the memory hierar-chy shifts the bottleneck to I/O bandwidth . Although mod-ern SSDs leverage high-performance protocols such as non-Qwen3 32B Llama3 70B DeepSeek-V3 671B                         
+
+> Perplexity
+> 5
+> 10
+> 15
+> KVCache Activation Ratio
+> 100% 50% 20% 10% 5% 1% 0.5% 0.2% 0.1%
+> Qwen3 30B Llama3 70B
+> 0510 15 20 25 0510 15 20 25
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Decode Step
+> Historical KVCache Entry
+> Dynamic Dynamic
+> (a) (b)
+
+Figure 3: KVCache activation sparsity. (a) Perplexity on Wiki-Text (2K context) under varying KV activation ratios. (b) Dy-namic activation patterns of KVCache across decoding steps. volatile memory express (NVMe) [35], their bandwidth re-mains structurally limited compared to DRAM. When KV-Cache resides in DRAM, it can be transferred to GPU over a PCIe ×16 link with relatively high throughput. In contrast, most NVMe SSDs are connected via PCIe ×4, offering only a fraction of the bandwidth available between DRAM and HBM. As shown in Figure 2, offloading KVCache to SSDs can introduce substantial I/O latency, and naive designs may severely degrade overall inference performance. 
+
+# 2.3 Sparsity-Driven KVCache Activation 
+
+To mitigate the overhead of KVCache transfers across mem-ory tiers, recent studies [44, 47, 53, 54] exploit the inherent sparsity within the attention mechanism. Despite large context lengths, only a small subset of tokens with the highest atten-tion scores dominate the final attention output. As shown in Figure 3(a), a large proportion of the KVCache can be safely ignored with negligible impact on model outputs. Therefore, instead of activating and transferring all historical keys and values, it is sufficient to identify and load only the KVCache entries of these critical tokens at each decoding step. However, sparsity-based KVCache activation presents two key challenges. First , the KVCache sparsity pattern is inher-ently dynamic and query-dependent. As shown in Figure 3(b), the set of activated KV entries varies across input tokens. The system needs to compute relevance scores (e.g., query-key inner products) and retrieve critical entries on the fly at each step, requiring a highly efficient retrieval mechanism. Second ,although sparsity reduces both data transfers and attention 3Qwen3    
+
+> (32B)
+> Llama3
+> (70B)
+> GPT -OSS
+> (120B)
+> WikiText LongBench MMLU 1.0
+> 0.8
+> 0.6
+> 0.4
+> 0.2
+> 0
+
+Figure 4: Visualization of KVCache co-activation patterns across models and datasets. Each matrix element (i, j) denotes the activation frequency of KVCache entries ei and e j.computation, thereby lowering overall inference latency, it does not fundamentally eliminate the SSD bandwidth bottle-neck. The improvement arises from shrinking the workload, rather than increasing effective I/O throughput. As a result, SSD bandwidth remains on the critical path of inference and continues to be the dominant performance constraint. 
+
+# 3 Motivation and Challenges 3.1 Insight: KVCache Co-Activation 
+
+Observation. In this paper, we aim to address the SSD band-width bottleneck to enable efficient and scalable KVCache offloading. Our approach is grounded in a profound yet largely underexplored observation: KVCache activation is not uni-formly random but exhibits strong correlations. As shown in Figure 4, when processing real-world workloads, the activa-tion of a given KV entry is often accompanied by a stable and recurring set of other entries. We term this phenomenon 
+
+KVCache Co-Activation , which naturally arises from sparsity-driven KVCache activation and consistently appears across different models and datasets. This observation suggests an opportunity to exploit the structured access patterns. 
+
+Core Idea. KVCache co-activation reveals intrinsic paral-lelism in KVCache activation patterns. Within each KVCache co-activation group, KV entries are computationally indepen-dent and can therefore be fetched concurrently without in-troducing additional synchronization. This parallelism aligns naturally with the topology of modern storage systems, where multiple SSDs are connected via independent PCIe lanes. By 
+
+strategically distributing co-activated KV entries across mul-WikiText LongBench          
+
+> WikiText: 9; LongBench: 44
+> Occurrence
+> 0
+> 10 4
+> 2×10 4
+> Co-Activation Relationships
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> 10
+> 11-15
+> 16-20
+> >20
+> Path-1
+> Path-2
+> Path-3
+> Path-4
+> Effective Bandwidth (GB/s)
+> 0
+> 5
+> 10
+> 15
+> Layer
+> 0816 24 32
+> Min-Size
+> Min-Diff
+> Probability
+> 0.5
+> 1.0
+> Decode Step
+> 124816
+> (a) (b) (c)
+
+Figure 5: (a) KVCache co-activation distribution on Qwen3-32B over 128 queries. (b) Retrieval paths’ impact on effective bandwidth across layers. (c) KVCache co-activation probabil-ity degradation across decoding steps under naive updates. 
+
+tiple SSDs , the system can aggregate device-level bandwidth for KVCache transfers. The resulting aggregated bandwidth can match or even exceed the effective bandwidth between DRAM and HBM, fundamentally alleviating the bottleneck. 
+
+# 3.2 Main Challenges 
+
+Although KVCache co-activation exposes intrinsic I/O par-allelism, translating this insight into a practical SSD-based system is far from straightforward. Based on a comprehensive analysis, we identify four key challenges that must be tackled: 
+
+Challenge #1: Modeling. The large number of KVCache entries and their complex activation patterns make identifying co-activated entries challenging. As depicted in Figure 5(a), co-activation patterns in practice are not neatly separable but instead form overlapping structures, with some entries partic-ipating in more than 20 co-activation relationships. Selective replication can help decouple these dependencies, but it intro-duces a combinatorial optimization problem that is NP-hard. 
+
+Challenge #2: Placement. Beyond identification, the sys-tem must further organize these correlated KV entries into a well-structured layout. In particular, this placement should align naturally with the SSD offloading hierarchy. On the one hand, co-activated entries should be distributed across SSDs as evenly as possible to maximize parallel read bandwidth. On the other hand, the system should be able to efficiently select these entries without first transferring them to DRAM. 
+
+Challenge #3: Retrieval. Replication further complicates retrieval. The same KV entry may reside on multiple SSDs, creating multiple feasible retrieval paths. As shown in Fig-4ure 5(b), different retrieval paths can result in markedly dif-ferent effective bandwidth, even under an identical KVCache placement. A suboptimal policy may reintroduce load im-balance and negate the benefits of replication, while overly complex scheduling may incur prohibitive per-step overhead. 
+
+Challenge #4: Update. LLM decoding continuously gener-ates new KV entries that have to be integrated into the existing organization. As shown in Figure 5(c), naive updates (based on group size or embedding similarity) can severely degrade co-activation probability, limiting achievable parallelism over time. Moreover, caching decisions should adapt to evolving access patterns to reduce repeated I/O for hot entries. 
+
+# 4 Design Overview 
+
+Figure 6 presents an overview of S WARM . Leveraging KV-Cache co-activation, S WARM provides a systematic solution for modeling, placing, retrieving, and updating co-activated KV entries. The overall workflow is divided into two phases: 
+
+Offline Phase (§ 5). In this phase, S WARM determines the placement of KV entries across SSDs to maximize aggregate bandwidth utilization. ❶ It first models the co-activation pat-terns of KVCache and organizes entries into clusters accord-ingly. ❶ Meanwhile, S WARM constructs an index structure over clusters to support efficient retrieval during online infer-ence. Based on this clustering, it distributes the entries of each cluster evenly across SSDs to facilitate parallel data transfer. 
+
+Online Phase (§ 6). Given the aggregate-oriented placement, SWARM further introduces runtime strategies to fully utilize the available bandwidth. On the one hand, ❸ it employs a load-balanced scheduling mechanism to route tokens during cluster retrieval. On the other hand, ❹ SWARM dynamically adapts clustering and caching decisions during decoding to maintain high efficiency under evolving access patterns. 
+
+# 5 Offline Phase: Modeling and Placement 5.1 Correlation-Aware Clustering 
+
+KVCache co-activation analysis reveals that KV entries are typically activated in highly correlated groups rather than independently. Motivated by this insight, S WARM organizes the KVCache into a set of structured clusters , each comprising entries with strong co-activation relationships. As shown in Figure 7, S WARM adopts a four-step clustering workflow. 
+
+Step 1: Pattern Extraction. SWARM begins by profiling KVCache co-activation patterns as a one-time preprocessing step prior to inference. For each model layer, we construct an 
+
+adjacency matrix A to capture pairwise co-activation statistics among KV entries. Each element Ai j records the number of times KV entries ei and e j are activated together during attention computation. Thus, A encodes the empirical co-activation frequency for all entry pairs. Based on the measured Offline Phase 
+
+Online Phase                                          
+
+> 1Clustering 2Partition
+> Scheduling 4Adaptation
+> cluster 1
+> {A,D,F,G}
+> KV entry
+> SSD 1 AB
+> 3
+> A
+> B
+> E
+> CF
+> D
+> G
+> SSD 2
+> SSD 3 E
+> SSD 4 G
+> CD
+> F
+> A
+> G
+> D
+> B
+> C
+> replica
+> cluster 2
+> {C, E,F,G}
+> F
+> E
+> Fcluster 3
+> {B,C,D,G}
+> DRAM
+> medoid
+> ABE
+> DRAM ABE
+> Query
+> Activated KV AGDFCE
+> q
+> 1234SSD
+> inner product
+> AGDFCEBExisting KV
+> Score 0.3 0.1 0.7 0.5 0.2 0.8 0.2
+> cached
+> DRAM ABE
+> New entry distance H
+> cluster 2
+> {C, E,F,G,H}
+
+Figure 6: Overview of S WARM .frequency f (ei, e j), we estimate the co-activation probability between ei and e j, denoted as P(ei, e j), as follows: 
+
+P(ei, e j) = f (ei, e j)
+
+∑Nk=1 ∑Nl=1 f (ek, el ) (2) where N denotes the context length. Profiling is performed on a task-agnostic dataset to obtain statistically representative characterizations of KVCache behavior. 
+
+Step 2: Graph Abstraction. Following the extracted co-activation patterns, S WARM abstracts these relationships into a complete graph to enable principled graph-theoretic op-timization. In this formulation, each node represents a KV entry, and each edge represents the co-activation relationship between a pair of entries. We define the edge weight as a dis-tance metric between two entries, denoted as d(ei, e j), which quantifies the strength of their co-activation as follows: 
+
+d(ei, e j) := 1 − P(ei, e j) (3) Under this definition, a smaller distance corresponds to stronger co-activation. In the extreme case where d(ei, e j) = 1 ,the two entries are always co-activated. Based on this abstrac-tion, a pairwise distance matrix D can be constructed for all entries. Consequently, clustering co-activated KV entries is reformulated as a graph optimization problem: identifying tightly connected node sets with minimal-distance edges. SWARM completes this optimization procedure in the final two steps. Considering exact combinatorial optimization over a complete weighted graph is NP-hard [26], S WARM adopts a heuristic algorithm to balance efficiency and solution quality, as outlined in Algorithm 1. The core idea is to first select the entry with the highest overall co-activation as the medoid 
+
+(Lines 6-10), and then greedily expand this medoid into a 50                                                                  
+
+> 00.1
+> 00.1 0.1
+> 00.1 0.3 0.3
+> 00.1 0.2 0.4 0.4
+> 00.1 0.15 0.4 0.4 0.4
+> Distance Matrix
+> F
+> A
+> B
+> C
+> D
+> E
+> ABCDEF
+> C: {A, B, D, E} → !(C) = 4
+> D: {C, E, F} → !(D) = 3
+> E: {C, D, F} → !(E) = 3
+> A: {B, C} → !(A) = 2
+> B: {A, C} → !(B) = 2
+> F: {D, E} → !(F) = 2
+> Co -Activation Density
+> Cluster Radius τ=0.2
+> A: '='!" = 0.1
+> B: '=('#" +'#! )/2= 0.2
+> D: '=('$" +'$! +'$# )/3= 0.23
+> E: '=('%" +'%! +'%# )/3= 0.33
+> Cluster 1 (Medoid: C)
+> A: '='!" = 0.1
+> B: '=('#" +'#! )/2= 0.2
+> D: '=('$" +'$! +'$# )/3= 0.23
+> Cluster 2 (Medoid: D)
+> Cluster 3 (Medoid: F)
+> E: '='%& = 0.1
+> D: '=('$& +'$% )/2= 0.125
+> Entries E, A and B are skipped.
+> All entries are covered.
+> 1Pattern Extraction &
+> Graph Abstraction 23Medoid Selection 4Cluster Expansion
+> A
+> B
+> C
+> D
+> E
+> F
+> Cluster 1
+> Cluster 2
+> Cluster 3
+
+Figure 7: Example of the offline clustering. (1–2) A distance matrix derived from KVCache co-activation patterns forms a graph abstraction. (3) Entries with the highest co-activation density are sequentially selected as medoids. (4) Each cluster expands by iteratively adding entries whose average distance to cluster members is within the radius threshold τ, until all entries are covered. 
+
+Algorithm 1 KVCache Co-Activation Clustering  
+
+> 1:
+
+Input : KV entry set E, distance matrix D, cluster radius τ 
+
+> 2:
+
+Output : KVCache cluster set C 
+
+> 3:
+
+function BUILD CLUSTERS (E, D, τ) 
+
+> 4:
+
+Initialize C ← /0 
+
+> 5:
+
+Initialize covered [e] ← false for all e ∈ E 
+
+> 6:
+
+▷ Step 3: Medoid Selection  
+
+> 7:
+
+for each ei ∈ E do  
+
+> 8:
+
+co-activation density ρ[ei] ← ∑e j ∈E I(D(ei, e j) ≤ τ) 
+
+> 9:
+
+end for  
+
+> 10:
+
+medoid queue Qm ← sort E in descending order of ρ[·] 
+
+> 11:
+
+▷ Step 4: Cluster Expansion  
+
+> 12:
+
+for each mi ∈ Qm and covered [mi] = false do  
+
+> 13:
+
+KVCache cluster Ci ← { mi} 
+
+> 14:
+
+candidate queue Qc ← { e ∈ E \ { mi} | D(mi, e) ≤ τ} 
+
+> 15:
+
+Qc ← sort Qc in ascending order of D(mi, ·) 
+
+> 16:
+
+for each c j ∈ Qc and ∑ek ∈Ci D(c j, ek)/|Ci| ≤ τ do  
+
+> 17:
+
+Ci ← Ci ∪ { c j} 
+
+> 18:
+
+end for  
+
+> 19:
+
+C ← C ∪ { Ci} 
+
+> 20:
+
+covered[ ei] ← true for all ei ∈ Ci 
+
+> 21:
+
+break if ∀e ∈ E, covered [e] = true  
+
+> 22:
+
+end for  
+
+> 23:
+
+return C 
+
+> 24:
+
+end function 
+
+cluster by iteratively incorporating additional entries with strong co-activation relationships (Lines 11-28). 
+
+Step 3: Medoid Selection. To quantify the co-activation strength of a KV entry, we further define the co-activation density of entry ei, denoted as ρ(ei), as follows: 
+
+ρ(ei) := {e j | j̸ = i, d(ei, e j) < τ} (4) where τ is a predefined cluster radius that controls the ex-pected cluster size. Under this formulation, an entry with more neighbors within radius τ has a higher co-activation den-sity, indicating stronger co-activation relationships. S WARM 
+
+then computes ρ(ei) for all KV entries and sorts them in de-scending order to construct a medoid queue Qm. Entries are then selected sequentially from Qm as cluster medoids. By construction, these medoids exhibit the highest co-activation density and thus have the greatest likelihood of co-activating other entries within their respective clusters when activated. 
+
+Step 4: Cluster Expansion. When a medoid mi is selected, SWARM computes its distance to all other entries. Any entry 
+
+e j satisfying d(mi, e j) is regarded as a candidate member of cluster Ci. These candidates are sorted according to their distances to the medoid and organized into a candidate queue 
+
+Qc. For each candidate c j fetched from Qc, we define its distance to cluster Ci as the average pairwise distance: 
+
+d(c j,Ci) := ∑ek∈Ci d(c j, ek)
+
+|Ci| (5) If this distance is smaller than τ, c j is added to Ci. The cluster is iteratively expanded under this criterion until no further entries can be incorporated. The clustering process terminates once every entry belongs to at least one cluster. Importantly, the algorithm naturally creates replicas of highly co-activated KV entries, which is crucial for capturing interleaved co-activation patterns. Consider the case where entry A is frequently co-activated with both entry B and entry 
+
+C, while B and C themselves are rarely co-activated. If each entry is restricted to a single assignment, A must either be clus-tered together with both B and C, or grouped with only one of them. In the former case, retrieving the cluster would incur redundant transfer of entry C when only B is needed. In the latter case, the cluster that does not include A would lose the opportunity to benefit from its frequent co-activation with A.By allowing replicas of highly co-activated entries, S WARM 
+
+resolves this tension with negligible storage overhead. 6LKJIHGFEDCBATokens                             
+
+> local window
+> generated direction
+> co -activation pattern
+> KVCache ABEGCDFHI
+> cluster 1cluster 2cluster 3
+> Tier 1: DRAM
+> Tier 2: SSD 1 -4
+> medoid
+> A
+> JKL
+> CHJKLI
+> local window hot clusters
+> A
+> … …
+> BEGCDFHI
+
+Figure 8: KVCache partition across the DRAM-SSD hierar-chy. Medoids, local-window entries, and hot clusters remain in DRAM, while clustered entries are distributed across SSDs. 
+
+# 5.2 Offloading-Friendly Partition 
+
+SWARM treats KVCache clusters as the atomic retrieval units and transfers them from SSD to DRAM on demand. To en-able accurate and efficient retrieval, S WARM builds an index structure over KVCache clusters, drawing on the conceptual parallel between KVCache retrieval and classical data re-trieval in database systems. By distributing the entries of each cluster across multiple SSDs, the transfer of a single cluster can leverage the aggregated bandwidth of multiple devices, thereby mitigating the bandwidth bottleneck. As depicted in Figure 8, S WARM realizes this design through careful parti-tioning across the two-tier memory hierarchy, minimizing I/O overhead while maximizing aggregate bandwidth utilization. 
+
+Tier 1: DRAM. SWARM places three types of data in DRAM. (1) Medoids . S WARM uses the medoid of each cluster as its index entry and maintains a route table that records its SSD placement. Each medoid computes a relevance score with the incoming query to determine whether the corresponding cluster should be retrieved. During clustering, each entry in a cluster is constrained to lie within the radius of its medoid. Consequently, the medoid naturally serves as the representa-tive entry of the cluster and is most likely to be co-activated with other entries in the same cluster. By retaining this index in DRAM, S WARM enables efficient cluster selection without incurring SSD access overhead. (2) Local window entries .SWARM keeps KV entries within a local window (e.g., 256 tokens) in DRAM to preserve contextual continuity during inference. A sliding buffer dynamically tracks the most re-cent entries as generation progresses. (3) Hot clusters . To exploit cluster-level activation locality, S WARM caches the most frequently activated clusters in DRAM. To balance space overhead against I/O reduction, we define a cost-effectiveness score for cluster Ci as follows: 
+
+S(Ci) = fi · Tbase + si · Ttransfer 
+
+si
+
+(6) where fi denotes the activation frequency of cluster Ci, Tbase 
+
+is the SSD addressing latency, and Ttransfer is the per-entry transfer cost. Given a fixed DRAM buffer capacity, clusters are cached in descending order of this score to maximize overall cost-effectiveness under memory constraints. 
+
+Tier 2: SSD. SWARM stores all KVCache clusters across SSDs. Since KV entries have already been clustered based on co-activation patterns, the primary objective here is to dis-tribute clusters as evenly as possible to maximize aggregate bandwidth utilization. S WARM adopts a round-robin place-ment strategy that flexibly adapts to varying cluster sizes and SSD numbers. Specifically, S WARM maintains a global disk pointer pglobal and processes clusters sequentially. For each cluster Ci, the target disk identifier is determined as: id i = pglobal mod Ndisk , pglobal = pglobal + |Ci| (7) where Ndisk denotes the total number of SSDs. Each clus-ter then places its entries starting from disk id i, distributing them sequentially across SSDs in a wrap-around manner. This strategy ensures balanced storage utilization and maximizes parallel data transfers during cluster retrieval. 
+
+# 6 Online Phase: Retrieval and Update 6.1 Load-Balanced Scheduling 
+
+After the offline optimization in S WARM , KV entries are placed using a bandwidth-aggregated layout across SSDs. At runtime, S WARM focuses on efficiently transferring the selected clusters based on the incoming query. The design is guided by two key objectives. First, the clustering process naturally introduces KV entry replicas. Although replication is essential for accurately capturing co-activation patterns, it may lead to redundant data transfers if multiple clusters con-taining overlapping entries are retrieved simultaneously. Sec-ond, selected clusters should be assembled in a load-balanced manner to fully utilize the available aggregate bandwidth. Meanwhile, the overall scheduling mechanism must remain lightweight to avoid introducing additional runtime overhead. As illustrated in Figure 9, S WARM develops a decoupled entry-bucket scheduling algorithm. First, before transferring the KV clusters to DRAM, S WARM performs a global merge over all activated clusters to construct the I/O entry set: 
+
+## EI/O = [
+
+> Ci∈Cactivated
+
+Ci
+
+!
+
+\ EDRAM (8) This operation eliminates duplicate KV entries across clusters and filters out entries that are already resident in DRAM, thereby avoiding redundant data transfers. Next, each SSD is assigned a dedicated bucket that stores the entries pending transfer. All entries in EI/O are first sorted in ascending order according to their replication factor (i.e., the number of SSDs on which the entry is available). Entries without replicas are directly assigned to their corresponding SSD bucket. For 7cluster 1: A C E cluster 2: Bcluster 3:A F cluster 4: DC C                          
+
+> Query One: cluster 1and cluster 3are activated
+> 1
+> activated tokens: ACEB
+> A
+> C
+> B
+> D
+> E
+> F
+> 1
+> 1
+> 1
+> 2
+> 2
+> 3
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> A
+> A
+> A
+> A
+> B
+> BBCCE
+> Query Two: cluster 2and cluster 4are activated
+> activated tokens: ACF
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> 4321SSD
+> Bucket
+> A
+> A
+> A
+> ADDCCF
+> D
+> C
+> Degree
+> (two are merged) C
+> SSD
+> 1
+> 2
+> 3
+> 4
+> FA
+> BDE
+> C
+> E
+> DF
+> F
+
+Figure 9: Example of KVCache retrieval scheduling under two queries. Activated clusters are merged, and entries are scheduled across SSD buckets in ascending order of degree. entries with multiple replicas, S WARM routes each entry to the SSD whose bucket currently has the smallest bucket size, balancing the load across devices. When multiple SSDs have the same bucket size, one of them is selected arbitrarily. After the buckets are constructed for each SSD, the system iteratively extracts the head entry from every bucket and aggre-gates them into a single submission batch. This batch is then issued to the kernel through a single system call. By consoli-dating multiple I/O requests into large batched submissions, SWARM minimizes the number of submission operations and reduces user–kernel context switches. 
+
+# 6.2 Cluster-Aligned Adaptation 
+
+SWARM also dynamically adapts to evolving system states during the online phase. Newly generated KVCache entries may alter the clustering structure, while changing activation patterns shift DRAM caching priorities. To address these dynamics, S WARM employs two dedicated update strategies. 
+
+Cluster Maintenance. As discussed in § 5.2, the newly gener-ated KV entries are retained in DRAM within a local window of size W . S WARM leverages this W -step interval to analyze their co-activation patterns with existing KVCache clusters. As shown in Figure 10, the distance between a newly gener-ated KV entry enew and a cluster Ci is defined as: 
+
+d(enew ,Ci) = 1 − f (enew , mi)
+
+∑Nj=1 f (enew , m j) = 1 − f (enew , mi)
+
+W (9) where mi denotes the medoid of cluster Ci and N is the total number of clusters. If the computed distance is smaller than the cluster radius τ, S WARM assigns enew to cluster Ci and places it on the next SSD allocated for that cluster (i.e., at disk index id i + |Ci| + 1 , modulo Ndisk if necessary). If multi-ple clusters satisfy the distance threshold, the entry is added JIHGFEDCBAInitial:                  
+
+> local window ( != 3)
+> KJIHGFEDCBA
+> LKJIHGFEDCBA
+> cluster 1{A, B, E, G} cluster 2{C, D, F}
+> JIH
+> 1-1/3 1-1/3 1-2/3 "!
+> 11-1/3 1-1/3 ""
+> KJI
+> 01-1/3 1-1/3 "!
+> 1-1/3 1-2/3 1-2/3 ""
+> LKJ
+> 1-1/3 1-1/3 1-2/3 "!
+> 1-1/3 1-2/3 1-3/3 ""
+> Ste p2:
+> Ste p3:
+> cluster 1activated
+> cluster 2activated
+> cluster 1activated
+> cluster 2activated
+> Ste p1:
+> LKJIHGFEDCBA
+
+Figure 10: Example of cluster maintenance over three decod-ing steps. Each new KV entry is assigned to the nearest cluster based on its co-activation pattern in the local window. to all of them, preserving controlled replication. This incre-mental placement strategy maintains cluster coherence while sustaining parallel transfer as decoding progresses. 
+
+Cache Replacement. In the offline phase, S WARM caches KVCache clusters in DRAM according to a cost-effectiveness score. As defined in Equation 6, the activation frequency fi
+
+used in this score is initially derived from offline profiling. To adapt to evolving runtime behaviors, S WARM dynamically updates the activation frequency of each cluster based on observed access patterns. Specifically, whenever a cluster is activated, its frequency is incremented by one. Conversely, for clusters already cached in DRAM but not activated dur-ing a decoding step, their frequencies are decremented by one. This design rewards clusters exhibiting temporal local-ity while penalizing inactive ones. To efficiently manage the DRAM cache, S WARM maintains the cached clusters using a min-heap structure ordered by their cost-effectiveness scores, enabling efficient updates and replacements. 
+
+# 7 Implementation 
+
+We implement S WARM as an end-to-end system for efficient SSD-backed KVCache offloading in CPU-GPU collaborative execution. The system spans both Python and C++, compris-ing more than 2,000 lines of code and covering the full stack from low-level data movement to runtime scheduling. 
+
+Asynchronous I/O. We build a customized C++ I/O backend to fully exploit the aggregate bandwidth of multiple SSDs. For high-performance asynchronous data transfers, we leverage the Linux kernel interface io_uring [4] to issue concurrent, non-blocking read commands. To further eliminate CPU-side copy overhead, all SSD reads are directed into pre-allocated pinned host memory. This allows the NVMe DMA controllers 8Table 2: Model configurations.                    
+
+> Model Size Attention Hidden Dim. Group Size
+> Qwen3-S [49] 14B GQA 5120 5Qwen3-M [49] 32B GQA 5120 8Llama3.1 [33] 70B GQA 8192 8GPT-OSS [1] 120B GQA 2880 8Qwen3-L-MoE [49] 235B GQA 4096 16
+
+to place data directly into these buffers, enabling zero-copy transfers to GPU HBM via CUDA copy engines [34]. 
+
+Pipelined Prefetching. To hide SSD access latency during auto-regressive decoding, we design a carefully engineered pipeline that overlaps computation and predictive KVCache transfers. Specifically, while the GPU executes the attention computation for layer L, the CPU concurrently performs three stages for layer L + 1 : (1) predicting the KV clusters likely to be accessed by comparing the layer L embedding with the cluster medoids of layer L + 1; (2) issuing asynchronous fetch requests to load the corresponding data from the SSD into pinned host memory; and (3) streaming the fetched data to GPU HBM through a dedicated CUDA stream. Based on the embedding similarity across adjacent layers [21], this design effectively overlaps SSD access with GPU computation. 
+
+# 8 Evaluation 8.1 Experimental Setup 
+
+Hardware. Our system comprises an Intel Xeon Gold 6530 CPU (64 cores, 128 threads), 8 NVIDIA H20 GPUs (96 GB HBM each), 1 TB DDR5 DRAM, and up to 8 NVMe SSDs. To cover heterogeneous storage, we use both high-end Sam-sung PM9A3 SSDs (up to 1.1M IOPS, 6.9 GB/s) and low-end Intel Optane 900P SSDs (up to 0.55M IOPS, 2.5 GB/s). 
+
+Models. We choose six widely adopted LLMs, as listed in Table 2. These models vary in architecture, scale, and KV-Cache characteristics. All models employ group-query atten-tion (GQA) [2], with varying group sizes. We evaluate all models in BF16 precision, following common practice. 
+
+Datasets. We evaluate S WARM on a diverse suite of datasets covering plain text, instruction-following and mathematical tasks. These datasets capture a wide range of linguistic struc-tures, enabling a comprehensive evaluation across varying co-activation patterns. To support longer prefix lengths, we concatenate multiple samples when individual sequences are insufficient, constructing extended inputs of up to 1M tokens. 
+
+Baselines. We compare S WARM against three representative KVCache management methods. All methods are evaluated with a sparsity ratio of 10%. (1) No Cluster : KV entries are stored on SSDs without any clustering or indexing structures. To identify the activated KV entries, the entire KVCache is first loaded into DRAM (in chunks when necessary) to Table 3: Dataset configurations. 
+
+Dataset Description 
+
+WikiText [32] Wikipedia-based language modeling dataset LongBench [5] Long context understanding capabilities MMLU [19] Multitask knowledge evaluation benchmark GSM8K [8] Grade-school math problem dataset 
+
+compute attention scores, after which the required entries are retrieved from SSDs. For fairness, we report only the time spent on attention score computation and the transfer of the required entries. (2) InfLLM [47]: KV entries are organized into fixed-size blocks. Token importance is determined at the block level, and only the selected blocks are retrieved dur-ing inference. (3) PQCache [53]: A clustering-based method that groups KV entries using K-means [31], where cluster centroids are used to identify relevant tokens for retrieval. 
+
+# 8.2 Overall Performance 
+
+Throughput. Figure 11(a) reports the end-to-end throughput measured in tokens per second (TPS). S WARM consistently achieves the highest TPS, improving throughput by 3.99 ×,1.76 ×, and 1.47 × over No Cluster, InfLLM, and PQCache, respectively. No Cluster delivers the lowest throughput due to the absence of any structured KVCache management. While InfLLM and PQCache introduce structured approaches, their strategies, based on block partitioning or embedding similar-ity, do not align well with KVCache co-activation patterns. In contrast, S WARM explicitly clusters KVCache entries ac-cording to their activation patterns and distributes them across SSDs, effectively mitigating the bandwidth bottleneck. 
+
+Bandwidth. Figure 11(b) presents the detailed I/O bandwidth during KV retrieval. Consistent with the throughput results, SWARM achieves the highest bandwidth utilization, exceed-ing No Cluster, InfLLM, and PQCache by 3.95 ×, 2.67 ×, and 1.55 ×, respectively, on average. By combining hierarchical offline and online optimizations, S WARM not only balances the I/O workload across devices but also reduces unnecessary data transfers, approaching the practical bandwidth limits of SSDs. Furthermore, the strong translation of I/O improve-ments into end-to-end latency reductions confirms that I/O is the primary bottleneck in SSD-backed offloading. S WARM 
+
+addresses this bottleneck with minimal runtime overhead. 
+
+Accuracy. Figure 11(c) shows the normalized accuracy, where oracle token selection (No Cluster) achieves the highest score. S WARM consistently attains accuracy closest to this up-per bound across all models and datasets. This result suggests that S WARM effectively captures KVCache co-activation pat-terns that closely align with the attention dynamics, enabling it to retrieve the most informative tokens. In contrast, other baselines exhibit a mismatch between KVCache structure and activation patterns, leading to the inclusion of irrelevant 9No Cluster InfLLM PQCache Swarm                                                                                                        
+
+> 12.51 11.68 12.71 12.29 11.21 11.33 11.72 11.58 7.42 6.54 6.76 6.53 5.57 5.37 5.46 5.28 4.56 4.74 5.34 5.27
+> TPS (Tokens/s)
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> A1 A2 A3 A4 B1 B2 B3 B4 C1 C2 C3 C4 D1 D2 D3 D4 E1 E2 E3 E4
+> 22.42 22.6 23.44 23.15 23.75 20.92 21.63 20.89 22.29 21.48 21.86 21.14 14.25 15.51 15.03 14.68 10.72 11.14 12.55 12.38
+> I/O Bandwidth (GB/s)
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> A1 A2 A3 A4 B1 B2 B3 B4 C1 C2 C3 C4 D1 D2 D3 D4 E1 E2 E3 E4
+> Accuracy (Norm.)
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> A1 A2 A3 A4 B1 B2 B3 B4 C1 C2 C3 C4 D1 D2 D3 D4 E1 E2 E3 E4
+> LLM: A. Qwen-S B. Qwen-M C. Llama3.1 D. GPT-OSS E. Qwen-L-MoE Dataset: 1. WikiText 2. LongBench 3. MMLU 4. GSM8K (a) (b) (c)
+
+Figure 11: Overall performance (normalized) across models and datasets. Lines indicate average values. Medoid Only No Replica Swarm       
+
+> Medoid Only Avg. = 8.86
+> No Replica Avg. = 7.61
+> Swarm Avg. = 6.68
+> I/O Latency (ms)
+> 0
+> 5
+> 10
+> 15
+> 20
+> Prefix Length
+> 16K 32K 64K 128K 256K 512K 1M
+
+Figure 12: I/O latency comparison across different prefix lengths for Qwen3-32B under three clustering strategies. tokens or the exclusion of important ones. 
+
+# 8.3 Ablation Study 
+
+Offline Modeling. We first evaluate the effectiveness of our clustering algorithm. We consider two baselines: Medoid Only , which constructs clusters using only entries within the cluster radius of the medoid, and No Replica , which restricts one entry to belong to a single cluster. As shown in Figure 12, SWARM reduces latency by on average 1.14 × and 1.33 × com-pared to these baselines, respectively. These results highlight the importance of capturing pairwise co-activation relation-ships within clusters and demonstrate that entry replication is essential for modeling complex activation patterns. 
+
+Offline Placement-SSD. We compare the aggregate band-width achieved by S WARM against two baselines in Figure 13. No Cluster No Balance Swarm       
+
+> No Cluster Avg. = 16.93
+> No Balance Avg. = 20.42
+> Swarm Avg. = 6.44
+> I/O Latency (ms)
+> 0
+> 20
+> 40
+> 60
+> Prefix Length
+> 16K 32K 64K 128K 256K 512K 1M
+
+Figure 13: I/O latency comparison across different prefix lengths for Qwen3-32B under three SSD placement strategies. The first, No Cluster , places tokens sequentially across SSDs without considering co-activation relationships. The second, 
+
+No Balance , organizes tokens by clusters but places them starting from a single SSD, leading to imbalanced utiliza-tion. These results show that S WARM reduces I/O latency by up to 2.63 × and 3.17 ×, respectively, effectively translating clustering into higher aggregate bandwidth across SSDs. 
+
+Offline Placement-DRAM. Table 4 evaluates the DRAM placement strategy. In addition to the local window, S WARM 
+
+keeps cluster medoids resident in DRAM. The results show that S WARM reduces selection latency by 6.9×-12 .2× across prefix lengths, with gains increasing proportionally with con-text length. Importantly, this improvement incurs only mini-mal memory overhead (0.412 GB at 1M context). 
+
+Online Retrieval. We evaluate the online scheduling algo-10 Static No Bal. No Dedup. Swarm          
+
+> Prefix Length  64K
+> 128K
+> 256K
+> 020 40 60 80
+> 64K
+> 128K
+> 256K
+> 0100 200 300 400
+> I/O Latency (ms) Volume (MB)
+
+Figure 14: Average I/O latency and volume across different prefix lengths for Qwen3-32B under four retrieval strategies. rithm of S WARM in terms of I/O latency and volume under three strategies. Static uses static multi-SSD routing, always reading from the first available replica, resulting in neither deduplication nor load balancing. No Balance performs dedu-plication but ignores load balancing, causing requests to con-centrate on a subset of SSDs and making the slowest SSD the bottleneck. No Dedeplication balances requests across SSDs but does not remove duplicated tokens introduced by cluster replicas, leading to read amplification. Figure 14 shows that, by jointly considering replication and load balancing at run-time, S WARM reduces I/O latency by 2.57 × and I/O volume by 1 .24 × on average compared to all three baselines. 
+
+Online Update-Cluster. Table 5 evaluates how S WARM main-tains cluster quality during decoding. We measure the average distance between cluster entries and their medoid, normal-ized by the initial distance calculated offline. As baselines, 
+
+Min-Size assigns new tokens based solely on cluster size, while Min-Diff assigns them based on similarity to the cluster medoid. S WARM outperforms both baselines by 8.0× and 2.3×. By tracking co-activation patterns within a local win-dow, S WARM effectively approximates the evolving relation-ships between new tokens and existing clusters. 
+
+Online Update-Cache. Figure 15 shows the cache hit rate and per-layer latency under varying DRAM cache ratios. Across all cache budgets, S WARM consistently outperforms the Least Recently Used (LRU) [9] baseline, improving cache hit rate by 74% and reducing per-layer latency by 13.6% on average. LRU only tracks recent accesses and may keep large clusters that are accessed once but rarely reused. In contrast, S WARM 
+
+dynamically balances activation frequency and cluster size through a cost-effectiveness score. Table 4: Selection latency across different prefix lengths on Qwen3-32B under two DRAM placement strategies.                                       
+
+> Prefix Len. s=128 Ks=256 Ks=512 Ks=1M
+> Naive Lat. (ms) 1.635 3.136 6.176 12.15 SWARM Lat. (ms) 0.236 0.374 0.554 0.999 SWARM Mem. (GB) 0.053 0.104 0.207 0.412 LRU Swarm
+> Cache Hit Rate
+> 0
+> 25
+> 50
+> 75
+> 100
+> 00.2 0.4 0.6 0.8 1.0
+> LRU Swarm
+> Latency (ms)
+> 50
+> 100
+> 150
+> 200
+> 00.2 0.4 0.6 0.8 1.0
+> DRAM Cache Ratio
+
+Figure 15: Cache hit rate and end-to-end latency across dif-ferent cache ratios for Qwen3-32B under Octopus and LRU. Batch = 1 Batch = 4 Batch = 8        
+
+> IOPS-Bound Bandwidth-Bound
+> I/O Latency (ms)
+> 0
+> 20
+> 40
+> 60
+> 80
+> Prefix Length
+> 16K 32K 64K 128K 256K 512K 1M
+
+Figure 16: Average I/O latency across prefix length under varying batch sizes for Qwen3-32B on WikiText. 
+
+# 8.4 Sensitivity Analysis 
+
+Prefix Length. Figure 16 presents the I/O latency under dif-ferent prefix lengths with batch sizes of 1, 4, and 8. For small prefix lengths, latency increases slowly as the workload is IOPS-bound: the number of I/O requests is limited and SSD bandwidth is underutilized. As the prefix length grows, the system becomes bandwidth-bound, with latency scaling ap-proximately linearly with the data retrieved. Increasing the batch size raises the number of concurrent I/O requests, en-abling S WARM to enter the bandwidth-bound regime earlier. 
+
+SSD Type. We evaluate S WARM and the baselines on two storage configurations: four high-tier PM9A3 SSDs and four lower-tier 900P SSDs. Figure 17 shows that across all prefix lengths, S WARM consistently achieves higher throughput than all baselines. On the lower-performance SSDs, the system transitions from IOPS-bound to bandwidth-bound at shorter prefixes (around 32K) due to limited IOPS capability. In con-trast, with the higher-performance PM9A3 SSDs, this transi-Table 5: Distance between cluster entries and medoid (com-pared to the initial), evaluated on Qwen3-32B with WikiText.                                     
+
+> Decoding Step t=1t=2t=4t=8t=16 t=32 Min-Size 1.733 2.481 3.957 6.834 12.004 21.376 Min-Diff 1.581 1.880 2.184 2.348 2.649 3.019 SWARM 1.001 1.001 1.001 1.002 1.005 1.012
+
+11 No Cluster InfLLM PQCache Swarm         
+
+> PM9A3 900P
+> TPS (Token/s)
+> 0
+> 5
+> 10
+> 15
+> Prefix Length
+> 16K 32K 64K 128K 16K 32K 64K 128K
+
+Figure 17: Throughput comparison across different prefix lengths for Qwen3-32B under two SSD types. No Cluster InfLLM PQCache Swarm        
+
+> TPS (Token/s)
+> 0
+> 2
+> 4
+> 6
+> 8
+> SSD Number
+> 12345678
+
+Figure 18: Throughput comparison across different number of SSDs for Qwen3-32B on WikiText (128K prefix length). tion occurs at larger prefixes (around 64K), where S WARM 
+
+achieves a higher upper bound on available bandwidth. 
+
+SSD Number. Figure 18 shows throughput as the number of SSDs increases from 1 to 8. With a single SSD, S WARM falls back to the baseline. As the number increases, its through-put scales steadily and consistently surpasses all baselines. This scalability stems from two factors: the offline placement adapts flexibly to varying numbers of SSDs, and the online scheduling effectively balances workloads. 
+
+Clustering Threshold. We study the sensitivity of through-put to the cluster radius τ across three datasets, as shown in Figure 19. In each subfigure, τ is selected based on the corresponding dataset. For example, Figure 19(a) illustrates the setting where S WARM uses D1 as the offline dataset and is evaluated on D1–D3. The results show that S WARM re-mains effective even under dataset shift, demonstrating the robustness of our clustering approach. 
+
+Sparsity Ratio. Figure 20 presents the throughput under vary-ing sparsity ratios. At low sparsity ratios, the I/O volume is small, and performance is primarily limited by IOPS, leading to underutilized bandwidth. As the sparsity ratio increases, the workload becomes bandwidth-bound, with throughput con-strained by the maximum achievable I/O bandwidth. Across all settings, S WARM consistently outperforms the baselines. By effectively leveraging aggregated multi-disk bandwidth, SWARM achieves higher throughput in both regimes. No Cluster InfLLM PQCache Swarm            
+
+> Datasets  D1
+> D2
+> D3
+> 05
+> D1
+> D2
+> D3
+> 05
+> D1
+> D2
+> D3
+> 05
+> TPS (Token/s) (a) D1: WikiText (b) D2: LongBench (c) D3: MMLU 7.35 6.93 7.26 6.25 6.58 7.04 7.17 6.23 7.44
+
+Figure 19: Throughput under dataset-specific τ calibrated for each datasets, evaluated on Qwen3-32B (128K prefix length). No Cluster InfLLM PQCache Swarm        
+
+> I/O Latency (ms)
+> 0
+> 2
+> 4
+> 6
+> 8
+> Sparsity Ratio
+> 1% 2% 5% 10% 15% 20% 30% 50%
+
+Figure 20: I/O latency comparison across different sparsity ratios for Qwen3-32B on WikiText (128K prefix length). 
+
+# 9 Related Works 
+
+KVCache Sparsity. Recent work has increasingly explored the intrinsic sparsity of KVCache in long-context LLM in-ference. Quest [44] proposes query-aware sparsity by dy-namically selecting relevant KV pages based on the query. RetrievalAttention [29] leverages approximate nearest neigh-bor search to retrieve KV entries via vector similarity. HeadKV [13] introduces head-level sparsity by retaining only a subset of important attention heads. However, a critical re-maining challenge is translating these insights into tangible performance gains in real-world inference systems. S WARM 
+
+bridges this gap with a co-design of algorithms and systems. 
+
+KVCache Offloading. In long-context LLM inference, the KVCache imposes substantial memory pressure, motivat-ing the offloading of KVCache to DRAM and SSD. Flex-Gen [41] proposes a three-tier memory hierarchy spanning HBM, DRAM, and SSD, leveraging linear programming to optimize tensor placement. SolidAttention [55] adopts an interleaved layout of KV entries on SSD and incorporates speculative prefetching, targeting efficient single-node deploy-ments. IMPRESS [7] and CachedAttention [15] extend this line of work to cloud settings by organizing KV entries into chunks based on token importance within multi-tier storage hi-erarchies. Despite these advances, prior work identifies SSD bandwidth as the primary bottleneck. In contrast, S WARM 
+
+addresses this limitation by exploiting multi-disk parallelism. 12 KVCache Clustering. In KVCache offloading, the organiza-tion of KV entries plays a critical role in enabling efficient retrieval. ClusterKV [30] applies K-means clustering based on static similarity metrics. InfLLM [47] selects high-score tokens as representatives and retrieves KV entries at a coarse granularity. PQCache [53] instead formulates cluster retrieval as a vector search problem. These methods primarily rely on mathematical similarity or heuristic importance for clustering. SWARM organizes KV entries based on co-activation patterns, translating them into tangible performance gains. 
+
+# 10 Conclusion 
+
+We propose S WARM , an SSD-based KVCache offloading framework that leverages KVCache co-activation to enable bandwidth-efficient parallel retrieval across SSDs. By trans-forming bandwidth-bound KVCache access into scalable parallel I/O, S WARM paves the way for cost-efficient and capacity-scalable storage systems for LLM inference. 
+
+# References 
+
+[1] Sandhini Agarwal, Lama Ahmad, Jason Ai, Sam Altman, Andy Applebaum, Edwin Arbus, Rahul K Arora, Yu Bai, Bowen Baker, Haiming Bao, et al. gpt-oss-120b & gpt-oss-20b model card. arXiv preprint arXiv:2508.10925 ,2025. [2] Joshua Ainslie, James Lee-Thorp, Michiel De Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sang-hai. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 4895–4901, 2023. [3] Anthropic. Prompt caching with claude. https://www. anthropic.com/news/prompt-caching , 2024. An-thropic blog post. [4] Jens Axboe. liburing. https://github.com/axboe/ liburing , 2026. Accessed: 2026-03-17. [5] Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. Longbench: A bilingual, mul-titask benchmark for long context understanding. In 
+
+Proceedings of the 62nd annual meeting of the asso-ciation for computational linguistics (volume 1: Long papers) , pages 3119–3137, 2024. [6] Joya Chen, Zhaoyang Lv, Shiwei Wu, Kevin Qinghong Lin, Chenan Song, Difei Gao, Jia-Wei Liu, Ziteng Gao, Dongxing Mao, and Mike Zheng Shou. Videollm-online: Online video large language model for streaming video. In Proceedings of the IEEE/CVF Conference on Com-puter Vision and Pattern Recognition , pages 18407– 18418, 2024. [7] Weijian Chen, Shuibing He, Haoyang Qu, Ruidong Zhang, Siling Yang, Ping Chen, Yi Zheng, Baoxing Huai, and Gang Chen. {IMPRESS }: An {Importance-Informed }{ Multi-Tier } prefix {KV } storage system for large language model inference. In 23rd USENIX Con-ference on File and Storage Technologies (FAST 25) ,pages 187–201, 2025. [8] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plap-pert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training ver-ifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. [9] Peter J Denning. The working set model for program behavior. Communications of the ACM , 11(5):323–333, 1968. [10] Yanhao Dong, Yubo Miao, Weinan Li, Xiao Zheng, Chao Wang, Jiesheng Wu, and Feng Lyu. Accelerat-ing llm inference throughput via asynchronous kv cache prefetching. arXiv preprint arXiv:2504.06319 , 2025. [11] Wenqi Fan, Yujuan Ding, Liangbo Ning, Shijie Wang, Hengyun Li, Dawei Yin, Tat-Seng Chua, and Qing Li. A survey on rag meeting llms: Towards retrieval-augmented large language models. In Proceedings of the 30th ACM SIGKDD conference on knowledge discovery and data mining , pages 6491–6501, 2024. [12] Shaoting Feng, Hanchen Li, Kuntai Du, Zhuohan Gu, Yuhan Liu, Jiayi Yao, Siddhant Ray, Samuel Shen, Yihua Cheng, Ganesh Ananthanarayanan, et al. Adaptcache: Kv cache native storage hierarchy for low-delay and high-quality language model serving. arXiv preprint arXiv:2509.00105 , 2025. [13] Yu Fu, Zefan Cai, Abedelkadir Asi, Wayne Xiong, Yue Dong, and Wen Xiao. Not all heads matter: A head-level kv cache compression method with integrated retrieval and reasoning. arXiv preprint arXiv:2410.19258 , 2024. [14] Bin Gao, Zhuomin He, Puru Sharma, Qingxuan Kang, Djordje Jevdjic, Junbo Deng, Xingkun Yang, Zhou Yu, and Pengfei Zuo. {Cost-Efficient } large lan-guage model serving for multi-turn conversations with 
+
+{CachedAttention }. In 2024 USENIX Annual Technical Conference (USENIX ATC 24) , pages 111–126, 2024. [15] Bin Gao, Zhuomin He, Puru Sharma, Qingxuan Kang, Djordje Jevdjic, Junbo Deng, Xingkun Yang, Zhou Yu, and Pengfei Zuo. {Cost-Efficient } large lan-guage model serving for multi-turn conversations with 13 {CachedAttention }. In 2024 USENIX annual technical conference (USENIX ATC 24) , pages 111–126, 2024. [16] In Gim, Guojun Chen, Seung-seob Lee, Nikhil Sarda, Anurag Khandelwal, and Lin Zhong. Prompt cache: Modular attention reuse for low-latency inference. Pro-ceedings of Machine Learning and Systems , 6:325–338, 2024. [17] Google DeepMind. Gemini 3 pro model card. Technical report, Google DeepMind, November 2025. Accessed: December 2025. [18] Shibo Hao, Tianyang Liu, Zhen Wang, and Zhiting Hu. Toolkengpt: Augmenting frozen language models with massive tools via tool embeddings. Advances in neural information processing systems , 36:45870–45894, 2023. [19] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. 
+
+Proceedings of the International Conference on Learn-ing Representations (ICLR) , 2021. [20] Chaoyi Jiang, Lei Gao, Hossein Entezari Zarch, and Murali Annavaram. Efficient llm inference with i/o-aware partial kv cache recomputation. arXiv preprint arXiv:2411.17089 , 2024. [21] Jiachen Jiang, Jinxin Zhou, and Zhihui Zhu. Tracing representation progression: Analyzing and enhancing layer-wise similarity. arXiv preprint arXiv:2406.14479 ,2024. [22] Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. Swe-bench: Can language models resolve real-world github issues? arXiv preprint arXiv:2310.06770 , 2023. [23] Chao Jin, Zili Zhang, Xuanlin Jiang, Fangyue Liu, Shu-fan Liu, Xuanzhe Liu, and Xin Jin. Ragcache: Efficient knowledge caching for retrieval-augmented generation. 
+
+ACM Transactions on Computer Systems , 44(1):1–27, 2025. [24] Hyunjoo Jin. Trendforce sees chip prices surging 90-95% in q1 from previous quarter. Reuters , February 2026. Reports TrendForce forecast that conventional DRAM contract prices will jump 90–95% QoQ in 1Q26. [25] Kingston Technology. Flash Memory Guide , 2012. Doc-ument MKF-283US. Archived PDF (snapshot 2013-10-19). [26] Jan V Leeuwen. Handbook of theoretical computer science: Algorithms and complexity . Mit Press, 1990. [27] Jiaqi Li, Mengmeng Wang, Zilong Zheng, and Muhan Zhang. Loogle: Can long-context language models un-derstand long contexts? In Proceedings of the 62nd An-nual Meeting of the Association for Computational Lin-guistics (Volume 1: Long Papers) , pages 16304–16333, 2024. [28] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 techni-cal report. arXiv preprint arXiv:2412.19437 , 2024. [29] Di Liu, Meng Chen, Baotong Lu, Huiqiang Jiang, Zhen-hua Han, Qianxi Zhang, Qi Chen, Chengruidong Zhang, Bailu Ding, Kai Zhang, Chen Chen, Fan Yang, Yuqing Yang, and Lili Qiu. Retrievalattention: Accelerating long-context llm inference via vector retrieval, 2024. [30] Guangda Liu, Chengwei Li, Jieru Zhao, Chenqi Zhang, and Minyi Guo. Clusterkv: Manipulating llm kv cache in semantic space for recallable compression. arXiv preprint arXiv:2412.03213 , 2024. [31] J MacQueen. Multivariate observations. In Proceedings ofthe 5th Berkeley Symposium on Mathematical Statis-ticsand Probability , volume 1, pages 281–297, 1967. [32] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models, 2016. [33] Meta AI. The llama 3.1 herd of models. https://ai. meta.com/llama/ , 2024. Accessed: 2026-03-18. [34] NVIDIA Corporation. NVIDIA CUDA C++ Program-ming Guide , 2026. Version 13.0. [35] NVM Express, Inc. NVM Express. https:// nvmexpress.org/ , 2017. Retrieved 2017-01-24. (Site archived 2019-12-05.). [36] OpenAI. Prompt caching. https://developers. openai.com/api/docs/guides/prompt-caching ,2024. OpenAI API documentation. [37] Xiurui Pan, Endian Li, Qiao Li, Shengwen Liang, Yizhou Shan, Ke Zhou, Yingwei Luo, Xiaolin Wang, and Jie Zhang. Instinfer: In-storage attention offload-ing for cost-effective long-context llm inference. arXiv preprint arXiv:2409.04992 , 2024. [38] PCI-SIG. Pci express ® base specification revision 5.0. Specification Rev. 5.0, v1.0, PCI Special Interest Group, May 2019. Version 1.0. [39] Ruoyu Qin, Zheming Li, Weiran He, Jialei Cui, Feng Ren, Mingxing Zhang, Yongwei Wu, Weimin Zheng, and Xinran Xu. Mooncake: Trading more storage for less computation—a {KVCache-centric } architecture 14 for serving {LLM } chatbot. In 23rd USENIX Confer-ence on File and Storage Technologies (FAST 25) , pages 155–170, 2025. [40] Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang, Bill Qian, et al. Toolllm: Facilitating large language models to master 16000+ real-world apis. arXiv preprint arXiv:2307.16789 , 2023. [41] Ying Sheng, Lianmin Zheng, Binhang Yuan, Zhuohan Li, Max Ryabinin, Beidi Chen, Percy Liang, Christopher Ré, Ion Stoica, and Ce Zhang. Flexgen: High-throughput generative inference of large language models with a single gpu. In International Conference on Machine Learning , pages 31094–31116. PMLR, 2023. [42] Aaditya Singh, Adam Fry, Adam Perelman, Adam Tart, Adi Ganesh, Ahmed El-Kishky, Aidan McLaughlin, Aiden Low, AJ Ostrow, Akhila Ananthram, et al. Openai gpt-5 system card. arXiv preprint arXiv:2601.03267 ,2025. [43] Jaspreet Singh and Zaheer Kachwala. Surging memory chip prices dim outlook for consumer electronics makers. 
+
+Reuters , January 2026. Discusses how rising memory (incl. DRAM) prices and shortages pressure consumer electronics; cites expectations of further memory price jumps. [44] Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774 , 2024. [45] Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Ji-ahao Chen, Ningxin Chen, Ruijue Chen, Yanru Chen, Yuankun Chen, Yutian Chen, et al. Kimi k2: Open agen-tic intelligence. arXiv preprint arXiv:2507.20534 , 2025. [46] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. [47] Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, and Maosong Sun. Infllm: Training-free long-context ex-trapolation for llms with an efficient context memory. 
+
+Advances in Neural Information Processing Systems ,37:119638–119661, 2024. [48] Junbin Xiao, Xindi Shang, Angela Yao, and Tat-Seng Chua. Next-qa: Next phase of question-answering to explaining temporal actions. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 9777–9786, 2021. [49] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chen-gen Huang, Chenxu Lv, et al. Qwen3 technical report. 
+
+arXiv preprint arXiv:2505.09388 , 2025. [50] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and Karthik Narasimhan. Tree of thoughts: Deliberate problem solving with large lan-guage models. Advances in neural information process-ing systems , 36:11809–11822, 2023. [51] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. In The eleventh international conference on learning representations , 2022. [52] Ahmet Caner Yüzügüler, Jiawei Zhuang, and Lukas Cavigelli. Preserve: Prefetching model weights and kv-cache in distributed llm serving. arXiv preprint arXiv:2501.08192 , 2025. [53] Hailin Zhang, Xiaodong Ji, Yilin Chen, Fangcheng Fu, Xupeng Miao, Xiaonan Nie, Weipeng Chen, and Bin Cui. Pqcache: Product quantization-based kvcache for long context llm inference. Proceedings of the ACM on Management of Data , 3(3):1–30, 2025. [54] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Pro-cessing Systems , 36:34661–34710, 2023. [55] Xinrui Zheng, Dongliang Wei, Jianxiang Gao, Yixin Song, Zeyu Mi, and Haibo Chen. 
+
+{SolidAttention }:{Low-Latency }{ SSD-based }
+
+serving on {Memory-Constrained }{ PCs }. In 24th USENIX Conference on File and Storage Technologies (FAST 26) , pages 67–82, 2026. 15

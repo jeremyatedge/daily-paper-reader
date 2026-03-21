@@ -6,73 +6,73 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-20
-- 运行时间：2026-03-20 20:13:19 UTC
+- 最新运行日期：2026-03-21
+- 运行时间：2026-03-21 19:15:28 UTC
 - 运行状态：成功
 - 本次总论文数：17
 - 精读区：6
 - 速读区：11
 
 ### 今日简报（AI）
-今日精选 17 篇前沿成果，深度聚焦边缘侧 AI 推理优化与脉冲神经网络（SNN）的硬件架构创新。
-满分论文展示了 FPGA 驱动的节能 SNN 方案及混合精度 MoE 动态编排，为低功耗设备运行复杂模型提供了高效路径。
-建议关注软硬件协同设计，特别是如何在资源受限的 IoT 环境中平衡模型性能、功耗与隐私安全。
-- 详情：[/202603/20/README](/202603/20/README)
+今日聚焦边缘智能与 XR 性能突破，深度复盘 17 篇涵盖 3D CNN 动态剪枝与强化学习调度的前沿成果。
+重点推荐 DANCE 框架对边缘端能效的极致优化，以及针对 XR 延迟约束的边缘卸载新策略。
+建议关注强化学习在内存控制与具身导航中的落地，把握软硬件协同优化的最新趋势。
+- 详情：[/202603/21/README](/202603/21/README)
 
 ### 精读区论文标签
-1. [An FPGA-Based SoC Architecture with a RISC-V Controller for Energy-Efficient Temporal-Coding Spiking Neural Networks](/202603/20/2603.18054v1-an-fpga-based-soc-architecture-with-a-risc-v-controller-for-energy-efficient-temporal-coding-spiking-neural-networks)  
+1. [DANCE: Dynamic 3D CNN Pruning: Joint Frame, Channel, and Feature Adaptation for Energy Efficiency on the Edge](/202603/21/2603.17275v1-dance-dynamic-3d-cnn-pruning-joint-frame-channel-and-feature-adaptation-for-energy-efficiency-on-the-edge)  
    标签：评分：10.0/10、query:aiot
-   evidence：集成RISC-V和能效脉冲神经网络核心的FPGA SoC架构
-2. [DyMoE: Dynamic Expert Orchestration with Mixed-Precision Quantization for Efficient MoE Inference on Edge](/202603/20/2603.19172v1-dymoe-dynamic-expert-orchestration-with-mixed-precision-quantization-for-efficient-moe-inference-on-edge)  
-   标签：评分：10.0/10、query:aiot
-   evidence：针对资源受限边缘平台的MoE推理动态混合精度量化
-3. [Exploiting temporal parallelism for LSTM Autoencoder acceleration on FPGA](/202603/20/2603.13982v1-exploiting-temporal-parallelism-for-lstm-autoencoder-acceleration-on-fpga)  
+   evidence：针对边缘端能效的动态3D CNN剪枝
+2. [Deep Reinforcement Learning-driven Edge Offloading for Latency-constrained XR pipelines](/202603/21/2603.16823v1-deep-reinforcement-learning-driven-edge-offloading-for-latency-constrained-xr-pipelines)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于 FPGA 的利用时间并行性的 LSTM 自动编码器加速器
-4. [VeriAgent: A Tool-Integrated Multi-Agent System with Evolving Memory for PPA-Aware RTL Code Generation](/202603/20/2603.17613v1-veriagent-a-tool-integrated-multi-agent-system-with-evolving-memory-for-ppa-aware-rtl-code-generation)  
+   evidence：边缘辅助XR的电池感知执行管理
+3. [Empirical Recipes for Efficient and Compact Vision-Language Models](/202603/21/2603.16987v1-empirical-recipes-for-efficient-and-compact-vision-language-models)  
    标签：评分：9.0/10、query:aiot
-   evidence：使用多智能体大模型框架生成功耗、性能、面积感知的RTL代码
-5. [EdgeCrafter: Compact ViTs for Edge Dense Prediction via Task-Specialized Distillation](/202603/20/2603.18739v1-edgecrafter-compact-vits-for-edge-dense-prediction-via-task-specialized-distillation)  
+   evidence：针对资源受限环境下紧凑模型的优化方案
+4. [Offload or Overload: A Platform Measurement Study of Mobile Robotic Manipulation Workloads](/202603/21/2603.18284v1-offload-or-overload-a-platform-measurement-study-of-mobile-robotic-manipulation-workloads)  
    标签：评分：9.0/10、query:aiot
-   evidence：针对资源受限边缘设备的紧凑型ViT
-6. [Mitigating the Bandwidth Wall via Data-Streaming System-Accelerator Co-Design](/202603/20/2603.19057v1-mitigating-the-bandwidth-wall-via-data-streaming-system-accelerator-co-design)  
-   标签：评分：9.0/10、query:aiot
-   evidence：Transformer推理的系统-加速器协同设计
+   evidence：车载与边缘GPU上机器人AI工作负载的测量研究
+5. [Determinism in the Undetermined: Deterministic Output in Charge-Conserving Continuous-Time Neuromorphic Systems with Temporal Stochasticity](/202603/21/2603.15987v1-determinism-in-the-undetermined-deterministic-output-in-charge-conserving-continuous-time-neuromorphic-systems-with-temporal-stochasticity)  
+   标签：评分：8.0/10、query:aiot
+   evidence：类脑计算系统与连续时间硬件架构
+6. [CODMAS: A Dialectic Multi-Agent Collaborative Framework for Structured RTL Optimization](/202603/21/2603.17204v1-codmas-a-dialectic-multi-agent-collaborative-framework-for-structured-rtl-optimization)  
+   标签：评分：8.0/10、query:aiot
+   evidence：针对功耗、性能和面积的自动化 RTL 优化
 
 ### 速读区论文标签
-1. [Resource-Efficient Iterative LLM-Based NAS with Feedback Memory](/202603/20/2603.12091v1-resource-efficient-iterative-llm-based-nas-with-feedback-memory)  
+1. [ReLMXEL: Adaptive RL-Based Memory Controller with Explainable Energy and Latency Optimization](/202603/21/2603.17309v1-relmxel-adaptive-rl-based-memory-controller-with-explainable-energy-and-latency-optimization)  
    标签：评分：8.0/10、query:aiot
-   evidence：在消费级硬件上针对CNN架构的资源高效型NAS
-2. [Privacy-Preserving Machine Learning for IoT: A Cross-Paradigm Survey and Future Roadmap](/202603/20/2603.13570v2-privacy-preserving-machine-learning-for-iot-a-cross-paradigm-survey-and-future-roadmap)  
+   evidence：基于强化学习的内存控制器能效与延迟优化
+2. [Ruyi2.5 Technical Report](/202603/21/2603.17311v1-ruyi25-technical-report)  
    标签：评分：8.0/10、query:aiot
-   evidence：针对资源受限物联网设备的隐私保护机器学习
-3. [AI Application Benchmarking: Power-Aware Performance Analysis for Vision and Language Models](/202603/20/2603.16164v1-ai-application-benchmarking-power-aware-performance-analysis-for-vision-and-language-models)  
+   evidence：用于隐私保护摄像头的边云协作模型
+3. [AgentVLN: Towards Agentic Vision-and-Language Navigation](/202603/21/2603.17670v1-agentvln-towards-agentic-vision-and-language-navigation)  
    标签：评分：8.0/10、query:aiot
-   evidence：针对AI工作负载的功耗感知性能分析与基准测试
-4. [SpecSteer: Synergizing Local Context and Global Reasoning for Efficient Personalized Generation](/202603/20/2603.16219v1-specsteer-synergizing-local-context-and-global-reasoning-for-efficient-personalized-generation)  
+   evidence：边缘计算平台的具身导航框架
+4. [CodeGreen: Towards Improving Precision and Portability in Software Energy Measurement](/202603/21/2603.17924v1-codegreen-towards-improving-precision-and-portability-in-software-energy-measurement)  
    标签：评分：8.0/10、query:aiot
-   evidence：设备端与云端模型之间的非对称协作推理
-5. [LongFlow: Efficient KV Cache Compression for Reasoning M](/202603/20/2603.11504v1-longflow-efficient-kv-cache-compression-for-reasoning-m)  
+   evidence：用于优化的软件能量测量
+5. [Co-Design of Memory-Storage Systems for Workload Awareness with Interpretable Models](/202603/21/2603.15571v1-co-design-of-memory-storage-systems-for-workload-awareness-with-interpretable-models)  
    标签：评分：7.0/10、query:aiot
-   evidence：长输出推理模型的高效KV缓存压缩
-6. [Retrieve, Schedule, Reflect: LLM Agents for Chip QoR Optimization](/202603/20/2603.13767v1-retrieve-schedule-reflect-llm-agents-for-chip-qor-optimization)  
+   evidence：存储系统与机器学习算法的协同设计
+6. [VIGIL: Towards Edge-Extended Agentic AI for Enterprise IT Support](/202603/21/2603.16110v1-vigil-towards-edge-extended-agentic-ai-for-enterprise-it-support)  
    标签：评分：7.0/10、query:aiot
-   evidence：用于芯片时序、功耗和面积优化的LLM智能体
-7. [DeFRiS: Silo-Cooperative IoT Applications Scheduling via Decentralized Federated Reinforcement Learning](/202603/20/2603.14729v1-defris-silo-cooperative-iot-applications-scheduling-via-decentralized-federated-reinforcement-learning)  
+   evidence：部署在资源受限终端上的边缘扩展代理AI系统
+7. [ProbeFlow: Training-Free Adaptive Flow Matching for Vision-Language-Action Models](/202603/21/2603.17850v1-probeflow-training-free-adaptive-flow-matching-for-vision-language-action-models)  
    标签：评分：7.0/10、query:aiot
-   evidence：用于物联网应用调度的去中心化联邦强化学习
-8. [CATFormer: When Continual Learning Meets Spiking Transformers With Dynamic Thresholds](/202603/20/2603.15184v1-catformer-when-continual-learning-meets-spiking-transformers-with-dynamic-thresholds)  
+   evidence：减少机器人控制推理延迟的自适应推理框架
+8. [Adaptive Domain Models: Bayesian Evolution, Warm Rotation, and Principled Training for Geometric and Neuromorphic AI](/202603/21/2603.18104v1-adaptive-domain-models-bayesian-evolution-warm-rotation-and-principled-training-for-geometric-and-neuromorphic-ai)  
    标签：评分：7.0/10、query:aiot
-   evidence：用于现实场景持续学习的脉冲Transformer
-9. [Adaptive Vision-Language Model Routing for Computer Use Agents](/202603/20/2603.12823v1-adaptive-vision-language-model-routing-for-computer-use-agents)  
+   evidence：类脑人工智能的替代训练架构
+9. [Ego to World: Collaborative Spatial Reasoning in Embodied Systems via Reinforcement Learning](/202603/21/2603.14811v1-ego-to-world-collaborative-spatial-reasoning-in-embodied-systems-via-reinforcement-learning)  
    标签：评分：6.0/10、query:aiot
-   evidence：自适应路由至低成本模型以实现高效代理执行
-10. [Agentic AI for SAGIN Resource Management_Semantic Awareness, Orchestration, and Optimization](/202603/20/2603.16458v1-agentic-ai-for-sagin-resource-managementsemantic-awareness-orchestration-and-optimization)  
+   evidence：具身多智能体系统中的协作空间推理
+10. [SYMDIREC: A Neuro-Symbolic Divide-Retrieve-Conquer Framework for Enhanced RTL Synthesis and Summarization](/202603/21/2603.17208v1-symdirec-a-neuro-symbolic-divide-retrieve-conquer-framework-for-enhanced-rtl-synthesis-and-summarization)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于SAGIN资源管理与优化的代理AI
-11. [Variational Phasor Circuits for Phase-Native Brain-Computer Interface Classification](/202603/20/2603.18078v1-variational-phasor-circuits-for-phase-native-brain-computer-interface-classification)  
+   evidence：硬件设计自动化中用于RTL综合的神经符号框架
+11. [Swarm: Co-Activation Aware KVCache Offloading Across Multiple SSDs](/202603/21/2603.17803v1-swarm-co-activation-aware-kvcache-offloading-across-multiple-ssds)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于信号分类的紧凑型相位学习架构
+   evidence：内存消耗优化与卸载策略
 
 
 <div class="dpr-home-promo-card">
