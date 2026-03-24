@@ -1,0 +1,1021 @@
+Title: SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference
+
+URL Source: https://arxiv.org/pdf/2603.21908v1
+
+Published Time: Tue, 24 Mar 2026 02:15:43 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference 
+
+## Ziyang Zhang 
+
+Politecnico di Milano Milan, Italy 
+
+ziyang.zhang@polimi.it 
+
+## Zheshun Wu 
+
+Harbin Institute of Technology Shenzhen, China 
+
+wuzhsh23@gmail.com 
+
+## Jie Liu 
+
+Harbin Institute of Technology Shenzhen, China 
+
+jieliu@hit.edu.cn 
+
+## Luca Mottola 
+
+Politecnico di Milano Milan, Italy 
+
+luca.mottola@polimi.it 
+
+## Abstract 
+
+Deploying deep neural networks (DNNs) on power-sensitive edge devices presents a formidable challenge. While Dy-namic Voltage and Frequency Scaling (DVFS) is widely em-ployed for energy optimization, traditional model-level scal-ing is often too coarse to capture intra-inference variations, whereas fine-grained operator-level scaling suffers from pro-hibitive performance degradation due to significant hard-ware switching latency. This paper presents SparseDVFS, a fine-grained, sparse-aware DVFS framework designed for energy-efficient edge inference. Our key insight is that opera-tor sparsity is a primary metric for hardware frequency mod-ulation. By distinguishing between compute-bound dense operators and memory-bound sparse operators, the system can apply specialized frequency triplets to maximize energy efficiency. To overcome switching overheads and component interference, SparseDVFS incorporates three key innova-tions: (1) an offline modeler that established a deterministic mapping between operator sparsity and optimal frequency triplets (CPU/GPU/EMC) via white-box timeline analysis; (2) a runtime graph partitioner that utilizes a greedy merging heuristic to aggregate operators into super-blocks, balancing scaling granularity and DVFS switching latency through a latency amortization constraint; and (3) a unified co-governor that employs a frequency unified scaling en-gine (FUSE) and a look-ahead instruction queue to eliminate antagonistic effects between independent controllers and hide hardware transition latencies. Extensive evaluations show that SparseDVFS achieves an average 78.17% energy efficiency gain over state-of-the-art solutions while main-taining a superior 14% cost-gain ratio. 
+
+## 1 Introduction 
+
+The rapid proliferation of deep neural networks (DNNs) has fundamentally transformed modern computing, driv-ing an unprecedented demand for high-performance infer-ence at the network edge [ 10 , 16 , 29 , 40 , 43 , 79 ]. As these models grow in complexity, spanning from deep convolu-tional neural networks (CNNs) like ResNet [ 17 ] to intricate (a) Model-level DVFS 
+
+> V/f
+> Setting
+> Time DNN
+> Operator
+> Conv1
+
+## ⋯  
+
+> Single DVFS Governor
+> ReLU1 BN1 FC1
+> (b) Operator-level DVFS
+> (c) Block-level DVFS (Ours)
+> Time
+> Conv1
+
+## ⋯   
+
+> ReLU1 BN1 FC1
+> Time
+> Conv1
+
+## ⋯ReLU1  FC1 Conv2    
+
+> Block 1
+> Conv3 BN1 Conv4
+> Block 2 Block 3
+> V/f
+> Setting
+> Block
+> Sparsity
+> Operator Index
+
+Figure 1. Comparison of DVFS governor granularities for edge DNN inference. (a) Model-level DVFS governor employs a single V/f setting. (b) Operator-level fine-grained DVFS governor. (c) Our sparsity-aware block-level DVFS governor. Transformer-based architectures like vision transformers (ViT) [ 9, 65 ], deploying them on resource-constrained edge devices presents a formidable challenge. Edge devices (e.g., NVIDIA Jetson series [ 47 ]) widely used in autonomous sys-tems [ 50 , 51 , 58 ] and IoT applications [ 37 , 69 ], operate un-der strict power envelopes and thermal constraints. Conse-quently, energy efficiency has emerged as the paramount design criterion, necessitating sophisticated system-level power management strategies. Dynamic voltage and frequency scaling (DVFS) [ 27 , 36 , 55 ,63 , 67 , 80 ] stands as the ubiquitous standard for managing power and performance trade-offs in modern processors. By dynamically adjusting the operating frequency and voltage of the CPU, GPU, and memory subsystems, systems can the-oretically align power consumption with the instantaneous computational demands of the workload. In the context of edge AI, effective DVFS is critical. However, since traditional DVFS cannot accurately perceive DNN characteristics (such as sparsity [ 10 , 35 , 61 , 62 ]), leading to suboptimal frequency allocation that either causes performance degradation or significant energy waste. 
+
+> 1
+> arXiv:2603.21908v1 [cs.LG] 23 Mar 2026 xxx et al.
+
+Existing research has proposed specific DVFS governors [ 15 ,24 , 26 , 36 , 67 , 80 , 81 ] for on-device DNN inference to im-prove energy efficiency. However, as illustrated in Figure 1, these solutions face a fundamental trade-off between scaling granularity and system-level overhead. Model-level DVFS in Figure 1(a) commonly employed by standard Linux gov-ernors [ 41 ] and learning-based methods like zTT [ 26 ] or GearDVFS [ 36 ], assigns a static frequency for the entire in-ference. This is inherently too coarse to capture intra-model workload fluctuations where computational intensity varies significantly between layers. Conversely, while operator-level DVFS like Ascend-DVFS [ 67 ] in Figure 1(b) attempts to track these variations at the finest grain, it remains prac-tically infeasible on commercial hardware. Our benchmarks in Section 2.4 reveal that frequency switching latencies can exceed the execution time of lightweight operators, caus-ing transition penalties to dominate the timeline and negate energy savings. To bridge this gap, Our proposed SparseD-VFS in Figure 1(c) introduces a block-level DVFS strategy. By aggregating operators into sparsity-aware super-blocks, our framework amortizes hardware switching costs while adapting to fine-grained model features, achieving a Pareto-superior trade-off between energy efficiency and latency. Achieving such a fine-grained, sparse-aware DVFS frame-work involves the following three key challenges: 
+
+• DVFS adjustment overhead: transitioning from coarse-grained model-level scaling to fine-grained operator-level control implies frequent frequency switching. Our benchmarks in Section 2.4 reveal that GPU fre-quency switching latency for on-device DNN infer-ence mostly ranges from 5ms to 10ms, but exceeds 20ms at extremely low frequencies. Since many light-weight DNN operators (e.g., ReLU [ 12 , 31 ] and GELU [ 19 ]) only take a few milliseconds to execute, operator-level DVFS strategy would cause the switching overhead to exceed the execution time, drastically increasing end-to-end latency. 
+
+• Balancing latency and power: the trade-off between latency and power is non-linear and governed by the Roofline Model [ 8 , 20 , 60 , 72 ]. Our benchmarks in Section 2.1 reveal that for compute-bound operators (e.g., Conv2d [ 33 ]), higher frequencies yield linear speedups. For memory-bound sparse operators (e.g., LayerNorm [ 1]), however, the performance bottleneck shifts to memory bandwidth. In these cases, increasing GPU frequency beyond the ridge point primarily in-creases power consumption with diminishing energy efficiency gains. 
+
+• Architectural adaptability and Scalability: mod-ern edge AI workloads exhibit extreme diversity [ 3 ,5 ], spanning diverse architectures from traditional CNNs with high intra-model sparsity to emerging Transformer-based models characterized by dynamic attention patterns. Existing learning-driven DVFS gov-ernors, however, treat DNN models as black boxes, ne-cessitating prohibitive offline retraining and manual profiling whenever a new model architecture or hard-ware platform is introduced. This lack of architectural transparency and deterministic modeling renders cur-rent solutions difficult to scale across the rapidly evolv-ing landscape of DNN topologies. To address the aforementioned limitations, this paper presents SparseDVFS, a fine-grained, sparse-aware DVFS for energy-efficient edge inference, predicated on the in-sight that operator sparsity is a primary metric for hard-ware frequency modulation. SparseDVFS overcomes the de-ficiencies of existing DVFS governors through three tightly coupled components. First, the offline modeler employs white-box timeline analysis [ 18 ] and thermal-aware power modeling [ 26 ] to construct a deterministic mapping between operator characteristics and optimal hardware states. Second, the runtime graph partitioner utilizes a greedy algorithm to dynamically aggregate operators into super-blocks [ 38 ], enforcing a latency amortization constraint that ensures com-putational gains are not offset by transition penalties. Third, the unified co-governor implements a frequency unified scaling engine (FUSE) strategy [ 80 , 81 ] to synchronize CPU, GPU, and memory frequencies, effectively eliminating the antagonistic effects [ 78 ] inherent in independent component controllers. Experimental evaluations on the NVIDIA Jetson Orin Nano show that SparseDVFS offers an average energy efficiency improvement of 78.17% and a cost gain of 14% compared to state-of-the-art methods. This paper makes the following contributions: 1. We propose SparseDVFS, a sparse-aware block-level DVFS that bridges the gap between coarse model-level and prohibitive operator-level scaling. 2. We develop an white-box offline modeler that provides a deterministic mapping between operator sparsity and optimal hardware states. 3. We introduce a runtime graph partitioner that greedily aggregates operators into super-blocks to amortize frequency adjustment overhead. 4. We design a unified co-governor to eliminate the an-tagonistic effects of independent governors. 
+
+## 2 Motivation 
+
+SparseDVFS is motivated by five key observations regarding the interaction between DNN operators and edge hardware. We use an NVIDIA Jetson Orin Nano with 8GB DRAM as our benchmark platform. Additionally, ResNet-18/101 [ 17 ]and ViT-B16/L16 [9] are chosen as workloads. 
+
+> 2
+
+SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference 10         
+
+> Arithmetic Intensity (FLOPs/Byte)
+> 10 1
+> 0
+> 10
+> 3
+> 10
+> 2
+> 10
+> 1
+> 10
+> GFLOPS
+> Roofline
+> Conv2d
+> Linear
+> 10123
+> 10 10 10 10
+> Compute Bound
+> Memory Bound
+
+(a) ResNet-18 10          
+
+> Arithmetic Intensity (FLOPs/Byte)
+> 10 1
+> 0
+> 10
+> 3
+> 10
+> 2
+> 10
+> 1
+> 10
+> Roofline
+> Conv2d
+> Linear
+> 10123
+> 10 10 10 10
+> Compute Bound
+> Memory Bound
+> GFLOPS
+
+(b) ResNet-101 10  3       
+
+> Arithmetic Intensity (FLOPs/Byte)
+> 10 1
+> 0
+> 10
+> 1
+> 10
+> 3
+> 10
+> 2
+> 10
+> Roofline
+> Conv2d
+> LayerNorm
+> Linear
+> 1012
+> 10 10 10 10
+> Compute Bound
+> Memory Bound
+> GFLOPS
+
+(c) ViT-B16 10  3        
+
+> Arithmetic Intensity (FLOPs/Byte)
+> 10 1
+> 0
+> 10
+> 1
+> 10
+> 3
+> 10
+> 2
+> 10
+> Roofline
+> Conv2d
+> LayerNorm
+> Linear
+> 1012
+> 10 10 10 10
+> GFLOPS  Compute Bound
+> Memory Bound
+
+(d) ViT-L16 
+
+Figure 2. Roofline model across diverse DNN architectures. For CNN-based models (i.e., ResNet-18/101), dense opera-tors (e.g., Conv2d, Linear) reside on the horizontal plateau (i.e., Compute-Bound), while activation and normalization layers fall into the sloped region (i.e., Memory-Bound). For Transformer-based models (i.e., ViT-B16/L16), dense oper-ators (e.g., Conv2d) reside on the horizontal plateau (i.e., Compute-Bound), while linear and normalization layers fall into the sloped region (i.e., Memory-Bound). 
+
+2.1 Roofline Model Analysis 
+
+The Roofline Model [ 72 ] provides a fundamental character-ization of how different operators interact with the hard-ware’s compute and memory limits. Figure 2 reveals the per-formance (FLOPS) [ 21 , 32 , 59 ] against arithmetic intensity (FLOPs/Byte) [ 48 , 56 , 57 ] for various operators in ResNet-18 and ViT-B16.1 The results reveal a clear bifurcation. Dense operators like Conv2d and Linear layers reside on the hori-zontal plateau of the Roofline, indicating they are Compute-Bound. Their performance scales linearly with frequency. In contrast, activation functions (ReLU, GELU) and normal-ization layers typically fall into the sloped region, identifying them as Memory-Bound. Crucially, as the GPU frequency in-creases from 306 MHz to 624.75 MHz, the ridge point (where the memory-bound slope meets the compute-bound plateau) shifts. For these memory-bound operators, increasing fre-quency beyond a certain point yields diminishing returns in performance because the bottleneck is memory bandwidth, not compute cycles. Thus, running high-sparsity, memory-bound operators at peak frequency wastes significant energy. 
+
+2.2 Dynamic Sparsity Distribution 
+
+We analyzed the sparsity distribution of operators across different models on ImageNet-2012 validation dataset (about 0.0 0.2 0.4 0.6 0.8 1.0 
+
+> Sparsity
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> CDF
+> Median: 0.54
+
+(a) ResNet-18 (ReLU) 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> Sparsity
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> CDF
+> Median: 0.62
+
+(b) ResNet-101 (ReLU) 0.0 0.2 0.4 0.6 0.8 1.0 
+
+> Sparsity
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> CDF
+> Median: 0.36
+
+(c) ViT-B16 (GELU) 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> Sparsity
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> CDF
+> Median: 0.52
+
+(d) ViT-L16 (GELU) 
+
+Figure 3. Dynamic sparsity distribution (CDF) for CNN and Transformer models on ImageNet-2012 validation dataset (about 50k images). A substantial portion of operators in ResNet and ViT exhibit high sparsity (>50%). 50k images) [ 31 ] using cumulative distribution function (CDF). As shown in Figure 3, the CDFs for ResNet-18/101 (ReLU) and ViT-B16/L16 (GELU) show distinct profiles. For ResNet, a substantial portion of operators exhibit high sparsity (>50%), with the median sparsity often exceeding 0.5. ViT models show a different but equally dynamic distribution, with spar-sity varying significantly between Attention and MLP blocks. In summary, the sparsity of activation functions changes dynamically with input data [ 10 ]. A static frequency setting cannot accommodate this variance. The wide distribution confirms that sparsity is a viable, high-entropy signal for modulating hardware performance. High-sparsity operators (right tail of the CDF) are prime candidates for frequency reduction, while low-sparsity operators (left tail) require high performance states. 
+
+2.3 CPU-GPU Antagonistic Effect 
+
+Runtime traces of CPU and GPU frequencies under default governors (i.e., simple_ondemand [52 ] for GPU and Linux schedutil [14 ] for CPU) reveal a critical inefficiency. In Fig-ure 4, CPU and GPU frequencies fluctuate independently and often inversely. For instance, during a GPU-intensive computation phase, the CPU utilization drops, causing the de-fault governor to lower the CPU frequency. However, when the GPU finishes and requests more data, the CPU is in a low-power state, causing a latency spike while it ramps up. This antagonistic effect [ 78 ] leads to pipeline stalls and energy wastage. To this end, a unified governor is required to synchronize CPU and GPU transitions, ensuring that the 
+
+3xxx et al. 6 8 12  14 10  
+
+> Time (s)
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> CPU Frequency (GHz)  CPU Frequency GPU Frequency
+> 200
+> 300
+> 400
+> 500
+> 600
+> 700
+> GPU Frequency (MHz)
+
+Idle 
+
+Figure 4. Runtime traces of CPU and GPU frequencies under default DVFS governors for ResNet-18. Independent and often inverse fluctuations between frequencies create an antagonistic effect. CPU is ready to feed the GPU (i.e., prefill) exactly when needed, regardless of instantaneous utilization. 
+
+2.4 DVFS Switching Overhead vs. Inference Latency 
+
+We benchmark the latency overhead of frequency switching using DVFS under different CPU-GPU frequency configura-tions, and compare it against the operator execution time. As shown in Figure 5, the results reveal that the DVFS switch-ing latency mostly ranges from 5ms to 10ms. In contrast, a full inference takes between 60ms and 100ms depending on the CPU-GPU clock frequency configurations. However, the cumulative overhead of switching hardware states for every single operator would be prohibitive. Therefore, the non-negligible nature of relative to full inference latency ren-ders an operator-level DVFS strategy practically infeasible. Attempting to adjust frequencies for every layer would cause the switching penalty to dominate the execution timeline, potentially doubling the end-to-end latency and negating any energy savings achieved through frequency scaling. Compared to the huge switching overhead of operator-level DVFS and the lack of awareness of DNN characteristics in model-level DVFS, block-level DVFS in SparseDVFS ag-gregates operators into super-blocks through the sparsity of DNNs, enabling block execution time significantly to exceed frequency switching overhead, thereby effectively amortiz-ing hardware switching costs while capturing fine-grained features of the model. 
+
+2.5 Impact of Clock Frequency on Performance 
+
+We conducted an extensive grid search across the CPU and GPU frequency scaling space to characterize their joint im-pact on inference latency and power consumption. As shown in Figure 6, inference latency is not uniformly sensitive to fre-quency scaling. For compute-bound phases, increasing GPU frequency yields significant latency reductions. However, as frequency increases, the system encounters a diminishing returns threshold where memory bandwidth become the primary bottleneck. Specifically, at high GPU frequencies, 115/306  
+
+> 192/408
+> 345/510
+> 422/612
+> 652/306
+> 729/408
+> 806/510
+> 883/612
+> 1113/306
+> 1190/408
+> 1344/510
+> 1420/612
+> DVFS Configuration (CPU/GPU MHz)
+> 0
+> 50
+> 100
+> 150
+> Inference (ms)
+> Inference Latency Switching Latency
+> 10
+> 20
+> Switching (ms)
+
+Figure 5. Comparison between DVFS switching overhead and end-to-end inference latency for ResNet-18. 115  
+
+> 192
+> 345
+> 422
+> 499
+> 652
+> 729
+> 806
+> 883
+> 1036
+> 1113
+> 1190
+> 1344
+> 1420
+> 1510
+> CPU Frequency (MHz)
+> 306  408  510  612
+> GPU Frequency (MHz)
+> 15
+> 20
+> 25
+> Average Latency (ms)
+> (a) Inference Latency 115
+> 192
+> 345
+> 422
+> 499
+> 652
+> 729
+> 806
+> 883
+> 1036
+> 1113
+> 1190
+> 1344
+> 1420
+> 1510
+> CPU Frequency (MHz)
+> 306  408  510  612
+> GPU Frequency (MHz)
+> 7.50
+> 7.75
+> 8.00
+> 8.25
+> 8.50
+> 8.75
+> Average Power (W) (b) Power Consumption
+
+Figure 6. The impact of CPU and GPU clock frequencies on system performance for ResNet-18. The heatmaps illustrate the non-linear sensitivity of (a) inference latency and (b) power consumption to frequency scaling. the performance gain plateaus while power consumption continues to climb quadratically. We also observe a clear decoupling between minimum latency and minimum energy consumption. While the highest frequency configuration minimizes latency, it often leads to sub-optimal energy effi-ciency due to the non-linear increase in power. These observations reveal the necessity of offline modeler. By mapping specific operator characteristics (such as sparsity and arithmetic intensity) to the relationship between latency and power, SparseDVFS can bypass the inefficiencies of de-fault governors. It allows the system to proactively select the energy-optimal frequency configuration that satisfies the target latency constraint, rather than blindly pursuing maximum performance at the cost of excessive energy waste. 
+
+## 3 System Overview 
+
+SparseDVFS functions as a middleware situated between the deep learning framework (e.g., PyTorch) and the OS inter-faces. It is designed to intercept the execution flow of DNN inference, analyze the upcoming workload, and proactively adjust hardware settings before execution begins. Unlike reactive governors that rely on trailing utilization indicators, SparseDVFS uses a predictive model based on static graph analysis and dynamic sparsity profiling. Figure 7 shows the architecture of SparseDVFS, which consists of three components. ❶ The offline modeler operates prior to deployment, characterizing the hardware’s behavior 
+
+> 4
+
+SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference Offline Modeler 
+
+Unified Co-Governor 
+
+Runtime Graph Partitioner 
+
+Sparsity Sensitivity Coefficient 
+
+Thermal-Aware Power Model 
+
+Conv 
+
+Conv 
+
+ReLU 
+
+⋯
+
+⋯
+
+Conv 
+
+⋯
+
+BN 
+
+DNN Computation Graph (DAG) 
+
+Graph Partitioning 
+
+Greedy 
+
+Merging 
+
+Sparse-Aware Block-Level Scheduler 
+
+Conv+ 
+
+ReLU 
+
+Conv+ 
+
+BN 
+
+Conv+ 
+
+ReLU +BN 
+
+Super-blocks 
+
+Conv+ 
+
+ReLU 
+
+Conv+ 
+
+BN 
+
+⋯                                  
+
+> 𝑻𝑻 𝒆𝒆𝒆𝒆𝒆𝒆 𝒇𝒇 =𝐦𝐦𝐦𝐦𝐦𝐦 𝑾𝑾 𝒄𝒄𝒄𝒄𝒄𝒄𝒄𝒄 ×𝟏𝟏 − 𝑺𝑺 𝒄𝒄𝒄𝒄𝒄𝒄𝒄𝒄
+> (𝒇𝒇 𝒄𝒄𝒄𝒄𝒄𝒄 ,𝒇𝒇 𝒈𝒈 𝒄𝒄𝒄𝒄 ),𝑫𝑫 𝒄𝒄𝒆𝒆𝒄𝒄 ×𝟏𝟏 − 𝑺𝑺 𝒄𝒄𝒆𝒆𝒄𝒄
+> 𝑩𝑩 𝑾𝑾 𝒄𝒄𝒆𝒆𝒄𝒄 𝒇𝒇 𝒄𝒄𝒆𝒆𝒄𝒄
+> +𝑻𝑻 𝒄𝒄 𝒐𝒐 𝒆𝒆 𝒐𝒐𝒐𝒐 𝒆𝒆 𝒐𝒐𝒐𝒐
+> Computation Memory DVFS
+> Switching
+> 𝑷𝑷 𝒕𝒕 𝒄𝒄 𝒕𝒕 𝒐𝒐 𝒕𝒕 =𝑷𝑷 𝒐𝒐 𝒅𝒅𝒅𝒅 𝒐𝒐𝒄𝒄 𝒅𝒅 𝒄𝒄 +𝑷𝑷 𝒔𝒔 𝒕𝒕𝒐𝒐𝒕𝒕𝒅𝒅𝒄𝒄 𝑻𝑻 =𝜶𝜶 � 𝑽𝑽 𝟐𝟐 � 𝒇𝒇 + ( 𝒌𝒌 𝟏𝟏 � 𝑻𝑻 +𝒌𝒌 𝟐𝟐 )� 𝑽𝑽
+
+Static Leakage 
+
+Estimation 
+
+Timeline-based Performance Model 
+
+> DVFS (V/F Maps)
+> Temperature Data
+
+Conv+ 
+
+ReLU 
+
+Conv+ 
+
+BN 
+
+Conv+ 
+
+ReLU +BN 
+
+Super-blocks 
+
+Frequency Unified Scaling Engine (FUSE) Strategy 
+
+Sparse Profiler 
+
+• Sparse Features 
+
+• Compute-Bound 
+
+• Memory-Bound  Memory Coordinator 
+
+> CPU-GPU Cooperator
+> GPU Governor
+> CPU Governor
+> EMC Freq. Lock
+> CPU Freq. Lock
+> GPU Freq. Scaling
+
+Edge Device 
+
+Figure 7. Overview of the SparseDVFS framework. The system is architected in three synergistic stages: (1) the offline modeler establishes a deterministic mapping between operator characteristics and optimal frequency triplets through timeline-based performance analysis and thermal-aware power modeling. (2) the runtime graph partitioner performs greedy operator aggregation to construct super-blocks, ensuring that fine-grained DVFS scaling satisfies the latency amortization constraint. (3) the unified co-governor executes coordinated frequency scaling across heterogeneous components via the frequency unified scaling engine (FUSE) strategy, while masking DVFS switching latency through a pipelined look-ahead mechanism. to build a comprehensive performance and power model. ❷
+
+During inference, the runtime graph partitioner dynamically segments the DNN computation graph into super-blocks to amortize switching overheads. ❸ Finally, the unified co-governor enforces the optimal frequency configurations for these blocks across the CPU, GPU, and memory subsystems, utilizing a look-ahead mechanism to hide DVFS switching latency. This pipelined design ensures that SparseDVFS can deliver significant energy savings without compromising the strict latency requirements of edge inference. 
+
+## 4 SparseDVFS Design 
+
+4.1 Offline Modeler 
+
+This component aims to eliminate the cold-start latency and unpredictability inherent in existing black-box approaches (e.g., deep neural networks) [ 26 , 36 ] by establishing a deter-ministic, physics-based mapping between operator charac-teristics and hardware states. 
+
+4.1.1 Timeline-based Performance Model. The execu-tion performance of DNN operators on heterogeneous Edge SoCs is fundamentally governed by the interplay between computational throughput and memory bandwidth, a rela-tionship classically described by the Roofline Model. How-ever, traditional Roofline formulations assume dense com-putation, failing to account for the dynamic workload re-duction introduced by algorithmic sparsity. To this end, we formulate a timeline-based performance model that explic-itly integrates sparsity sensitivity coefficients to predict the execution time 𝑇 𝑒𝑥𝑒 of an operator under varying frequency configurations. This model treats execution time not as a monolithic random variable, but as a convex piecewise linear function determined by the bottleneck resource. Specifically, the execution time is derived by calculating the maximum latency between the compute-bound execu-tion path and the memory-bound data transfer path, aug-mented by a system overhead constant. For a given frequency configuration vector f = [𝑓 𝑐𝑝𝑢 , 𝑓 𝑔𝑝𝑢 , 𝑓 𝑚𝑒𝑚 ], the predicted ex-ecution time is defined as: 
+
+𝑇 𝑒𝑥𝑒 (f ) = max 
+
+𝑊 𝑐𝑜𝑚𝑝 · ( 1 − 𝑆 𝑐𝑜𝑚𝑝 )P𝑝𝑒𝑎𝑘 (𝑓 𝑐𝑝𝑢 , 𝑓 𝑔𝑝𝑢 ) , 𝐷 𝑚𝑒𝑚 · ( 1 − 𝑆 𝑚𝑒𝑚 )B𝑚𝑒𝑚 (𝑓 𝑚𝑒𝑚 )
+
+
+
++𝑇 𝑜𝑣𝑒𝑟ℎ𝑒𝑎𝑑 
+
+(1) 
+
+where 𝑊 𝑐𝑜𝑚𝑝 represents the theoretical computational work-load (FLOPs) derived statically from the operator’s dimen-sions, while 𝑆 𝑐𝑜𝑚𝑝 ∈ [ 0, 1] is the computational sparsity co-efficient, representing the fraction of zero-valued activations that the hardware can effectively skip. 𝑊 𝑐𝑜𝑚𝑝 ·( 1−𝑆 𝑐𝑜𝑚𝑝 ) thus quantifies the effective computational load, revealing the ex-ecution slack available for frequency downscaling in sparse layers. Conversely, the memory is governed by the total data volume 𝐷 𝑚𝑒𝑚 and the storage sparsity coefficient 𝑆 𝑚𝑒𝑚 . Cru-cially, 𝑆 𝑚𝑒𝑚 captures the bandwidth savings dependent on the sparsity. For structured sparsity, 𝑆 𝑚𝑒𝑚 ≈ 𝑆 𝑐𝑜𝑚𝑝 , whereas 
+
+5xxx et al. 
+
+for unstructured sparsity, 𝑆 𝑚𝑒𝑚 approaches zero due to ran-dom access inefficiencies. P𝑝𝑒𝑎𝑘 and B𝑚𝑒𝑚 denote the peak theoretical performance and memory bandwidth at respec-tive frequencies, obtained via offline micro-benchmarking. 
+
+𝑇 𝑜𝑣𝑒𝑟ℎ𝑒𝑎𝑑 accounts for constant system latencies such as ker-nel launch overhead and synchronization barriers. Table 1 shows the performance of our proposed timeline-based performance model. We take the FLOPs-based predic-tor as the baseline, which utilizes theoretical computational workload to build a simple linear model for latency predic-tion. As shown, the FLOPs-based predictor only achieves 8.2% ∼18.4% accuracy across all evaluated models.By inte-grating sparsity sensitivity and hardware-specific bottle-necks, our deterministic predictor achieves ±10% accuracies of 86.25%, 84.6%, 82.1%, and 80.8% for ResNet-18, ResNet-101, ViT-B16, and ViT-L16, respectively. This performance is even comparable with the black-box model nn-Meter, which relies on extensive kernel-level profiling. Note that our physics-based predictor is designed to be extremely lightweight (only 32 bytes), while nn-Meter’s size is nearly 856MB which is not suitable for the online prediction on edge devices. 
+
+Table 1. ±10% latency prediction accuracy and model size of different predictors.                 
+
+> Predictor Model ±10% Accuracy Model Size
+> FLOPs-based [30] ResNet-18 18.4% 8B ResNet-101 12.8% ViT-B16 11.5% ViT-L16 8.2% nn-Meter [77] ResNet-18 91.5% ~856MB ResNet-101 88.1% ViT-B16 87.2% ViT-L16 85.9% Timeline-based (Ours) ResNet-18 86.2% 32B ResNet-101 84.6% ViT-B16 82.1% ViT-L16 80.8%
+
+4.1.2 Thermal-Aware Power Model. Accurate energy optimization in embedded AI chips requires a precise esti-mation of power consumption that accounts for the non-linear dependency of static leakage current on temperature. A simplistic model ignoring thermal feedback risks underes-timating power draw during intensive inference workloads, leading to thermal throttling and performance jitter. SparseD-VFS introduces a thermal-aware power model that decouples total power into dynamic switching power and temperature-dependent static leakage power. The dynamic component is modeled as a function of the activity factor, supply voltage , and frequency , while the static component is modeled as a linear function of temperature scaled by voltage. The unified CPU Freq. (MHz)     
+
+> 500
+> 1000
+> 1500
+> GPU Freq. (MHz) 300
+> 400
+> 500
+> 600
+> Latency (ms)  15
+> 20
+> 25
+> Measured
+> Predicted
+> (a) Inference Latency Prediction 30 40 50 60
+> Temperature (°C)
+> 8
+> 9
+> 10
+> Power (W)  Measured
+> Predicted (b) Thermal-Aware Power Prediction
+
+Figure 8. An example of offline modeler for ResNet-18. (a) latency prediction under different CPU/GPU frequency com-binations and (b) thermal-aware power prediction. power model can be expressed as: 
+
+𝑃 𝑡𝑜𝑡𝑎𝑙 (𝑓 ,𝑇 ) = 𝑃 𝑑𝑦𝑛𝑎𝑚𝑖𝑐 + 𝑃 𝑠𝑡𝑎𝑡𝑖𝑐 (𝑇 )
+
+= 𝛼 (𝑆 𝑐𝑜𝑚𝑝 ) · 𝑉 2 · 𝑓 + ( 𝑘 1 · 𝑇 + 𝑘 2) · 𝑉 (2) where the activity factor 𝛼 is explicitly modeled as a function of sparsity 𝑆 𝑐𝑜𝑚𝑝 , reflecting that sparse data streams induce fewer bit-flips in the datapath, thereby reducing dynamic power. The coefficients 𝑘 1 and 𝑘 2 are device-specific thermal constants derived from regression analysis of offline profiling data, capturing the sensitivity of leakage current to junction temperature and the base leakage at a reference temperature, respectively. Our proposed thermal-aware power model enables the system to perform proactive thermal management. When the device temperature 𝑇 rises, the model predicts the super-linear increase in 𝑃 𝑠𝑡𝑎𝑡𝑖𝑐 , prompting the scheduler to select a voltage-frequency pair that not only satisfies the imme-diate latency constraint but also minimizes total energy 
+
+𝐸 = 𝑃 𝑡𝑜𝑡𝑎𝑙 ×𝑇 𝑒𝑥𝑒 by potentially lowering voltage to reduce the thermal envelope. This feedback loop prevents the device from hitting hardware thermal limits, ensuring sustained real-time performance. Figure 8 presents a comparison between measured data and the prediction data of our offline modeler for ResNet-18. As shown in Figure 8(a), the timeline-based performance model accurately characterizes operator latency across the joint CPU-GPU frequency scaling space, with a mean er-ror below 2%. Simultaneously, Figure 8(b) shows the pre-diction accuracy of the thermal-aware power model, which successfully captures the super-linear increase in power con-sumption driven by temperature-dependent static leakage. Overall, our physics-based offline modeler provides the nec-essary deterministic foundation for proactive DVFS scaling, effectively bypassing the unpredictability and cold-start over-heads inherent in traditional black-box learning methods. 
+
+> 6SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference
+
+4.2 Runtime Graph Partitioner 
+
+While the offline modeler provides optimal configurations for individual operators, blindly applying these settings at run-time is impractical due to the non-trivial hardware switch-ing latency ( 𝑇 𝑠𝑤𝑖𝑡𝑐ℎ ) associated with voltage regulator ad-justments and PLL relocking. To resolve the conflict be-tween fine-grained optimization and switching overhead, the runtime graph partitioner dynamically transforms the fine-grained operator graph into a sequence of execution-friendly super-blocks. 
+
+4.2.1 Greedy Fusion and Super-block Construction. 
+
+The partitioner operates on the DNN directed acyclic graph (DAG) by employing a greedy merging algorithm that tra-verses the topologically sorted sequence of operators. The core logic dictates that adjacent operators should be fused into a single super-block if they share similar sparsity char-acteristics, and thus compatible optimal frequencies, or if the execution time of an individual operator is insufficient to amortize the cost of a frequency switch. Algorithm 1 maintains a current block and tentatively adds the next operator in the sequence. For each candidate merge, it evaluates two criteria: homogeneity and amortiza-tion. Homogeneity checks if the optimal frequency of the candidate operator, 𝑓 𝑛𝑒𝑥𝑡 𝑜𝑝𝑡 , falls within a tolerance threshold of the current block’s frequency 𝑓 𝑐𝑢𝑟𝑟 𝑜𝑝𝑡 . If the frequencies diverge significantly (e.g., a transition from a sparse, low-frequency ReLU to a dense, high-frequency Convolution), the partitioner considers creating a block boundary. However, this decision is overridden by the Amortization constraint. 
+
+Algorithm 1 Sparse-Aware Greedy Graph Partitioning                                                                                            
+
+> Input: 𝐺 (𝑉 , 𝐸 ): DNN computation graph sorted topologically
+> Input: 𝑀 𝑝𝑒𝑟 𝑓 , 𝑀 𝑝𝑜𝑤𝑒𝑟 : Offline performance and power models
+> Input: 𝑇 𝑠𝑤𝑖𝑡𝑐ℎ : Hardware frequency switching latency
+> Input: 𝑁 : Amortization granularity factor
+> Output: S: Sequence of (super-block, 𝑓 𝑜𝑝𝑡 ) tuples 1: S ← ∅ ,𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 ← { 𝑣 1},𝑓 𝑐𝑢𝑟𝑟 ←𝑀 𝑝𝑒𝑟 𝑓 .𝑝𝑟𝑒𝑑𝑖𝑐𝑡 (𝑣 1)
+> 2: for 𝑖 =2to |𝑉 |do
+> 3: 𝑣 𝑛𝑒𝑥𝑡 ←𝑉 [𝑖 ]
+> 4: 𝑓 𝑛𝑒𝑥𝑡 ←𝑀 𝑝𝑒𝑟 𝑓 .𝑝𝑟𝑒𝑑𝑖𝑐𝑡 (𝑣 𝑛𝑒𝑥𝑡 )
+> 5: 𝑇 𝑒𝑠𝑡 ←𝑀 𝑝𝑒𝑟 𝑓 .𝑐𝑎𝑙𝑐 _𝑡𝑖𝑚𝑒 (𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 , 𝑓 𝑐𝑢𝑟𝑟 )
+> 6: {Check amortization and similarity constraints} 7: if 𝑇 𝑒𝑠𝑡 <𝑁 ×𝑇 𝑠𝑤𝑖𝑡𝑐ℎ or 𝑓 𝑛𝑒𝑥𝑡 ≈𝑓 𝑐𝑢𝑟𝑟 then
+> 8: 𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 ←𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 ∪ { 𝑣 𝑛𝑒𝑥𝑡 }
+> 9: 𝑓 𝑐𝑢𝑟𝑟 ←max (𝑓 𝑐𝑢𝑟𝑟 , 𝑓 𝑛𝑒𝑥𝑡 ){Conservative merge} 10: else
+> 11: S.𝑎𝑝𝑝𝑒𝑛𝑑 ( ( 𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 , 𝑓 𝑐𝑢𝑟𝑟 ) )
+> 12: 𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 ← { 𝑣 𝑛𝑒𝑥𝑡 }
+> 13: 𝑓 𝑐𝑢𝑟𝑟 ←𝑓 𝑛𝑒𝑥𝑡
+> 14: end if
+> 15: end for
+> 16: S.𝑎𝑝𝑝𝑒𝑛𝑑 ( ( 𝐵𝑙𝑜𝑐𝑘 𝑐𝑢𝑟𝑟 , 𝑓 𝑐𝑢𝑟𝑟 ) )
+> 17: return S
+
+4.2.2 Latency Amortization Constraint. The partitioner enforces a strict latency amortization constranit to ensure ResNet-18 ResNet-101  Vit-816  Vit-L16      
+
+> 120
+> 90
+> 60
+> 30
+> 0
+> Number
+> Operators Super-blocks Switching Latency
+> 0
+> 20
+> 40
+> 60
+> Switching
+> Latency (ms)
+> 7.0x 6.4x 8.5x 5.6x
+
+Figure 9. Impact of runtime graph partitioner on operator aggregation granularity and DVFS switching latency. We set aggregation factor 𝑁 = 5.that the energy savings from a DVFS switching latency are not negated by the performance penalty of the switch itself. A super-block is finalized only if its cumulative estimated execution time satisfies the condition: 
+
+𝑇 𝑏𝑙𝑜𝑐𝑘 > 𝑁 × 𝑇 𝑠𝑤𝑖𝑡𝑐ℎ (3) where 𝑁 is a tunable granularity factor that dictates the ag-gressiveness of the aggregation. If the accumulated duration of the current block is less than 𝑁 ×𝑇 𝑠𝑤𝑖𝑡𝑐ℎ , the partitioner is forced to merge the disparate operator, effectively absorbing the short operator into the long block. As shown in Figure 9, we analyze the reduction in scaling granularity and the corresponding mitigation of switching overhead across diverse architectures. The partitioner effec-tively consolidates fine-grained operators into computation-ally substantial super-blocks to satisfy the latency amorti-zation constraint (aggregation factor 𝑁 = 5). Specifically, ResNet-18 is compressed from 21 operators to just 2 super-blocks, while the deeper ResNet-101 is reduced from 105 operators to 16. Similarly, the partitioner aggregates the 38 and 74 operators of ViT-B16 and ViT-L16 into 8 and 12 super-blocks, respectively. Crucially, this reduction in granularity translates directly into a drastic decrease in cumulative DVFS switching latency. Compared to operator-level DVFS scaling, SparseDVFS reduces the total switching latency by 7.0 × for ResNet-18 and up to 8.5 × for ViT-B16. These results reveal that by enforcing 𝑇 𝑏𝑙𝑜𝑐𝑘 > 𝑁 × 𝑇 𝑠𝑤𝑖𝑡𝑐ℎ , SparseDVFS success-fully amortizes the non-negligible DVFS switching latency. 
+
+4.3 Unified Co-Governor 
+
+This component aims to execute the schedule generated by the partitioner. To mitigate the antagonistic effect ob-served in heterogeneous SoCs (i.e., section 2.3), where inde-pendent governors for CPU and GPU optimize locally and cause system-level bottlenecks—the governor implements the FUSE (i.e., frequency unified scaling engine) strategy. The default Linux governors (e.g., schedutil) react to in-stantaneous load. In a DNN inference pipeline, a GPU-heavy sparse operator might cause CPU utilization to drop, trig-gering the CPU governor to downclock. When the GPU completes its task and requests new data, the CPU is in a low-power state, causing a wake-up latency spike that stalls 
+
+> 7xxx et al.
+
+the pipeline. Our proposed unified co-governor eliminates this antagonism by treating the frequencies of the CPU, GPU, and Memory as a coupled vector . Instead of reacting to load, it proactively sets the frequency vector based on the known characteristics of the incoming super-block. 
+
+4.3.1 CPU-GPU Cooperative. To eliminate antagonis-tic effects where independent governors create bottlenecks, SparseDVFS implements a proactive race-to-submit policy by treating CPU, GPU, and memory frequencies as a coupled vector. By intercepting CUDA streams and TensorRT execu-tion queues, the co-governor identifies super-block bound-aries and immediately locks the CPU to a high-performance state to accelerate prefill tasks like data preprocessing and kernel launches. This prevents the GPU starvation typically caused by reactive governors downclocking the CPU dur-ing GPU-intensive phases. Once the kernel is offloaded, the CPU frequency is allowed to drop, effectively masking hard-ware wake-up latencies and maximizing system-wide energy efficiency without compromising throughput. 
+
+4.3.2 Memory Coordination. For sparse operators, the co-governor leverages the insight from the Roofline model that performance is memory-bound. 
+
+• Sparse Blocks: the governor locks the Memory Con-troller (EMC) to a high frequency to maximize band-width, while simultaneously lowering the GPU core frequency. This configuration saves GPU power with-out hurting performance, as the GPU was stalling on memory anyway. 
+
+• Dense Blocks: the governor scales the EMC down to the minimum level required to support the GPU’s compute throughput, reducing the significant power draw of the memory interface. 
+
+4.3.3 Pipeline-based Look-Ahead Strategy. To mitigate the impact of DVFS switching latency (e.g., 𝑇 𝑠𝑤𝑖𝑡𝑐ℎ ), the uni-fied co-governor utilizes a pipeline-based look-ahead mecha-nism. Traditional DVFS governors typically execute scaling commands serially, causing significant execution stalls as the system waits for voltage and frequency levels to stabilize. As shown in Figure 10, SparseDVFS overcomes this bottleneck by employing a pipelined command queue that submits fre-quency scaling instructions for the subsequent super-block (𝑖 + 1) to hardware registers before the current super-block (𝑖 ) completes its execution. These asynchronous instructions effectively mask the non-negligible DVFS switching latency, without inducing pipeline bubbles. The benefits of this strategy are quantified in Table 2. For instance, in ResNet-101, traditional serial DVFS switching incurs a cumulative latency of 10.81ms, which SparseDVFS drastically reduces to just 1.45ms. Similarly, for ViT-L16, the switching overhead is reduced from 7.92ms to 1.08ms. By overlapping the physical switching period with active computation, SparseDVFS ensures that the energy efficiency Time         
+
+> Super-block iSuper-block i+1 Super-block i-1 Block Execution
+> DVFS Switching
+> Governor Instruction
+> 𝑇𝑇 𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠ℎ
+> 𝑠𝑠 -1
+> Instruction i
+> 𝑇𝑇 𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠ℎ
+> 𝑠𝑠
+> Instruction i+1 Instruction i+2
+> 𝑇𝑇 𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠ℎ
+> 𝑠𝑠 +1
+> Overlapping
+
+Figure 10. Pipeline-based Look-Ahead DVFS. 
+
+Table 2. Comparison of DVFS Switching Latency between Traditional DVFS (serial execution) and Pipeline-based Look-Ahead. We set aggregation factor 𝑁 = 5.
+
+Model Traditional DVFS Pipeline Look-Ahead 
+
+ResNet-18 7.23ms 0.12ms 
+
+ResNet-101 10.81ms 1.45ms 
+
+ViT-B16 5.44ms 0.72ms 
+
+ViT-L16 7.92ms 1.08ms 
+
+gains achieved through fine-grained frequency modulation are not negated by system-level performance penalties. 
+
+## 5 Implementation 
+
+SparseDVFS is implemented as a lightweight middleware sit-uated between the deep learning framework and the Linux kernel frequency governors. The offline modeler and the runtime graph partitioner are implemented in Python, lever-aging the PyTorch 2.1 for computation graph extraction and execution time prediction. The unified co-governor is im-plemented in C++ to minimize overhead during inference. The system is deployed on an NVIDIA Jetson Orin Nano edge device (JetPack 6.0 with Linux Kernel 5.15). This edge platform features an Ampere architecture GPU and an ARM Cortex CPU, sharing unified 8GB DRAM. Unlike existing DVFS governors that operate entirely within the OS kernel space, SparseDVFS operates in userspace by in-tercepting execution streams. Specifically, we detect upcom-ing operator sequences by intercepting CUDA streams [ 44 ]and TensorRT execution queues [ 46 ]. During runtime, the unified co-governor applies the FUSE strategy by directly manipulating the device’s frequency scaling interfaces. We utilized the jetson_stats [ 2 ], specifically jtop.power() API, to monitor real-time power consumption across the CPU, GPU, and memory rails. To bypass the default governors (such as Linux schedutil [ 14 ] for the CPU governor and sim-ple_ondemand [52 ] for the GPU governor), SparseDVFS takes direct control of the clock frequencies via the jetson_clocks 
+
+provided by NVIDIA nvpmodel [45] and sysfs nodes. 
+
+> 8SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference
+
+Table 3. Detailed configuration of four DNN models.                
+
+> Model Op. Count FLOPs (G) Size (M)
+> ResNet-18 21 1.82 11.69 ResNet-101 105 7.87 44.55 ViT-B16 38 11.29 58.07 ViT-L16 74 39.86 203.36
+
+## 6 Performance Evaluation 
+
+6.1 Experiment Setup Models and Datasets. In Table 3, our evaluation use CNN-based (e.g., ResNet-18 and ResNet-101 [ 17 ]) and Transformer-based (e.g., ViT-B16 and ViT-L16 [ 9]) architectures to show the adaptability of SparseDVFS to different sparsities. All models are pre-trained on ImageNet-2012 [ 31 ] and converted to ONNX [ 49 ] before being optimized via the SparseDVFS. 
+
+Frequency Configurations. To comprehensively explore the optimization space, we utilize the full range of accessible frequencies on the Jetson Orin Nano. For CPU governor, there are 20 distinct frequency levels ranging from 115MHz to 1510MHz. For GPU governor, there 5 distinct frequency levels: 306/408/510/612/624MHz. 
+
+Baselines. We compare SparseDVFS against four power management strategies: 
+
+• Default DVFS: The standard Linux schedutil gov-ernor for the CPU and NVIDIA’s simple_ondemand 
+
+governor for the GPU, which is our default baseline. 
+
+• nvpmodel (MAX-N) [ 45 ]: A static maximum perfor-mance mode provided by NVIDIA JetPack that locks all clocks to their highest frequencies. 
+
+• GearDVFS [ 36 ]: A deep reinforcement learning (DRL)-based governor optimized for concurrent workloads that operates at a coarse model-level granularity. 
+
+• Ascend-DVFS [ 67 ]: An state-of-the-art fine-grained operator-level DVFS governor employing a genetic algorithm for frequency scaling. 
+
+6.2 Comparison of End-to-End Latency 
+
+As shown in Figure 11, SparseDVFS demonstrates the ability to maintain competitive latency while aggressively saving power. Specifically, nvpmodel (MAX-N) achieved the lowest latency by running all clocks at maximum. SparseDVFS in-curred a modest latency penalty of approximately 12.8% com-pared to MAX-N. However, it consistently outperformed the Default DVFS and matched the latency profile of GearDVFS. This slight increase is a calculated trade-off, SparseDVFS intentionally slows down sparse blocks where the "race-to-idle" strategy of MAX-N yields diminishing returns. ResNet-18 ResNet-101 Vit-B16 Vit-L16 0100 200 300 Inference Latency (ms) Default DVFS nvpmodel (MAX-N) GearDVFS Ascend-DVFS SparseDVFS Switching Latency 010 20 30 40 Switching Latency (ms) 
+
+> GPU CPU
+
+Figure 11. Comparison of end-to-end inference latency across different DNN models. ResNet-18 ResNet-101 Vit-B16 Vit-L16 
+
+> 0
+> 700
+> 1400
+> 2100
+> 2800
+> 3500
+> Energy (mJ)  Default DVFS
+> nvpmodel (MAX-N)
+> GearDVFS
+> Ascend-DVFS
+> SparseDVFS
+> Power
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> Power (W)
+
+Figure 12. Energy and power profile comparison across different DNN models. 
+
+6.3 Comparison of Energy and Power 
+
+As shown in Figure 12, Energy consumption is where SparseD-VFS exhibits its dominance. The power profile of SparseD-VFS is significantly lower and more stable than the baselines. While nvpmodel consistently draws peak power ( 15W) and GearDVFS fluctuates in the 10-12W range, SparseDVFS dy-namically modulates power between 7W and 10W depending on the operator sparsity. By reducing frequency during high-sparsity phases (e.g., ReLU-heavy blocks), it drastically cuts the integrated energy area under the curve. 
+
+6.4 Energy Efficiency Gain 
+
+In this section, We quantify energy efficiency gain as the percentage reduction in total energy consumption relative to the Default DVFS baseline. As shown in Figure 13, SparseD-VFS achieves an impressive average energy efficiency gain of 78.17%. In comparison, nvpmodel achieves a 46.86% gain (mostly due to faster execution time), GearDVFS achieves 20.25%, and Ascend-DVFS achieves 11.33%. This substantial margin highlights the efficacy of the sparse-aware block-level approach over coarser model-level strategies. 
+
+6.5 Cost-Gain Analysis 
+
+To evaluate the trade-off between performance and efficiency, we utilize the Cost-Gain Ratio [ 7 ] (lower is better), which measures the latency cost incurred for every unit of energy gain. Figure 14, SparseDVFS achieves a superior Cost-Gain Ratio of 14%. In contrast, GearDVFS (48%) and Ascend-DVFS (68%) incur significantly higher latency penalties for their 
+
+> 9
+
+xxx et al. ResNet-18 ResNet-101 Vit-B16 Vit-L16 
+
+> 0
+> 700
+> 1400
+> 2100
+> 2800
+> 3500
+> Energy (mJ)  Default DVFS
+> nvpmodel (MAX-N)
+> GearDVFS
+> Ascend-DVFS
+> SparseDVFS
+> Gain (%)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> 140
+> Energy Efficiency Gain (%)
+
+Figure 13. Normalized energy efficiency gain relative to the Default DVFS baseline. ResNet-18 ResNet-101 Vit-B16 Vit-L16  
+
+> 0Inference Latency (ms)
+> Default DVFS
+> nvpmodel (MAX-N)
+> GearDVFS
+> Ascend-DVFS
+> SparseDVFS
+> Gain (%)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> Cost-Gain Ratio (%)
+
+Figure 14. Comparison of Cost-Gain Ratio across different DVFS strategies. GPU Only +CPU Lock Fuse  
+
+> 0
+> 10
+> 20
+> 30
+> CPU Latency (ms)
+> 0
+> 10
+> 20
+> GPU Latency (ms)
+> CPU GPU
+
+(a) DOTA-v1.0 Dataset GPU Only +CPU Lock Fuse   
+
+> 0
+> 200
+> 400
+> 600
+> Energy (mJ)
+> 0
+> 5
+> 10
+> 15
+> Power (W)
+> Energy Power
+
+(b) VisDrone 2019 Dataset 
+
+Figure 15. Ablation studies of each component of the uni-fied co-governor on (a) DOTA-v1.0 and (b) VisDrone 2019 datasets, respectively. We use ViT-B16 as test load. respective energy savings. nvpmodel achieves 16%, close to SparseDVFS, but requires running at thermal limits. 
+
+6.6 Ablation Study 
+
+In this section, we conducted an ablation study on ViT-B16 using the DOTA-v1.0 and VisDrone 2019 datasets to validate the unified co-governor components. As shown in Figure 15, While GPU Only scaling suffers from the CPU-GPU antago-nistic effect, where independent CPU frequency drops dur-ing GPU-intensive phases induce wake-up latency spikes, the +CPU Lock configuration mitigates GPU starvation by maintaining the CPU in a high-performance state during crit-ical kernel launch windows. Ultimately, the full Fuse (FUSE) strategy, which treats CPU, GPU, and memory frequencies as a coupled vector, achieves optimal energy efficiency by synchronizing transitions and minimizing total integrated power consumption across diverse edge workloads. 30             
+
+> 40
+> 50
+> 60
+> Temperature (°C)  Phase 1: Fan On Phase 2: Fan Off Phase 3: Inside Case
+> Threshold
+> Default DVFS
+> nvpmodel
+> Ascend-DVFS
+> GearDVFS
+> SparseDVFS
+> 0100 200 300 400 500 600
+> Time (s)
+> 15
+> 20
+> 25
+> 30
+> 35
+> Frame Rate (FPS)
+> Default DVFS nvpmodel Ascend-DVFS GearDVFS SparseDVFS
+
+Figure 16. Thermal stability and frame rate jitter analysis of NVIDIA Jetson Orin Nano under sustained load (ViT-B16). 1 2 3 4 5 6 7 8 9 10 
+
+> The value of the amortization factor N
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Number of Super-blocks  ResNet-18
+> ResNet-101
+> ViT-B16
+> ViT-L16
+
+Figure 17. Impact of the amortization factor 𝑁 on super-block aggregation granularity. Increasing 𝑁 dictates the trade-off between operator aggregation granularity and DVFS switching latency. 
+
+6.7 Thermal Throttling for Stability Analysis 
+
+We evaluate the thermal throttling of SparseDVFS for sta-bility analysis. As shown in Figure 16, the nvpmodel and Default DVFS quickly reached the thermal throttle temper-ature, leading to severe frame rate jitter. SparseDVFS, due to its lower average power draw, maintained a stable tem-perature trajectory, delaying the onset of thermal throttling significantly. The jitter level for SparseDVFS was the low-est among all methods, proving its suitability for passively cooled edge devices. 
+
+6.8 Impact of Operator Aggregation Granularity 6.8.1 Number of Super-blocks. The amortization fac-tor 𝑁 regulates the trade-off between scaling granularity and DVFS switching latency. Figure 17 shows a consistent inverse correlation between 𝑁 and super-block count. For layer-dense models like ResNet-101, small 𝑁 (e.g., 𝑁 = 1)captures fine-grained sparsity but incurs excessive switching risks, increasing 𝑁 to 10 effectively consolidates operators into computationally significant units. Conversely, ViT-L16 exhibits a more gradual aggregation curve. Because its Trans-former blocks possess substantial execution times, the amor-tization constraint (i.e., 𝑇 𝑏𝑙𝑜𝑐𝑘 > 𝑁 ×𝑇 𝑠𝑤𝑖𝑡𝑐ℎ ) is easily satisfied even at lower 𝑁 values. 
+
+10 SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference 1 2 3 4 5 6 7 8 9 10 
+
+> The value of N
+> 10
+> 15
+> 20
+> 25
+> Inference Latency (ms)
+> Inference Latency
+> Switching Latency
+> 0
+> 2
+> 4
+> 6
+> Switching Latency (ms)
+
+(a) ResNet-18 1 2 3 4 5 6 7 8 9 10  
+
+> The value of N
+> 50
+> 70
+> 90
+> 110
+> Inference Latency (ms)
+> Inference Latency
+> Switching Latency
+> 0
+> 2
+> 4
+> 6
+> Switching Latency (ms)
+
+(b) ResNet-101 1 2 3 4 5 6 7 8 9 10 
+
+> The value of N
+> 20
+> 30
+> 40
+> 50
+> Inference Latency (ms)
+> Inference Latency
+> Switching Latency
+> 0
+> 2
+> 4
+> 6
+> Switching Latency (ms)
+
+(c) ViT-B16 1 2 3 4 5 6 7 8 9 10  
+
+> The value of N
+> 200
+> 300
+> 400
+> 500
+> Inference Latency (ms)
+> Inference Latency
+> Switching Latency
+> 5
+> 7
+> 9
+> Switching Latency (ms)
+
+(d) ViT-L16 
+
+Figure 18. Trade-off between inference latency and switch-ing overhead relative to 𝑁 .
+
+6.8.2 Inference Latency and Switching Overhead. Fig-ure 18 illustrates how 𝑁 balances inference latency and switching overhead. At 𝑁 = 1, switching latency dominates the timeline, particularly for ResNet-101. Although ViT-L16’s bigger operators buffer against switching costs, the Look-Ahead mechanism remains essential for masking transitions between its massive MLP and Attention blocks. Notably, an excessively high 𝑁 induces a frequency lag effect, where the framework misses downclocking opportunities by merging distinct and dense phases into a single block. 
+
+6.8.3 Power and Energy. As shown in Figure 19, the energy-per-inference displays a characteristic U-shaped curve relative to 𝑁 . At low 𝑁 values, the system suffers from high energy consumed during the frequent high-voltage transi-tions between blocks. Conversely, at very high 𝑁 values, the lack of granularity prevents the unified co-governor from identifying short-lived sparse windows, forcing the GPU to remain in high-power states even during memory-bound phases. For the computationally heavy ViT-L16, the energy savings are most pronounced at moderate 𝑁 settings. 
+
+## 7 Related work 
+
+Performance Modeling for Edge Inference. Existing stud-ies like nn-Meter [ 77 ] and nn-stretch [ 68 ] rely on kernel-level profiling, while EdgeFM [74], lm-Meter [66] and nnPerf [4] focus on macro-level latency. Unlike black-box models or memory-centric simulations like Symphony [ 54 ] and Spat-ula [ 11 ], SparseDVFS implements a white-box and sparsity-aware modeler. It maps operator-level sparsity to optimal frequency triplets with deterministic and lightweight lookup complexity suited for real-time edge execution. 1 2 3 4 5 6 7 8 9 10 
+
+> The value of N
+> 0
+> 100
+> 200
+> 300
+> Energy (mJ)
+> Energy (mJ)
+> Power (W)
+> 0
+> 4
+> 8
+> 12
+> Power (W)
+
+(a) ResNet-18 1 2 3 4 5 6 7 8 9 10  
+
+> The value of N
+> 600
+> 700
+> 800
+> 900
+> 1000
+> Energy (mJ)
+> Energy (mJ)
+> Power (W)
+> 8
+> 10
+> 12
+> Power (W)
+
+(b) ResNet-101 1 2 3 4 5 6 7 8 9 10 
+
+> The value of N
+> 0
+> 200
+> 400
+> 600
+> Energy (mJ)
+> Energy (mJ)
+> Power (W)
+> 0
+> 4
+> 8
+> 12
+> Power (W)
+
+(c) ViT-B16 1 2 3 4 5 6 7 8 9 10  
+
+> The value of N
+> 1600
+> 1700
+> 1800
+> 1900
+> 2000
+> Energy (mJ)
+> Energy (mJ)
+> Power (W)
+> 12
+> 14
+> Power (W)
+
+(d) ViT-L16 
+
+Figure 19. Impact of the aggregation factor 𝑁 on system power and energy consumption. 
+
+DVFS Technology for AI Accelerators. Frequency scal-ing has evolved from coarse model-level adaptation (e.g., zTT [ 26 ] and GearDVFS [ 36 ]) to prohibitive layer- or operator-level scaling (e.g., Ascend-DVFS [ 67 ] and CLONE [ 63 ]). To eliminate component interference, FUSE [ 78 ] and collabo-rative frameworks like DVFO [ 81 ] and E4 [ 80 ] have been proposed. While prior arts focus on high-overhead operator-level scaling or low-precision model-level governors, SparseD-VFS aggregates operators into super-blocks and employing a look-ahead mechanism, it effectively amortizes the non-negligible DVFS switching latency. 
+
+Sparse Optimization for DNN Models. Exploiting model sparsity and low-precision representation is a primary lever for reducing computational and memory intensity of DNN models. Algorithmic efforts like nmSPARSE [ 35 ], Sparse VILA [ 25 ], and FlashAttention-2 [ 6] focus on designing spe-cialized sparse kernels or hardware primitives like SparseC-ore [ 23 ]. While these works focus on designing specialized sparse kernels, SparseDVFS treats operator sparsity as a dy-namic control signal for DVFS. It bridges the gap between algorithmic sparsity and the physical power states of com-mercial hardware, enabling unified frequency modulation that saves energy without sacrificing model performance. 
+
+## 8 Discussion 
+
+Distinguishing Sparsity Pattern. SparseDVFS currently treats sparsity largely as a scalar ratio. However, operators with the same sparsity ratio can have different patterns [ 35 ], i.e., structured [ 70 , 75 , 83 ] (i.e., prune according to regular patterns to form a predictable sparse structure) or unstruc-tured [ 13 , 22 , 71 , 82 ] (i.e., random pruning to form arbitrary 
+
+11 xxx et al. 
+
+sparsity patterns). Unstructured sparsity often causes ran-dom memory access patterns that degrade bandwidth ef-ficiency regardless of frequency. For future work, we will refine the offline modeler to penalize unstructured sparsity, potentially assigning higher EMC frequencies to handle the inefficient access patterns compared to structured sparsity. 
+
+Memory Access Awareness. Our sparsity-aware method in SparseDVFS relys on the compute reduction aspect of sparsity. However, memory access overhead, specifically the latency of DRAM row activation, remains a critical factor. Future improvements could integrate real-time memory con-troller performance counters [ 28 , 34 , 39 , 64 , 73 ] into the runtime partitioner. This would allow the system to dynami-cally adjust the parameter based on bus contention, rather than relying solely on static profiling. 
+
+Hardware Feature Adaptation. While effective on the cur-rent hardware, the offline modeler requires device-specific profiling. A promising improvement is transfer learning [ 42 ,53 , 76 , 84 ]. This method would allow the V/F mapping learned on one device (e.g., NVIDIA Jetson Orin Nano) to be trans-ferred to another (e.g., Google Edge TPU) by adapting to the new device’s specific DVFS voltage steps and thermal characteristics without a full re-profiling run. This addresses the limitation of ignoring heterogeneous hardware features. 
+
+## 9 Conclusion 
+
+This paper introduces SparseDVFS, a block-level DVFS for energy efficiency edge inference. By elevating operator spar-sity to a first-class metric, SparseDVFS bridges the gap be-tween operators and the power states of commercial hard-ware. The block-level aggregation strategy in SparseDVFS successfully captures intra-inference computation, while mit-igating the non-negligible DVFS switching latency. 
+
+## References 
+
+[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. 2016. Layer normalization. arXiv preprint arXiv:1607.06450 (2016). [2] Raffaello Bonghi. 2026. jetson-stats: Interactive system-monitoring and control utility for NVIDIA Jetson family. https://github.com/ rbonghi/jetson-stats Accessed: 2026-03-01. [3] Seungbeom Choi, Sunho Lee, Yeonjae Kim, Jongse Park, Youngjin Kwon, and Jaehyuk Huh. 2022. Serving heterogeneous machine learn-ing models on {Multi-GPU } servers with {Spatio-Temporal } sharing. In 2022 USENIX Annual Technical Conference (USENIX ATC 22) . 199– 216. [4] Haolin Chu, Xiaolong Zheng, Liang Liu, and Huadong Ma. 2023. nnPerf: Demystifying DNN runtime inference latency on mobile plat-forms. In Proceedings of the 21st ACM Conference on Embedded Net-worked Sensor Systems . 125–137. [5] Weihao Cui, Han Zhao, Quan Chen, Hao Wei, Zirui Li, Deze Zeng, Chao Li, and Minyi Guo. 2022. {DVABatch }: Diversity-aware {Multi-Entry } { Multi-Exit } batching for efficient processing of {DNN } ser-vices on {GPUs }. In 2022 USENIX Annual Technical Conference (USENIX ATC 22) . 183–198. [6] Tri Dao. 2023. Flashattention-2: Faster attention with better parallelism and work partitioning. arXiv preprint arXiv:2307.08691 (2023). [7] Kemal Davaslioglu and Ender Ayanoglu. 2014. Quantifying poten-tial energy efficiency gain in green cellular wireless networks. IEEE Communications Surveys & Tutorials 16, 4 (2014), 2065–2091. [8] Nan Ding and Samuel Williams. 2019. An instruction roofline model for gpus. In 2019 IEEE/ACM Performance Modeling, Benchmarking and Simulation of High Performance Computer Systems (PMBS) . IEEE, 7–18. [9] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weis-senborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al . 2021. An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale. In International Conference on Learning Representations .[10] Hongxiang Fan, Stylianos I Venieris, Alexandros Kouris, and Nicholas Lane. 2023. Sparse-dysta: Sparsity-aware dynamic and static schedul-ing for sparse multi-dnn workloads. In Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture . 353–366. [11] Axel Feldmann and Daniel Sanchez. 2023. Spatula: A hardware accel-erator for sparse matrix factorization. In Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture . 91–104. [12] Xavier Glorot, Antoine Bordes, and Yoshua Bengio. 2011. Deep sparse rectifier neural networks. In Proceedings of the fourteenth international conference on artificial intelligence and statistics . JMLR Workshop and Conference Proceedings, 315–323. [13] Ashish Gondimalla, Mithuna Thottethodi, and TN Vijaykumar. 2023. Eureka: Efficient tensor cores for one-sided unstructured sparsity in dnn inference. In Proceedings of the 56th Annual IEEE/ACM Interna-tional Symposium on Microarchitecture . 324–337. [14] Redha Gouicem, Damien Carver, Jean-Pierre Lozi, Julien Sopena, Bap-tiste Lepers, Willy Zwaenepoel, Nicolas Palix, Julia Lawall, and Gilles Muller. 2020. Fewer Cores, More Hertz: Leveraging {High-Frequency }
+
+Cores in the {OS } Scheduler for Improved Application Performance. In 2020 USENIX Annual Technical Conference (USENIX ATC 20) . 435– 448. [15] Joao Guerreiro, Aleksandar Ilic, Nuno Roma, and Pedro Tomas. 2018. GPGPU power modeling for multi-domain voltage-frequency scaling. In 2018 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 789–800. [16] Mingcong Han, Hanze Zhang, Rong Chen, and Haibo Chen. 2022. Microsecond-scale preemption for concurrent {GPU-accelerated } { DNN } inferences. In 16th USENIX Symposium on Oper-ating Systems Design and Implementation (OSDI 22) . 539–558. [17] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual learning for image recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition . 770–778. [18] Christopher Henard, Mike Papadakis, Mark Harman, Yue Jia, and Yves Le Traon. 2016. Comparing white-box and black-box test prioritiza-tion. In Proceedings of the 38th International conference on software engineering . 523–534. [19] Dan Hendrycks and Kevin Gimpel. 2016. Gaussian error linear units (gelus). arXiv preprint arXiv:1606.08415 (2016). [20] Mark Hill and Vijay Janapa Reddi. 2019. Gables: A roofline model for mobile socs. In 2019 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 317–330. [21] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko, Weijun Wang, Tobias Weyand, Marco Andreetto, and Hartwig Adam. 2017. Mobilenets: Efficient convolutional neural networks for mobile vision applications. arXiv preprint arXiv:1704.04861 (2017). [22] Geonhwa Jeong, Po-An Tsai, Abhimanyu R Bambhaniya, Stephen W Keckler, and Tushar Krishna. 2025. Enabling unstructured sparse acceleration on structured sparse accelerators. Proceedings of Machine Learning and Systems 7 (2025). [23] Norm Jouppi, George Kurian, Sheng Li, Peter Ma, Rahul Nagarajan, Lifeng Nai, Nishant Patil, Suvinay Subramanian, Andy Swing, Brian Towles, et al . 2023. Tpu v4: An optically reconfigurable supercom-puter for machine learning with hardware support for embeddings. In 12 SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference 
+
+Proceedings of the 50th annual international symposium on computer architecture . 1–14. [24] Vijay Kandiah, Scott Peverelle, Mahmoud Khairy, Junrui Pan, Amogh Manjunath, Timothy G Rogers, Tor M Aamodt, and Nikos Hardav-ellas. 2021. AccelWattch: A power modeling framework for modern GPUs. In MICRO-54: 54th Annual IEEE/ACM International symposium on microarchitecture . 738–753. [25] Samir Khaki, Junxian Guo, Jiaming Tang, Shang Yang, Yukang Chen, Konstantinos N Plataniotis, Yao Lu, Song Han, and Zhijian Liu. 2025. SparseVILA: Decoupling Visual Sparsity for Efficient VLM Inference. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 23784–23794. [26] Seyeon Kim, Kyungmin Bin, Sangtae Ha, Kyunghan Lee, and Song Chong. 2021. zTT: learning-based DVFS with zero thermal throttling for mobile devices. In Proceedings of the 19th Annual International Conference on Mobile Systems, Applications, and Services . 41–53. [27] Seyeon Kim, Kyungmin Bin, Sangtae Ha, Kyunghan Lee, and Song Chong. 2022. zTT: Learning-based DVFS with zero thermal throttling for mobile devices. GetMobile: Mobile Computing and Communications 
+
+25, 4 (2022), 30–34. [28] Seah Kim, Hasan Genc, Vadim Vadimovich Nikiforov, Krste Asanović, Borivoje Nikolić, and Yakun Sophia Shao. 2023. MoCA: Memory-centric, adaptive execution for multi-tenant deep neural networks. In 
+
+2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 828–841. [29] Seah Kim, Hyoukjun Kwon, Jinook Song, Jihyuck Jo, Yu-Hsin Chen, Liangzhen Lai, and Vikas Chandra. 2023. Dream: A dynamic scheduler for dynamic real-time multi-model ml workloads. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 4 . 73–86. [30] Youngsok Kim, Joonsung Kim, Dongju Chae, Daehyun Kim, and Jang-woo Kim. 2019. 𝜇 layer: Low latency on-device inference using coop-erative single-layer acceleration and processor-friendly quantization. In Proceedings of the Fourteenth EuroSys Conference 2019 . 1–15. [31] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton. 2012. Im-agenet classification with deep convolutional neural networks. Ad-vances in neural information processing systems 25 (2012). [32] Yann LeCun, Bernhard Boser, John S Denker, Donnie Henderson, Richard E Howard, Wayne Hubbard, and Lawrence D Jackel. 1989. Backpropagation applied to handwritten zip code recognition. Neural computation 1, 4 (1989), 541–551. [33] Yann LeCun, Léon Bottou, Yoshua Bengio, and Patrick Haffner. 1998. Gradient-based learning applied to document recognition. Proc. IEEE 
+
+86, 11 (1998), 2278–2324. [34] Huaicheng Li, Daniel S Berger, Lisa Hsu, Daniel Ernst, Pantea Zar-doshti, Stanko Novakovic, Monish Shah, Samir Rajadnya, Scott Lee, Ishwar Agarwal, et al . 2023. Pond: Cxl-based memory pooling sys-tems for cloud platforms. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . 574–587. [35] Bin Lin, Ningxin Zheng, Lei Wang, Shijie Cao, Lingxiao Ma, Quanlu Zhang, Yi Zhu, Ting Cao, Jilong Xue, Yuqing Yang, et al . 2023. Efficient gpu kernels for n: m-sparse weights in deep learning. Proceedings of Machine Learning and Systems 5 (2023), 513–525. [36] Chengdong Lin, Kun Wang, Zhenjiang Li, and Yu Pu. 2023. A workload-aware DVFS robust to concurrent tasks for mobile devices. In Proceed-ings of the 29th Annual International Conference on Mobile Computing and Networking . 1–16. [37] Ji Lin, Wei-Ming Chen, Yujun Lin, Chuang Gan, Song Han, et al . 2020. Mcunet: Tiny deep learning on iot devices. Advances in neural infor-mation processing systems 33 (2020), 11711–11722. [38] Neiwen Ling, Xuan Huang, Zhihe Zhao, Nan Guan, Zhenyu Yan, and Guoliang Xing. 2022. Blastnet: Exploiting duo-blocks for cross-processor real-time dnn inference. In Proceedings of the 20th ACM Conference on Embedded Networked Sensor Systems . 91–105. [39] Jinshu Liu, Hamid Hadian, Yuyue Wang, Daniel S Berger, Marie Nguyen, Xun Jian, Sam H Noh, and Huaicheng Li. 2025. System-atic cxl memory characterization and performance analysis at scale. In 
+
+Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 .1203–1217. [40] Zihan Liu, Jingwen Leng, Zhihui Zhang, Quan Chen, Chao Li, and Minyi Guo. 2022. VELTAIR: towards high-performance multi-tenant deep learning services via adaptive compilation and scheduling. In 
+
+Proceedings of the 27th ACM international conference on architectural support for programming languages and operating systems . 388–401. [41] Pietro Mercati, Andrea Bartolini, Francesco Paterna, Tajana Simunic Rosing, and Luca Benini. 2014. A linux-governor based dynamic relia-bility manager for android mobile devices. In 2014 Design, Automation & Test in Europe Conference & Exhibition (DATE) . IEEE, 1–4. [42] Behnam Neyshabur, Hanie Sedghi, and Chiyuan Zhang. 2020. What is being transferred in transfer learning? Advances in neural information processing systems 33 (2020), 512–523. [43] Vinod Nigade, Pablo Bauszat, Henri Bal, and Lin Wang. 2022. Jellyfish: Timely inference serving for dynamic edge networks. In 2022 IEEE Real-Time Systems Symposium (RTSS) . IEEE, 277–290. [44] NVIDIA Corporation. 2026. NVIDIA CUDA C Programming Guide. 
+
+https://docs.nvidia.com/cuda/ Accessed: 2026-03-01. [45] NVIDIA Corporation. 2026. NVIDIA Jetson Linux Developer Guide: NVPModel Command-Line Tool . https://docs.nvidia.com/jetson/ archives/ Accessed: 2026-03-01. [46] NVIDIA Corporation. 2026. NVIDIA TensorRT: Programmable Deep Learning Accelerator. https://developer.nvidia.com/tensorrt Accessed: 2026-03-01. [47] NVIDIA Jetson Modules. 2026. NVIDIA Jetson Modules for Edge AI and Robotics. https://developer.nvidia.com/embedded/jetson-modules Accessed: 2026-03-01. [48] Young H Oh, Seonghak Kim, Yunho Jin, Sam Son, Jonghyun Bae, Jongsung Lee, Yeonhong Park, Dong Uk Kim, Tae Jun Ham, and Jae W Lee. 2021. Layerweaver: Maximizing resource utilization of neural processing units via layer-wise scheduling. In 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 584–597. [49] ONNX Project Developers. 2026. ONNX: Open Neural Network Ex-change. https://github.com/onnx/onnx Accessed: 2026-03-01. [50] Xiaomin Ouyang, Xian Shuai, Jiayu Zhou, Ivy Wang Shi, Zhiyuan Xie, Guoliang Xing, and Jianwei Huang. 2022. Cosmo: contrastive fusion learning with small data for multimodal human activity recognition. In Proceedings of the 28th Annual International Conference on Mobile Computing And Networking . 324–337. [51] Arthi Padmanabhan, Neil Agarwal, Anand Iyer, Ganesh Anantha-narayanan, Yuanchao Shu, Nikolaos Karianakis, Guoqing Harry Xu, and Ravi Netravali. 2023. Gemel: Model merging for {Memory-Efficient },{Real-Time } video analytics at the edge. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . 973–994. [52] Venkatesh Pallipadi and Alexey Starikovskiy. 2006. The ondemand governor. In Proceedings of the linux symposium , Vol. 2. 215–230. [53] Sinno Jialin Pan and Qiang Yang. 2009. A survey on transfer learning. 
+
+IEEE Transactions on knowledge and data engineering 22, 10 (2009), 1345–1359. [54] Michael Pellauer, Jason Clemons, Vignesh Balaji, Neal Crago, Aamer Jaleel, Donghyuk Lee, Mike O’Connor, Angshuman Parashar, Sean Treichler, Po-An Tsai, et al . 2023. Symphony: Orchestrating sparse and dense tensors with hierarchical heterogeneous processing. ACM Transactions on Computer Systems 41, 1-4 (2023), 1–30. [55] Padmanabhan Pillai and Kang G Shin. 2001. Real-time dynamic voltage scaling for low-power embedded operating systems. In Proceedings 
+
+13 xxx et al. 
+
+of the eighteenth ACM symposium on Operating systems principles .89–102. [56] Enrico Reggiani, Cristóbal Ramírez Lazo, Roger Figueras Bagué, Adrián Cristal, Mauro Olivieri, and Osman Sabri Unsal. 2022. Bison-e: A lightweight and high-performance accelerator for narrow integer linear algebra computing on the edge. In Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems . 56–69. [57] Joseph Rogers, Taha Soliman, and Magnus Jahre. 2024. AIO: An abstraction for performance analysis across diverse accelerator archi-tectures. In 2024 ACM/IEEE 51st Annual International Symposium on Computer Architecture (ISCA) . IEEE, 487–500. [58] Shuyao Shi, Jiahe Cui, Zhehao Jiang, Zhenyu Yan, Guoliang Xing, Jianwei Niu, and Zhenchao Ouyang. 2022. VIPS: Real-time perception fusion for infrastructure-assisted autonomous driving. In Proceedings of the 28th annual international conference on mobile computing and networking . 133–146. [59] Karen Simonyan and Andrew Zisserman. 2014. Very deep convo-lutional networks for large-scale image recognition. arXiv preprint arXiv:1409.1556 (2014). [60] Marco Siracusa, Lorenzo Di Tucci, Marco Rabozzi, Samuel Williams, Emanuele Del Sozzo, and Marco D Santambrogio. 2020. A cad-based methodology to optimize hls code via the roofline model. In Proceed-ings of the 39th International Conference on Computer-Aided Design .1–9. [61] Yixin Song, Zeyu Mi, Haotong Xie, and Haibo Chen. 2024. Powerinfer: Fast large language model serving with a consumer-grade gpu. In 
+
+Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles . 590–606. [62] Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. 2024. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774 (2024). [63] Chunlin Tian, Xinpeng Qin, Kahou Tam, Li Li, Zijian Wang, Yuanzhe Zhao, Minglei Zhang, and Chengzhong Xu. 2025. {CLONE }: Customiz-ing {LLMs } for Efficient {Latency-Aware } Inference at the Edge. In 
+
+2025 USENIX Annual Technical Conference (USENIX ATC 25) . 563–585. [64] Wen-Jer Tsai, Chun-Chang Lu, Ting-En Hsieh, Tao-Cheng Lu, Kuang-Chao Chen, Tuo-Hung Hou, and Chih-Yuan Lu. 2026. A Page-Buffer and Fail-Bit Counter-Based In-Memory Computing Platform for 3D NAND Flash Memory. IEEE Journal on Emerging and Selected Topics in Circuits and Systems (2026). [65] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. Advances in neural information processing systems 30 (2017). [66] Haoxin Wang, Xiaolong Tu, Hongyu Ke, Huirong Chai, Dawei Chen, and Kyungtae Han. 2025. lm-Meter: Unveiling Runtime Inference Latency for On-Device Language Models. In Proceedings of the Tenth ACM/IEEE Symposium on Edge Computing . 1–17. [67] Zibo Wang, Yijia Zhang, Fuchun Wei, Bingqiang Wang, Yanlin Liu, Zhiheng Hu, Jingyi Zhang, Xiaoxin Xu, Jian He, Xiaoliang Wang, et al .2025. Using analytical performance/power model and fine-grained dvfs to enhance ai accelerator energy efficiency. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 . 1118–1132. [68] Jianyu Wei, Ting Cao, Shijie Cao, Shiqi Jiang, Shaowei Fu, Mao Yang, Yanyong Zhang, and Yunxin Liu. 2023. Nn-stretch: Automatic neural network branching for parallel inference on heterogeneous multi-processors. In Proceedings of the 21st Annual International Conference on Mobile Systems, Applications and Services . 70–83. [69] Hao Wen, Yuanchun Li, Zunshuai Zhang, Shiqi Jiang, Xiaozhou Ye, Ye Ouyang, Yaqin Zhang, and Yunxin Liu. 2023. Adaptivenet: Post-deployment neural architecture adaptation for diverse edge environ-ments. In Proceedings of the 29th Annual International Conference on Mobile Computing and Networking . 1–17. [70] Wei Wen, Chunpeng Wu, Yandan Wang, Yiran Chen, and Hai Li. 2016. Learning structured sparsity in deep neural networks. Advances in neural information processing systems 29 (2016). [71] Lucas Wilkinson, Kazem Cheshmi, and Maryam Mehri Dehnavi. 2023. Register tiling for unstructured sparsity in neural network inference. 
+
+Proceedings of the ACM on Programming Languages 7, PLDI (2023), 1995–2020. [72] Samuel Williams, Andrew Waterman, and David Patterson. 2009. Roofline: an insightful visual performance model for multicore ar-chitectures. Commun. ACM 52, 4 (2009), 65–76. [73] Jeonghyun Woo, Gururaj Saileshwar, and Prashant J Nair. 2023. Scal-able and secure row-swap: Efficient and safe row hammer mitigation in memory systems. In 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 374–389. [74] Bufang Yang, Lixing He, Neiwen Ling, Zhenyu Yan, Guoliang Xing, Xian Shuai, Xiaozhe Ren, and Xin Jiang. 2023. Edgefm: Leveraging foundation model for open-set learning on the edge. In Proceedings of the 21st ACM conference on embedded networked sensor systems .111–124. [75] Shang Yang, Junxian Guo, Haotian Tang, Qinghao Hu, Guangxuan Xiao, Jiaming Tang, Yujun Lin, Zhijian Liu, Yao Lu, and Song Han. 2025. Lserve: Efficient long-sequence llm serving with unified sparse attention. Proceedings of Machine Learning and Systems 7 (2025). [76] Wei Ying, Yu Zhang, Junzhou Huang, and Qiang Yang. 2018. Transfer learning via learning to transfer. In International conference on machine learning . PMLR, 5085–5094. [77] Li Lyna Zhang, Shihao Han, Jianyu Wei, Ningxin Zheng, Ting Cao, Yuqing Yang, and Yunxin Liu. 2021. Nn-meter: Towards accurate latency prediction of deep-learning model inference on diverse edge devices. In Proceedings of the 19th Annual International Conference on Mobile Systems, Applications, and Services . 81–93. [78] Zongpu Zhang, Pranab Dash, Y Charlie Hu, Qiang Xu, Jian Li, and Haibing Guan. 2025. Dissecting the Impact of Mobile DVFS Governors on LLM Inference Performance and Energy Efficiency. arXiv preprint arXiv:2507.02135 (2025). [79] Ziyang Zhang, Huan Li, Yang Zhao, Changyao Lin, and Jie Liu. 2023. Pos: An operator scheduling framework for multi-model inference on edge intelligent computing. In Proceedings of the 22nd International Conference on Information Processing in Sensor Networks . 40–52. [80] Ziyang Zhang, Yang Zhao, Ming-Ching Chang, Changyao Lin, and Jie Liu. 2025. E4: Energy-Efficient DNN Inference for Edge Video Analytics Via Early Exiting and DVFS. In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 39. 1165–1173. [81] Ziyang Zhang, Yang Zhao, Huan Li, Changyao Lin, and Jie Liu. 2024. DVFO: Learning-based DVFS for energy-efficient edge-cloud collabo-rative inference. IEEE Transactions on Mobile Computing 23, 10 (2024), 9042–9059. [82] Tiandong Zhao, Shaoqiang Lu, Chen Wu, and Lei He. 2024. ChatOPU: An FPGA-based overlay processor for large language models with un-structured sparsity. In Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design . 1–9. [83] Qianchao Zhu, Jiangfei Duan, Chang Chen, Siran Liu, Xiuhong Li, Guanyu Feng, Xin Lv, Xiao Chuanfu, Dahua Lin, and Chao Yang. 2025. Sampleattention: Near-lossless acceleration of long context llm inference with adaptive structured sparse attention. Proceedings of Machine Learning and Systems 7 (2025). [84] Fuzhen Zhuang, Zhiyuan Qi, Keyu Duan, Dongbo Xi, Yongchun Zhu, Hengshu Zhu, Hui Xiong, and Qing He. 2020. A comprehensive survey on transfer learning. Proc. IEEE 109, 1 (2020), 43–76. 14

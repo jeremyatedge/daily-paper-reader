@@ -1,0 +1,1421 @@
+Title: DynamicGate MLP Conditional Computation via Learned Structural Dropout and Input Dependent Gating for Functional Plasticity
+
+URL Source: https://arxiv.org/pdf/2603.16367v1
+
+Published Time: Wed, 18 Mar 2026 01:00:36 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+DynamicGate‑MLP: Conditional Computation via Learned Structural Dropout and Input‑Dependent Gating for Functional Plasticity Yong Il Choi Sorynorydotcom Co., Ltd./AI Open Research Lab: hurstchoi@sorynory.com https://orcid.org/0009-0009-8813-5420 December 24, 2025 
+
+Abstract 
+
+Dropout is a representative regularization technique that stochastically deactivates hidden units during training to mitigate overfitting. In contrast, standard inference executes the full network with dense com-putation, so its goal and mechanism differ from conditional computation, where the executed operations depend on the input. This paper organizes DynamicGate-MLP into a single framework that simultane-ously satisfies both the regularization view and the conditional-computation view. Instead of a random mask, the proposed model learns gates that decide whether to use each unit (or block), suppressing un-necessary computation while implementing sample-dependent execution that concentrates computation on the parts needed for each input. To this end, we define continuous gate probabilities and, at inference time, generate a discrete execution mask from them to select an execution path. Training controls the compute budget via a penalty on expected gate usage and uses a Straight-Through Estimator (STE) to optimize the discrete mask. We evaluate DynamicGate-MLP on MNIST, CIFAR-10, Tiny-ImageNet, Speech Commands, and PBMC3k, and compare it with various MLP baselines and MoE-style variants. Compute efficiency is compared under a consistent criterion using gate activation ratios and a layer-weighted relative MAC metric, rather than wall-clock latency that depends on hardware and backend kernels. 
+
+# Introduction 
+
+## 1.1 Motivation 
+
+The starting point of this study dates back to the mid-2000s, when we encountered early neuromorphic chips such as General Vision and IBM’s ZISC and began to suspect that “brain-inspired” chips might point beyond the traditional von Neumann architecture. Later, while training and analyzing large neural networks—especially LLMs—we repeatedly observed that dense computation in hidden layers is structurally far from biological mechanisms such as neuronal firing/silence and synaptic plasticity. We also found that sparse-activation phenomena such as firing/silence can be approximated more precisely in a mathematical form. Considering the current technical limitations of neuromorphic hardware, we believe there is a need for conditional-computation structures that are implementable on general-purpose hardware. In this context, we designed DynamicGate-MLP, which selectively performs computation via input-dependent gating. 
+
+## 1.2 Problem Statement 
+
+Deep learning models are often over-parameterized, which can be beneficial for expressivity and optimization but increases compute cost and may raise the risk of overfitting. Dropout is a widely used regularization method that removes random units during training to reduce co-adaptation and improve generalization[1]. However, standard dropout has the following limitations. • Sparsity only during training (Training-time sparsity only) : inference is typically executed with dense computation, making it difficult to translate into conditional execution. • Input-agnostic stochasticity (Input-agnostic stochasticity) : in standard dropout, the mask is not chosen adaptively per input, but is sampled from fixed-probability randomness. Pruning, on the other hand, can compress a model by removing weights/channels after training[14], but it typically applies the same static structure to all inputs. Conditional computation and sparse routing aim to reduce average computation by executing only a subset of paths per input; Mixture-of-Experts (MoE)[12] and Switch Transformer[13] are representative examples. 1
+
+> arXiv:2603.16367v1 [cs.LG] 17 Mar 2026
+
+## 1.3 Core Idea 
+
+Input Hidden layer (all neurons active) Output 
+
+(a) Baseline 
+
+Input Hidden layer + random mask (training only) Output 
+
+(b) Dropout 
+
+Input Hidden layer (static sparsity) Output 
+
+(c) Pruning 
+
+Input Hidden layer + input-dependent gates (z(x), p (x), g (x)) Output 
+
+(d) DynamicGate-MLP 
+
+Input Hidden layer + dynamic sparse rewiring (RigL) (m(t), W ⊙ m(t)) Output 
+
+(e) RigL (Dynamic Sparse Training) 
+
+Input Hidden layer + input-dependent gates (z(x), p (x), g (x)) 
+
++ RigL dynamic rewiring (m(t), W ⊙ m(t)) Output 
+
+(f) DynamicGate-MLP + RigL (Gated Dynamic Sparse) 
+
+Figure 1: Conceptual comparison: Baseline / Dropout / Pruning / DynamicGate-MLP / RigL / Dynamic-Gate‑MLP + RigL DynamicGate-MLP can control sample-wise activation patterns via input-dependent gating. In Fig. 1, (d) and (f) are models newly designed in this work. This paper connects dropout–pruning–conditional compu-tation into a single narrative through DynamicGate-MLP. The core idea of DynamicGate-MLP is to implement the viewpoint: “turn units off like dropout, but not randomly—turn them off by learning, and turn them off differently for each input at execution time.” Con-cretely, we insert learnable gates into each layer, replacing dropout’s random mask with a learned gate probability p. We then discretize this probability with a threshold to obtain a hard mask g(x), allowing only selected units (or blocks) to participate in computation. At the same time, by including a penalty on gate usage (e.g., E[p]) in the objective, we can directly tune the activation-rate (compute) budget during training while maintaining accuracy. Furthermore, combining grow-and-prune methods such as RigL/SET enables an extension that couples fast time-scale functional selection (“which units to use for this input”) with slow time-scale structural change (“which connections should exist at all”). From a neuroscience per-spective, the brain exhibits both functional plasticity—selectively activating circuits depending on tasks and context—and structural plasticity—reconfiguring circuits via synapse/spine formation and elimination[27,28]. 2Figure 2: Conceptual diagram of the gating layer DynamicGate-MLP focuses primarily on the former (functional selection), while its combination with RigL-style rewiring can complementarily connect it to the latter (structural change). 
+
+## 1.4 Contributions 
+
+• We introduce a shared gating structure that decides unit activation, unifying dropout-style probabilistic masking (during training) and input-dependent conditional execution (at inference) within a single gating layer. • We introduce expected gate-usage regularization to directly control a compute budget and provide an implementable training method that stably learns a discrete gate policy via STE. • We compare Baseline / Dropout / Pruned / DynamicGate-MLP / RigL / DynamicGate-MLP + RigL on MNIST and CIFAR. • We report compute using proxy metrics based on gate activation ratios (Compute Proxy) and a MAC-weighted relative metric (RelMAC), and we do not equate these directly with wall-clock latency, which depends on backend optimizations. 3Figure 3: Conceptual illustration of active and silent neurons 
+
+# 2. Background and Related Work 
+
+## 2.1 Neuronal firing, silence, and removal as conditional computation 
+
+In neuroscience, neuronal silence refers to a state where a neuron structurally exists but does not fire under certain conditions. This can be understood as part of sparse information processing in which we do not “always compute everything” but rather “compute only when needed.” Over longer time scales, it is also related to structural changes such as pruning, where rarely used connections weaken or are removed. This view can be summarized as follows. • Short term: input-dependent firing/silence (functional selection) • Long term: removal/rewiring based on usage statistics (structural change) DynamicGate-MLP implements such “reversible silence” via input-dependent gating, (reversible silence) 1 and it provides a bridge between gating and pruning in that units with low average gate usage can become candidates for long-term removal. 
+
+## 2.2 Dropout, DropConnect, and Bayesian interpretations 
+
+Dropout[1] and DropConnect[2] stochastically deactivate units or connections during training to improve generalization 2. Dropout can also be interpreted from a Bayesian approximation perspective[4], and many extensions exist, including variational dropout[3] and Concrete Dropout[5]. DynamicGate-MLP can be viewed as a learnable/structured variant of dropout in that it uses extbflearned gate probabilities instead of a fixed-probability random mask. 
+
+## 2.3 Learned sparsity, discrete gating, and continuous relaxations 
+
+L0-regularization-based sparse learning[7] learns structural sparsity by directly controlling the expected activation of a mask. To make discrete choices differentiable, various methods have been proposed, including 
+
+> 1Here, “reversible silence” means that a unit/connection is not permanently removed, but is temporarily deactivated depend-ing on the input and thus excluded from computation. Therefore, an inactive unit can become active again for future inputs, and once re-activated, the parameters on that path re-enter gradient updates from that point onward.
+> 2I.e., improving performance on unseen inputs.
+
+4STE[6], Gumbel-Softmax[8], and Concrete distributions[9]. For simplicity and clarity of implementation, this paper focuses on hard threshold-based discrete gates trained with STE. 
+
+## 2.4 Pruning, structured sparsity, and hardware friendliness 
+
+Pruning compresses a model by removing weights/channels/filters[14]. The Lottery Ticket Hypothesis[15] and Movement Pruning[16] discuss the existence of learnable sparse structures and training strategies. Struc-tured pruning (at the channel/filter level)[17] is often favorable for real speedups, but it typically yields a static structure with weak input dependence. 
+
+## 2.5 Conditional computation, MoE, and adaptive computation 
+
+Conditional computation reduces average computation by executing only a subset of paths for each input. ACT[11], MoE[12], and Switch Transformer[13] are representative approaches. Unlike MoE, which introduces multiple experts, DynamicGate-MLP implements selective execution of units (or blocks) inside a simple MLP, aiming for a compact formulation that explicitly includes budget control. 
+
+## 2.6 Dynamic sparse training (DST) and rewiring 
+
+SET[20] and RigL[30] are dynamic sparse training (DST) methods that prune and regrow connections during training, offering a rewiring perspective in which the structure itself changes over time. While this paper primarily focuses on functional gating, we later present an extension that combines gating with rewiring. 
+
+# 3. DynamicGate‑MLP: Unified Formulation 
+
+Consider an L-layer MLP. For an input x, let h(ℓ−1) (x) denote the activation vector of layer ℓ−1. A standard linear layer is defined as follows. 
+
+z(l)(x) = W (l)h(l−1) (x) + b(l),h(l)raw (x) = ϕ(z(l)(x)) (1) DynamicGate-MLP multiplies each hidden unit by a gate. 
+
+h(l)(x) = g(l)(x) ⊙ h(l)raw (x). (2) .Here, g(l)(x) is defined as follows: 
+
+g(l)(x) ∈ [0 , 1] (soft gate ), g(l)(x) ∈ { 0, 1} (hard gate ). (3) That is, a soft gate is a real value between 0 and 1, while a hard gate takes either 0 or 1. 
+
+## 3.1 Static vs. dynamic gating 
+
+• Static (input-agnostic): for each unit, introduce a learnable logit Z(l) 
+
+> i
+
+and produce a fixed probability P(l) 
+
+> i
+
+.This can be interpreted as learned structural dropout. • Dynamic (input-dependent): using a small gate network. 
+
+(1) Logit (score) generation 
+
+z(l) 
+
+> g
+
+(x) = GateNet 
+
+(
+
+h(l−1) (x)
+
+)
+
+(4) • h(l−1) (x): representation from the previous layer (feature vector) 5• GateN et (·): a small network that decides “which neurons/blocks to open, and by how much, for this input.” This naturally connects to conditional computation [11, 12]. 
+
+z(l) 
+
+> g
+
+(x): logit = the gate’s “raw score” • Value range: (−∞ , +∞)
+
+• Meaning: learned toward large positive values if it should open, and toward large negative values if it should close 
+
+(2) Converting to gate probabilities with a sigmoid 
+
+• σ(t) = 11 + e−t (sigmoid) • Result: g(l)(x) ∈ (0 , 1) 
+
+• Interpretation: 
+
+– zg ≫ 0 ⇒ g ≈ 1 (almost fully ON) 
+
+– zg ≪ 0 ⇒ g ≈ 0 (almost fully OFF) 
+
+– zg = 0 ⇒ g = 0 .5
+
+In other words, this step converts GateNet’s score zg into something like the probability/fraction that the gate is ON. 
+
+## 3.2 Probability parameterization, threshold, and temperature 
+
+From the gate logit Z(l) 
+
+> i
+
+(x), we define 
+
+p(ℓ) 
+
+> i
+
+(x) = σ
+
+( z(ℓ) 
+
+> g,i
+
+(x)
+
+τ
+
+)
+
+, g(ℓ) 
+
+> i
+
+(x) = ⊮3
+
+[
+
+p(ℓ) 
+
+> i
+
+(x) > θ 
+
+]
+
+. (5) where τ is the temperature and θ is a global hard threshold. (Extension: if layerwise thresholds are needed, this can be generalized to θ(l), but for simplicity we use a global θ.) For stability, training may use soft gating ( p), while the deployment/inference policy is often defined by hard gating ( g). Accordingly, we distinguish the following when reporting results. • Training proxy: E[p] (differentiable expected activation) • Deployment activation: E[g] = E[1( p > θ )] 
+
+## 3.3 Budget control via expected gate usage 
+
+We denote the total objective by J to avoid confusion with the number of layers L.
+
+J = Ltask + λgL−1∑
+
+> ℓ=1
+
+1
+
+nℓnℓ∑
+
+> i=1
+
+¯p(ℓ) 
+
+> i
+
+, ¯p(ℓ) 
+
+> i
+
+= 1
+
+|B|
+
+∑
+
+> x∈B
+
+p(ℓ) 
+
+> i
+
+(x). (6) 
+
+(1) Expected activation ratio of layer l (definition) 
+
+ρ(l) := 1
+
+nlnl∑
+
+> i=1
+
+E
+
+[
+
+p(l) 
+
+> i
+
+(x)
+
+]
+
+≈ 1
+
+nlnl∑
+
+> i=1
+
+1
+
+| B |
+
+∑
+
+> x∈B
+
+p(l) 
+
+> i
+
+(x) (7) 
+
+> 3⊮: the indicator function.
+
+6ρ(l) indicates “how much (probabilistically) layer l is ON on average.” 
+
+(2) The corresponding penalty term in the objective 
+
+λgL−1∑
+
+> l=1
+
+ρ(l) (8) This is similar to L0-style sparse learning objectives [7]. 
+
+(3) Compute-cost weighting (optional). If we introduce a per-unit compute cost C(l) 
+
+> i
+
+, then 
+
+J = Ltask + λgL−1∑
+
+> ℓ=1
+
+∑nℓ 
+
+> i=1
+
+c(ℓ) 
+
+> i
+
+p(ℓ)
+
+> i
+
+∑nℓ 
+
+> i=1
+
+c(ℓ)
+
+> i
+
+. (9) which enables cost-aligned budget control [17]. 
+
+## 3.4 Top‑k gating (optional hard budget) 
+
+Instead of a threshold, one can activate exactly kℓ units per layer: 
+
+g(ℓ)(x) = TopK 
+
+(
+
+p(ℓ)(x), k ℓ
+
+)
+
+. (10) enforces exactly kℓ activations per layer to guarantee a strict budget, but it may reduce the flexibility of per-input adaptive control [13]. 
+
+## 3.5 Learning discrete gates via STE 
+
+Because hard gates are non-differentiable, we use STE [6]. The forward pass uses g, while the backward pass uses the derivative of p.
+
+STE equations (hard gate in forward, soft-gate gradient in backward) (1) Soft gate probability (differentiable path) 
+
+p(↕) 
+
+> i
+
+(x) = σ
+
+( z(↕) 
+
+> g,i
+
+(x)
+
+τ
+
+)
+
+(11) 
+
+(2) Forward: use a hard gate (binarization) 
+
+g(↕) 
+
+> i
+
+(x) = ⊮
+
+[
+
+p(↕) 
+
+> i
+
+(x) > θ 
+
+]
+
+(12) 
+
+(3) Backward(STE): ∂g 
+
+> ∂zg
+
+is approximated by ∂p 
+
+> ∂zg
+
+.
+
+∂g (↕) 
+
+> i
+
+(x)
+
+∂z (↕) 
+
+> g,i
+
+(x) ≈ ∂p (↕) 
+
+> i
+
+(x)
+
+∂z (↕) 
+
+> g,i
+
+(x) = 1
+
+τ p(↕) 
+
+> i
+
+(x)(1 − p(↕) 
+
+> i
+
+(x)) (13) (If we write it in chain-rule form including the loss J)7Ltask yi = gi · hi
+
+Forward pass: 
+
+pi(x) = σ
+
+( zi(x)
+
+> τ
+
+)
+
+gi(x) = 1[pi(x) > θ ]
+
+Backward pass (STE): 
+
+∂g i
+
+∂z i
+
+≈ ∂p i
+
+∂z i
+
+= 1
+
+τ pi(1 − pi)
+
+zi(x)
+
+> ∂L
+> ∂y i
+> ∂L
+> ∂g i
+
+Surrogate gradient 
+
+λg
+
+∑ 
+
+> i
+
+¯pi
+
+Figure 4: Conceptual diagram of forward execution with hard gating and STE-based backpropagation 
+
+∂J ∂z (↕) 
+
+> g,i
+
+(x) ≈ ∂J ∂g (↕) 
+
+> i
+
+(x) · 1
+
+τ p(↕) 
+
+> i
+
+(x)(1 − p(↕) 
+
+> i
+
+(x)) (14) Alternatively, one may use Gumbel-Softmax [8] or Concrete [9]. A gate-usage penalty enables budget control. Fig. 4 illustrates the concept of learning discrete gates with STE. Budget control is performed via a penalty based on E[p], while deployment-time activation is interpreted via 
+
+E[g].
+
+## 3.6 The gap between compute proxies and real deployment speed 
+
+In this paper, compute reduction is not reported via direct measurements of FLOPs/latency, but via proxy metrics based on gate activations. A simple average unit-activation proxy is defined as follows. 
+
+α(ℓ) 
+
+> p
+
+= 1
+
+nℓnℓ∑
+
+> i=1
+
+p(ℓ) 
+
+> i
+
+, α(ℓ) 
+
+> g
+
+= 1
+
+nℓnℓ∑
+
+> i=1
+
+E
+
+[
+
+1
+
+(
+
+p(ℓ) 
+
+> i
+
+> θ 
+
+)] 
+
+. (15) 
+
+ComputeProxy p = 1
+
+L − 1
+
+> L−1
+
+∑
+
+> ℓ=1
+
+α(ℓ) 
+
+> p
+
+, ComputeProxy g = 1
+
+L − 1
+
+> L−1
+
+∑
+
+> ℓ=1
+
+α(ℓ) 
+
+> g
+
+. (16) However, MACs of fully connected (FC) layers are weighted by fan-in/out, so we additionally define a relative MAC (RelMAC) metric: 
+
+RelMAC = 
+
+∑L−1 
+
+> ℓ=1
+
+α(ℓ) nℓ−1nℓ
+
+∑L−1 
+
+> ℓ=1
+
+nℓ−1nℓ
+
+, α(ℓ) ∈ { α(ℓ) 
+
+> p
+
+, α (ℓ) 
+
+> g
+
+}. (17) DynamicGate controls input-dependent unit activation g(x), while RigL periodically rewires a sparse con-nectivity mask m(t) during training to learn structural sparsity. Here, α(ℓ) denotes the layerwise average activation (under either the training proxy or the deployment policy). Real speedups depend on sparse kernels, block/channel-wise structured sparsity, or routing-based implementations [17, 14]. This paper focuses on controllable activation patterns and accuracy rather than absolute speed. 83.7 RigL: learning dynamic sparse connectivity (rewiring) 
+
+RigL is a Dynamic Sparse Training method that dynamically reallocates the connections themselves (a sparse mask over weights) during training, maximizing performance under a fixed parameter budget[30]. 
+
+(1) Sparse-mask parameterization. 
+
+For the layer-ℓ weight matrix W (ℓ) ∈ Rnℓ×nℓ−1 , define a discrete mask at training step tm(ℓ)(t) ∈ { 0, 1}nℓ×nℓ−1 . (18) and define the sparse weights used in computation as 
+
+˜W (ℓ)(t) = W (ℓ)(t) ⊙ m(ℓ)(t). (19) as follows. Here, ˜W (↕)(t) is the “mask-applied weight actually used in computation.” Note that the mask 
+
+m(t) is not updated at every step; under RigL it is updated every fixed period (∆ T ), and remains fixed between updates while only W (t) is trained. Then the forward computation of layer ℓ is 
+
+a(ℓ)(x; t) = ˜W (ℓ)(t) h(ℓ−1) (x; t) + b(ℓ), h(ℓ)(x; t) = ϕ(a(ℓ)(x; t)). (20) 
+
+(2) Fixed sparsity constraint. To keep the number of active connections per layer constant, the mask is maintained to satisfy the following budget condition. 
+
+∥∥∥m(ℓ)(t)
+
+∥∥∥0
+
+= (1 − sℓ) nℓ nℓ−1. (21) Here, sℓ ∈ [0 , 1] is the layerwise sparsity; RigL keeps the number of connections fixed while changing which connections remain active during training. 
+
+(3) Prune & Grow (RigL update). RigL updates the mask every period ∆T .t ￿ {ΔT, 2ΔT, 3ΔT, . . . }. (15) At each update, it prunes (removes) active connections ( m = 1 ) with small weight magnitude and grows (adds) new connections among inactive locations ( m = 0 ) with large gradient magnitude. In equations, define the set of indices to prune as 
+
+P(ℓ)(t) = BottomK 
+
+({ |W (ℓ) 
+
+> ij
+
+(t)| : m(ℓ) 
+
+> ij
+
+(t) = 1 }, K ℓ
+
+)
+
+. (22) The set of indices to grow (new connections) is the Top-K gradients among locations with no current connection ( m = 0 ). 
+
+G(↕)(t) = TopK 
+
+({ |∇ W (↕) 
+
+> ij (t)
+
+L(t)| : m(↕) 
+
+> ij
+
+(t) = 0 }, K ↕
+
+)
+
+. (23) • L(t) or Ltask (t): the loss • ∇Wij L: how sensitive the loss would be to that connection if it existed • mij (t) = 0 : crucially, we only select candidates among currently absent connections Define them as above, and update the mask as 
+
+m(ℓ) 
+
+> ij
+
+(t+) = 
+
+
+
+0, (i, j ) ∈ P (ℓ)(t),
+
+1, (i, j ) ∈ G (ℓ)(t),m(ℓ) 
+
+> ij
+
+(t), otherwise .
+
+(24) 9as follows. Here, t+ denotes immediately after the update. This procedure preserves the parameter budget while allowing training to discover important connections [30]. 
+
+(4) RigL compute proxy. The layerwise connection density in RigL is 
+
+pℓ =
+
+∥∥m(ℓ)(t)∥∥0
+
+nℓ nℓ−1
+
+= 1 − sℓ. (25) and can be used as a proxy for structural (connection-level) sparsity. 
+
+## 3.8 DynamicGate‑MLP + RigL: a unified formulation of gating and rewiring                            
+
+> Ltask
+> yi=gi·hi
+> Gating forward pass:
+> pi(x) = σ
+> (zi(x)
+> τ
+> )
+> gi(x) = 1[pi(x)> θ ]
+> STE backward pass:
+> ∂g i
+> ∂z i
+> ≈∂p i
+> ∂z i
+> = 1
+> τ pi(1 −pi)
+> zi(x)
+> ∂L
+> ∂y i
+> ∂L
+> ∂g i
+> Surrogate gradient
+> λg
+> ∑
+> i¯pi
+> W
+> m(t)
+> ˜W(t)=W⊙m(t)
+> (sparse weights)
+> RigL update (periodic):
+> Prune: Bottom-Kby |W|
+> Grow: Top-Kby |∇ WL| ∥m(t)∥0kept fixed
+> rewire
+> ∇WL
+> hraw =ϕ(˜W x )
+
+Figure 5: Diagram of adding RigL’s dynamic rewiring to the hard-gating (STE) training path. DynamicGate controls input-dependent unit activation g(x), and RigL periodically rewires a sparse connectivity mask m(t)
+
+during training to learn structural sparsity. In this subsection, we define a fused model that applies input-dependent unit gating (DynamicGate-MLP) and connection rewiring (RigL) simultaneously. The key point is that (1) unit-level conditional computation and (2) connection-level structural learning provide sparsity along different axes. 
+
+(1) Fused forward computation. 
+
+With RigL, the sparse weight is ˜W (ℓ)(t) = W (ℓ)(t) ⊙ m(ℓ)(t), and 
+
+(Sparse weight definition) 
+
+˜W (↕)(t) = W (↕)(t) ⊙ m(↕)(t) (26) 
+
+(Forward: sparse structure + unit gating) 
+
+a(ℓ)(x; t) = ˜W (ℓ)(t) h(ℓ−1) (x; t) + b(ℓ). (27) 
+
+h(ℓ)raw (x; t) = ϕ
+
+(
+
+a(ℓ)(x; t)
+
+)
+
+. (28) 
+
+h(ℓ)(x; t) = g(ℓ)(x; t) ⊙ h(ℓ)raw (x; t). (29) 10 Here, the mask m(ℓ)(t) constrains the connections (structure) , and the gate g(ℓ)(x; t) selects unit activation (function) depending on the input. 
+
+h(ℓ)(x; t) = g(ℓ)(x; t) ⊙ ϕ
+
+((W (ℓ)(t) ⊙ m(ℓ)(t)) h(ℓ−1) (x; t) + b(ℓ))
+
+. (30) In short, connectivity is constrained by the mask, and unit activation is selected per input on top of it. GateNet input: the gate logits are defined in the same way as before, 
+
+z(ℓ) 
+
+> g
+
+(x) = GateNet 
+
+(
+
+h(ℓ−1) (x; t)
+
+)
+
+, p(ℓ)(x) = σ
+
+(
+
+z(ℓ) 
+
+> g
+
+(x)
+
+τ
+
+)
+
+, g(ℓ)(x) = ⊮
+
+[
+
+p(ℓ)(x) > θ 
+
+]
+
+. (31) and GateNet takes as input a representation computed under the current sparse structure. 
+
+(2) Fused objective. RigL maintains sparsity primarily as a (fixed) constraint, while DynamicGate-MLP penalizes the expected activation E[p]. Therefore, the combined loss naturally becomes 
+
+Jfuse = Ltask + λgL−1∑
+
+> ℓ=1
+
+1
+
+nℓnℓ∑
+
+> i=1
+
+¯p(ℓ) 
+
+> i
+
+. (32) 
+
+(3) Fused compute proxy (important). In layer ℓ, FC compute can be approximated by the product 
+
+of connection density ρℓ and unit activation ratio αℓ. Here, 
+
+ρℓ = ∥m(ℓ)∥0
+
+nℓ−1nℓ
+
+, αℓ ∈
+
+{
+
+E
+
+[
+
+p(ℓ)]
+
+, E
+
+[
+
+g(ℓ)]} 
+
+. (33) Therefore, the relative MAC proxy of the fused model is 
+
+RelMAC fuse =
+
+∑L−1 
+
+> ℓ=1
+
+(nℓ−1nℓ) ρℓ αℓ
+
+∑L−1 
+
+> ℓ=1
+
+(nℓ−1nℓ) . (34) This proxy metric simultaneously reflects the effects of RigL (structure) and DynamicGate (input-conditional execution). RigL learns which connections should exist, while DynamicGate selects which units to use among existing connections depending on the input. Thus, they can operate on complementary sparsity axes rather than being redundant. 
+
+# 4. Training recipe and practical considerations 
+
+## 4.1 Preventing gate collapse and tuning guide 
+
+A strong gate penalty ( λg ) or a low temperature ( τ ) can cause extitgate collapse early in training, where gates close excessively. In particular, when forming a thresholded binary gate g ∈ { 0, 1} from the gate probability p as in our model, abruptly increasing θ or λg in a certain phase can make g drop sharply and collapse performance. To prevent this, we recommend the following practical tuning recipes. 11 (1) Early diagnosis of collapse (log-based) Recording the batch-averaged values of both p and g
+
+during training helps quickly classify the failure mode. • p is high but g goes to 0: the evaluation threshold θ is too high (or jumps up at a phase transition), making hard thresholding overly aggressive. • p itself rapidly drops to 0: the λg ramp is too fast, or τ is too low so the sigmoid saturates and training becomes unstable. • Collapse only in a specific phase: a shock pattern where keep-target changes, θ increases, and λg
+
+increases simultaneously when entering phase-3. 
+
+(2) Safe scheduling rules 
+
+• Increase the penalty “later” and “slowly”: Keep λg = 0 during the initial warmup Ew to first secure capacity, then gradually increase λg up to λmax with a linear or cosine ramp. • Anneal temperature gently: Start with a relatively high temperature (e.g., τ ∈ [1 , 2] ) and decrease it gradually, avoiding abrupt drops to overly low values (e.g., a sudden drop to τ ≲ 0.5 increases collapse risk). • Initialize the gate bias to start “open”: Choose an initial open rate p0 (e.g., 0.8) and initialize the gate bias as 
+
+b ← τ · logit( p0) (35) so that training starts from a naturally open state. 
+
+(3) Recommended tuning order for a 3-phase schedule When using a 3-phase schedule, it is impor-tant not to change the keep target and threshold/penalty abruptly at phase boundaries. • Phase-1 (stabilization): high keep target (e.g., 0.85–0.95), λg = 0 , low θ (e.g., 0.50–0.65). • Phase-2 (encourage reduction): medium keep target (e.g., 0.45–0.65), gradually increase λg , gently raise θ (e.g., 0.65–0.80). • Phase-3 (final compression): guide toward a low keep target (e.g., 0.20–0.35), but avoid overly high θ (e.g., above 0.90) or abrupt increases of λg . If collapse signs appear, it is often more stable to buffer the keep target around ∼0.30 at the beginning of phase-3 and then lower it further. 
+
+(4) Guaranteeing minimum activity (optional safety mechanisms) If collapse repeats or the model is sensitive to data/initialization, one can add safety mechanisms that structurally prevent total collapse. • Force Top-k activations: keep the top-k units with the highest probabilities in each layer always active ( g = 1 ). • Lower bound on the open rate: enforce E[gℓ] ≥ rmin (e.g., 0.05–0.10) per layer to prevent total collapse. 
+
+(5) Practical context The above warmup → gradual regularization → smooth temperature annealing 
+
+→ optional minimum-activity constraint pattern aligns with practical conventions in sparse routing/sparse learning, and can be interpreted as a general stabilization strategy to avoid gate collapse [7, 13]. 
+
+## 4.2 Training algorithm 
+
+Algorithm 1 summarizes the training loop with an expected gate-usage penalty and optional hard masking. 12 Algorithm 1 Training DynamicGate-MLP with an expected gate-usage penalty 
+
+Input: data loader D, model parameters Θ, gate parameters Φ, total epochs T , warmup epochs Ew, maxi-mum penalty λmax  
+
+> g
+
+, temperature schedule τ (t), threshold θ 
+
+> 1:
+
+for t ← 1 to T do Set penalty coefficient:  
+
+> 2:
+
+if t ≤ Ew then  
+
+> 3:
+
+λg ← 0 
+
+> 4:
+
+else  
+
+> 5:
+
+λg ← λmax  
+
+> g
+
+· min 
+
+(
+
+1, t−Ew  
+
+> max(1 ,T −Ew)
+
+)  
+
+> ▷linear ramp (example)
+> 6:
+
+end if  
+
+> 7:
+
+for minibatch B ∼ D do  
+
+> 8:
+
+for all layers ℓ do  
+
+> 9:
+
+z(ℓ)(x) ← GateNet (ℓ)(h(ℓ−1) (x))  
+
+> 10:
+
+p(ℓ)(x) ← σ(z(ℓ)(x)/τ (t)) 
+
+> 11:
+
+g(ℓ)(x) ← I[p(ℓ)(x) > θ ] ▷ Forward hard gate  
+
+> 12:
+
+h(ℓ)(x) ← g(ℓ)(x) ⊙ ϕ(W (ℓ)h(ℓ−1) (x) + b(ℓ)) 
+
+> 13:
+
+end for  
+
+> 14:
+
+Ltask ← TaskLoss (B)
+
+Batch-average gate usage:  
+
+> 15:
+
+for all layers ℓ do  
+
+> 16:
+
+¯p(ℓ) 
+
+> i
+
+← 1
+
+> |B|
+
+∑ 
+
+> x∈B
+
+p(ℓ) 
+
+> i
+
+(x) 
+
+> 17:
+
+end for  
+
+> 18:
+
+Lg ← ∑ 
+
+> ℓ1
+> nℓ
+
+∑nℓ 
+
+> i=1
+
+¯p(ℓ) 
+
+> i
+> 19:
+
+J ← L task + λg Lg 
+
+> 20:
+
+BackwardUpdate (J ; Θ , Φ) using STE 
+
+( ∂g ∂z ≈ ∂p ∂z 
+
+) 
+
+> 21:
+
+end for  
+
+> 22:
+
+end for 
+
+Algorithm 2 summarizes RigL’s dynamic sparse rewiring. 
+
+Algorithm 2 RigL: Dynamic sparse rewiring (Dynamic Sparse Training) 
+
+Input: data loader D, weights Θ = {W (ℓ)}, masks M = {m(ℓ)}, total steps S, sparsity sℓ, update period 
+
+∆T , rewires per update Kℓ 
+
+> 1:
+
+Initialize: for each layer ℓ, create a random sparse mask satisfying ∥m(ℓ)∥0 = (1 − sℓ) nℓ−1nℓ 
+
+> 2:
+
+for t ← 1 to S do  
+
+> 3:
+
+Sample minibatch B ∼ D  
+
+> 4:
+
+Forward: compute with sparse weights ˜W (ℓ) ← W (ℓ) ⊙ m(ℓ) 
+
+> 5:
+
+Compute Ltask and then compute ∇W Ltask  
+
+> 6:
+
+Update Θ with an optimizer ▷ connections with mask 0 are excluded from updates  
+
+> 7:
+
+if t mod ∆ T = 0 then  
+
+> 8:
+
+for all layers ℓ do  
+
+> 9:
+
+Prune: remove the Kℓ active connections with the smallest |W (ℓ) 
+
+> ij
+
+| 
+
+> 10:
+
+Grow: add the Kℓ inactive connections with the largest |∇ W (ℓ)
+
+> ij
+
+Ltask | 
+
+> 11:
+
+Update mask: set pruned indices to 0 and grown indices to 1 
+
+> 12:
+
+Check consistency: keep ∥m(ℓ)∥0 fixed (preserve the number of connections)  
+
+> 13:
+
+end for  
+
+> 14:
+
+end if  
+
+> 15:
+
+end for 
+
+Algorithm 3 summarizes the fused training of DynamicGate-MLP with RigL. 13 Algorithm 3 DynamicGate-MLP + RigL fused training (Gated Dynamic Sparse Training) 
+
+Input: data loader D, weight parameters Θ = {W (ℓ), b (ℓ)}, gate parameters Φ, sparse masks M = {m(ℓ)},total steps S, total epochs T , warmup epochs Ew, maximum gate penalty λmax  
+
+> g
+
+, temperature schedule 
+
+τ (e), threshold θ, RigL update period ∆T , rewires per update Kℓ 
+
+> 1:
+
+Initialize: create sparse masks satisfying ∥m(ℓ)∥0 = (1 − sℓ) nℓ−1nℓ for each layer ℓ 
+
+> 2:
+
+for e ← 1 to T do Set gate penalty coefficient:  
+
+> 3:
+
+if e ≤ Ew then  
+
+> 4:
+
+λg ← 0 
+
+> 5:
+
+else  
+
+> 6:
+
+λg ← λmax  
+
+> g
+
+· min 
+
+(
+
+1, e−Ew  
+
+> max(1 ,T −Ew)
+
+) 
+
+> 7:
+
+end if  
+
+> 8:
+
+for t ← 1 to S do  
+
+> 9:
+
+Sample minibatch B ∼ D 
+
+(1) Sparse forward:  
+
+> 10:
+
+˜W (ℓ) ← W (ℓ) ⊙ m(ℓ)(t)
+
+(2) Gating forward:  
+
+> 11:
+
+for all layers ℓ do  
+
+> 12:
+
+z(ℓ)(x) ← GateNet (ℓ)(h(ℓ−1) (x; t))  
+
+> 13:
+
+p(ℓ)(x) ← σ(z(ℓ)(x)/τ (e)) 
+
+> 14:
+
+g(ℓ)(x) ← I[p(ℓ)(x) > θ ] 
+
+> 15:
+
+end for (3) Fused forward:  
+
+> 16:
+
+for all layers ℓ do  
+
+> 17:
+
+h(ℓ)(x; t) ← g(ℓ)(x) ⊙ ϕ
+
+(˜W (ℓ)(t)h(ℓ−1) (x; t) + b(ℓ)
+
+) 
+
+> 18:
+
+end for  
+
+> 19:
+
+Compute Ltask 
+
+Batch-average gate usage:  
+
+> 20:
+
+for all layers ℓ do  
+
+> 21:
+
+¯p(ℓ) 
+
+> i
+
+← 1
+
+> |B|
+
+∑ 
+
+> x∈B
+
+p(ℓ) 
+
+> i
+
+(x) 
+
+> 22:
+
+end for  
+
+> 23:
+
+Lg ← ∑ 
+
+> ℓ1
+> nℓ
+
+∑nℓ 
+
+> i=1
+
+¯p(ℓ) 
+
+> i
+> 24:
+
+J ← L task + λg Lg
+
+(4) Parameter update:  
+
+> 25:
+
+Learn gates with STE (backward uses p) and update (Θ , Φ) with an optimizer 
+
+(5) RigL rewiring (periodic):  
+
+> 26:
+
+if t mod ∆ T = 0 then  
+
+> 27:
+
+for all layers ℓ do  
+
+> 28:
+
+Prune: remove Kℓ active connections with the smallest |W (ℓ) 
+
+> ij
+
+| 
+
+> 29:
+
+Grow: add Kℓ inactive connections with the largest |∇ W (ℓ)
+
+> ij
+
+Ltask | 
+
+> 30:
+
+Update mask m(ℓ)(t) and keep ∥m(ℓ)∥0 fixed  
+
+> 31:
+
+end for  
+
+> 32:
+
+end if  
+
+> 33:
+
+end for  
+
+> 34:
+
+end for 
+
+# 5. Experimental Results 
+
+Due to limited resources, all experiments were run in Google Colab, and we therefore evaluated primarily on relatively small datasets. The datasets used in this paper are as follows. 14 • MNIST: a standard toy dataset of handwritten digits. • CIFAR-10: a small natural image dataset (Krizhevsky, 2009). • Tiny ImageNet: a reduced version of ImageNet with 200 classes, for natural image classification at 64 ×64 resolution. • Speech Commands: a keyword-spotting dataset that classifies short (about 1-second) speech clips into a limited vocabulary. • PBMC3k: a single-cell RNA-seq dataset of human peripheral blood mononuclear cells (PBMC), widely used to classify/cluster cell types from high-dimensional gene-expression vectors. To demonstrate that DynamicGate-MLP can reduce computation, we selected diverse datasets and report several key results. Recently, interest in GPU-efficient models has increased—for example, the emergence of DeepSeek raised public awareness that LLM-level accuracy might be achievable with fewer GPUs under certain conditions. We have also seen online reports that OpenAI’s ChatGPT-4.0 and France-based Mistral AI adopt MoE-style models. Motivated by this trend, we additionally compared DynamicGate-MLP to a Switch-MoE-style MLP on MNIST. The following experiments highlight learned structural-dropout behavior and conditional execution characteristics. More detailed descriptions of all experiments and datasets are provided in Appendix A. Table 1: Overview of datasets used in this paper Data Set Domain Dimensionality Training Set Test Set MNIST Vision 28×28 grayscale (784) 60,000 10,000 CIFAR-10 Vision 32×32 RGB (3,072) 50,000 10,000 Tiny ImageNet Vision 200 classes, 64x64 RGB(12,288) 100,000 10,000 Speech Speech 2624 (=64×41) 86,843 11,305 PBMC3k Genomics 2000 (HVG) 100,000 10,000 
+
+## 5.1 MNIST comparison 
+
+Table 2 Model accuracy and relative compute (proxy) comparison. The compute reduction ratio is computed relative to the Baseline. Table 2: Model comparison (Accuracy / Params / FLOPs) Model Accuracy(%) Param Reduction(%) FLOPs Reduction(%) Params FLOPs Baseline MLP 98.07 0.0 0.000000 203,530 406,528 Dropout MLP 98.31 0.0 0.000000 203,530 406,528 Pruned MLP 98.02 0.0 29.622314 203,530 286,105 Dynamic MLP 98.07 0.0 21.711912 204,570 318,263 15 Figure 6: Model comparison plots on MNIST 
+
+Interpretation. DynamicGate-MLP matches the Baseline accuracy (98.07%) while reducing proxy compute by about 21.71%. The parameter count increases slightly due to gate logits and related parameters. The average activation of the input gate (or the hard ON ratio) is lower than that of the hidden gate, suggesting that most of the savings come from the first large FC operation (e.g., 784 → 256 ) in the fan-in-dominant region. Meanwhile, the hidden gate remains mostly open, which is favorable for preserving accuracy. This can be interpreted as a trade-off: “more aggressively block unnecessary input dimensions while keeping representational capacity in the hidden layer.” Pruning achieves a larger reduction ratio but slightly decreases accuracy. We verified that with further hyperparameter tuning it is possible to push the reduction beyond the Pruned setting, but in this experiment we prioritized accuracy. DynamicGate-MLP provides stable accuracy retention even when the reduction 16 ratio is moderate, and it offers interpretability as conditional execution through input-dependent activation patterns. 
+
+## 5.2 CIFAR-10 
+
+Table 3: Accuracy and relative FLOPs (proxy) comparison 
+
+Model Accuracy (%) FLOPs(rel) Notes 
+
+Baseline 43.30 1.000 Dropout 41.45 1.000 Pruned 48.90 0.941 Dynamic 43.29 0.843 OpenRate L1/L2: 0.94/0.29 
+
+Figure 7: Model comparison on CIFAR-10 Table 3 compares accuracy and relative compute (FLOPs) across model variants. Baseline serves as the reference point with accuracy 43.30% and FLOPsrel 1.000. With Dropout, accuracy decreases to 41.45% 17 (−1.85%p), while inference compute remains the same (FLOPsrel = 1.000). Gate open-rate (threshold=0.5): L1=94%, L2=29%. This suggests that, under this setting, dropout regularization did not translate into better generalization. In contrast, the Pruned model achieves the highest accuracy at 48.90% (+5.60%p over Baseline) with a slight compute reduction (FLOPsrel = 0.941, about 5.9%). This can be interpreted as pruning suppressing redundant capacity and improving generalization by removing redundant connections/representations. Gate-MLP achieves 43.29% accuracy—nearly identical to Baseline (−0.01%p)—while reducing relative FLOPs to FLOPsrel = 0.843, i.e., about 15.7% compute reduction. Thus, Gate-MLP is an efficiency-oriented alternative that meaningfully reduces compute with minimal accuracy loss. Additionally, at threshold 0.5, the gate open-rates are measured as L1 = 93.9% and L2 = 28.9%. This indicates that the first layer remains active for most inputs, while the second layer is selectively activated, and most compute savings arise from selective computation in deeper layers (L2). Relative to Baseline, Gate-MLP nearly preserves accuracy while reducing FLOPsrel to 0.843 (about 15.7% reduction). At threshold 0.5, the open-rate is high in L1 (￿93.9%) and low in L2 (￿28.9%), implying that compute savings primarily come from selective computation in deeper layers. Dropout did not improve accuracy in this setting, whereas pruning showed both an accuracy gain and a modest compute reduction, suggesting that suppressing excess capacity may have benefited generalization. 
+
+## 5.3 Tiny ImageNet 
+
+Table 4: Model comparison (Accuracy / Params / FLOPs)                        
+
+> Model Accuracy(%) Param Reduction(%) FLOPs Reduction(%) Params FLOPs Baseline MLP 3.24 0.0 0.000 3,197,384 6,393,856
+> Dropout MLP 2.51 0.0 0.000 3,197,384 6,393,856
+> Pruned MLP 4.28 0.0 29.519 3,197,384 4,506,418
+> DynamicMLP 2.97 0.0 80.088 3,197,640 1,273,117
+
+On the more complex ImageNet-like dataset, all MLP variants achieve low absolute accuracy. However, DynamicGate-MLP slightly outperforms Dropout, and achieves a large proxy compute reduction (about 80%) relative to the Baseline. 
+
+## 5.4 Speech Commands (Keyword spotting) 
+
+Data and preprocessing (reproducibility) Speech Commands is an audio dataset; after preprocessing, each sample becomes a 2D feature map (log-mel spectrogram) with shape 40 × 98 . We used the standard (official) 12-class mapping to construct the classification task. We used 40 mel bins, an STFT window of 30 ms and hop of 10 ms, and normalized each sample by per-sample standardization. 
+
+Model and training We used a lightweight MLP-based classifier on top of the flattened feature input. Gates were inserted into the hidden layers, and the gate penalty was tuned to achieve a target activation ratio without harming accuracy. DynamicGate achieves accuracy comparable to the Baseline while reducing proxy compute (Compute Proxy/RelMAC). This suggests that even in non-image modalities, input-dependent gating can suppress unnecessary computation. 
+
+Interpretation Speech Commands has inputs with heterogeneous difficulty and redundancy (e.g., silence vs. speech segments). DynamicGate-MLP can allocate compute more selectively by closing units for easy or 18 Table 5: Speech Commands preprocessing parameters (reproducibility) 
+
+Item Value 
+
+Sample rate 16 kHz Clip length 1.0 s (fixed length, 16,000 samples) STFT window / hop 30 ms / 10 ms Mel bins 40 Feature log-mel spectrogram (shape: 40 × 98 )Augmentation time shift (100 ms), additive noise (optional) Train/valid/test split official split Batch size 256 Normalization per-sample standardization: (x − μ)/(σ + ϵ), ϵ = 10 −5
+
+Input dimension (flattened) 64 ×41 = 2624 Label space 12-class (mapped): {yes,no,up,down,left,right, Label space (cont.) on,off,stop,go,_silence_,_unknown_} Table 6: Model comparison on Speech Commands Model Val Acc (best) Test Acc Gate open (g1/g 2) RelMAC MACs (baseline → gated) BaselineMLP 0.8762 0.8656 – 1.000 973,824 → 973,824 DynamicGateMLP 0.8739 0.8654 0.924 / 0.820 0.989 973,824 → 963,287 redundant inputs. (0.8656 → 0.8654; best validation accuracy is also similar: 0.8762 vs. 0.8739). However, as discussed in Section 6, the degree of real speedup depends on whether the runtime can exploit the sparsity pattern (e.g., block-wise structured kernels). At threshold 0.5, the open-rates are L1=92.4% and L2=82.0%, meaning about 7.6% (L1) and 18.0% (L2) of units are deactivated on average. In this paper, we therefore focus on controllable activation patterns and proxy compute reduction as a consistent measure across environments. In this configuration, RelMAC=0.989 (only about 1.1% reduction), because the open-rates remain relatively high; stronger reduction would require a higher penalty or a higher threshold, but with increased collapse risk. Further improvements are expected by introducing block-/channel-wise gating or routing-friendly im-plementations. 
+
+## 5.5 MoE vs. DynamicGate-MLP 
+
+We compare DynamicGate-MLP to a SwitchMoE-style MLP on MNIST to understand differences between within-layer unit gating and expert routing. Table 7: Epoch-wise comparison of DynamicGateMLP vs. SwitchMoE_MLP (MNIST snapshots).                                                               
+
+> DynamicGateMLP SwitchMoE_MLP ep acc loss main aux acc loss main aux drop
+> 21 0.9795 0.010982 0.010823 0.000159 0.9787 0.025858 0.018638 0.007220 44 22 0.9806 0.007150 0.006996 0.000155 0.9815 0.021875 0.014871 0.007004 13 23 0.9815 0.007374 0.007222 0.000152 0.9815 0.020910 0.014248 0.006663 0
+> (continued)
+> DynamicGateMLP SwitchMoE_MLP ep active_g corr(h,a) entropy cv MI cap
+> 21 0.377229 -0.001672 2.044537 0.266152 0.871885 63.291139 22 0.367201 0.002379 2.043974 0.265866 0.899625 63.291139 23 0.359287 -0.006189 2.051539 0.229780 0.848144 63.291139
+
+Interpretation. Across all epochs, DynamicGate-MLP achieves accuracy comparable to or better than 19 Table 8: Performance and efficiency averaged over multiple random seeds (mean ± std).                                                                                                
+
+> Model Acc (%) Macro-F1 (%) MACs ( ×10 6)MACs Red. (%) Time (s) Baseline 91.83 ±1.49 93.29 ±1.77 2.505 ±0.000 0.00 ±0.00 7.20 ±0.24 Dropout 92.48 ±1.07 94.22 ±1.11 2.505 ±0.000 0.00 ±0.00 7.75 ±0.57 Pruned 92.17 ±1.46 93.95 ±1.36 1.252 ±0.000 50.00 ±0.00 3.31 ±0.38 DynamicGate 92.57 ±0.89 94.18 ±0.78 0.988 ±0.446 60.57 ±17.82 8.32 ±0.26 RigL-only 93.33 ±1.04 94.18 ±2.06 0.629 ±0.000 74.87 ±0.00 9.61 ±0.53 DynamicGate+RigL 92.43 ±1.34 93.43 ±2.41 0.541 ±0.033 78.41 ±1.33 11.24 ±0.30
+
+SwitchMoE, while using fewer effective compute resources under the proxy metric. Notably, SwitchMoE shows unstable behavior early in training (accuracy collapsing to around 10% in several epochs), whereas DynamicGate-MLP remains stable. (e.g., at epoch 23, both reach 0.9815). When including the compute proxy, DynamicGate-MLP also shows a meaningful reduction ratio. This suggests that, in this small MLP setting, gating within a single expert (unit/block-level conditional execution) can be a simpler and more stable alternative than routing among multiple experts. For DynamicGate-MLP, the average active gate ratio avg_active_ratio_g gradually decreases as training progresses (0.377 → 0.367 → 0.359), indicating convergence toward sparser activation patterns. In practice, the trade-off depends on the target scale and implementation: MoE can scale capacity by adding experts, while DynamicGate focuses on selectively executing parts of a fixed network. indicating that the model gradually converges to sparser activation patterns. For SwitchMoE_MLP, training uses an auxiliary routing loss (train_aux ) in addition to the main loss ( train_main ); the auxiliary loss is non-negligible (e.g., train_aux =0.007220 at epoch 21). (e.g., at epoch 21, train_aux = 0 .007220 ), As training proceeds, the number of dropped tokens/samples due to capacity constraints ( train_dropped )decreases from 44 → 13 → 0, suggesting that routing stabilizes over time. decreases from 44 → 13 → 0, suggesting that routing stabilizes over time. DynamicGate-MLP’s hardness–activation correlation (corr_hardness_active ) stays near zero (about -0.0017 to 0.0024), implying that in this setup, gating does not strongly correlate with the chosen hardness measure. stays around −0.0017 ∼ 0.0024 , i.e., very close to zero, Overall, DynamicGate-MLP provides a simpler, more stable training path in this small setting, while MoE introduces additional routing dynamics (auxiliary loss, capacity/dropped samples) that can add instability early in training. 
+
+## 5.6 PBMC3k: MACs–Accuracy Pareto (mean±std over seeds) 
+
+MACs denote the compute proxy (multiply–accumulate operations), and MACs reduction is reported relative to the Baseline. Time is the measured wall-clock runtime under the same experimental setting. 20 Figure 8: Pareto plot of classification accuracy versus compute reduction on PBMC3K. 
+
+Interpretation. Fig 8 Each point denotes a model variant, and the Pareto frontier highlights the non-dominated trade-offs between predictive accuracy and computational efficiency. The Pareto frontier identifies the non-dominated models, namely those for which no other variant achieves both higher accuracy and greater compute reduction simultaneously. Models located on or near this frontier provide the most favorable accuracy–efficiency balance, whereas points below the frontier are comparatively suboptimal. In Table 8, we compare predictive performance (Acc, Micro-F1, Macro-F1) and efficiency (seconds, MACs reduction) across three random seeds. Dropout slightly improves Acc/Micro-F1/Macro-F1 compared to Baseline, but yields no structural compute reduction (MACs reduction 0.00%). Therefore, in this setting, dropout’s benefit appears mainly as regularization (mitigating overfitting) rather than as conditional computation. Pruned achieves a 50.00% MACs reduction with little performance degradation, and also records the fastest wall time (3.31 s), showing that static structured sparsity can translate into practical gains. By contrast, DynamicGate achieves the largest gain in Macro-F1 (93.90), and reduces MACs by 60.57% on average; however, its wall time is slower than Baseline (8.24 s), likely due to gating overhead and limited kernel-level skipping. RigL-only records strong efficiency (74.87% MACs reduction) while achieving the best accuracy (93.33%), indicating that dynamic structural sparsity can improve both accuracy and compute proxy. In particular, RigL-only provides a favorable accuracy–efficiency point among the compared models. However, wall time does not perfectly match the MACs proxy: despite large MACs reductions, RigL variants can be slower due to overheads in sparse execution and memory/launch costs. This mismatch can be explained by (i) overhead from gating/masking, (ii) dynamic sparse-structure management costs (e.g., mask updates), and (iii) limited sparse-kernel optimization in general backends. DynamicGate+RigL combines both methods and attains the largest MACs reduction (78.41%), showing the complementary effect on functional and structural sparsity. Nevertheless, it is the slowest in wall-clock time (11.24 s) in this prototype implementation, highlighting 21 the need for hardware-/kernel-aware realizations (e.g., block-structured sparsity) for real speed gains. Thus, proxy compute reduction should be interpreted as potential efficiency, and deploying it effectively requires implementation support. Finally, DynamicGate shows relatively large variance in MACs reduction (60.57% ± 17.82%), meaning that the active-gate ratio varies significantly with input/seed. If inference-time compute stability is important, this variance can be reduced via additional regularization and smoother scheduling (e.g., for λg and τ ). In addition, the Pareto chart in Fig. 8 shows that even using DynamicGate alone yields a lower av-erage MAC (0.988) than Pruned (1.252%) while achieving higher accuracy (92.57% vs. 92.17%). When RigL and DynamicGate are combined, the average MAC is the best at 0.541, and the accuracy remains high at 92.43%, which is higher than the Baseline (91.83%) although slightly lower than RigL-only. These results suggest that, depending on the experiment and input conditions, DynamicGate alone or its combination with RigL can produce strong outputs. Because of the limits of repeated experiments, more extensive sweeps are needed to tune parameters; we leave this to future work. 
+
+# 6. Discussion 
+
+## 6.1 Connecting dropout, pruning, and routing 
+
+Dropout samples many subnetworks during training, while pruning selects a single static subnetwork. DynamicGate-MLP forms a family of subnetworks via learned gates and can select them depending on the input, which gives it routing-like properties [12, 13]. The key distinction of this paper is that we do not rely on “large-scale MoE”; instead, we provide input-dependent gating in a simple MLP that remains interpretable from the dropout perspective, together with explicit budget control (penalty / Top-k). 
+
+## 6.2 Compute proxies vs. deployment reality 
+
+Even if Compute Proxy/RelMAC decreases, real speedup is not automatically guaranteed. To achieve wall-clock acceleration, one typically needs (i) block/channel-wise structured gating, (ii) sparse kernels, and/or (iii) routing-based implementations. This paper focuses on learning controllable activation patterns rather than claiming direct speedups [17, 14, 13]. 
+
+## 6.3 Extending toward structural plasticity: gating + rewiring 
+
+DynamicGate-MLP implements selective activation via functional gating. To extend this toward structural change, one can combine grow-and-prune methods: • RigL-style growth: remove inactive connections + grow new connections at large-gradient locations [30]. • SET-style evolution: maintain a sparse structure while repeatedly pruning and regrowing connec-tions [20]. 
+
+## 6.4 Continual learning and forgetting 
+
+Gating encourages the selection of different sparse subnetworks depending on input/task conditions, and rewiring enables capacity reallocation. This can potentially be interpreted as a structural/functional separa-tion mechanism that alleviates catastrophic forgetting in continual learning [24, 25, 26]. Here, “alleviating catastrophic forgetting” means that when learning a new task (Task B), the model is less likely to suddenly and severely lose performance on a previously learned task (Task A). This happens because neural networks typically reuse and overwrite the same parameters while learning new tasks (parameter interference), which can break representations needed for old tasks. 22 • Gating (DynamicGate): by making the active neurons/paths depend on the task/input, it reduces the overlap between the paths used by Task A and Task B → less mutual interference → older knowledge is less damaged. • Rewiring (RigL-like): by reorganizing connections during training, it can allocate separate capacity for the new task or preserve important connections → it can reduce the need to overwrite existing connections to learn the new task. Therefore, “alleviating forgetting” means that the drop in Task A accuracy after learning Task B becomes smaller. 
+
+# 7. Limitations 
+
+This work shows that gating can reduce average compute (Compute Proxy/RelMAC), but it does not guar-antee that compute reduction directly translates into lower wall-clock latency. The reasons are as follows. • Lack of sparse kernels / backend optimization – On GPUs and general CPUs, dense matmul is heavily optimized. Therefore, even if some units are deactivated, computation may still be performed unless the backend provides a sparse kernel that truly “skips” those operations. • Masking/gating overhead – Additional costs arise from computing gate probabilities (GateNet), threshold comparisons, ap-plying masks, and conditional branching. In particular, sample-wise gating changes activation patterns across batches, which can reduce kernel and vectorization efficiency; in such cases, wall-clock time may even increase. • Memory/launch overhead may dominate – For small MLPs or small batch sizes, memory movement and kernel launch/synchronization over-head can dominate over arithmetic operations. In these regimes, reducing arithmetic operations may yield limited perceived speedup. • Implementations that only make values zero (not structural sparsity) – If deactivation is implemented as a simple multiplication such as h ← h ⊙ g, the next layer’s matmul can still run densely, so real computation may not decrease. To obtain speed gains, gates must be reflected structurally in the computation graph or implemented in hardware-friendly forms such as block/channel-wise structured sparsity. For these reasons, rather than directly measuring FLOPs/latency and claiming “acceleration,” this paper reports compute reduction conservatively using hardware/back-end-agnostic proxy metrics, namely Compute Proxy and RelMAC. Additional limitations include: • Hyperparameter sensitivity. λg , τ , and θ can cause gate collapse or under/over-activation depend-ing on their settings; stable training typically requires warmup and smooth scheduling. • Scale/generalization. Current evaluation focuses on small MLP settings. Extending to Transformers (FFN/attention) requires additional validation, including routing, sparse kernels, and batch-efficiency issues [16, 13]. 
+
+# 8. Future Work 
+
+• Real latency measurement with block/channel gating and sparse kernels (or routing-friendly execution). 23 • Extension to Transformers (FFN/attention) with head/block gating and comparison to sparse routing methods [13]. • Quantify forgetting metrics on continual learning benchmarks and test whether gating reduces inter-ference [24, 25]. • Study the coupling of fast functional gating and slow structural rewiring (gating + RigL/SET) under various time-scale schedules [30, 20]. • Additional experiments on gene-expression and other high-dimensional tabular/omics datasets. • Block-structured sparsity, compaction (reordering active blocks), and efficient GPU execution via block-GEMM kernels. 
+
+# 9. Conclusion 
+
+We proposed DynamicGate-MLP, a unified framework that bridges dropout-style regularization and input-dependent conditional computation via learned gating. By introducing gate probabilities, thresholded hard masks, and an expected gate-usage penalty, the model can control a compute budget while maintaining accuracy. Across MNIST, CIFAR-10, Tiny ImageNet, Speech Commands, and PBMC3k, DynamicGate-MLP demonstrates meaningful reductions in proxy compute metrics with competitive performance. We further showed that combining DynamicGate with RigL-style dynamic sparse rewiring can yield complementary functional and structural sparsity, improving the accuracy–efficiency trade-off. Future work will focus on hardware-/kernel-aware implementations and extensions to larger architectures. 
+
+## Acknowledgements 
+
+This study employed a generative AI tool (OpenAI ChatGPT Plus) in an iterative prototyping workflow to assist with the implementation of experimental code and the generation of experimental data. The tool was mainly used for code structure design, repetitive implementation, debugging assistance, correction of XeLaTeX errors, and the search and comparison of related literature. However, the experimental design, data generation procedures, interpretation of results, and final conclusions were directly verified by the author, who assumes full responsibility for them. It should be noted that some automatically generated processes have limitations in that their internal reasoning steps are not always fully explicit; accordingly, these outputs were evaluated primarily in terms of reproducibility and validation of results. The author also sincerely thanks Professor In-Joong Kim of Handong Global University for recommending the submission of the author’s first MLP-related paper to arXiv. 
+
+## Code and License 
+
+The reference implementation associated with this work is made available under the Apache License 2.0. For commercial or enterprise use involving proprietary optimizations, deployment toolchains, or hardware-specific runtime integrations, separate commercial licensing terms may apply. 
+
+## References 
+
+[1] N. Srivastava, G. Hinton, A. Krizhevsky, I. Sutskever, and R. Salakhutdinov. Dropout: A simple way to prevent neural networks from overfitting. JMLR, 15:1929–1958, 2014. [2] L. Wan, M. Zeiler, S. Zhang, Y. LeCun, and R. Fergus. Regularization of neural networks using DropConnect. In ICML, 2013. [3] D. P. Kingma, T. Salimans, and M. Welling. Variational dropout and the local reparameterization trick. In NeurIPS, 2015. [4] Y. Gal and Z. Ghahramani. Dropout as a Bayesian approximation: Representing model uncertainty in deep learning. In ICML, 2016. 24 [5] Y. Gal, J. Hron, and A. Kendall. Concrete dropout. In NeurIPS, 2017. [6] Y. Bengio, N. Léonard, and A. Courville. Estimating or propagating gradients through stochastic neurons. arXiv:1305.2982, 2013. [7] C. Louizos, M. Welling, and D. P. Kingma. Learning sparse neural networks through L0 regularization. In ICLR, 2018. [8] E. Jang, S. Gu, and B. Poole. Categorical reparameterization with Gumbel‑Softmax. In ICLR, 2017. [9] C. J. Maddison, A. Mnih, and Y. W. Teh. The concrete distribution: A continuous relaxation of discrete random variables. In ICLR, 2017. [10] Y. Bengio, N. Boulanger‑Lewandowski, and R. Pascanu. Advances in optimizing recurrent networks. In ICASSP, 2013. [11] A. Graves. Adaptive computation time for recurrent neural networks. arXiv:1603.08983, 2016.16 [12] N. Shazeer, A. Mirhoseini, K. Maziarz, et al. Outrageously large neural networks: The sparsely‑gated mixture‑of‑experts layer. In ICLR, 2017. [13] W. Fedus, B. Zoph, and N. Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. JMLR, 23(120):1–39, 2022. [14] S. Han, H. Mao, and W. J. Dally. Deep compression: Compressing deep neural networks with pruning, trained quantization and Huffman coding. arXiv:1510.00149, 2015. [15] J. Frankle and M. Carbin. The lottery ticket hypothesis: Finding sparse, trainable neural networks. In ICLR, 2019. [16] V. Sanh, T. Wolf, and A. M. Rush. Movement pruning: Adaptive sparsity by finetuning. In NeurIPS, 2020. [17] H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf. Pruning filters for efficient convnets. In ICLR, 2017. [18] P. Warden. Speech commands: A dataset for limited‑vocabulary speech recognition. arXiv:1804.03209, 2018. [19] Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner. Gradient‑based learning applied to document recog-nition. Proceedings of the IEEE, 86(11):2278–2324, 1998. [20] D. C. Mocanu, E. Mocanu, P. Stone, et al. Scalable training of artificial neural networks with adaptive sparse connectivity inspired by network science. Nature Communications, 9:2383, 2018. [21] H. Mostafa and X. Wang. Parameter efficient training of deep convolutional neural networks by dynamic sparse reparameterization. In ICML, 2019. [22] T. Dettmers. Sparse networks from scratch: Faster training without losing performance. arXiv:1907.04840, 2019. [23] N. Gale, E. Elsen, and S. Hooker. The state of sparsity in deep neural networks. arXiv:1902.09574, 2019. [24] J. Kirkpatrick, R. Pascanu, N. Rabinowitz, et al. Overcoming catastrophic forgetting in neural net-works. PNAS, 114(13):3521–3526, 2017. [25] F. Zenke, B. Poole, and S. Ganguli. Continual learning through synaptic intelligence. In ICML, 2017. [26] S.‑A. Rebuffi, A. Kolesnikov, G. Sperl, and C. H. Lampert. iCaRL: Incremental classifier and repre-sentation learning. In CVPR, 2017. 25 [27] A. Holtmaat and K. Svoboda. Experience‑dependent structural synaptic plasticity in the mammalian brain. Nature Reviews Neuroscience, 10:647–658, 2009. [28] Y. Zuo, G. Yang, E. Kwon, and W.‑B. Gan. Long‑term sensory deprivation prevents dendritic spine loss in the adult cortex. Nature, 436:261–265, 2005. [29] S. Fusi, P. J. Drew, and L. F. Abbott. Cascade models of synaptically stored memories. Neuron, 45(4):599–611, 2005. [30] Utku Evci, Trevor Gale, Jacob Menick, Pablo Samuel Castro, and Erich Elsen. Rigging the Lottery: Making All Tickets Winners. Proceedings of Machine Learning and Systems (MLSys), 2020. 
+
+# Appendix A. Reproducibility 
+
+This appendix provides concrete values and links to reproduce the experiments. For reproducibility, we provide Google Colab notebooks that can run the reported settings as-is. These notebooks are executable reference materials and do not replace the experimental descriptions in the paper. 
+
+## A.1 Reproducibility checklist 
+
+A.1.1 Code and environment All code is organized in a public GitHub repository; each dataset has its own folder and a corresponding Colab notebook. 
+
+A.1.2 Reproducibility Artifacts 
+
+• Code Repository: https://github.com/YongilChoi/DynamicGate_MLP_Model.git • Experimental Environment: Google Colab (Python 3.12.12, PyTorch 2.9.0+cpu, CUDA None, GPU: CPU) 
+
+A.1.3 Hardware We used Google Colab GPUs (e.g., T4/A100 depending on availability). For CPU-only runs, results may differ in wall time but proxy metrics remain comparable. 
+
+A.1.4 Key hyperparameters 
+
+• Optimizer: AdamW (lr, weight decay as in each experiment config). • Training: epochs T , batch size, and random seeds (3 seeds) are reported per experiment; hardware and software versions are logged in the Colab notebooks. 
+
+A.1.5 Gate scheduling In addition, due to Google Colab session interruptions (e.g., memory limits), we performed memory optimizations and various parameter tuning tailored to each dataset. We used a warmup (Ew) with λg = 0 , followed by a gradual ramp of λg up to λmax  
+
+> g
+
+; temperature τ is annealed smoothly. Threshold θ is fixed unless otherwise stated. 
+
+A.1.6 Compute Proxy and RelMAC Compute Proxy is the average gate activation ratio; RelMAC weights activation by layerwise MAC contributions (fan-in/out). We report both as hardware-agnostic proxy metrics. 
+
+## A.2 Colab notebooks 
+
+26 Table 9: Colab source code links for each dataset. 
+
+Dataset Colab Source Code (URL) 
+
+MNIST https://colab.research.google.com/drive/1PbKL4So4Vqel9VTN-SxFsEcHJGoo7aib?usp=sharing CIFAR-10 https: //colab.research.google.com/drive/1q8aA74ImyfW8QB55RrqImBDSOt2IUtbv?usp=sharing Tiny ImageNet https://colab.research.google.com/drive/19V6E8EHPjwdW-zgv1jnyxCgPiRT9_F3M?usp=sharing SpeechCommands https://colab.research.google.com/drive/1TZBecTZQxlEu2ME_q3Ta5mM_jgt-fQTZ?usp=sharing PBMC3k (HVG) https://colab.research.google.com/drive/1DffTQEO8Ctw0h8UQGL-RajQW6HtBKEjX?usp=sharing 
+
+27

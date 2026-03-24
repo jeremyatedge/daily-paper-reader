@@ -6,49 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-23
-- 运行时间：2026-03-23 20:07:16 UTC
+- 最新运行日期：2026-03-24
+- 运行时间：2026-03-24 20:37:12 UTC
 - 运行状态：成功
-- 本次总论文数：9
-- 精读区：6
-- 速读区：3
+- 本次总论文数：19
+- 精读区：8
+- 速读区：11
 
 ### 今日简报（AI）
-今日聚焦 AI 与硬件系统的深度融合，涵盖从卫星 TinyML 到 LLM 驱动的芯片设计优化等 9 项前沿进展。
-重点关注 TinyML 赋能立方星任务的突破，以及 POET 框架利用进化微调显著提升 LLM 在 RTL 电路设计中的 PPA 表现。
-建议深入探索 LLM 智能体在移动端功耗管理及自动化硬件设计流程中的落地潜力。
-- 详情：[/202603/23/README](/202603/23/README)
+今日精选 19 篇论文，重点攻克下一代可重构推理加速器与 3D 点云存内计算难题。
+满分论文 MINISA 与 PC2IM 揭示了极简指令集与硬件加速的巨大潜力，显著提升边缘感知能效。
+推荐关注大模型驱动的云边端协同调度，把握 AI 算力从底层架构到应用落地的全栈演进。
+- 详情：[/202603/24/README](/202603/24/README)
 
 ### 精读区论文标签
-1. [TinyML Enhances CubeSat Mission Capabilities](/202603/23/2603.20174v1-tinyml-enhances-cubesat-mission-capabilities)  
+1. [MINISA: Minimal Instruction Set Architecture for Next-gen Reconfigurable Inference Accelerator](/202603/24/2603.20623v1-minisa-minimal-instruction-set-architecture-for-next-gen-reconfigurable-inference-accelerator)  
    标签：评分：10.0/10、query:aiot
-   evidence：针对立方星嵌入式处理器的TinyML能效推理优化
-2. [POET: Power-Oriented Evolutionary Tuning for LLM-Based RTL PPA Optimization](/202603/23/2603.19333v1-poet-power-oriented-evolutionary-tuning-for-llm-based-rtl-ppa-optimization)  
+   evidence：用于可重构AI推理加速器的极简指令集架构
+2. [PC2IM: An Efficient In-Memory Computing Accelerator for 3D Point Cloud](/202603/24/2603.21167v1-pc2im-an-efficient-in-memory-computing-accelerator-for-3d-point-cloud)  
+   标签：评分：10.0/10、query:aiot
+   evidence：用于移动系统的 SRAM 存内计算加速器
+3. [SparseDVFS: Sparse-Aware DVFS for Energy-Efficient Edge Inference](/202603/24/2603.21908v1-sparsedvfs-sparse-aware-dvfs-for-energy-efficient-edge-inference)  
+   标签：评分：10.0/10、query:aiot
+   evidence：用于高能效边缘推理的稀疏感知动态电压频率调整
+4. [Neuronal Self-Adaptation Enhances Capacity and Robustness of Representation in Spiking Neural Networks](/202603/24/2603.20687v1-neuronal-self-adaptation-enhances-capacity-and-robustness-of-representation-in-spiking-neural-networks)  
    标签：评分：9.0/10、query:aiot
-   evidence：使用大模型进行面向功耗的硬件RTL优化
-3. [DAPA: Distribution Aware Piecewise Activation Functions for On-Device Transformer Inference and Training](/202603/23/2603.19338v1-dapa-distribution-aware-piecewise-activation-functions-for-on-device-transformer-inference-and-training)  
+   evidence：用于实时边缘计算的高能效脉冲神经网络
+5. [RoboECC: Multi-Factor-Aware Edge-Cloud Collaborative Deployment for VLA Models](/202603/24/2603.20711v1-roboecc-multi-factor-aware-edge-cloud-collaborative-deployment-for-vla-models)  
    标签：评分：9.0/10、query:aiot
-   evidence：适用于设备端Transformer推理的硬件友好型激活函数
-4. [Federated Hyperdimensional Computing for Resource-Constrained Industrial IoT](/202603/23/2603.20037v1-federated-hyperdimensional-computing-for-resource-constrained-industrial-iot)  
+   evidence：边缘云部署的模型硬件协同感知分割策略
+6. [Optimizing Feature Extraction for On-device Model Inference with User Behavior Sequences](/202603/24/2603.21508v1-optimizing-feature-extraction-for-on-device-model-inference-with-user-behavior-sequences)  
    标签：评分：9.0/10、query:aiot
-   evidence：资源受限工业物联网的能效推理
-5. [STAG-CN: Spatio-Temporal Apiary Graph Convolutional Network for Disease Onset Prediction in Beehive Sensor Networks](/202603/23/2603.14462v1-stag-cn-spatio-temporal-apiary-graph-convolutional-network-for-disease-onset-prediction-in-beehive-sensor-networks)  
-   标签：评分：8.0/10、query:aiot
-   evidence：用于疾病预测的物联网传感器网络集成
-6. [Skilled AI Agents for Embedded and IoT Systems Development](/202603/23/2603.19583v1-skilled-ai-agents-for-embedded-and-iot-systems-development)  
-   标签：评分：8.0/10、query:aiot
-   evidence：用于硬件在环嵌入式和物联网系统开发的AI智能体
+   evidence：优化设备端模型推理和特征提取
+7. [IMMSched: Interruptible Multi-DNN Scheduling via Parallel Multi-Particle Optimizing Subgraph Isomorphism](/202603/24/2603.21659v1-immsched-interruptible-multi-dnn-scheduling-via-parallel-multi-particle-optimizing-subgraph-isomorphism)  
+   标签：评分：9.0/10、query:aiot
+   evidence：边缘加速器的可中断多DNN调度优化
+8. [LSAI: A Large Small AI Model Codesign Framework for Agentic Robot Scenarios](/202603/24/2603.21726v1-lsai-a-large-small-ai-model-codesign-framework-for-agentic-robot-scenarios)  
+   标签：评分：9.0/10、query:aiot
+   evidence：针对智能机器人场景的大小AI模型协同设计
 
 ### 速读区论文标签
-1. [PowerLens: Taming LLM Agents for Safe and Personalized Mobile Power Management](/202603/23/2603.19584v1-powerlens-taming-llm-agents-for-safe-and-personalized-mobile-power-management)  
+1. [IndoorR2X: Indoor Robot-to-Everything Coordination with LLM-Driven Planning](/202603/24/2603.20182v1-indoorr2x-indoor-robot-to-everything-coordination-with-llm-driven-planning)  
    标签：评分：8.0/10、query:aiot
-   evidence：使用大模型智能体进行个性化移动电源管理
-2. [PAI: Fast, Accurate, and Full Benchmark Performance Projection with AI](/202603/23/2603.19330v1-pai-fast-accurate-and-full-benchmark-performance-projection-with-ai)  
+   evidence：整合移动机器人和静态物联网设备的观测数据
+2. [Learning to Optimize Joint Source and RIS-assisted Channel Encoding for Multi-User Semantic Communication Systems](/202603/24/2603.21097v1-learning-to-optimize-joint-source-and-ris-assisted-channel-encoding-for-multi-user-semantic-communication-systems)  
+   标签：评分：8.0/10、query:aiot
+   evidence：最大化多用户语义通信系统的能量效率
+3. [ConsRoute:Consistency-Aware Adaptive Query Routing for Cloud-Edge-Device Large Language Models](/202603/24/2603.21237v1-consrouteconsistency-aware-adaptive-query-routing-for-cloud-edge-device-large-language-models)  
+   标签：评分：8.0/10、query:aiot
+   evidence：云-边-端协同推理的自适应查询路由
+4. [Ultrafast microwave sensing and automatic recognition of dynamic objects in open world using programmable surface plasmonic neural networks](/202603/24/2603.21521v1-ultrafast-microwave-sensing-and-automatic-recognition-of-dynamic-objects-in-open-world-using-programmable-surface-plasmonic-neural-networks)  
+   标签：评分：8.0/10、query:aiot
+   evidence：用于实时传感和识别的集成微波处理器
+5. [ECHO: Edge-Cloud Humanoid Orchestration for Language-to-Motion Control](/202603/24/2603.16188v1-echo-edge-cloud-humanoid-orchestration-for-language-to-motion-control)  
    标签：评分：7.0/10、query:aiot
-   evidence：现代 SoC 的硬件-软件功耗性能分析
-3. [Efficient LLM Serving for Agentic Workflows: A Data Systems Perspective](/202603/23/2603.16104v1-efficient-llm-serving-for-agentic-workflows-a-data-systems-perspective)  
+   evidence：用于人形机器人控制的边缘-云框架，在边缘部署强化学习
+6. [DynamicGate MLP Conditional Computation via Learned Structural Dropout and Input Dependent Gating for Functional Plasticity](/202603/24/2603.16367v1-dynamicgate-mlp-conditional-computation-via-learned-structural-dropout-and-input-dependent-gating-for-functional-plasticity)  
+   标签：评分：7.0/10、query:aiot
+   evidence：通过输入依赖门控抑制不必要的计算
+7. [SOL-ExecBench: Speed-of-Light Benchmarking for Real-World GPU Kernels Against Hardware Limits](/202603/24/2603.19173v1-sol-execbench-speed-of-light-benchmarking-for-real-world-gpu-kernels-against-hardware-limits)  
+   标签：评分：7.0/10、query:aiot
+   evidence：针对AI模型硬件限制的GPU内核基准测试
+8. [On Performance Guarantees for Federated Learning with Personalized Constraints](/202603/24/2603.19617v1-on-performance-guarantees-for-federated-learning-with-personalized-constraints)  
+   标签：评分：7.0/10、query:aiot
+   evidence：具有异构资源约束的联邦学习
+9. [From Connectivity to Multi-Orbit Intelligence: Space-Based Data Center Architectures for 6G and Beyond](/202603/24/2603.18601v1-from-connectivity-to-multi-orbit-intelligence-space-based-data-center-architectures-for-6g-and-beyond)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于高效LLM调用的工作流感知服务框架
+   evidence：面向6G和物联网连接的天基数据中心架构
+10. [Holistic Energy Performance Management: Enablers, Capabilities, and Features](/202603/24/2603.18841v1-holistic-energy-performance-management-enablers-capabilities-and-features)  
+   标签：评分：6.0/10、query:aiot
+   evidence：5G/6G网络中的节能特性与硬件能力
+11. [Sustainable Load Balancing for Wireless Networks With Renewable Energy Sources](/202603/24/2603.20557v1-sustainable-load-balancing-for-wireless-networks-with-renewable-energy-sources)  
+   标签：评分：6.0/10、query:aiot
+   evidence：无线网络的能耗感知负载均衡
 
 
 <div class="dpr-home-promo-card">
