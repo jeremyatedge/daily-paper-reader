@@ -1,0 +1,751 @@
+Title: From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning
+
+URL Source: https://arxiv.org/pdf/2603.18383v1
+
+Published Time: Fri, 20 Mar 2026 00:29:45 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning 
+
+# Grant Wilkins 
+
+gfw@stanford.edu Stanford University Stanford, CA, USA 
+
+# Fiodar Kazhamiaka 
+
+fkazhamiaka@microsoft.com Microsoft Azure Research Redmond, WA, USA 
+
+# Ram Rajagopal 
+
+ramr@stanford.edu Stanford University Stanford, CA, USA 
+
+## Abstract 
+
+Datacenter operators and electrical utilities rely on power traces at different spatiotemporal scales. Operators use fine-grained traces for provisioning, facility management, and scheduling, while util-ities use site-level load profiles for capacity and interconnection planning. Existing datacenter power models do not capture LLM inference workloads, in which GPUs shift rapidly among compute-intensive prefill, lower-power decode, and idle states, and facility demand depends on how these states evolve and synchronize across many devices. We show that LLM inference power can be repre-sented compositionally through two components: workload-driven transitions among operating states and configuration-specific power distributions within those states. Building on this observation, we develop a trace-generation framework that learns from measured traces and synthesizes power profiles for new traffic conditions and serving configurations. These traces aggregate from GPU servers to rack-, row-, and facility-scale load profiles at the temporal gran-ularity required by the study. Across multiple LLMs, tensor-parallel settings, and GPU genera-tions, our framework achieves median absolute energy error below 5% for most configurations while preserving temporal autocorrela-tion structure. The resulting traces support downstream analyses including oversubscription, power modulation, and utility-facing load characterization, enabling infrastructure evaluations that flat nameplate assumptions and static trace replay cannot support. 
+
+## Keywords 
+
+Grid, Computing 
+
+ACM Reference Format: 
+
+Grant Wilkins, Fiodar Kazhamiaka, and Ram Rajagopal. 2026. From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning. In . ACM, New York, NY, USA, 13 pages. https: //doi.org/10.1145/nnnnnnn.nnnnnnn 
+
+## 1 Introduction 
+
+Models of datacenter electrical demand inform decisions ranging from infrastructure provisioning inside the datacenter to inter-connection planning on the grid. LLM inference has changed the       
+
+> Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+> Conference’17, Washington, DC, USA
+> ©2026 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM https://doi.org/10.1145/nnnnnnn.nnnnnnn 0246810
+
+Time (minutes) 
+
+> 0
+> 1
+> 2
+> 3
+> GPU Power (kW)
+> Measured
+> LUT-based
+> Ours
+
+Figure 1: Server-level power trace comparison for Llama-3.1 (70B) with TP=8 on an A100 DGX. A phase-based look-up-table (LUT) baseline produces jumps and misses intermediate operating regions, ignoring the mixed prefill–decode occu-pancy from continuous batching. Our model more closely follows the measured trace across transitions between idle, partially loaded, and saturated regimes. 
+
+character of that demand. Unlike conventional CPU-dominated services, modern inference deployments run on high-power GPU servers, often across multiple GPUs or multiple servers, and can drive large power swings on sub-second timescales as requests arrive and complete. As a result, facility-scale load can no longer be represented adequately by coarse utilization or average-power abstractions alone. At the device level, LLM serving repeatedly moves GPUs between compute-heavy prefill, lower-power decode, and idle states [ 30 , 43 ]. These transitions accumulate across a deployment, so facility de-mand depends not only on average utilization but also on how load shifts propagate and align across many GPUs. Capturing those effects requires modeling at server or GPU-device granularity, since the timing and synchronization of these transitions shape the ag-gregate load seen at larger scales [3, 26, 44, 48, 54]. Datacenter operation and grid planning have different require-ments for these load models. The former use power traces to study provisioning, oversubscription, power capping, and scheduling un-der changing hardware, model mixes, and traffic conditions [ 29 ,33 , 37 , 47 , 48 , 59 ]. The latter instead consume aggregate load pro-files for interconnection and capacity studies, where conclusions depend on quantities such as peak demand, ramping behavior, and coincidence with other loads in the network [ 10 , 13 ]. In both set-tings, the quality of the larger-scale model depends on whether it preserves inference-driven device-level dynamics that can generate those system-level characteristics. Prior work captures important pieces of LLM inference power modeling [ 42 , 43 , 54 , 55 ], but not the combination of properties needed here: generalization to unseen traffic conditions, transfer across serving configurations, and aggregation into facility-scale  
+
+> arXiv:2603.18383v1 [cs.DC] 19 Mar 2026 Conference’17, July 2017, Washington, DC, USA Wilkins et al.
+
+load profiles for deployments that may not yet exist. Phase-based analyses identify recurring regimes such as idle, prefill, and de-code [ 43 ], but fixed per-phase power levels cannot capture how power varies with offered load and concurrent occupancy. As Fig-ure 1 shows, a phase-based look-up-table (LUT) baseline produces artificial jumps and misses intermediate operating regions created by overlapping prefill and decode work under continuous batching. Replay from measured deployments preserves a specific observed system [ 42 , 54 , 55 ], but does not extrapolate reliably to new arrival processes, model mixes, or deployment scales. What is missing is a representation that captures both the workload dynamics gov-erning transitions among operating states and the configuration dependence of power within each state. Our central insight is that inference power traces can be gener-ated compositionally. Workload dynamics determine the evolution of operating state over time, while model choice, hardware plat-form, and serving configuration determine the distribution of power conditional on that state. This representation transfers across both traffic scenarios and deployment settings. Model Training Data Center   
+
+> Model
+> Prefill & Decode
+> Latency Models
+> Workload
+> Simulator
+> Measured
+> Traces
+> Feature Prep
+> GRU Training
+> Site
+> Rows
+> Racks
+> Node Power Trace
+> Input features
+> Data Center
+> Power Trace
+> Nodes
+> Token stream
+> Trace Generation
+
+Figure 2: Compositional trace generation pipeline. Measured power traces train per-configuration state classifiers and state-conditioned power models offline. At generation time, a workload simulator produces token-level features from an arrival schedule; the classifier maps features to states; the power model converts the resulting state trajectory into server-level power traces; and these traces aggregate through the datacenter hierarchy to produce facility-scale load pro-files. 
+
+Figure 2 illustrates the framework. Measured traces are used offline to train a classifier that predicts transitions among operating states from workload features. At generation time, a simulator converts a stream of request arrivals into a feature sequence, the classifier produces a state trajectory, and a configuration-specific power model maps that trajectory to a power trace. This allows us to synthesize traces for new settings without remeasuring each an end-to-end scenario, and to aggregate them from GPU servers to rack-, row-, and facility-scale profiles at the temporal resolution required by a study. Our contributions are threefold. We present a compositional model for generating LLM inference power traces that supports both fine-grained operational analysis and planner-facing facil-ity studies. We show that this separation creates a transferable representation across arrival patterns, hardware platforms, and model mixes. Finally, through case studies, we demonstrate that 0 20 40 60 80 100 
+
+> Time (s)
+> 100
+> 150
+> 200
+> 250
+> 300
+> 350
+> 400
+> 450
+> GPU Power (W)
+> GPU Power
+> At
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> 4.0
+> Active Requests ( At)
+
+Figure 3: Measured GPU power and active request count 𝐴 𝑡 
+
+for Llama-3.1-8B on H100 at 𝜆 = 0.25 req/s. Each power tran-sition aligns with a change in 𝐴 𝑡 , as sharp rises correspond to request arrivals (prefill), sustained plateaus to concurrent decode, and drops to request completions. The two signals move together throughout the trace. 
+
+inference-aware traces can materially change conclusions relative to TDP-based and phase-only abstractions. We evaluate this pipeline on five dense and two mixture-of-experts (MoE) LLMs across A100 and H100 GPUs and multiple tensor-parallel settings. For most dense-model settings, the gen-erator achieves median energy error below 5% while preserving temporal structure with high autocorrelation fidelity. We then com-bine the framework with production Azure token-traffic traces to construct datacenter power traces that can be used in downstream planning studies. Relative to TDP-based provisioning and simpler phase-based models, our traces produce materially different es-timates of peak demand, ramping, and feasible oversubscription levels, showing that trace fidelity is not merely descriptive but can change infrastructure conclusions. We release the data-collection scripts, trained classifiers, and trace-generation code to support reproducibility and downstream use 1.
+
+## 2 Motivation and Observations 2.1 Power States in Continuous-Batch Inference 
+
+Modern LLM inference engines use continuous batching [ 30 , 43 ] to serve requests across a set of GPUs. When a new request arrives, its prompt is processed in a compute-bound prefill pass that drives GPU power to 80–90% of TDP [ 17 , 43 , 55 ]. The request then enters a memory-bound decode phase that generates tokens autoregres-sively at 40–60% of TDP [ 39 , 54 ]. Under continuous batching, prefill and decode often coexist within the same batch, so GPU power is determined not by a single phase label but by the mixture of work executing at that moment [22]. This implies that GPU power is largely a function of the number of concurrently active requests and whether prompt-processing work is present in the batch. Figure 3 makes this relationship visible, since measured GPU power and the active request count 𝐴 𝑡 move closely together, and each major power transition aligns with a change in 𝐴 𝑡 . Sharp increases coincide with new request arrivals  
+
+> 1https://github.com/grantwilkins/powertrace-sim From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA
+
+that trigger prefill, sustained elevated regions reflect concurrent decode activity, and drops toward idle occur as requests complete. We formalize this observation using two features derived from the request schedule. Let 𝐴 𝑡 denote the number of concurrently active requests at timestep 𝑡 , and let Δ𝐴 𝑡 = 𝐴 𝑡 − 𝐴 𝑡 −1. A request is 
+
+active from the timestep its prefill begins until the timestep its final token is generated. The feature 𝐴 𝑡 captures instantaneous load, as each active request occupies batch capacity, reserves KV cache, and contributes attention and feedforward work. As illustrated in Figure 3, total power scales with 𝐴 𝑡 up to a hardware-dependent saturation point. The feature Δ𝐴 𝑡 serves as a proxy for prefill pres-sure, since under continuous-batching policies that process prompts on admission, Δ𝐴 𝑡 > 0 strongly indicates that prefill is occurring alongside decode. Both features can be computed from a request schedule together with a simple throughput surrogate for continuous-batching be-havior. The surrogate requires only a small number of serving parameters, including a token-throughput curve, maximum batch size, and prompt and output length distributions. Given an arrival process and length distributions, one can therefore compute 𝐴 𝑡 
+
+and Δ𝐴 𝑡 for hypothetical deployments without coupling the power model to a specific serving-system implementation. These features are useful not only because they explain server-level power variation, but also because they preserve the aspects of trace structure that downstream operational and planning work-flows consume. 
+
+## 2.2 Why Trace Fidelity Matters 
+
+The same underlying inference workload feeds multiple infras-tructure workflows, each of which requires a different view of power. For datacenter operators, the key input is a high-resolution IT-power trace that preserves transients, burst durations, and coin-cidence across nearby servers. These traces inform at least three classes of decisions [ 33 , 48 ]. First, sub-second control loops such as power capping, throttling, and protection logic must respond to excursions that threaten local power-delivery limits or protection thresholds [ 11 , 33 , 34 , 52 , 55 ]. Second, over timescales of seconds to minutes, operators study whether excess electrical capacity can be traded for additional IT load through oversubscription, place-ment, or load-balancing policies [ 21 , 29 , 42 , 51 , 53 , 55 , 66 ]. Third, over planning horizons of months to years, fleet designers need scenario-conditioned traces to estimate how row- and site-level de-mand changes as accelerator generations, model mixes, and traffic volumes evolve [6, 35, 56]. For these workflows, usable headroom depends on whether traces preserve peak magnitude, peak duration, coincidence across nearby servers, and how bursts change under different batching and traffic conditions. A flat TDP assumption is conservative but often overly restrictive, whereas a smoothed mean power profile can be misleading in the opposite direction because it suppresses short excursions. Grid-facing studies consume a coarser version of this same trace. Utility workflows typically require metered load shapes together with statistics such as interval peaks, ramp-rate distributions, coin-cidence with surrounding demand, and peak duration at the billing or protection timescale [ 8, 15 ]. In some jurisdictions, projected load 2 4 6 8 10 12 14 16 18 20 
+
+> Number of components K
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized BIC  Llama H100 TP1
+> Llama H100 TP2
+> GPT-OSS A100 TP4
+> DeepSeek H100 TP4
+
+Figure 4: Normalized BIC as a function of mixture compo-nents 𝐾 for four representative configurations. BIC plateaus near 𝐾 =10 for most configurations, with selected 𝐾 ranging from 8 to 12. 
+
+shapes are now part of the datacenter connection process itself [ 2 ]. Similar inputs also appear in capacity-expansion and resource-adequacy studies, where the question is whether generation and network infrastructure can accommodate a large new load under simulated interactions with the rest of the system [ 10 , 13 , 14 , 61 ]. For these studies, the key issue is how inference activity aggregates to the point of common coupling (PCC): i.e., whether short bursts wash out under diversity, persist into metered peaks, or align with an already-stressed system. In our setting, facility power at the PCC is derived from modeled IT power using the datacenter aggregation procedure described in §3.4. 
+
+## 3 Methods 3.1 Planner-Facing Interface 
+
+The framework exposes a planner-facing interface: given a facility configuration and workload scenario, it returns a power time series at user-specified temporal resolution. The required inputs are: 
+
+• Facility topology: number of rows, racks per row, and servers per rack. 
+
+• Server configuration: GPU type (e.g., A100 or H100), model family and size, and tensor-parallel degree. 
+
+• Workload scenario: request arrival process (e.g., Poisson with rate 𝜆 ) together with prompt- and output-length distri-butions. 
+
+• Site-level assumptions: per-server non-GPU IT power and site power usage effectiveness (PUE). The output is a per-server power trace at 250 ms resolution. These traces can be aggregated to rack, row, and site levels and resampled at any coarser interval needed by a downstream study. Site-level output represents IT load scaled by PUE. Any onsite storage or generation must be modeled externally. Internally, the pipeline consists of three stages: (1) state modeling (§3.2), (2) trace synthesis (§3.3), and (3) datacenter-scale aggregation (§3.4). 
+
+## 3.2 Power State Modeling 
+
+State discovery via Gaussian mixtures. Measured power traces show that GPU power during LLM inference concentrates in a small number of recurring operating regimes. Rather than fixing Conference’17, July 2017, Washington, DC, USA Wilkins et al. 
+
+these regimes a priori, we infer them separately for each hardware– model–deployment 2 configuration. For each configuration (𝐻, 𝑀, TP ), we fit a Gaussian mixture model with 𝐾 components: 
+
+𝑝 (𝑦 𝑡 | 𝐻, 𝑀, TP ) =
+
+> 𝐾
+
+∑︁ 
+
+> 𝑘 =1
+
+𝜋 𝑘 N  𝑦 𝑡 | 𝜇 𝑘 , 𝜎 2
+
+> 𝑘
+
+ , (1) where 𝑦 𝑡 is measured GPU power at time 𝑡 , 𝜋 𝑘 is the mixing weight of component 𝑘 , and (𝜇 𝑘 , 𝜎 2 
+
+> 𝑘
+
+) are its mean and variance. We choose 
+
+𝐾 independently for each configuration using the Bayesian Infor-mation Criterion (BIC). As shown in Figure 4, BIC typically plateaus near 𝐾 = 10 , and the selected values range from 8 to 12 across our measured configurations. To train our temporal model, we take each measured power sample as a hard state label from posterior maximization: 
+
+𝑧 𝑡 = arg max  
+
+> 𝑘
+
+𝜋 𝑘 N  𝑦 𝑡 | 𝜇 𝑘 , 𝜎 2
+
+> 𝑘
+
+ , (2) and sort components by mean power to obtain an ordered set of operating states ranging from idle to full-load behavior. Dense mod-els typically yield well-separated states, while MoE models exhibit broader and more overlapping components. The resulting state dictionary, {( 𝜇 (𝐻,𝑀, TP ) 
+
+> 𝑘
+
+, 𝜎 (𝐻,𝑀, TP ) 
+
+> 𝑘
+
+)} 𝐾 𝑘 =1, serves both as the labels for temporal classification and as the power sampling model used dur-ing trace generation. Because Gaussian components are only an empirical approximation to bounded hardware power, generated samples are clipped to the observed power range of the correspond-ing configuration. 
+
+Temporal state classification. The GMM yields latent states for measured traces, but trace generation requires the inverse mapping, from workload features to state sequence. As motivated in §2.1, we describe the workload at each timestep using the active-request count 𝐴 𝑡 and its first difference Δ𝐴 𝑡 as features. We model the mapping from workload features to latent states with a bidirectional GRU classifier. Let X = (x1, . . . , x𝑇 ) denote the feature sequence, where x𝑡 = (𝐴 𝑡 , Δ𝐴 𝑡 ) ∈ R2. The classifier outputs 
+
+P(𝑧 𝑡 = 𝑘 | X) = softmax (𝑊 h𝑡 + b)𝑘 , (3) where h𝑡 ∈ R2𝑑 is the concatenated forward and backward hidden state at time 𝑡 , and 𝑊 ∈ R𝐾 ×2𝑑 projects it to 𝐾 state logits. Because our setting is offline trace generation for planning, the full work-load is available at evaluation time, hence a bidirectional model is appropriate. Among several sequence models we evaluated, the BiGRU pro-vided the best tradeoff between temporal classification quality and downstream energy fidelity on our dataset. For configurations with sharp state transitions, the classifier typically produces concen-trated posteriors; for smoother occupancy ramps, probability mass is often shared across adjacent states, allowing for some ambiguity near transition boundaries. 
+
+## 3.3 Trace Generation 
+
+Given a new workload scenario, trace generation proceeds in three stages: (i) compute workload features from the arrival schedule,        
+
+> 2In our study we vary deployment with tensor parallelism (TP); however, this applies for other variations in serving policy as well. 0.008 0.010 0.012 0.014
+> Prefill Time (seconds)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> Ground Truth
+> Simulated
+> (a) Prefill 0123
+> Decode Time (seconds)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> Ground Truth
+> Simulated (b) Decode
+
+Figure 5: CDFs of modeled versus measured prefill and decode durations for DeepSeek-R1-Distill (8B) on H100 with TP =8. 
+
+(ii) predict a latent state trajectory, and (iii) sample power values conditioned on that trajectory. 
+
+From arrival schedules to workload features. We begin with a request arrival schedule {( 𝑡 𝑖 , 𝑛 in  
+
+> 𝑖
+
+, 𝑛 out  
+
+> 𝑖
+
+)} 𝑖 , where 𝑡 𝑖 is the arrival time and 𝑛 in  
+
+> 𝑖
+
+and 𝑛 out  
+
+> 𝑖
+
+are the input and output token counts. To compute the workload features 𝐴 𝑡 and Δ𝐴 𝑡 , we estimate each request’s ac-tive interval [𝑡 start  
+
+> 𝑖
+
+, 𝑡 end  
+
+> 𝑖
+
+] using a lightweight throughput surrogate calibrated per configuration. Our surrogate models query lifetime as the sum of a prefill phase and a decode phase. Prefill duration (time-to-first-token, TTFT) grows superlinearly [46, 55] with prompt length: 
+
+log (TTFT ) = 𝛼 0 + 𝛼 1 log (𝑛 in + 1) + 𝜀, 𝜀 ∼ N ( 0, 𝜎 2TTFT ), (4) while decode duration is the product of output length and inter-token latency [30, 55] (time-between-tokens, TBT), 
+
+log (TBT ) ∼ N ( 𝜇 log TBT , 𝜎 2log TBT ). (5) The parameters (𝛼 0, 𝛼 1, 𝜎 TTFT , 𝜇 log TBT , 𝜎 log TBT ) are estimated per configuration from measured traces, but they can also be obtained from a small benchmark sweep or supplied directly from deploy-ment SLOs/SLAs. Requests are then placed into a FIFO queue with batch size 64. Request 𝑖 begins execution at 𝑡 start  
+
+> 𝑖
+
+= max (𝑡 𝑖 , earliest available slot ),incurs TTFT for prefill, and then decodes for 𝑛 out  
+
+> 𝑖
+
+× TBT seconds. We can then efficiently compute our features as, 
+
+𝐴 𝑡 = {𝑖 : 𝑡 start  
+
+> 𝑖
+
+≤ 𝑡 < 𝑡 end  
+
+> 𝑖
+
+} , (6) and Δ𝐴 𝑡 = 𝐴 𝑡 − 𝐴 𝑡 −1.This model is intended to reproduce request lifetimes and con-currency, not to emulate a scheduler fully. Different serving policies enter only through their aggregate effect on TTFT, TBT, and the resulting concurrency process. Figure 5 shows distributional agree-ment of this proxy against measured prefill and decode durations, and Appendix A.1 compares the resulting simulated and measured workload features. 
+
+From workload features to a state trajectory. Given the feature sequence X′, our trained BiGRU produces per-timestep state proba-bilities P(𝑧 𝑡 = 𝑘 | X′). We then can generate a state trajectory by sampling 
+
+ˆ𝑧 𝑡 ∼ Categorical (p𝑡 ), 𝑝 𝑡 (𝑘 ) = P(𝑧 𝑡 = 𝑘 | X′), (7) From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA 
+
+rather than taking an argmax at each timestep. At high loads, we typically remain within a single state. More uncertainty happens near transitions, where adjacent states may have similar probability. 
+
+From state trajectory to power. Using the predicted state se-quence { ˆ𝑧 𝑡 }, we sample power from the GMMs stored in the state dictionary. For dense transformer models, variation within a state is weakly correlated in time, so we can sample power independently from the corresponding GMM component: 
+
+ˆ𝑦 𝑡 ∼ N 
+
+
+
+𝜇 ˆ𝑧 𝑡 , 𝜎 2ˆ𝑧 𝑡 
+
+
+
+. (8) MoE models have stronger time correlated variation due to data-dependent expert routing. In this case, independent sampling can destroy autocorrelation that we observe but that is not recoverable from our workload features. We therefore use a per-state AR(1) model, 
+
+ˆ𝑦 𝑡 = 𝜇 ˆ𝑧 𝑡 + 𝜙 ˆ𝑧 𝑡 ( ˆ𝑦 𝑡 −1 − 𝜇 ˆ𝑧 𝑡 ) + 𝜎 noise ˆ𝑧 𝑡 𝜀 𝑡 , 𝜀 𝑡 ∼ N ( 0, 1), (9) where 𝜙 𝑘 is estimated from segments in the training data and 
+
+𝜎 noise  
+
+> 𝑘
+
+= 𝜎 𝑘 √︃ 1 − 𝜙 2 
+
+> 𝑘
+
+captures marginal variance of state 𝑘 . Dense configurations typically have a 𝜙 𝑘 near zero, whereas the MoE is higher. All generated samples are clipped to the observed power range [𝑦 min , 𝑦 max ] from the training data. 
+
+## 3.4 Datacenter-Scale Aggregation 
+
+Facility hierarchy. We model each data hall as a four-level hierar-chy [ 66 ]: data hall → rows → racks → servers. A hall with 𝑠 rows, 
+
+𝑟 racks per row, and 𝑛 servers per rack contains 𝑁 total = 𝑠𝑟𝑛 infer-ence servers. Each server 𝑁 𝑖,𝑗,𝑘 is assigned a configuration tuple 
+
+(𝐻, 𝑀, TP ), which selects a model. This framework lets us simulate arbitrary per-server assignments, and having heterogeneous mixes of accelerator generations, model sizes, and serving configurations within a single hall. 
+
+Cross-server arrival structure. Aggregation depends not just on per-server power but also on how request streams are distributed across servers [ 21 ]. We support two primary traffic cases. First we have an independent case where each server draws from its own arrival process. Then we model a shared-intensity case in which servers follow a common arrival-rate function with independent thinning, yielding correlated request streams. This is the mode used with the Azure trace from [ 54 ]. These modes allow a planner to explore effects from independent to correlated traffic without needing to change the per-server trace-generation model. 
+
+Bottom-up aggregation. Let 𝑦 (𝑖,𝑗,𝑘 ) 
+
+> 𝑡
+
+denote the generated GPU 
+
+power trace for server 𝑁 𝑖,𝑗,𝑘 . We model additional non-GPU IT load (e.g., CPUs, storage, and networking) as a constant 𝑃 base = 1 kW 
+
+per server. Total IT power is then 
+
+𝑃 IT (𝑡 ) =
+
+> 𝑠
+
+∑︁ 
+
+> 𝑖 =1
+> 𝑟
+
+∑︁ 
+
+> 𝑗 =1
+> 𝑛
+
+∑︁ 
+
+> 𝑘 =1
+
+
+
+𝑦 (𝑖,𝑗,𝑘 ) 
+
+> 𝑡
+
++ 𝑃 base 
+
+
+
+, (10) from which rack, row, and hall level trajectories are just partial sums across time in the system. Our choice for a constant non-GPU term is motivated by the relative stability and magnitude difference of these components power draw during inference as compared to GPUs [4, 60]. 
+
+Facility power. We map IT power to facility power at the point of common coupling using a constant-PUE model, 
+
+𝑃 facility (𝑡 ) = PUE × 𝑃 IT (𝑡 ), (11) following standard datacenter planning practice [ 4 , 48 , 62 ]. This approximation is appropriate for aggregate provisioning and grid-integration studies. We point out that our model does not capture weather-dependent shifts in PUE, as we discuss further in §5. 
+
+## 4 Evaluation 
+
+We evaluate the framework across an increasing scale. We begin with server-level fidelity, showing that generated traces reproduce measured GPU power dynamics (§4.2). We then compare against simpler baselines to identify which aspects of structure they miss (§4.3). Next, we study whether those differences matter in a facility-scale case study driven by a production workload (§4.4). Finally, we examine how aggregation through the datacenter hierarchy can smooth variability and the planning quantities derived from it (§4.5). 
+
+## 4.1 Experimental Setup 
+
+We evaluate our framework on Microsoft Azure NVIDIA DGX servers with 8×A100 (80 GB) and 8×H100 (80 GB) GPUs. All experi-ments use vLLM [ 30 ] v0.10.0 with default settings, except for tensor parallelism, which is varied to show robustness across different serving configurations. GPU clocks and power caps are left unchanged from their default settings. Power is measured using nvidia-smi at 250 ms intervals. This resolution is sufficient to resolve prefill and decode transitions, even though it does not capture sub-millisecond transients. Our measurement set spans 7 models, 2 GPU generations, and the tensor-parallel settings supported by each configuration. The workload trace we validate our site-level activity on is a single-day snapshot (5/16/24) from a coding activity trace released by Microsoft [ 54 ]. The size of the facility, the size of models served, and the number of instances from this model were not publicly announced. 
+
+Workload collection. For each configuration, we collect traces at 7 arrival rates ranging from 0.125 to 4 req/s. Each trace contains 600 𝜆 
+
+prompts, corresponding to approximately 10 minutes of runtime, and we repeat each arrival rate 5 times. Request streams are drawn from four prompt datasets: ShareGPT, InstructCoder [ 32 ], AIMO-Validation-AIME, and Edit-10K-Char. We profile dense models from the Llama-3.1 family [ 38 ] at 8B, 70B, and 405B parameter counts. We also profile dense chain-of-thought reasoning models from the DeepSeek-R1 [ 20 ] distillations onto the 8B and 70B Llama-3.1 model architectures. Finally, we profile gpt-oss [41] 20B and 120B, two MoE models from OpenAI. 
+
+Training. For each hardware, model, and parallelism configura-tion, we train a separate BiGRU classifier with hidden size 𝐻 =
+
+64 and input dimension 2. The number of latent states 𝐾 is se-lected by BIC. Training data is split at the trace level into 70/15/15 train/validation/test partitions after pooling across arrival rates. All reported fidelity metrics are computed on held-out test traces. 
+
+Metrics. We judge trace quality with four quantities. ACF 𝑅 2 mea-sures agreement between the autocorrelation function of measured Conference’17, July 2017, Washington, DC, USA Wilkins et al. 
+
+Table 1: Synthetic trace fidelity on held-out test data, av-eraged across hardware and TP configurations per model. Dense models use i.i.d. generation (Eq 8), MoE models use AR(1) generation (Eq 9). Note, Llama-3.1 (405B) was only eval-uated on an H100 with TP=8, therefore, there is no standard deviation to report.                                                                              
+
+> Model KS ↓ACF 𝑅 2↑NRMSE ↓ΔEnergy (%) ↓
+> Llama-3.1 (8B) 0.18 ±0.04 1.00 ±0.00 0.33 ±0.03 0.6 ±0.3 Llama-3.1 (70B) 0.22 ±0.09 0.97 ±0.04 0.43 ±0.09 4.0 ±2.7 Llama-3.1 (405B) 0.11 0.97 0.32 4.5 DeepSeek-R1-Distill (8B) 0.21 ±0.08 0.99 ±0.01 0.32 ±0.05 1.0 ±0.4 DeepSeek-R1-Distill (70B) 0.16 ±0.02 0.98 ±0.02 0.32 ±0.18 2.6 ±0.8 gpt-oss (120B) 0.51 ±0.11 0.58 ±0.07 0.33 ±0.04 10.8 ±3.5 gpt-oss (20B) 0.48 0.21 0.31 11.2
+
+and synthetic traces. ΔEnergy measures signed relative error in total energy consumption, Δ𝐸 =  𝐸 syn − 𝐸 meas 
+
+ /𝐸 meas , over the en-tire held-out trace. For each held-out trace, we generate 5 synthetic traces using different random seeds and report the median |Δ𝐸 |.
+
+KS statistic measures whether distributionally our measured and synthetic power samples match. NRMSE measures point-wise error normalized by the observed power range. For each held-out trace, we generate 5 synthetic traces using different random seeds and report the median metric value. 
+
+## 4.2 Server-Level Trace Fidelity 
+
+At the server level, our generated traces closely match measured dense-model power dynamics across a range of arrival rates, while MoE traces remain more challenging because expert routing causes within-state variation that is not observable from workload features alone. Figure 6 shows representative examples. For dense models at low load (Figure 6(a)), the measured trace alternates between idle and active levels as individual requests are served. The synthetic trace reproduces the timing and magnitude of these transitions. At moderate load (Figure 6(b)), overlapping requests have intermediate occupancy buckets they fall in, and the synthetic trace tracks these transitions with some minor smoothing near these boundaries. At high load (Figure 6(c)), the GPU operates at saturation, with some dips when the queue is empty. The MoE example in Figure 6(d) exhibits more within state vari-ation and much more temporal persistence than dense traces. Our AR(1)-based sampling recovers some of this structure, giving some gradual within-state movement rather than the i.i.d. jitter that we would see in dense-model sampling, but the match is visibly less accurate than for dense models. Table 1 summarizes these results across all model families, av-eraging over hardware and tensor-parallel settings. The results cleanly bifurcate: dense models, for which the compositional de-composition captures most of the observed dynamics, and MoE models, for which expert-routing we do not capture contributes a larger share of the remaining variation. 
+
+Dense models. All five dense configurations achieve strong tem-poral fidelity, with mean ACF 𝑅 2 above 0.96 and median |Δ𝐸 | below 5%. Figure 7 further shows that the synthetic traces reproduce the marginal power distributions of dense models well. 
+
+Table 2: Baseline comparison at server level for Llama-3.1 (70B) A100 TP=4 and TP=8 data.                          
+
+> Method KS ↓ACF 𝑅 2↑NRMSE ↓ΔE (%) ↓
+> TDP 1.00 —1.66 243.60 Mean 0.69 —0.32 17.35 LUT-based 0.64 0.56 0.27 13.71 Ours 0.12 0.99 0.27 6.09
+
+MoE models. MoE fidelity is lower. The gpt-oss (120B) configu-ration achieves moderate temporal coherence (ACF 𝑅 2 = 0.58 ) but relatively high energy error (10.8%), while gpt-oss (20B) preserves energy well but exhibits little autocorrelation from our calculations. In both cases, expert routing causes within-state power variation that is not represented by 𝐴 𝑡 and Δ𝐴 𝑡 , and the AR(1) correction captures only some low order persistence. Even so, marginal distri-butions remain well matched, as reflected in the KS statistics and in Figure 7(c). This suggests that coarse energy and load-duration properties are able to be preserved by our models even when the exact temporal structure is not. 
+
+## 4.3 Comparison with Simpler Power Models 
+
+We compare our framework against three baselines that represent some common methods used in planning studies. 
+
+TDP (nameplate) assumes that every server draws rated TDP at all times. This is the most conservative abstraction and is often implicit in first-pass capacity planning and interconnection studies. 
+
+Mean power assumes that every server draws its empirical training-set mean at all times, 𝑃 server (𝑡 ) = ¯𝑦 train . This captures the average operating point but removes all temporal variation. 
+
+Splitwise-style LUT baseline. We implement a Splitwise-inspired LUT baseline using the public Splitwise performance model and re-leased characterization tables [ 43 ]. The baseline predicts prefill and decode latency from batch token count and treats mixed iterations as prompt-like with a small penalty, and assigns phase-dependent power ratios for prompt, decode, mixed, and idle operation. Node power is then synthesized by scaling active-GPU power by the selected ratio from the LUT and adding fixed non-GPU overhead. Since the public Splitwise tables are calibrated on A100 and Llama-2 70B, whereas our experiments target Llama-3.1 70B at TP=8, we treat this baseline as a structurally matched LUT surrogate rather than an exact reproduction of the original system. 
+
+Server-level comparison. Table 2 reports the server-level metrics for representative dense configurations. There is no ACF 𝑅 2 for TDP and mean power because they are constants. TDP overestimates energy by more than 3.5×, reflecting the fact that inference GPUs spend much of their time below name-plate. Mean power removes most of that bias but, by design, cannot reproduce temporal structure. LUT-Based performs better than ei-ther constant baseline, but its three-level formulation is still too coarse. In our strict calibration, the phase levels miss the measured operating points entirely which results in poor distributional agree-ment, autocorrelation, and higher energy errors. The limiting factor is the abstraction, since this LUT approach cannot represent the occupancy of the GPU adequately to compute dependent power From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA 0 100 200 300 400 500 600  
+
+> Time (s)
+> 0
+> 200
+> 400
+> 600
+> GPU Power (W)
+> Measured Simulated
+
+(a) Dense model, sparse load ( 𝜆 = 0.25 req/s) 0 100 200 300 400 500 600   
+
+> Time (s)
+> 0
+> 200
+> 400
+> 600
+> GPU Power (W)
+> Measured Simulated
+
+(b) Dense model, medium load ( 𝜆 = 1.0 req/s) 0 100 200 300 400 500 600  
+
+> Time (s)
+> 0
+> 200
+> 400
+> 600
+> GPU Power (W)
+> Measured Simulated
+
+(c) Dense model, high load ( 𝜆 = 4.0 req/s) 0 100 200 300 400 500 600   
+
+> Time (s)
+> 0
+> 500
+> 1000
+> GPU Power (W)
+> Measured Simulated
+
+(d) MoE model, medium load ( 𝜆 = 1.0 req/s) 
+
+Figure 6: Measured and simulated power traces for Llama-3.1 (8B) on A100 with TP =2 across three arrival rates (a–c), and for gpt-oss (120B) on A100 with TP=4 configuration (d). 500 1000 1500  
+
+> Active GPU Power (W)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> Original Sampled
+
+(a) Dense A100 TP4 200 400   
+
+> Active GPU Power (W)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> Original Sampled
+
+(b) Dense H100 TP1 500 1000 1500   
+
+> Active GPU Power (W)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> Original Sampled
+
+(c) MoE A100 TP8 
+
+Figure 7: CDFs of synthetic versus measured power on held-out test data for representative dense and MoE configurations. In both cases, the marginal power distribution is reproduced more accurately than the full temporal dynamics. The mod-els are (a) DeepSeek-R1-Distill (70B), (b) Llama-3.1 (8B), (c) gpt-oss (120B). 
+
+that appears when concurrent requests are filling and draining the batch. Our framework can recover that structure as shown by lower energy error and high temporal correlation. 
+
+Facility-level comparison. These differences are still visible after aggregation. Figure 8 shows 15 minutes of facility power for a 60-server deployment (Llama-3.1 (70B), H100, TP =4) under Poisson arrivals. LUT-Based performs worse still, missing both the overall magnitude and the temporal pattern. 
+
+## 4.4 Infrastructure Planning with Production Workloads 
+
+We now use a production workload to show what our traces reveal about infrastructure planning decisions. We drive our pipeline with a production-representative Azure LLM inference trace [ 54 ] that 0.0 2.5 5.0 7.5 10.0 12.5 15.0 
+
+Time (minutes) 
+
+> 0
+> 100
+> 200
+> 300
+> Facility power (kW)
+> TDP
+> Mean
+> LUT-based
+> Ours
+
+Figure 8: 15 minutes of facility power (60 servers, Llama-3.1 (70B), H100, TP =8) generated by each method. 
+
+exhibits both a diurnal structure and bursty arrivals. We then study three planning views of the same facility: facility load profiling, interconnection sizing, and rack-level oversubscription. 
+
+Facility configuration. We model an arbitrary data hall with 10 
+
+rows, 6 racks per row, and 4 servers per rack, for a total of 240 
+
+servers. We assume that all servers run Llama-3.1 (70B) on A100 racks with TP = 8. Each server receives its own request stream derived from the Azure trace with a random temporal offset so that arrivals are decorrelated across the facility. We assume 1 kW of non-GPU IT power per server and PUE = 1.3, and generate 24 hours of facility power at 250 ms resolution. Figure 9 shows the resulting 24-hour facility profile at a 15-minute resolution, together with the input arrival rate. This is the kind of load shape that would be used in an interconnection or substation study. The site power follows the same broad diurnal pattern as the workload, but not a scaled copy of the arrival trace. The mapping from arrivals to power is nonlinear, and bursts can also introduce lag because requests queue before they reach the GPU. Peak power occurs during the afternoon surge, while overnight Conference’17, July 2017, Washington, DC, USA Wilkins et al. 0 5 10 15 20 
+
+> Hour of Day
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> Site Power (MW)  Site Power (15-min)
+> Arrival Rate (5-min)
+> 20
+> 40
+> 60
+> 80
+> Arrival Rate (req/s)
+
+Figure 9: 24-hour facility power profile (240 servers, PUE = 1.3)driven by a production Azure inference trace [ 54 ]. Solid line: 15-minute site power. Dashed line: 5-minute arrival rate. Table 3: Infrastructure sizing from 24-hour facility simula-tion (240 servers, PUE = 1.3).                         
+
+> Metric TDP Mean LUT-Based Ours
+> Peak facility power (MW) 1.19 0.85 0.82 0.75 Average facility power (MW) 1.19 0.85 0.76 0.63 Peak-to-average ratio 1.00 1.00 1.09 1.19 Max ramp rate (MW/15-min) 0.00 0.00 0.07 0.11 Load factor 1.00 1.00 0.92 0.84
+
+power drops toward idle but still reflects the variability of sparse inference traffic. 
+
+Interconnection sizing. Table 3 summarizes quantities that can be extracted from this 24-hour facility trace. TDP would size the facility at 1.19 MW, while our generated traces produce a 24-hour peak of 0.75 MW. In this case, name-plate provisioning overstates required interconnection capacity by roughly 60%. Mean power captures only the long-run operating point, which removes all variability from the profile. It also underes-timates the facility average, since the token trace sustains a higher operating point than the uniform arrival-rate sweep used during training. LUT-Based overstates this slightly at 0.82 MW and under-estimates the ramping effects that are present from our approach, a critical quantity for grid operators to evaluate a site. Our power traces instead produce a peak-to-average ratio of 1.19, a load factor of 0.84, and a maximum 15-minute ramp of 0.11 MW. These results illustrate quantities that matter in planning, capacity allocation, and downstream grid studies. 
+
+Oversubscription analysis. We next consider planning inside the facility, where row-level power constraints determine how much IT load can be deployed safely. For this example, we assume a 600 kW row distribution limit and require that the 24-hour peak row power remain below that limit across 5 random seeds. Figure 10 shows per-rack power over a four-hour peak window. The main pattern is that there is temporal decorrelation across racks, since under independent arrivals, individual rack peaks do not align. This makes the row-level aggregate remain much smoother than the per-rack traces. TDP cannot represent this because it assumes permanent full utilization, and mean power cannot represent it because it assumes no peaks at all. Figure 11 quantifies the resulting headroom. Under nameplate provisioning, a 600 kW row can host only ⌊600 kW /rack TDP ⌋ = 23 0 1 2 3
+
+> Time in Peak Window (hours)
+> 0
+> 20
+> 40
+> 60
+> Rack ID
+> 9.2
+> 9.4
+> 9.6
+> 9.8
+> Rack Power (kW)
+
+Figure 10: Per-rack power heatmap during a four-hour peak window, showing temporal decorrelation across racks serv-ing independent Azure inference streams. 0 5 10 15 20 
+
+> Time (hours)
+> 400
+> 500
+> 600
+> Row Power (kW)
+> Mean (N=42)
+> LUT-based (N=52)
+> Ours (N=57)
+> TDP (N=23)
+> Row limit
+
+Figure 11: Aggregate row power for deploying racks above the TDP recommended nameplate capacity. 
+
+racks. Under the production workload, however, those 23 racks reach only about 250 kW at peak, leaving roughly 350 kW of row capacity unused. To find the maximum number of racks deploy-able under this limit, we provision 4 ×A100 DGX server racks run-ning similar workloads until the P95 of the row power exceeds the 600 kW limit. At this point we consider the row saturated. We find that using our power traces, this same row can accommodate 57 racks while remaining below the 600 kW limit, with an observed peak of about 580 kW. This corresponds to more than double the rack density of TDP-based provisioning in this case study. LUT-Based and Mean racks show similar deployments, reaching 52 and 42 racks, respectively, under the same deployment criteria. We should note that this result depends on arrival-correlation assumptions. While we are using production token arrival data, if arrivals were more strongly synchronized across racks, row peaks could coincide more often and the oversubscription limit would fall. In practice, this means that oversubscription is evaluated as a function of traffic correlation rather than from a single static trace. Even so, this example shows the basic planning value of our framework, as it can expose headroom that static nameplate assumptions leave unused while still making the dependence on workload structure explicit. 
+
+## 4.5 Aggregation Across the Hierarchy 
+
+The facility-scale results above rely on the simple property of aggre-gation, that as independent server-level traces are summed through the datacenter hierarchy, short-timescale variability is smoothed. From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA 0 5 10 15 20               
+
+> Time (hours)
+> 1
+> 2
+> Power (kW)
+> Raw (1s)
+> Trend (900s)
+> (a) Server 0510 15 20
+> Time (hours)
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> Power (kW)  Raw (1s)
+> Trend (900s) (b) Rack 0510 15 20
+> Time (hours)
+> 40
+> 60
+> Power (kW)
+> Raw (1s)
+> Trend (900s)
+> (c) Row 0510 15 20
+> Time (hours)
+> 400
+> 600
+> Power (kW)
+> Raw (1s)
+> Trend (900s) (d) Site
+
+Figure 12: Power traces at four hierarchical levels over 24 hours. As you aggregate, variance decreases and trends to-wards the mean. 
+
+Figure 12 shows this progression over the same 24-hour period. At the single-server level (250 ms), power exhibits sharp transitions characteristic of inference serving, spanning nearly the full range from idle to near-TDP. Aggregating four servers into a rack already compresses that and softens some of these transitions. At the row level, transient excursions are further averaged out, and the load fluctuates within a much narrower band. By the site level, viewed at 15-minute resolution, the dominant signal is the diurnal envelope that is visible from the utility. This smoothing matters in two ways. First, it is the mechanism that creates oversubscription headroom. Server-level peaks do not coincide perfectly, so row and site level demand remains below the sum of peak utilization. In our case study, the coefficient of variation falls from 0.583 at the single-server level to 0.127 at the site level, consistent with the expected reduction in variability under aggregation of largely independent sources. More strongly correlated arrivals, as seen in production [ 58 , 63 ], would reduce this benefit. Second, aggregation makes facility-level planning less sensitive to small server-level errors, but not to systematic modeling bias. Random mismatch in exact transition timing or within-state vari-ation can average out across many servers, but structural errors can distort aggregate peaks, ramps, and coincidence consistently. This is why aggregation does not rescue simpler approaches even though it can reduce the effect of residual error in our own traces. 
+
+## 5 Discussion 
+
+Our results suggest both a practical role for synthetic inference traces in planning workflows and a clearer view of the assumptions under which those traces can remain reliable. Here, we discuss these implications, along with the main limits of the current framework. 
+
+## 5.1 Utility-Operator Coordination 
+
+Our framework enables utility-facing load characterization for AI facilities before deployment. This matters because interconnec-tion and planning studies increasingly require more than a flat nameplate value or annual energy forecast [ 15 , 19 , 35 , 40 ], while operators have strong incentives not to reveal serving details such as traffic composition, batching policy, or internal telemetry. The framework also enables a counterfactual analysis that is not possible from one-off forecasts. A utility can stress-test a proposed deployment under alternative assumptions about traffic intensity, model mix, or deployment scale, even before the facility is built. This better matches the probabilistic structure of existing planning workflows [15]. The emergence of closed-source platforms such as Emerald AI’s Conductor [ 12 ] further illustrates the value of our interface. The distinction is that our framework is open-source and can be run by the operator, so synthetic traces or aggregate planning artifacts can be shared externally while raw serving telemetry remains internal. We do not claim formal privacy guarantees; the contribution is a practical reduction in disclosure surface, not a cryptographic one. 
+
+## 5.2 Composability and Extensions 
+
+The evaluation in this paper focuses on fixed serving configurations under arbitrary arrivals. The same compositional structure supports several natural extensions. 
+
+Model mix evolution and hardware refresh. Because power be-havior is modeled per per-configuration, adding a new model or accelerator does not require rebuilding the entire pipeline. A small set of measurements and retraining is sufficient, after which mixed deployments can be simulated directly. This makes the framework useful for studying phased rollouts, hardware refreshes, and partial migrations before they are deployed at scale. 
+
+Agentic and multi-step workloads. Tool-calling agents and multi-turn reasoning systems introduce self-correlated arrivals, where one completion can trigger additional requests [ 28 , 31 , 36 , 64 ]. In our framework, this primarily changes the arrival process rather than the per-server power model itself. If an agentic simulator or pro-duction trace produces a request schedule, then the same pipeline can translate that schedule into power traces. What becomes more important in this setting is cross-server correlation, since agen-tic bursts may reduce the diversity that makes oversubscription feasible. 
+
+Long-horizon planning and grid interaction. Utilities and plan-ners often require annual load shapes for resource-adequacy and capacity-expansion studies [ 2 , 14 , 19 , 61 ]. The framework can gen-erate these from year-long arrival scenarios that reflect expected traffic growth, model turnover, or hardware replacement. The same traces can also be used to study potential load flexibility. If opera-tors can reshape some portion of inference demand through queue-ing, routing, or deferral of latency-tolerant work, then scenario-generated traces can quantify when and how much reduction is actually available under deployment-specific SLOs. 
+
+## 5.3 Scope and Limitations 
+
+Arrival processes. Server-level fidelity is validated under Poisson arrivals. The Azure facility study demonstrates plausible behavior Conference’17, July 2017, Washington, DC, USA Wilkins et al. 
+
+under production-like diurnal and bursty demand, but we do not claim model adherence across all distributions of arrivals. 
+
+Facility modeling. We use a constant PUE model and constant non-GPU IT overhead. This is appropriate for the planning-scale comparisons in the paper, but it does not capture weather-dependent cooling behavior, load-dependent PUE variation, or auxiliary sys-tems whose power may vary over time [8]. 
+
+Serving policies and hidden internal dynamics. The throughput model abstracts away scheduler internals such as memory-aware batching, preemption, and other serving-engine details. Our clas-sifiers are trained on vLLM [ 30 ], so configurations that materially change the implicit mapping from arrivals to kernel usage and hence power may require some retraining. More broadly, the framework is strongest when workload-visible features explain most of the trace dynamics. This is true for the dense-model settings we study, but not as much for MoE systems, where the hidden expert-routing adds some within-state variation that our arrival-level features can only partially capture. 
+
+## 6 Related Work 
+
+Grid-facing load construction for datacenters. Some approaches exist for constructing datacenter load profiles for grid and planning studies. In practice, utilities often rely on customer-provided pro-files when evaluating new large loads, and regulatory processes increasingly require projected load shapes as part of the intercon-nection process itself [ 2 , 15 , 19 , 40 ]. Measurement-based forecasting requires an already-operational facility [ 39 ], while scenario studies often move away from the serving configuration that drives short-timescale power variation [ 10 , 57 ]. We instead provide traces before full deployment, rather than after a facility is already operating. 
+
+LLM inference power characterization and control. A grow-ing body of work shows that inference power has recognizable structure, especially around the prefill–decode distinction, and that this structure can be exploited both architecturally and opera-tionally. On the architectural side, phase separation has been used to motivate disaggregated serving, energy-aware placement, and power-aware reallocation across serving pools [ 5 , 23 , 43 , 67 ]. On the control side, phase-aware energy management and finer-grained power control have been studied under bounded SLO or SLA con-straints [ 12 , 24 , 42 , 47 , 52 , 54 , 55 ]. Measurement studies further quantify how batching, quantization, and hardware configuration shape inference energy [ 16 , 18 , 27 , 59 , 60 ]. This literature shows that inference power is structured and controllable, something we use to generate traces for new scenarios. 
+
+Datacenter power modeling and oversubscription. Datacenter power management spans device-level profiling and simulation on one end [ 9, 25 , 26 , 65 ] and facility-scale demand management and oversubscription on the other [ 21 , 29 , 44 , 45 , 48 , 49 , 51 , 62 , 66 ]. Our work is complementary, providing the workload-conditioned inference traces these systems and studies would consume. 
+
+Workload generation for AI inference. The closest prior work studies synthetic workload generation for cloud and AI serving systems. BurstGPT [ 58 ] and ServeGen [ 63 ] generate production-representative request streams, but stop at arrivals and do not model power. Bergsma et al. [ 7] show that recurrent sequence models can capture long-range temporal structure in cloud workloads, which is closely aligned with our use of sequence modeling, but their target is workload generation rather than power synthesis. More general time-series generation methods [ 50 ] produce synthetic sequences without modeling the state-structured serving dynamics that govern inference power, and inference simulators likewise stop short of calibrated, deployment-grounded power traces [ 1, 43 ]. These tools model the demand side of inference workloads; our focus is the resulting power they induce. 
+
+## 7 Conclusion 
+
+In this paper, we presented a compositional framework for gener-ating LLM inference power traces from workload scenarios and limited server-level measurements. By separating workload-driven state evolution from configuration-specific power behavior, the framework can synthesize realistic traces across traffic conditions, hardware platforms, and serving settings without end-to-end profil-ing of each new scenario. Across the settings we profile, our model reproduces measured energy and temporal structure with high fi-delity. Our case studies show that this additional accuracy matters, since flat TDP and mean-power abstractions miss the peaks, ramps, and coincidence structure that determine provisioning outcomes and oversubscription headroom. Overall, this work provides a prac-tical path from inference-serving behavior to the planner-facing electrical load models needed for datacenter infrastructure design. 
+
+## Acknowledgments 
+
+Grant Wilkins was supported in part by a Stanford University Bits & Watts Initiative Powering AI Seed Grant. We thank Microsoft Azure Research – Systems for providing access to the compute nodes used for profiling and data collection in this project. 
+
+## References                      
+
+> [1] Amey Agrawal, Anmol Agarwal, Nitin Kedia, Jayashree Mohan, Souvik Kundu, Nipun Kwatra, Ramachandran Ramjee, and Alexey Tumanov. 2024. Etalon: Holistic Performance Evaluation Framework for LLM Inference Systems. arXiv:2407.07000 [cs.LG] https://arxiv.org/abs/2407.07000 [2] Alberta Electric System Operator (AESO). 2025. Connection Requirements for Transmission-Connected Data Centres . Draft for Stakeholder Review. Alberta Electric System Operator, Calgary, Alberta. https://www.aeso.ca/ Version dated August 22, 2025. [3] Vlasia Anagnostopoulou, Susmit Biswas, Heba Saadeldeen, Alan Savage, Ricardo Bianchini, Tao Yang, Diana Franklin, and Frederic T. Chong. 2012. Barely alive memory servers: Keeping data active in a low-power state. J. Emerg. Technol. Comput. Syst. 8, 4, Article 31 (Nov. 2012), 20 pages. doi:10.1145/2367736.2367742 [4] Luiz André Barroso, Urs Hölzle, and Parthasarathy Ranganathan. 2018. The Datacenter as a Computer: designing warehouse-scale machines .https://www. morganclaypool.com/doi/pdf/10.2200/S00874ED3V01Y201809CAC046 [5] Omar Basit, Yunzhao Liu, Z. Jonny Kong, and Y. Charlie Hu. 2026. BiScale: Energy-Efficient Disaggregated LLM Serving via Phase-Aware Placement and DVFS. arXiv:2602.18755 [cs.DC] https://arxiv.org/abs/2602.18755 [6] Saumil Baxi, Kayla Cummings, Alexandre Jacquillat, Sean Lo, Rob McDonald, Konstantina Mellou, Ishai Menache, and Marco Molinaro. 2025. Online Rack Placement in Large-Scale Data Centers: Online Sampling Optimization and De-ployment. arXiv:2501.12725 [math.OC] https://arxiv.org/abs/2501.12725 [7] Shane Bergsma, Timothy Zeyl, Arik Senderovich, and J. Christopher Beck. 2021. Generating Complex, Realistic Cloud Workloads using Recurrent Neural Net-works. In Proceedings of the ACM SIGOPS 28th Symposium on Operating Systems Principles (Virtual Event, Germany) (SOSP ’21) . Association for Computing Ma-chinery, New York, NY, USA, 376–391. doi:10.1145/3477132.3483590 [8] John Bistline and Geoffrey Blanford. 2024. Powering Data Centers: U.S. Energy System and Emissions Impacts of Growing Loads . Technical Report 3002031198. Electric Power Research Institute (EPRI), Palo Alto, California. https://www.epri. com White Paper. [9] Jae-Won Chae, Jie You, Sam Feng, and Mosharaf Chowdhury. 2024. Perseus: Removing Energy Bloat from Large Model Training. In Proceedings of the 30th
+
+From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA 
+
+Symposium on Operating Systems Principles . ACM, 365–382. [10] Xin Chen, Xiaoyang Wang, Ana Colacelli, Matt Lee, and Le Xie. 2025. Electric-ity Demand and Grid Impacts of AI Data Centers: Challenges and Prospects. arXiv:2509.07218 [eess.SY] https://arxiv.org/abs/2509.07218 [11] Esha Choukse et al . 2025. Power Stabilization for AI Training Datacenters. arXiv:2508.14318 [cs.AR] https://arxiv.org/abs/2508.14318 [12] Philip Colangelo, Ayse K. Coskun, Jack Megrue, Ciaran Roberts, Shayan Sengupta, Varun Sivaram, Ethan Tiao, Aroon Vijaykar, Chris Williams, Daniel C. Wilson, Brandon Records, Zack MacFarland, Daniel Dreiling, Nathan Morey, Anuja Rat-nayake, and Baskar Vairamohan. 2026. AI data centres as grid-interactive assets. 
+
+Nature Energy 11, 2 (2026), 254–261. doi:10.1038/s41560-025-01927-1 [13] North American Electric Reliability Corporation. 2025. Character-istics and Risks of Emerging Large Loads . Technical Report. NERC. https://www.nerc.com/globalassets/who-we-are/standing-committees/ rstc/whitepaper-characteristics-and-risks-of-emerging-large-loads.pdf [14] North American Electric Reliability Corporation. 2026. Long-Term Reliability Assessment. https://www.nerc.com/globalassets/our-work/assessments/nerc_ ltra_2025.pdf [15] Anthony Degleris, Abbas El Gamal, and Ram Rajagopal. 2024. Scalable and Interactive Electricity Grid Expansion Planning. arXiv:2410.13055 [math.OC] https://arxiv.org/abs/2410.13055 [16] Julien Delavande, Regis Pierrard, and Sasha Luccioni. 2026. Understanding Efficiency: Quantization, Batching, and Serving Strategies in LLM Energy Use. arXiv:2601.22362 [cs.LG] https://arxiv.org/abs/2601.22362 [17] Kuntai Du, Bowen Wang, Chen Zhang, Yiming Cheng, Qing Lan, Hejian Sang, Yihua Cheng, Jiayi Yao, Xiaoxuan Liu, Yifan Qiao, Ion Stoica, and Junchen Jiang. 2025. PrefillOnly: An Inference Engine for Prefill-only Workloads in Large Language Model Applications. In Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles (Lotte Hotel World, Seoul, Republic of Korea) 
+
+(SOSP ’25) . Association for Computing Machinery, New York, NY, USA, 399–414. doi:10.1145/3731569.3764834 [18] Jared Fernandez, Clara Na, Vashisth Tiwari, Yonatan Bisk, Sasha Luccioni, and Emma Strubell. 2025. Energy Considerations of Large Language Model Inference and Efficiency Optimizations. arXiv preprint arXiv:2504.17674 (2025). [19] Julieta Giraldex and Ahmed Rashwan. 2024. Large Loads: Interconnection, Planning and Reliability Considerations. In Energy Systems International Group (ESIG) 2024 . https://www.esig.energy/download/session-4a-large-loads-interconnection-planning-and-reliability-considerations-julieta-giraldez-and-ahmed-rashwan/?wpdmdl=12224 [20] Daya Guo et al . 2025. DeepSeek-R1 incentivizes reasoning in LLMs through reinforcement learning. Nature 645, 8081 (2025), 633–638. doi:10.1038/s41586-025-09422-z [21] Chang-Hong Hsu, Qingyuan Deng, Jason Mars, and Lingjia Tang. 2018. Smooth-Operator: Reducing Power Fragmentation and Improving Power Utilization in Large-scale Datacenters. In Proceedings of the Twenty-Third International Confer-ence on Architectural Support for Programming Languages and Operating Systems 
+
+(Williamsburg, VA, USA) (ASPLOS ’18) . Association for Computing Machinery, New York, NY, USA, 535–548. doi:10.1145/3173162.3173190 [22] Cunchen Hu, Heyang Huang, Liangliang Xu, Xusheng Chen, Chenxi Wang, Jiang Xu, Shuang Chen, Hao Feng, Sa Wang, Yungang Bao, Ninghui Sun, and Yizhou Shan. 2025. ShuffleInfer: Disaggregate LLM Inference for Mixed Downstream Workloads. ACM Trans. Archit. Code Optim. 22, 2, Article 77 (July 2025), 24 pages. doi:10.1145/3732941 [23] Yiwei Jiang, Sangeeta Chowdhary, Nathaniel Morris, Rutwik Jain, Srilatha Manne, and Sam Bayliss. 2026. Power Aware Dynamic Reallocation For Inference. arXiv:2601.12241 [cs.DC] https://arxiv.org/abs/2601.12241 [24] Andreas Kosmas Kakolyris, Dimosthenis Masouros, Petros Vavaroutsos, Sotirios Xydis, and Dimitrios Soudris. 2025. SLO-aware GPU Frequency Scaling for Energy Efficient LLM Inference Serving. arXiv:2408.05235 [cs.DC] https://arxiv.org/abs/ 2408.05235 [25] Vijay Kandiah, Amir Zhang, Lizy Nai, Asit Kadav, and Timothy G Rogers. 2021. AccelWattch: A power modeling framework for modern GPUs. In Proceedings of the 54th Annual IEEE/ACM International Symposium on Microarchitecture . ACM, 738–753. [26] Aman Kansal, Feng Zhao, Jie Liu, Nupur Kothari, and Arka A. Bhattacharya. 2010. Virtual machine power metering and provisioning. In Proceedings of the 1st ACM Symposium on Cloud Computing (Indianapolis, Indiana, USA) (SoCC ’10) .Association for Computing Machinery, New York, NY, USA, 39–50. doi:10.1145/ 1807128.1807136 [27] Jonathan Koomey, Eric Masanet, Arman Shehabi, et al . 2024. Single-Node Power Demand During AI Training: Measurements on an 8-GPU NVIDIA H100 System. 
+
+Joule 8, 4 (2024), 1–12. [28] Varad Kulkarni, Vaibhav Jha, Nikhil Reddy, Anand Eswaran, Praveen Jayachan-dran, and Yogesh Simmhan. 2026. Optimizing FaaS Platforms for MCP-enabled Agentic Workflows. arXiv:2601.14735 [cs.DC] https://arxiv.org/abs/2601.14735 [29] Alok Gautam Kumbhare, Reza Azimi, Ioannis Manousakis, Anand Bonde, Felipe Frujeri, Nithish Mahalingam, Pulkit A. Misra, Seyyed Ahmad Javadi, Bianca Schroeder, Marcus Fontoura, and Ricardo Bianchini. 2021. Prediction-Based Power Oversubscription in Cloud Platforms. In 2021 USENIX Annual Technical Conference (USENIX ATC 21) . USENIX Association, 473–487. https://www.usenix. org/conference/atc21/presentation/kumbhare [30] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Memory Management for Large Language Model Serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Principles (Koblenz, Germany) (SOSP ’23) . Association for Computing Machinery, New York, NY, USA, 611–626. doi:10.1145/3600006.3613165 [31] Hanchen Li, Qiuyang Mang, Runyuan He, Qizheng Zhang, Huanzhi Mao, Xiaokun Chen, Hangrui Zhou, Alvin Cheung, Joseph Gonzalez, and Ion Stoica. 2026. Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live. arXiv:2511.02230 [cs.OS] https://arxiv.org/abs/2511.02230 [32] Kaixin Li, Qisheng Hu, James Zhao, Hui Chen, Yuxi Xie, Tiedong Liu, Michael Shieh, and Junxian He. 2024. Instructcoder: Instruction tuning large language models for code editing. In Proceedings of the 62nd Annual Meeting of the As-sociation for Computational Linguistics (Volume 4: Student Research Workshop) .50–70. [33] Yang Li, Charles R. Lefurgy, Karthick Rajamani, Malcolm S. Allen-Ware, Guillermo J. Silva, Daniel D. Heimsoth, Saugata Ghose, and Onur Mutlu. 2019. A Scalable Priority-Aware Approach to Managing Data Center Server Power. In 
+
+2019 IEEE International Symposium on High Performance Computer Architecture (HPCA) . 701–714. doi:10.1109/HPCA.2019.00067 [34] Yuzhuo Li, Mariam Mughees, Yize Chen, and Yunwei Ryan Li. 2024. The Unseen AI Disruptions for Power Grids: LLM-Induced Transients. arXiv:2409.11416 [cs.AR] https://arxiv.org/abs/2409.11416 [35] Liuzixuan Lin, Rajini Wijayawardana, Varsha Rao, Hai Nguyen, Emmanuel Wedan GNIBGA, and Andrew A. Chien. 2024. Exploding AI Power Use: an Opportunity to Rethink Grid Planning and Management. In Proceedings of the 15th ACM International Conference on Future and Sustainable Energy Systems (Singapore, Singapore) (e-Energy ’24) . Association for Computing Machinery, New York, NY, USA, 434–441. doi:10.1145/3632775.3661959 [36] Yuhan Liu, Yuyang Huang, Jiayi Yao, Zhuohan Gu, Kuntai Du, Hanchen Li, Yihua Cheng, Junchen Jiang, Shan Lu, Madan Musuvathi, and Esha Choukse. 2026. DroidSpeak: Efficient Context Sharing for Multiple-LLM Inference. In 
+
+NSDI . https://www.microsoft.com/en-us/research/publication/droidspeak-kv-cache-sharing-for-efficient-multi-llm-serving/ [37] Paul Joe Maliakel, Shashikant Ilager, and Ivona Brandic. 2026. Characterizing LLM Inference Energy-Performance Tradeoffs across Workloads and GPU Scaling. arXiv:2501.08219 [cs.LG] https://arxiv.org/abs/2501.08219 [38] Meta, Inc. 2024. The Llama 3 Herd of Models. arXiv:2407.21783 [cs.AI] https: //arxiv.org/abs/2407.21783 [39] Mariam Mughees, Yuzhuo Li, Yize Chen, and Yunwei Ryan Li. 2025. Short-Term Load Forecasting for AI-Data Center. arXiv:2503.07756 [eess.SP] https: //arxiv.org/abs/2503.07756 [40] Tyler Norris, Timothy Profeta, Dalia Patino-Echeverri, and Adam Cowie-Haskell. 2025. Rethinking load growth: assessing the potential for integration of large flexible loads in US power systems. (2025). [41] OpenAI. 2025. gpt-oss-120b & gpt-oss-20b Model Card. arXiv:2508.10925 [cs.CL] https://arxiv.org/abs/2508.10925 [42] Pratyush Patel, Esha Choukse, Chaojie Zhang, Íñigo Goiri, Brijesh Warrier, Nithish Mahalingam, and Ricardo Bianchini. 2024. Characterizing Power Manage-ment Opportunities for LLMs in the Cloud. In Proceedings of the 29th ACM Inter-national Conference on Architectural Support for Programming Languages and Op-erating Systems, Volume 3 (La Jolla, CA, USA) (ASPLOS ’24) . Association for Com-puting Machinery, New York, NY, USA, 207–222. doi:10.1145/3620666.3651329 [43] Pratyush Patel, Esha Choukse, Chaojie Zhang, Aashaka Shah, Iñigo Goiri, Saeed Maleki, and Ricardo Bianchini. 2024. Splitwise: Efficient generative LLM inference using phase splitting. In Proceedings of the 51st Annual International Symposium on Computer Architecture . ACM, 1–15. [44] Steven Pelley, David Meisner, Pooya Zandevakili, Thomas F. Wenisch, and Jack Underwood. 2010. Power routing: dynamic power provisioning in the data center. In Proceedings of the Fifteenth International Conference on Architectural Support for Programming Languages and Operating Systems (Pittsburgh, Pennsylvania, USA) (ASPLOS XV) . Association for Computing Machinery, New York, NY, USA, 231–242. doi:10.1145/1736020.1736047 [45] Leonardo Piga, Iyswarya Narayanan, Aditya Sundarrajan, Matt Skach, Qingyuan Deng, Biswadip Maity, Manoj Chakkaravarthy, Alison Huang, Abhishek Dhan-otia, and Parth Malani. 2024. Expanding Datacenter Capacity with DVFS Boosting: A safe and scalable deployment experience. In Proceedings of the 29th ACM Inter-national Conference on Architectural Support for Programming Languages and Op-erating Systems, Volume 1 (La Jolla, CA, USA) (ASPLOS ’24) . Association for Com-puting Machinery, New York, NY, USA, 150–165. doi:10.1145/3617232.3624853 [46] Reiner Pope, Sholto Douglas, Aakanksha Chowdhery, Jacob Devlin, James Bradbury, Jonathan Heek, Kefan Xiao, Shivani Agrawal, and Jeff Dean. 2023. Efficiently Scaling Transformer Inference. In Proceedings of Ma-chine Learning and Systems , D. Song, M. Carbin, and T. Chen (Eds.), Vol. 5. Conference’17, July 2017, Washington, DC, USA Wilkins et al. 
+
+Curan, 606–624. https://proceedings.mlsys.org/paper_files/paper/2023/file/ c4be71ab8d24cdfb45e3d06dbfca2780-Paper-mlsys2023.pdf [47] Haoran Qiu, Weichao Mao, Archit Patke, Shengkun Cui, Saurabh Jha, Chen Wang, Hubertus Franke, Zbigniew Kalbarczyk, Tamer Başar, and Ravishankar K. Iyer. 2024. Power-aware Deep Learning Model Serving with mu-Serve. In 2024 USENIX Annual Technical Conference (USENIX ATC 24) . USENIX Association, Santa Clara, CA, 75–93. https://www.usenix.org/conference/atc24/presentation/qiu [48] Ana Radovanovic, Bokan Chen, Saurav Talukdar, Binz Roy, Alexandre Duarte, and Mahya Shahbazi. 2022. Power Modeling for Effective Datacenter Planning and Compute Management. IEEE Transactions on Smart Grid 13, 2 (2022), 1611–1621. doi:10.1109/TSG.2021.3125275 [49] Benjamin Reidys, Pantea Zardoshti, Íñigo Goiri, Celine Irvene, Daniel S. Berger, Haoran Ma, Kapil Arya, Eli Cortez, Taylor Stark, Eugene Bak, Mehmet Iyigun, Stanko Novakovic, Lisa Hsu, Karel Trueba, Abhisek Pan, Chetan Bansal, Saravan Rajmohan, Jian Huang, and Ricardo Bianchini. 2025. Coach: Exploiting Temporal Patterns for All-Resource Oversubscription in Cloud Platforms. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 (Rotterdam, Netherlands) (ASPLOS ’25) . Association for Computing Machinery, New York, NY, USA, 164–181. doi:10. 1145/3669940.3707226 [50] Cécile Rousseau, Tobia Boschi, Giandomenico Cornacchia, Dhaval Salwala, Alessandra Pascale, and Juan Bernabé Moreno. 2025. Forging Time Series with Language: A Large Language Model Approach to Synthetic Data Generation. 
+
+arXiv preprint arXiv:2505.17103 (2025). [51] Varun Sakalkar, Vasileios Kontorinis, David Landhuis, Shaohong Li, Darren De Ronde, Thomas Blooming, Anand Ramesh, James Kennedy, Christopher Mal-one, Jimmy Clidaras, and Parthasarathy Ranganathan. 2020. Data Center Power Oversubscription with a Medium Voltage Power Plane and Priority-Aware Cap-ping. In Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems (Lausanne, Switzer-land) (ASPLOS ’20) . Association for Computing Machinery, New York, NY, USA, 497–511. doi:10.1145/3373376.3378533 [52] Jeffrey Spaan, Kuan-Hsun Chen, and Ana-Lucia Varbanescu. 2026. Reducing Compute Waste in LLMs through Kernel-Level DVFS. arXiv:2601.08539 [cs.PF] https://arxiv.org/abs/2601.08539 [53] Jovan Stojkovic, Pulkit A. Misra, Íñigo Goiri, Sam Whitlock, Esha Choukse, Mayukh Das, Chetan Bansal, Jason Lee, Zoey Sun, Haoran Qiu, Reed Zimmer-mann, Savyasachi Samal, Brijesh Warrier, Ashish Raniwala, and Ricardo Bianchini. 2024. SmartOClock: Workload- and Risk-Aware Overclocking in the Cloud. In 
+
+2024 ACM/IEEE 51st Annual International Symposium on Computer Architecture (ISCA) . 437–451. doi:10.1109/ISCA59077.2024.00040 [54] Jovan Stojkovic, Chaojie Zhang, Inigo Goiri, Josep Torrellas, and Esha Choukse. 2025. DynamoLLM: Designing LLM Inference Clusters for Performance and Energy Efficiency . In 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE Computer Society, Los Alamitos, CA, USA, 1348–1362. doi:10.1109/HPCA61900.2025.00102 [55] Jovan Stojkovic, Chaojie Zhang, Íñigo Goiri, Esha Choukse, Haoran Qiu, Rodrigo Fonseca, Josep Torrellas, and Ricardo Bianchini. 2025. TAPAS: Thermal- and Power-Aware Scheduling for LLM Inference in Cloud Platforms. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (Rotterdam, Netherlands) (ASPLOS ’25) . Association for Computing Machinery, New York, NY, USA, 1266–1281. doi:10.1145/3676641.3716025 [56] Jovan Stojkovic, Chaojie Zhang, Íñigo Goiri, and Ricardo Bianchini. 2025. Rearchitecting Datacenter Lifecycle for AI: A TCO-Driven Framework. arXiv:2509.26534 [cs.AI] https://arxiv.org/abs/2509.26534 [57] Maria Vabson, Muhy Eddin Zater, Amir Sajadi, Kyri Baker, and Bri-Mathias Hodge. 2026. Optimal County-Level Siting of Data Centers in the United States. arXiv:2601.16315 [eess.SY] https://arxiv.org/abs/2601.16315 [58] Yuxin Wang, Yuhan Chen, Zeyu Li, Xueze Kang, Yuchu Fang, Yeju Zhou, Yang Zheng, Zhenheng Tang, Xin He, Rui Guo, Xin Wang, Qiang Wang, Amelie Chi Zhou, and Xiaowen Chu. 2025. BurstGPT: A Real-World Workload Dataset to Optimize LLM Serving Systems. In Proceedings of the 31st ACM SIGKDD Confer-ence on Knowledge Discovery and Data Mining V.2 (Toronto ON, Canada) (KDD ’25) . Association for Computing Machinery, New York, NY, USA, 5831–5841. doi:10.1145/3711896.3737413 [59] Grant Wilkins, Srinivasan Keshav, and Richard Mortier. 2024. Hybrid Heteroge-neous Clusters Can Lower the Energy Consumption of LLM Inference Workloads. In Proceedings of the 15th ACM International Conference on Future and Sustainable Energy Systems (Singapore, Singapore) (e-Energy ’24) . Association for Computing Machinery, New York, NY, USA, 506–513. doi:10.1145/3632775.3662830 [60] Grant Wilkins, Srinivasan Keshav, and Richard Mortier. 2025. Offline Energy-Optimal LLM Serving: Workload-Based Energy Models for LLM Inference on Het-erogeneous Systems. SIGENERGY Energy Inform. Rev. 4, 5 (April 2025), 113–119. doi:10.1145/3727200.3727217 [61] John Wilson, Sophie Meyer, Zach Zimmerman, and Rob Gramlich. 2025. Power Demand Forecasts Revised Up for Third Year Running, Led by Data Centers . Tech-nical Report. Grid Strategies LLC. https://gridstrategiesllc.com/wp-content/ uploads/Grid-Strategies-National-Load-Growth-Report-2025.pdf [62] Qiang Wu, Qingyuan Deng, Lakshmi Ganesh, Chang-Hong Hsu, Yun Jin, Sanjeev Kumar, Bin Li, Justin Meza, and Yee Jiun Song. 2016. Dynamo: facebook’s data center-wide power management system. In Proceedings of the 43rd International Symposium on Computer Architecture (Seoul, Republic of Korea) (ISCA ’16) . IEEE Press, 469–480. doi:10.1109/ISCA.2016.48 [63] Yuxing Xiang, Xue Li, Kun Qian, Wenyuan Yu, Ennan Zhai, and Xin Jin. 2025. ServeGen: Workload Characterization and Generation of Large Language Model Serving in Production. arXiv preprint arXiv:2505.09999 (2025). [64] Shunyu Yao, Jeffrey Zhao, Dian Yu, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. 2022. ReAct: Synergizing Reasoning and Acting in Language Models. In NeurIPS 2022 Foundation Models for Decision Making Workshop . https:// openreview.net/forum?id=tvI4u1ylcqs [65] Jie You, Jae-Won Chung, and Mosharaf Chowdhury. 2023. Zeus: Understanding and optimizing GPU energy consumption of DNN training. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . 119– 139. [66] Chaojie Zhang, Alok Kumbhare, Ioannis Manousakis, Deli Zhang, Pulkit Misra, Rod Assis, Kyle Woolcock, Nithish Mahalingam, Brijesh Warrier, David Gau-thier, Lalu Kunnath, Steve Solomon, Osvaldo Morales, Marcus Fontoura, and Ricardo Bianchini. 2021. Flex: High-Availability Datacenters With Zero Reserved Power. In Proceedings of the International Symposium on Computer Architec-ture (ISCA) . https://www.microsoft.com/en-us/research/publication/flex-high-availability-datacenters-with-zero-reserved-power/ [67] Yinmin Zhong, Shengyu Liu, Junda Chen, Jianbo Hu, Yibo Zhu, Xuanzhe Liu, Xin Jin, and Hao Zhang. 2024. DistServe: disaggregating prefill and decoding for goodput-optimized large language model serving. In Proceedings of the 18th USENIX Conference on Operating Systems Design and Implementation (Santa Clara, CA, USA) (OSDI’24) . USENIX Association, USA, Article 11, 18 pages. From Servers to Sites: Compositional Power Trace Generation of LLM Inference for Infrastructure Planning Conference’17, July 2017, Washington, DC, USA 0 5 10 15 20                                                
+
+> A_t
+> 0.00
+> 0.05
+> 0.10
+> Density
+> Measured
+> Surrogate
+> (a) Deepseek-R1-Distill (70B) A100 TP8, 𝜆 =4.00100 200 300 400 500 600
+> Time (s)
+> 0
+> 5
+> 10
+> 15
+> 20
+> A_t
+> Measured
+> Surrogate (b) Deepseek-R1-Distill (70B) A100 TP8, 𝜆 =4.00123
+> A_t
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Density
+> Measured
+> Surrogate
+> (c) Deepseek-R1-Distill (70B) H100 TP4, 𝜆 =0.25 0100 200 300 400 500 600
+> Time (s)
+> 0
+> 1
+> 2
+> 3
+> A_t
+> Measured
+> Surrogate (d) Deepseek-R1-Distill (70B) A100 TP4, 𝜆 =0.25 0246810
+> A_t
+> 0.0
+> 0.1
+> 0.2
+> Density
+> Measured
+> Surrogate
+> (e) Deepseek-R1-Distill (70B) H100 TP8, 𝜆 =0.50100 200 300 400 500 600
+> Time (s)
+> 0
+> 2
+> 4
+> 6
+> 8
+> A_t
+> Measured
+> Surrogate (f) Deepseek-R1-Distill (70B) H100 TP8, 𝜆 =0.5
+
+Figure 13: 𝐴 𝑡 reproductions from fit token latency surrogate and FIFO queue model. 
+
+## A Workload-Feature Adherence A.1 Surrogate Reproduces Concurrency Dynamics 
+
+Our framework decouples power modeling from the serving-engine by computing workload features (𝐴 𝑡 , Δ𝐴 𝑡 ) from a throughput model rather than from runtime instrumentation (§3.3). This surrogate approximates the serving stack as a FIFO queue with log-linear prefill latency (Eq. 4) and lognormal decode latency (Eq. 5). If the composed system fails to reproduce realistic concurrency dynamics, the downstream classifier receives out-of-distribution inputs and trace fidelity will degrade regardless of model quality. Here in Figure 13 we show the throughput against measured 𝐴 𝑡 trajectories for DeepSeek-R1-Distill (70B) across two GPU generations, two tensor-parallel settings, and three arrival rates spanning the low-to-high load regime. At high load ( 𝜆 = 4.0 req/s), the model can capture both the mode and spread of the concurrency distribution. At low load ( 𝜆 = 0.25 req/s), both measured and surrogate 𝐴 𝑡 concentrate on 0–1 active requests with some excursions, reproducing the telegraph-like arrival pattern that drives sharp, idle-to-active power transitions. At moderate load ( 𝜆 = 0.5 req/s), the surrogate matches the intermediate occupancy regime where multiple requests overlap but the GPU has not yet saturated. This surrogate is not intended to reproduce exact request-level timing, but rather to produce 𝐴 𝑡 trajectories whose distributional and temporal properties align enough to the classifier’s training distribution. The correlation and distributional agreement in Figure 13 shows that the features a capacity planner computes from an arrival schedule and a small latency calibration are realistic enough to drive the learned power model.

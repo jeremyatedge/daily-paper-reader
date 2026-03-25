@@ -1,0 +1,693 @@
+Title: TRINE: A Token-Aware, Runtime-Adaptive FPGA Inference Engine for Multimodal AI
+
+URL Source: https://arxiv.org/pdf/2603.22867v1
+
+Published Time: Wed, 25 Mar 2026 00:52:05 GMT
+
+Number of Pages: 7
+
+Markdown Content:
+# TRINE: A Token-Aware, Runtime-Adaptive FPGA Inference Engine for Multimodal AI 
+
+## Hyunwoo Oh 1, Hanning Chen 1, Sanggeon Yun 1, Yang Ni 2, Suyeon Jang 1,Behnam Khaleghi 3, Fei Wen 4, and Mohsen Imani 1
+
+> 1
+
+University of California, Irvine, 2Purdue University Northwest, 3Qualcomm, 4Samsung {hyunwooo,m.imani}@uci.edu 
+
+Abstract 
+
+Multimodal stacks that mix ViTs, CNNs, GNNs, and transformer NLP strain embedded platforms because their compute/memory patterns diverge and hard real-time targets leave little slack. TRINE is a single-bitstream FPGA accelerator and compiler that executes end-to-end multimodal inference without reconfiguration. Layers are unified as DDMM/SDDMM/SpMM and mapped to a mode-switchable engine that toggles at runtime among weight/output-stationary systolic, 1 ×CS SIMD, and a routable adder tree (RADT) on a shared PE array. A width-matched, two-stage top-k unit enables in-stream token pruning, while dependency-aware layer offloading (DALO) overlaps independent kernels across reconfigurable pro-cessing units to sustain utilization. Evaluated on Alveo U50 and ZCU104, TRINE reduces latency by up to 22.57 × vs. RTX 4090 and 6.86 × vs. Jetson Orin Nano at 20–21 W; token pruning alone yields up to 7.8 × on ViT-heavy pipelines, and DALO contributes up to 79% throughput improvement. With int8 quantization, accuracy drops remain <2.5% across representative tasks, delivering state-of-the-art latency and energy efficiency for unified vision, language, and graph workloads—in one bitstream. 
+
+1 Introduction 
+
+Multimodal artificial intelligence (AI) is reshaping computer vi-sion (CV), language understanding, and relational reasoning by jointly modeling images, text, and graphs. Systems that combine Vision Transformers (ViTs), Graph Neural Networks (GNNs), Con-volutional Neural Networks (CNNs), and transformer-based Nat-ural Language Processing (NLP) have enabled text-conditioned detection and vision–language grounding [ 7 , 15 ] as well as graph-augmented cognition [ 30 ]. Yet these gains come with heterogeneous compute and memory behaviors that complicate utilization, work-load balance, and real-time inference on embedded platforms. ViTs are a particular pain point: fixed-length token processing and attention-heavy blocks inflate the cost of both feed-forward net-works and attention matrices, especially in CV pipelines with many tokens and moderate embedding widths [ 3 , 5, 15 ]. Token-pruning methods reduce this cost by discarding low-importance tokens at inference time [ 10 , 17 , 22 , 25 , 28 ]. However, on GPUs the resulting irregular sparsity often degrades utilization, so measured speedups fall short of theoretical potential [ 8, 17 , 29 ]. Prior hardware efforts have accelerated isolated pieces—e.g., ViT-only or NLP-only prun-ing—or targeted a subset of kernels, leaving end-to-end multimodal pipelines underserved [8, 19, 20, 26, 29]. FPGAs are a natural fit for such heterogeneity, but frequent bit-stream swapping introduces prohibitive reconfiguration delays and complicates deployment [ 1]. While some designs support multi-ple workloads [ 31 , 32 ], a unified solution that adapts at runtime across the full diversity of multimodal AI remains elusive. Moreover, replicating separate dense and sparse engines inflates area and com-plicates timing closure, often depressing maximum clock frequency. What is missing is a single bitstream that (i) executes ViT/CNN/GN-N/NLP end-to-end, (ii) embraces dynamic token sparsity, and (iii) sustains high utilization without reconfiguration. This work takes the view that multimodal layers can be ex-pressed as three matrix kernels—dense–dense (DDMM), sampled dense–dense (SDDMM), and sparse (SpMM)—provided the hard-ware can change its dataflow at runtime via switchable intercon-nects and per-PE operation modes. This abstraction lets a single PE array serve all kernels by switching interconnects and per-PE ops at runtime rather than instantiating duplicated datapaths. We there-fore introduce TRINE, an FPGA-based accelerator and compiler that map DDMM/SDDMM/SpMM onto a shared datapath with a mode-switchable engine capable of weight- and output-stationary systolic execution, 1×𝐶 𝑆 SIMD, and a routable adder tree (RADT) for highly sparse reductions. A width-matched, two-stage top-𝑘 unit performs in-stream token pruning so attention scores are filtered as they are produced, avoiding oversized global sorters and off-chip detours. Above the engine, dependency-aware layer offloading (DALO) over-laps independent kernels across multiple reconfigurable processing units (RPUs). RADT and DALO act at complementary levels—RADT handles intra-kernel sparsity and reductions, DALO exposes inter-kernel concurrency—enabling runtime adaptation within a single bitstream without sacrificing efficiency. 
+
+• TRINE unifies ViT/CNN/GNN/NLP layers as DDMM/SDDM-M/SpMM and executes them end-to-end on one bitstream with-out reconfiguration. 
+
+• A shared PE array switches among systolic (WS/OS), 1×𝐶 𝑆 SIMD, and RADT via fine-grained routing, matching kernel structure and sparsity without duplicating engines. 
+
+• In-stream top-𝑘 pruning is coupled with RPU-level scheduling: the array-width-matched sorter prunes tokens in flight, and DALO overlaps independent kernels to raise utilization on multi-RPU fabrics. We evaluate TRINE on Xilinx Alveo U50 and ZCU104. Across TinyCLIP [ 27 ], MDETR [ 15 ], and MissionGNN [ 30 ] workloads, TRINE reduces latency by up to 22 .57 × than RTX 4090 and 6.86 ×
+
+versus a Jetson Orin Nano while operating at ∼20–21 W; pruning alone yields up to 7.8× speedup on ViT-heavy cases, and DALO im-proves throughput by 79% . To our knowledge, this is the first work to provide state-of-the-art latency and energy efficiency across vision, language, and graph workloads within a single bitstream. 
+
+> arXiv:2603.22867v1 [cs.AR] 24 Mar 2026 Hyunwoo Oh 1, Hanning Chen 1, Sanggeon Yun 1, Yang Ni 2, Suyeon Jang 1,Behnam Khaleghi 3, Fei Wen 4, and Mohsen Imani 1
+
+2 Related Works and Motivations 2.1 Multimodal AI Models 
+
+Multimodal systems combine ViTs, CNNs, GNNs, and transformer NLP to align and reason over images, text, and graphs. MDETR fuses CNN/ViT with language for text-conditioned detection [15]; CLIP/TinyCLIP learn vision–language embeddings for zero-shot tasks [ 7, 21 , 27 ]; ImageBind extends to additional modalities [ 12 ]. On the graph side, MissionGNN converts visual evidence into a knowledge graph processed by a GNN [ 30 ]; ML-CGN mixes CNNs and GNNs for scene/relational understanding [ 6]; TaskCLIP targets fine-grained segmentation [ 4]. Despite this progress, the workload heterogeneity across NLP/GNN/CNN/ViT complicates efficient ac-celeration. 
+
+2.2 Token Pruning for ViTs 
+
+ViT cost scales with tokens and attention. Dynamic pruning keeps only the most informative tokens using top-𝑘 selection [ 22 , 28 ], but on CPUs/GPUs the induced irregular sparsity limits realized speedups. SPViT replaces top-𝑘 with Gumbel-Softmax for differ-entiable selection [ 17 ], which introduces nonlinear kernels that are also unfriendly to general-purpose hardware. These trends mo-tivate specialized support for pruning that reduces compute and 
+
+preserves utilization. 
+
+2.3 Domain-Specific Accelerators 
+
+2.3.1 Hardware Pruning. Accelerators for sparse kernels (SpM-M/SDDMM) and pruned transformers improve throughput but are typically model- or kernel-specific [ 11 , 19 ]. Token-pruning hard-ware exists—e.g., threshold-based engines for NLP [ 26 ], compile-time pruning for ViTs [ 29 ], and run-time Gumbel-Softmax pruning [ 8 ]—yet each targets a subset of models or fixes sparsity patterns, limiting generality. 
+
+2.3.2 Multimodality-Aware Accelerators. Mode-switchable FPGA designs covering multiple modalities have emerged: CNN+GNN [ 31 ] and extensions that add ViT support [ 32 ]. However, cover-age remains incomplete (not all four modalities) and most lack hardware-accelerated run-time token pruning, leaving end-to-end multimodal pipelines under-optimized. 
+
+2.4 Motivations 
+
+As summarized in Table 1, prior work either narrows to a few modalities or omits run-time token pruning essential for ViT-heavy pipelines. We aim for a single-bitstream framework that spans ViT/GNN/CNN/NLP and provides scalable, hardware top-𝑘 pruning so emerging pruning strategies can be executed in real time within unified multimodal graphs. 
+
+3 Hardware Architecture 
+
+TRINE unifies ViT, GNN, NLP, and CNN inference on a single bitstream by combining a grid of reconfigurable processing units (RPUs), a mode-switchable compute engine (MSE) that switches dataflows on one PE array, and an in-stream, width-matched top-𝑘 
+
+unit for run-time token pruning (Fig. 1). 
+
+> Table 1: FPGA accelerators vs. supported workloads, sparse-kernel support, and token-pruning capability.
+
+Work AI Sparse Token Workload Kernel Pruning 
+
+This work ViT+GNN+CNN+NLP Yes Run-time [32] CNN+GNN or ViT Yes No [31] CNN+GNN No No [8] ViT No Run-time ∗
+
+[29] ViT No Compile-time ∗
+
+[26] NLP Yes Compile-time ∗
+
+[19] General MM Yes No [11] General MM Yes No 
+
+> ∗Compile/run-time denotes when the sparsity pattern is determined.
+
+3.1 System Overview 
+
+As shown in Fig. 1(a), an 𝑟 ×𝑐 RPU grid with local inter-RPU buffers minimizes off-chip traffic and enables pipelined inter-tile exchange. A host APU/CPU writes compact control blocks (mode, tiling, rout-ing masks) and uses AXI DMA for bulk I/O. Mode changes drain the in-flight pipeline and update a few registers; since kernels run for thousands of cycles, the overhead is negligible in wall time. This separation of control and dataflow allows per-kernel adaptation at runtime without any bitstream reconfiguration. 
+
+3.2 Mode-Switchable Engine (MSE) 
+
+Within each RPU in Fig. 1(b), the MSE is a single PE array that time-shares multiple dataflows using small interconnect multiplexers and per-PE operation control. Each PE provides west/north inputs, a partial-sum path, a tiny register file for reuse, and a three-function ALU (MAC/ADD/PASS). One multiplexer steers the B stream to realize output- or weight-stationary wavefronts; another selects the PE operation (multiply–accumulate, reduction for RADT, or pass-through). Lightweight row/column broadcasts and a short cross-row tap enable SIMD and tree reductions without duplicating engines or introducing long global wires. Consolidating dense and sparse dataflows into one array avoids a second large macro and its routing pressure, which helps timing closure and keeps 𝐹 max stable when pruning is enabled. The four execution modes are summarized in Fig. 1(c): 
+
+• Systolic (WS/OS). Dense DDMM (conv-as-GEMM, MLP, full at-tention) with reuse balanced between weights (WS, small token-s/large reuse) and outputs (OS, wide feature maps/many tokens). 
+
+• 1×CS SIMD . A single active row of width 𝑪 𝑺 (array width in columns ) issues only scheduled nonzeros; effective for SDDM-M/SpMM at moderate sparsity or bounded degrees (GNN). 
+
+• RADT . The same PEs form a programmable multi-stage reduc-tion tree; active products are injected where they occur and accumulated along routed paths, preferred under high or skewed sparsity. 
+
+• Normal SIMD . Element-wise work such as bias, activation, and edge functions. Mode selection uses kernel shape (𝑁 , 𝑀, 𝐾 ), observed token/edge sparsity 𝑝 , and array width 𝐶 𝑆 : dense layers map to WS/OS; pruned attention and message passing use 1×𝐶 𝑆 when activity per row is near 𝐶 𝑆 and fairly uniform, and switch to RADT when activity is much smaller or heavily skewed. In our builds, sharing one array TRINE: A Token-Aware, Runtime-Adaptive FPGA Inference Engine for Multimodal AI Top Buffer (TB) × 2       
+
+> Le Buffer (LB)
+> Host Interface
+> Layer/
+> Batch
+> Norm
+> Feed Scheduler
+> GELU/
+> ELU/
+> Somax
+> CS-element
+> Sorter
+> Center Buffer (CB)
+> ID/EX
+> Unit
+> Bottom Buffer (BB)
+> Feed Scheduler
+> Feed Scheduler
+> CS-k
+> Mergesorter
+> ×2 ×2 ×2
+> ×2 ×2 ×2
+> Systolic Array Mode
+> (Weight/Output Stationary)
+> TB
+> L
+> B
+> CB
+> SQB TB
+> L
+> B
+> CB
+> TB
+> CB
+> ×2
+> ×2
+
+❶
+
+> Host Interface
+
+APU / CPU External Memory 
+
+(c) Mode-Switchable Engine (MSE) 
+
+> Inter-RPU Buffer
+> Mode-
+> Switchable
+> Engine
+> Norm.
+> Functions
+> Activation
+> Functions
+> Top-k
+> Engine
+
+Host Interface 
+
+(a) Top Accelerator Architecture (b) Reconfigurable Processing Unit (Fully-loaded)  
+
+> Sparse eue
+> Buffer
+> CS: Column count of the PE array RS: Row count of the PE array
+> Mode-
+> Switchable
+> Engine
+> Norm.
+> Functions
+> Activation
+> Functions
+> Top-k
+> Engine
+
+Reconfigurable 
+
+Processing Unit 
+
+Reconfigurable 
+
+Processing Unit 
+
+> Inter-RPU Buffer
+> Mode-
+> Switchable
+> Engine
+> Norm.
+> Functions
+> Activation
+> Functions
+> Top-k
+> Engine
+> Mode-
+> Switchable
+> Engine
+> Norm.
+> Functions
+> Activation
+> Functions
+> Top-k
+> Engine
+
+Reconfigurable 
+
+Processing Unit 
+
+Reconfigurable 
+
+Processing Unit                              
+
+> ×+ ×+ ×+ ×+
+> ×+ ×+ ×+ ×+
+> ×+
+> ×+ ×+
+> ×+ ×+
+> ×+ ×+
+> ×+
+> ×|+ ×|+ ×|+ ×|+ ×+ ×+ ×+ ×+
+> 1 by C SSIMD
+> Mode
+> Normal SIMD
+> Mode
+> Routable Adder Tree Mode
+> (RADT)
+> SQB TB
+> CB
+> ××××
+> ++
+> ==
+> +
+> SQB TB
+> CB
+> ××××
+> ++
+> ==
+> ==
+> 4-1 Adder Tree 2 × (2-1) Adder Tree
+> SQB TB
+> CB
+> ×××
+> +=
+> +
+> =
+> 3-1 Adder Tree
+
+❷ ❸
+
+❹
+
+Figure 1: TRINE overview and mode-switchable engine (MSE). (a) Accelerator with an RPU grid and local inter-RPU buffers to localize traffic and pipeline inter-tile exchange. (b) Each RPU integrates a shared-datapath MSE, a width-matched two-stage top-𝑘 , compact nonlinear units, and a lightweight feed scheduler. (c) One PE array time-shares four dataflows via small interconnect muxes and per-PE op control: (1) Systolic (WS/OS) for dense DDMM; (2) 1×𝐶 𝑆 SIMD for moderately sparse SDDMM/SpMM; (3) RADT for highly sparse/irregular reductions; (4) normal SIMD for element-wise ops. Selection policy (runtime): DDMM →WS/OS (WS for small-token/high weight reuse; OS for wide feature maps/many tokens). SDDMM/SpMM →1×𝐶 𝑆 when active operands per row/col ≲ 𝐶 𝑆 and fairly uniform; switch to RADT as sparsity grows or degree skews. Feed scheduling provides systolic delay insertion and sparsity-aware indexed reads without host-side packing. Pipelined 
+
+Bitonic Sorter (C S)
+
+> 8
+> 7
+> 4
+> 2
+> 9
+> 6
+> 5
+> 1
+
+CS
+
+n
+
+> 9
+> 8
+> 7
+> 6
+> 5
+> 4
+> 2
+> 1
+> value
+> pos( i,j )
+
+Row-wise Mergesorter 
+
+k(n, C S) (n, k)C
+
+B
+
+SQB 
+
+B
+
+B
+
+> value
+> pos( i,j )
+> pos( i,j )
+> value
+
+Figure 2: Two-stage, width-matched top-𝑘 . A fixed-width (up to 𝐶 𝑆 ) pipelined bitonic stage matches array width; a lightweight 𝐶 𝑆 →𝑘 merge completes selection. Values/indices stream from MSE into a center buffer (CB) and sparse queue buffer (SQB), avoiding off-chip detours and scaling better than single large bitonic networks. 
+
+instead of duplicating dense/sparse macros reduced logic/routing by roughly 20–30% while maintaining 𝐹 max .
+
+3.3 Top-𝑘 Engine (In-Stream Pruning) 
+
+Token and score selection happens immediately after compute. The unit is split into a fixed-width (up to 𝐶 𝑆 ) pipelined bitonic stage followed by a small 𝐶 𝑆 →𝑘 mergesorter. Matching the first stage to the array’s output width (Fig. 1(c)) caps the number of compare-and-swap units; the merge completes selection with little extra logic. Values and indices stream through a center buffer and sparse queue buffer, so pruning neither stalls the pipeline nor detours through DRAM. Compared with a single large bitonic network whose area grows as 𝑂 (𝑛 log 2 𝑛 ), this width-matched split preserves near-streaming throughput at substantially lower area, and the microarchitecture can be swapped (dual-layer or FLiMS) when devices are tight. ≈
+
+> (0, 0)
+> (0, 2)
+> (1, 1)
+> (1, 2)
+
+Sparse eue    
+
+> (2, 0)
+> (2, 2)
+> (3, 2)
+> (3, 3)
+> 0
+> 1
+> 2
+> 3
+> 0123
+> n-iter
+> (1,k)×( k,d)
+
+Insert 
+
+delays 
+
+Sparsity 
+
+Matrix 
+
+(a) Pipelined Delay Insertion (b) Sparsity-aware Indexing       
+
+> w11 w12 w13
+> w21 w22 w23
+> w31 w32 w33
+> I11
+> I12
+> I13
+> b11
+> b13
+> b21
+> b22
+> b23
+> I21
+> I22
+> I23
+> I31
+> I32
+> I33
+> I41
+> I42
+> I43
+> b12
+
+Typical 
+
+Systolic 
+
+Operation 
+
+Figure 3: Feed scheduler. (a) Pipelined delay insertion aligns rows/columns for WS/OS systolic waves with no host-side data reshaping. (b) Sparsity-aware indexed reads via a small BRAM-backed sparse queue (SQB) and address gen-erator feed only active pairs to 1×𝐶 𝑆 SIMD and RADT, eliminating bubbles and DRAM detours after top-𝑘 pruning. 
+
+3.4 Lightweight Feed and Nonlinear Units 
+
+The feed scheduler in Fig. 3(a) inserts per-row delays for correct systolic alignment and, in Fig. 3(b), performs sparsity-aware in-dexed reads using a small BRAM-backed sparse queue, so inputs need no host-side repacking while 1×𝐶 𝑆 and RADT consume only active pairs. Compact nonlinear units (SoftMax, GELU/ELU, nor-malization) use polynomial or piecewise-linear approximations and reuse a tree-style accumulate pattern; they are sized to sustain the array’s streaming rate with modest resources. 
+
+3.5 Putting It Together 
+
+At runtime, TRINE applies a simple policy: dense DDMM uses WS or OS according to reuse and width (Fig. 1(c)); SDDMM/SpMM use 
+
+1×𝐶 𝑆 when activity per row is near 𝐶 𝑆 and uniform, and RADT when activity is much smaller or skewed (also Fig. 1(c)); element-wise stages use normal SIMD; top-𝑘 runs in stream so pruning Hyunwoo Oh 1, Hanning Chen 1, Sanggeon Yun 1, Yang Ni 2, Suyeon Jang 1,Behnam Khaleghi 3, Fei Wen 4, and Mohsen Imani 1[BERT]   
+
+> SeqLen=var
+> EmbedDim=768
+> MHSADepth=6
+> …
+> Compiler
+> AI Model
+> Run-time SW (APU)
+> Run-time SW Block
+> Generation
+> Model
+> Extraction Pred. Layers
+> HW Cfg.
+> Fuzzy Layers
+> Kernel
+> Selection
+> Kernel
+> Selection
+> Fuzzy Layer
+> SW Blocks
+> HW Specs.
+> Model
+> Metadata
+> Pred. Layer
+> Machine
+> Codes
+> Fuzzy Layer
+> Machine
+> Codes
+> Master
+> Loop pruning
+> result
+> Instr.
+> Layer
+> Info,
+> Status
+> [ViT]
+> EmbedDim=192
+> HeadCnt=6
+> MHSADepth=6
+> Top-k=8
+> MLPRatio=4.0
+> …
+> RPUs=2x2
+> [RP U0]
+> MACs=32x32
+> SorterMax=256
+> …
+> [RP U1]
+> …
+> RPU
+> Scheduling
+> Accelerator
+> Kernel ID
+> eue
+> RPU
+> status
+> Figure 4: TRINE compile–run flow. The compiler parses a structured model, classifies layers (predictable vs. fuzzy), maps them to DDMM/SDDMM/SpMM, selects MSE modes via a sparsity/shape policy, and emits compact instruction blocks plus a dependency DAG. At runtime, an APU-backed controller fills fuzzy templates (e.g., token counts), configures top-
+
+𝑘 , and schedules ready blocks across RPUs using dependency-aware layer offloading (DALO). Pruning indices flow forward to shrink subsequent kernels. 
+
+immediately reduces downstream work. This shared-datapath ap-proach maintains utilization across dense and sparse regimes and requires no bitstream reconfiguration. 
+
+4 Software Stack 
+
+TRINE provides a vertically integrated stack that takes a structured model description and produces pruning-aware, runtime-adaptive execution on a single-bitstream FPGA. The stack enables multi-modal offloading (vision, language, graph), mixes static and dy-namic flows (e.g., variable token counts), and chooses efficient MSE modes per kernel. It comprises a model specification interface, a multi-stage compiler that emits compact instruction blocks, and a lightweight runtime that instantiates fuzzy layers, manages prun-ing, and dispatches work across the RPU grid (Fig. 4). 
+
+4.1 Compiler Infrastructure 
+
+The model is described in a compact configuration that lists layer types (Attention, MatMul, GELU, SDDMM, etc.), tensor shapes, dataflow hints, and whether token pruning is enabled. During pars-ing, layers are classified as predictable (fixed shapes and static dataflow, e.g., MLPs or static convolutions) or fuzzy (runtime-dependent, e.g., variable-length NLP sequences or dynamically pruned attention). This split allows the compiler to generate fi-nal binaries for predictable layers and templates for fuzzy ones whose missing fields will be filled at runtime. Kernels are unified as DDMM, SDDMM, and SpMM and assigned an MSE mode using a simple scoring policy driven by layer shape and expected sparsity: dense kernels map to WS/OS systolic; pruned attention (SDDMM) and message passing (SpMM) map to 1×𝐶 𝑆 
+
+SIMD when activity per row is near the array width and uniform, and to RADT when activity is much smaller or skewed. To keep compile time small, RADT exploration is restricted to a short list of homogeneous partitions consistent with the array dimensions; the compiler evaluates only a handful of candidates rather than a combinatorial space. The compiler then emits compact instruction blocks that encode mode ID, loop bounds/tiling, buffer and operand IDs, pruning op-tions, and dependency tags. A dependency graph (DAG) across blocks enables dependency-aware layer offloading (DALO): inde-pendent kernels (e.g., the 𝑄 , 𝐾 , and 𝑉 projections) are placed on different RPUs and overlapped to raise utilization. Static placement respects RPU capabilities (presence of top-𝑘 , nonlinear units) and co-locates producer–consumer pairs when it reduces memory traf-fic (e.g., top-𝑘 adjacent to its consumer SDDMM/SpMM). 
+
+4.2 Runtime Control and Dynamic Execution 
+
+At runtime, a lightweight APU controller streams instruction blocks and fills in fuzzy templates with observed parameters (token counts, pruning ratios, actual sparsity) before dispatch. Pruning thresholds and 𝑘 -values are programmed into the top-𝑘 unit; the resulting indices are propagated forward as compact streams to shrink sub-sequent SDDMM/SpMM and to guide sparse reads. The controller tracks RPU availability, honors the DAG to preserve dependencies, and opportunistically overlaps independent work across the grid; if observed sparsity deviates from compile-time estimates, it can switch the next block’s MSE mode (e.g., 1×𝐶 𝑆 to RADT) by updating a small control block without any reconfiguration. 
+
+• Template instantiation: complete fuzzy blocks with runtime shapes (e.g., sequence length, kept tokens). 
+
+• Pruning control: load top-𝑘 parameters; consume index streams to gate downstream compute and memory. 
+
+• DALO scheduling: dispatch ready blocks to idle RPUs, co-locate hot producer–consumer pairs, and maintain backpressure via shared queues. This hybrid compile–run design keeps the critical logic in the compiler (kernel unification, mode scoring, DAG construction) while leaving low-cost decisions (template fill-in, 𝑘 selection, mode flips under sparsity drift) to the runtime. In practice, this preserves high utilization across dense and sparse regimes, allows pruning to immediately reduce downstream work, and maintains adaptation within a single bitstream. 
+
+5 Evaluation 
+
+We evaluate TRINE on multimodal workloads with latency and power as primary metrics. Experiments are run on two FPGA tar-gets—Alveo U50 and ZCU104—to show scalability, with compar-isons to an RTX 4090 and Jetson Orin Nano. We report (i) end-to-end latency on multimodal graphs, (ii) ViT token-pruning impact, and (iii) cross-platform results. We implement TRINE using a Chisel-based RTL generator [ 2]and synthesize/place-and-route in Vivado 2022.1. Unless noted oth-erwise, the Alveo U50 runs at 300 MHz and the ZCU104 at 200 MHz; all experiments use int8 quantization. The top-𝑘 engine supports up to 256 elements (bitonic on U50, dual-layer on ZCU104). Table 2 summarizes the configurations and resource utilization. Model configurations are listed in Table 3, spanning TinyCLIP (ViT/NLP), MDETR (CNN/NLP), and MissionGNN (ViT/GNN, CN-N/GNN). Together, these cover ViT, NLP, GNN, and CNN. TRINE: A Token-Aware, Runtime-Adaptive FPGA Inference Engine for Multimodal AI 
+
+Table 2: Hardware configurations and resource utilization. 
+
+Alveo U50 ZCU104 
+
+RPU Grid 2×2 1×1MSE PE 32 ×32 32 ×32 Top-𝑘 Eng. Bitonic, Max-𝑘 =256 Dual-Layer, Max-𝑘 =256 Clock Freq. 300 MHz 200 MHz LUT 693,092 / 871,680 (79.51%) 163,112 / 230,400 (70.80%) FFs 379,608 / 1,743,360 (21.77%) 84,064 / 460,800 (18.24%) DSPs 4,564 / 5,952 (76.68%) 1,141 / 1,728 (66.03%) BRAM 553 / 1,344 (41.15%) 139 / 312 (44.55%) URAM 78 / 640 (12.19%) 20 / 96 (20.83%) Power 20.99 W 8.05 W 
+
+Table 3: AI model configurations used in evaluation. 
+
+Model Label Workload1 Workload2 Param. Count (M) 
+
+TinyCLIP (ViT + NLP) A ViT-8M/16 TEXT-3M 11 B ViT-39M/16 TEXT-19M 58 C ViT-40M/32 TEXT-19M 59 D ViT-61M/32 TEXT-29M 90 MDETR (CNN + NLP) E ResNet-18 RoBERTa 152 F ResNet-50 RoBERTa 166 G ResNet-101 RoBERTa 185 MissionGNN (ViT + GNN) H ViT-S/16 GNN-104 6I ViT-B/32 GNN-104 22 J ViT-H/14 GNN-104 632 MissionGNN (CNN + GNN) K ResNet-18 GNN-104 12 L ResNet-101 GNN-104 45 
+
+5.1 Multimodal Workload Analyses 
+
+Fig. 5 shows the impact of dependency-aware layer offloading (DALO). On U50, TinyCLIP A–D complete in 4.2–19.4 ms ; DALO improves throughput by up to 79.2% , keeping latency under 25 ms 
+
+for interactive rates ( >40 FPS). For MDETR E–G , the RoBERTa branch dominates; DALO still yields 1.0–1.2 × gains by overlap-ping early text/vision blocks on U50, while single-RPU ZCU104 shows no benefit (sequential execution). MissionGNN H–I finish 
+
+<12 ms ; the largest J reaches 414 ms without pruning, indicating pruning is essential for this scale. Overall, DALO converts inter-branch independence into wall-clock savings on multi-RPU devices and degrades gracefully to correct sequential execution on small devices. 
+
+5.2 Token Pruning Impact on Latency 
+
+We apply DynamicViT [ 22 ] with pruning rates 𝑝 ∈ { 0.1, 0.2, 0.3}
+
+(baseline 𝑝 = 0), with DALO enabled. Fig. 6 shows up to 7.3 ×
+
+(U50) and 7.8 × (ZCU104) speedups, exceeding GPU-reported gains (∼1.6 ×). Larger-token ViTs ( A,B,H,J ) benefit most; MissionGNN (H–J ) sees higher speedups than TinyCLIP due to ViT’s share of total compute. On ZCU104, pruning yields higher relative gains because scheduling is not the bottleneck. In all cases, pruning im-mediately reduces downstream SDDMM/SpMM via the in-stream top-𝑘 and raises utilization through mode switching. Latency ( ms )
+
+> 0
+> 10
+> 20
+> Latency ( ms )
+
+(a) TinyCLIP -U50    
+
+> ABCD
+> 20
+> 0
+
+(c) MDETR -U50   
+
+> EFG
+> Latency ( ms )
+> 0
+
+(e) MissionGNN -U50   
+
+> HIJ
+> Latency ( ms )
+> 0
+> 20
+> 60
+> Latency ( ms )
+> 40
+
+(b) TinyCLIP -ZCU104    
+
+> ABCD
+> 20
+> 0
+
+(d) MDETR -ZCU104   
+
+> EFG
+> Latency ( ms )
+
+(f) MissionGNN -ZCU104               
+
+> 100
+> 40
+> 30
+> 10
+> 0HIJ
+> 200
+> Workload 1 Workload 2 RPU scheduling applied
+> 30 60
+> 40 80
+> 200 400
+> 300 600
+> 400 800
+> 500 1000
+> KLKL
+
+Figure 5: End-to-end latency with/without DALO; labels refer to Table 3. Token pruning disabled to isolate scheduling effects. 0         
+
+> 2
+> 4
+> 6
+> 8
+> ABCDHIJ
+> Speedup ( ×)
+> p=0 p=0.1 p=0.2 p=0.3
+
+(a) Alveo U50       
+
+> ABCDHIJ
+
+(b) ZCU 104 
+
+Figure 6: Speedup from ViT token pruning (DynamicViT); labels per Table 3. 80.1                          
+
+> 84.4
+> 89.6
+> 80.0
+> 84.3
+> 89.4
+> 72
+> 76
+> 80
+> 84
+> 88
+> 92
+> EFG
+> 73.6
+> 78.9
+> 84.4
+> 73.5
+> 78.8
+> 84.3
+> 68
+> 72
+> 76
+> 80
+> 84
+> 88
+> EFG
+> 74.2
+> 79.2
+> 84.8
+> 74.1
+> 79.1
+> 84.7
+> 68
+> 72
+> 76
+> 80
+> 84
+> 88
+> EFG
+> (d) MDETR -RefCOCO (e) MDETR -RefCOCO +(f) MDETR -RefCOCOg
+> 37.4
+> 58.6 55.5 58.3
+> 36.4
+> 57.3 53.3 56.6
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> ABCD
+> 62.4 83.4 80.9 83.1
+> 61.0
+> 82.3 79.1 81.8
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> ABCD
+> (a) TinyCLIP -Acc@1 (b) TinyCLIP -Acc@5
+> 82.6 82.1
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> J
+> Accuracy ( %) Accuracy ( %)
+> mAUC  (%)
+> (c) MissionGNN
+
+Figure 7: Accuracy of FP32 vs. int8 quantization; labels per Table 3. 
+
+5.3 Quantization Effects on Accuracy 
+
+As summarized in Fig. 7, we quantize transformers with Bitsand-bytes and use PyTorch static quantization for CNN/GNN. TinyCLIP (A–D ) shows 1.0–2.2% top-1 and 1.0–1.8% top-5 drops on Ima-geNet [ 23 ]; MDETR ( E–G ) loses 0.1–0.2% on RefCOCO/+/g [ 16 ]; MissionGNN ( J) decreases by 0.5% mAUC on UCF-Crime [ 24 ]. Across all cases in Fig. 7 (blue: FP32, red: int8), degradation re-mains under 2.5% while reducing model size by 4 × and aligning with TRINE’s int8 datapath. Hyunwoo Oh 1, Hanning Chen 1, Sanggeon Yun 1, Yang Ni 2, Suyeon Jang 1,Behnam Khaleghi 3, Fei Wen 4, and Mohsen Imani 1
+
+Table 4: Comparison with other FPGA-based accelerators including CNN, GNN, ViT, and NLP transformers.                                                                                                                                                                    
+
+> Unit AMD DPU
+> ’22 [14]
+> VisionAgile
+> TPDS’24 [32]
+> GCV-Turbo
+> FCCM’24 [31]
+> HPTA
+> FPL’23 [13]
+> FTRANS
+> ISLPED’20 [18]
+> HeatViT
+> HPCA’23 [8]
+> SWAT
+> ASP-DAC’24 [9]
+> TRINE
+> This Work ML Workload -CNN, Transformer CNN, ViT, GNN CNN, GNN Transformer Transformer ViT * Swin CNN, GNN, ViT, NLP
+> Scheduling Mechanism -Sequential Sequential Sequential Sequential Sequential Sequential Sequential Inter-Model Parallel
+> Number Data Type -fixed-point8 -float16 int8 fixed-point16 fixed-point8 int8 int8 FPGA Platform -ZCU 104 Alveo U250 Alveo U250 ZCU 102 VCU118 ZCU102 Alveo U50 Alveo U50 Memory Bandwidth GB/s 19.2 77 77 19.2 -19.2 316 316 Operating Frequency MHz 600/300 ** 600/300 ** 600/300 ** 200 -150 200 300 Peak Throughput TOPS 2.40 -1.08 --0.37 0.31 1.30 DSP Usage --9091 -2307 6531 2307 1968 4564 Maximum Power W8.85 --20 25.13 9.45 14.35 20.99 TinyCLIP (ViT + NLP) ViT-8M/16+TEXT-3M Latency ms -4.26 -6.38 9.94 7.46 22.04 1.60
+> Norm. Latency *** ms -7.92 -3.51 10.21 3.55 17.83 1.60
+> Energy mJ ---127.54 249.72 70.54 316.27 33.58
+> MDETR (CNN + NLP) ResNet-101+RoBERTa Latency ms -30.54 -----28.40
+> Norm. Latency *** ms -58.60 -----28.40
+> Energy mJ -------596.12 MissionGNN (CNN + GNN) ResNet-101+GNN-104 Latency ms 21.18 9.42 8.96 ----7.40
+> Norm. Latency *** ms 9.50 17.68 16.75 ----7.40
+> Energy mJ 187.44 ------155.33
+> * The original work only supports ViT, but we assume it can support RoBERTa when padding the input sentence tokens with image token size. ** 600 MHz for computation units and 300 MHz for data buffer. *** Normalized the latency based on the utilized DSP count.
+
+5.4 Cross-Platform Analyses 
+
+5.4.1 Comparison with FPGA Accelerators. Table 4 compares TRINE with recent FPGA accelerators across CNN, ViT, GNN, and NLP. Since most baselines are single-modal, we report their strongest per-modal numbers and use FLOPs-scaled estimates when needed (e.g., TinyCLIP on HeatViT [ 8]). We also provide DSP-normalized latency to account for device size; this is wall-clock latency divided by the fraction of DSPs used, so designs that achieve more with fewer DSPs are credited appropriately. Unless stated otherwise, all figures are batch size 1, single-sample medians after warm-up, and energy is computed as 𝐸 = Power × Latency. For TinyCLIP (configuration A), TRINE achieves 1.6 ms , 2.7 ×
+
+faster than VisionAGILE [ 32 ] in raw latency and 2.2 × per-DSP. Energy per inference is 33.6 mJ , a 2.1 × improvement over HeatViT. The gap comes from in-stream top-𝑘 (downstream SDDMM/SpMM immediately shrink) and DALO overlapping 𝑄 /𝐾 /𝑉 with the text branch across RPUs, which raises utilization without extra memory traffic. For MDETR, TRINE exceeds VisionAGILE by 1.1 × raw and 2.1 ×
+
+per-DSP despite lower external bandwidth. WS/OS mode switch-ing matches layer reuse, and DALO overlaps early CNN and text blocks before fusion. Gains are modest because the unpruned text encoder dominates, but they are consistent across configurations and devices. For MissionGNN, TRINE is 1.2 × faster in raw latency and 1.3 ×
+
+per-DSP than GCV-Turbo [ 31 ] and AMD DPU [ 14 ], with 1.2 ×
+
+better energy efficiency. Native SDDMM/SpMM support in the MSE (switching to 1×𝐶 𝑆 SIMD or RADT as sparsity skews) sustains utilization on irregular graphs without reconfiguration and avoids host-side packing. Overall, TRINE is, to our knowledge, the only accelerator that executes CNN, ViT, GNN, and NLP end-to-end on a single bitstream. Competing works often require FPGA reconfiguration (100–150 ms [ 1]) or CPU offload; those costs are typically excluded from reported latencies, so full-pipeline advantages are larger in practice. 
+
+5.4.2 GPU Comparison. Table 5 compares TRINE with an RTX 4090 and a Jetson Orin Nano at batch size 1 and int8 where applicable; ViT uses 𝑝 =0.3, and transfers are overlapped when supported. 
+
+Table 5: Latency comparison between TRINE and GPUs (ms); ViT uses 𝑝 =0.3
+
+configuration.                                           
+
+> Workload TinyCLIP MDETR MissionGNN Workload TinyCLIP Cfg. ABFGJLCfg. ABAlveo U50 ∗1.6 6.5 18.7 23.0 56.9 7.4 ZCU104 ∗4.4 20.8 RTX 4090 ∗37.1 49.9 21.7 28.4 50.1 44.1 Jetson Orin Nano ∗30 40.6 Speedup (×)22.57 7.64 1.16 1.24 0.88 5.98 Speedup (×)6.86 1.96
+> Labels refer to Table 3. ∗Numbers are latencies (ms).
+
+For TinyCLIP, the Alveo U50 is 22.57 × faster than the RTX 4090 on configuration A and 7.64 × on B. On the embedded side, ZCU104 exceeds Orin Nano by 6.86 × and 1.96 ×. GPUs underutilize on irregular sparsity after pruning; the MSE’s sparse-friendly modes and on-chip top-𝑘 immediately reduce downstream work. For MDETR, the U50 delivers 1.16–1.24 × over the RTX 4090. The text encoder is unpruned and CNNs map well to tensor cores, so the margin is smaller. For MissionGNN, configuration L achieves 5.98 × versus RTX 4090 due to efficient SpMM, while the very large ViT in configuration 
+
+J yields 0.88 × (limited by FPGA resources rather than dataflow). Even here, performance per watt remains favorable: FPGA boards operate at or below 21 W , whereas the RTX 4090 draws roughly 
+
+430 W .
+
+6 Conclusion 
+
+We presented TRINE, a single-bitstream, runtime-adaptive acceler-ator and compiler that unifies ViT/CNN/GNN/NLP as DDMM/S-DDMM/SpMM on a shared mode-switchable PE array; the MSE switches among WS/OS, 1×𝐶 𝑆 SIMD, and RADT, while a width-matched in-stream top-𝑘 and DALO sustain utilization without reconfiguration. Across TinyCLIP, MDETR, and MissionGNN on Alveo U50 and ZCU104, TRINE cuts latency by up to 22 .57 × and 
+
+6.86 × (vs. RTX 4090 and Orin Nano, respectively) at ≤21 W; prun-ing alone yields up to 7.8× on ViT-heavy cases and DALO adds up to 79% throughput, with < 2.5% accuracy loss under int8. Future work includes extending run-time sparsity to NLP/CNN, exploring heterogeneous RADT partitions with fast cost models, and finer-grained kernel splitting with telemetry-guided policies to push TRINE: A Token-Aware, Runtime-Adaptive FPGA Inference Engine for Multimodal AI 
+
+TRINE toward a broadly deployable, energy-efficient substrate for multimodal AI. 
+
+References 
+
+[1] AMD. 2024. Configuration Time . https://docs.amd.com/r/en-US/ug909-vivado-partial-reconfiguration/Configuration-Time Vivado Design Suite User Guide: Dynamic Function eXchange (UG909), Version 2024.2. [2] Jonathan Bachrach, Huy Vo, Brian Richards, Yunsup Lee, Andrew Waterman, Rimas Avižienis, John Wawrzynek, and Krste Asanović. 2012. Chisel: constructing hardware in a Scala embedded language. In 49th Annual Design Automation Conference (DAC) . ACM, San Francisco, CA, USA, 1216–1225. doi:10.1145/2228360. 2228584 [3] Shuning Chang, Pichao Wang, Ming Lin, Fan Wang, David Junhao Zhang, Rong Jin, and Mike Zheng Shou. 2023. Making Vision Transformers Efficient from A Token Sparsification View. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) . Los Alamitos, CA, USA, 6195–6205. doi:10.1109/ CVPR52729.2023.00600 [4] Hanning Chen, Wenjun Huang, Yang Ni, Sanggeon Yun, Yezi Liu, Fei Wen, Alvaro Velasquez, Hugo Latapie, and Mohsen Imani. 2024. TaskCLIP: Extend Large Vision-Language Model for Task Oriented Object Detection. doi:10.48550/ arXiv.2403.08108 arXiv:2403.08108 [cs]. [5] Zhiyang Chen, Yousong Zhu, Zhaowen Li, Fan Yang, Chaoyang Zhao, Jinqiao Wang, and Ming Tang. 2024. The Devil is in Details: Delving Into Lite FFN Design for Vision Transformers. In IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) . Seoul, Korea, 4130–4134. doi:10.1109/ ICASSP48485.2024.10447756 [6] Zhao-Min Chen, Xiu-Shen Wei, Peng Wang, and Yanwen Guo. 2019. Multi-Label Image Recognition with Graph Convolutional Networks. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .[7] Mehdi Cherti, Romain Beaumont, Ross Wightman, Mitchell Wortsman, Gabriel Ilharco, Cade Gordon, Christoph Schuhmann, Ludwig Schmidt, and Jenia Jitsev. 2023. Reproducible Scaling Laws for Contrastive Language-Image Learning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Vancouver, BC, Canada, 2818–2829. doi:10.1109/CVPR52729.2023.00276 [8] Peiyan Dong, Mengshu Sun, Alec Lu, Yanyue Xie, Kenneth Liu, Zhenglun Kong, Xin Meng, Zhengang Li, Xue Lin, Zhenman Fang, and Yanzhi Wang. 2023. HeatViT: Hardware-Efficient Adaptive Token Pruning for Vision Transformers. In 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . Montreal, QC, Canada, 442–455. doi:10.1109/HPCA56546.2023.10071047 [9] Qiwei Dong, Xiaoru Xie, and Zhongfeng Wang. 2024. SWAT: An Efficient Swin Transformer Accelerator Based on FPGA. In 29th Asia and South Pacific Design Automation Conference (ASP-DAC) . 515–520. doi:10.1109/ASP-DAC58780.2024. 10473931 [10] Mohsen Fayyaz, Soroush Abbasi Koohpayegani, Farnoush Rezaei Jafari, Sunando Sengupta, Hamid Reza Vaezi Joze, Eric Sommerlade, Hamed Pirsiavash, and Juergen Gall. 2022. Adaptive Token Sampling for Efficient Vision Transformers. In European Conference on Computer Vision (ECCV) . Tel Aviv, Israel, 396–414. doi:10.1007/978-3-031-20083-0_24 [11] Gerasimos Gerogiannis, Serif Yesil, Damitha Lenadora, Dingyuan Cao, Charith Mendis, and Josep Torrellas. 2023. SPADE: A Flexible and Scalable Accelerator for SpMM and SDDMM. In 50th Annual International Symposium on Computer Architecture (ISCA) . Orlando, FL, USA, 1–15. doi:10.1145/3579371.3589054 [12] Rohit Girdhar, Alaaeldin El-Nouby, Zhuang Liu, Mannat Singh, Kalyan Vasudev Alwala, Armand Joulin, and Ishan Misra. 2023. ImageBind: One Embedding Space To Bind Them All. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) . Vancouver, Bc, Canada. [13] Yuntao Han and Qiang Liu. 2023. HPTA: A High Performance Transformer Ac-celerator Based on FPGA. In 33rd International Conference on Field-Programmable Logic and Applications (FPL) . 27–33. doi:10.1109/FPL60245.2023.00012 [14] Xilinx Inc. 2021. Zynq DPU Product Guide (PG338) . https://docs.amd.com/r/3.3-English/pg338-dpu Document ID: PG338. [15] Aishwarya Kamath, Mannat Singh, Yann LeCun, Gabriel Synnaeve, Ishan Misra, and Nicolas Carion. 2021. MDETR - Modulated Detection for End-to-End Multi-Modal Understanding. In IEEE/CVF International Conference on Computer Vision (ICCV) . Montreal, QC, Canada, 1760–1770. doi:10.1109/ICCV48922.2021.00180 [16] Sahar Kazemzadeh, Vicente Ordonez, Mark Matten, and Tamara Berg. 2014. ReferItGame: Referring to Objects in Photographs of Natural Scenes. In Confer-ence on Empirical Methods in Natural Language Processing (EMNLP) . Doha, Qatar, 787–798. [17] Zhenglun Kong, Peiyan Dong, Xiaolong Ma, Xin Meng, Wei Niu, Mengshu Sun, Xuan Shen, Geng Yuan, Bin Ren, Hao Tang, Minghai Qin, and Yanzhi Wang. 2022. SPViT: Enabling Faster Vision Transformers via Latency-Aware Soft Token Pruning. In 17th European Conference on Computer Vision (ECCV) (Tel Aviv, Israel). 620–640. doi:10.1007/978-3-031-20083-0_37 [18] Bingbing Li, Santosh Pandey, Haowen Fang, Yanjun Lyv, Ji Li, Jieyang Chen, Mimi Xie, Lipeng Wan, Hang Liu, and Caiwen Ding. 2020. FTRANS: energy-efficient acceleration of transformers using FPGA. In ACM/IEEE International Symposium on Low Power Electronics and Design (ISLPED) . Boston, MA, USA, 175–180. doi:10.1145/3370748.3406567 [19] Liqiang Lu, Yicheng Jin, Hangrui Bi, Zizhang Luo, Peng Li, Tao Wang, and Yun Liang. 2021. Sanger: A Co-Design Framework for Enabling Sparse Attention using Reconfigurable Architecture. In 54th Annual IEEE/ACM International Sym-posium on Microarchitecture (MICRO-54) . Virtual, 977–991. doi:10.1145/3466752. 3480125 [20] Dhruv Parikh, Shouyi Li, Bingyi Zhang, Rajgopal Kannan, Carl Busart, and Viktor Prasanna. 2024. Accelerating ViT Inference on FPGA through Static and Dynamic Pruning. In IEEE 32nd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) . Orlando, FL, USA, 78–89. doi:10.1109/FCCM60383.2024.00018 [21] Alec Radford, Jong Wook Kim, Chris Hallacy, A. Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. 2021. Learning Transferable Visual Models From Natural Language Supervision. In 38th International Conference on Machine Learning .[22] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. 2021. DynamicViT: Efficient Vision Transformers with Dynamic Token Sparsification. In 35th International Conference on Neural Information Processing Systems (NeurIPS) (Virtual). 13937–13949. [23] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael S. Bernstein, Alexander C. Berg, and Li Fei-Fei. 2014. ImageNet Large Scale Visual Recognition Challenge. doi:10.48550/arXiv.1409.0575 arXiv:1409.0575 [cs.CV]. [24] Waqas Sultani, Chen Chen, and Mubarak Shah. 2018. Real-world Anomaly Detection in Surveillance Videos. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) . Salt Lake City, UT, USA, 6479–6488. [25] Shitao Tang, Jiahui Zhang, Siyu Zhu, and Ping Tan. 2022. Quadtree Attention for Vision Transformers. In International Conference on Learning Representations (ICLR) . Virtual, 1–16. [26] Hanrui Wang, Zhekai Zhang, and Song Han. 2021. SpAtten: Efficient Sparse Attention Architecture with Cascade Token and Head Pruning. In IEEE Inter-national Symposium on High-Performance Computer Architecture (HPCA) . Seoul, Korea, 97–110. doi:10.1109/HPCA51647.2021.00018 [27] Kan Wu, Houwen Peng, Zhenghong Zhou, Bin Xiao, Mengchen Liu, Lu Yuan, Hong Xuan, Michael Valenzuela, Xi Stephen Chen, Xinggang Wang, Hongyang Chao, and Han Hu. 2023. TinyCLIP: CLIP Distillation via Affinity Mimicking and Weight Inheritance. In IEEE/CVF International Conference on Computer Vision (ICCV) . 21913–21923. doi:10.1109/ICCV51070.2023.02008 [28] Yifan Xu, Zhijie Zhang, Mengdan Zhang, Kekai Sheng, Ke Li, Weiming Dong, Liqing Zhang, Changsheng Xu, and Xing Sun. 2022. Evo-ViT: Slow-Fast Token Evolution for Dynamic Vision Transformer. In 36th AAAI Conference on Artificial Intelligence (AAAI) (Virtual). 2964–2972. doi:10.1609/AAAI.V36I3.20202 [29] Haoran You, Zhanyi Sun, Huihong Shi, Zhongzhi Yu, Yang Zhao, Yongan Zhang, Chaojian Li, Baopu Li, and Yingyan Lin. 2023. ViTCoD: Vision Transformer Accel-eration via Dedicated Algorithm and Accelerator Co-Design. In IEEE International Symposium on High-Performance Computer Architecture (HPCA) . Montreal, QC, Canada, 273–286. doi:10.1109/HPCA56546.2023.10071027 [30] Sanggeon Yun, Ryozo Masukawa, Minhyoung Na, and Mohsen Imani. 2024. MissionGNN: Hierarchical Multimodal GNN-based Weakly Supervised Video Anomaly Recognition with Mission-Specific Knowledge Graph Generation. doi:10.48550/arXiv.2406.18815 arXiv:2406.18815 [cs]. [31] Bingyi Zhang, Rajgopal Kannan, Carl Busart, and Viktor Prasanna. 2024. GCV-Turbo: End-to-end Acceleration of GNN-based Computer Vision Tasks on FPGA. In IEEE 32nd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) . Orlando, FL, USA, 66–77. doi:10.1109/FCCM60383. 2024.00017 [32] Bingyi Zhang, Rajgopal Kannan, Carl Busart, and Viktor K. Prasanna. 2024. VisionAGILE: A Versatile Domain-Specific Accelerator for Computer Vision Tasks. IEEE Transactions on Parallel and Distributed Systems 35, 12 (Dec. 2024), 2405–2422. doi:10.1109/TPDS.2024.3466891
