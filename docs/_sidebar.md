@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-03-29 <!--dpr-date:20260329-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202603/29/2603.21678v1-conbonet-conformalized-neuroscience-inspired-bayesian-operator-network-for-reliability-analysis" data-sidebar-item="{&quot;title&quot;: &quot;CoNBONet: Conformalized Neuroscience-inspired Bayesian Operator Network for Reliability Analysis&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2603.21678v1-conbonet-conformalized-neuroscience-inspired-bayesian-operator-network-for-reliability-analysis&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;aiot&quot;}], &quot;evidence&quot;: &quot;受神经科学启发的节能可靠性分析代理模型&quot;}">CoNBONet: Conformalized Neuroscience-inspired Bayesian Operator Network for Reliability Analysis</a>
   * 2026-03-28 <!--dpr-date:20260328-->
     * 精读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202603/28/2603.23722v1-dual-gated-epistemic-time-dilation-autonomous-compute-modulation-in-asynchronous-marl" data-sidebar-item="{&quot;title&quot;: &quot;Dual-Gated Epistemic Time-Dilation: Autonomous Compute Modulation in Asynchronous MARL&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2603.23722v1-dual-gated-epistemic-time-dilation-autonomous-compute-modulation-in-asynchronous-marl&quot;, &quot;score&quot;: &quot;9.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;aiot&quot;}], &quot;evidence&quot;: &quot;针对热量和代谢预算受限的边缘设备调节执行频率&quot;}">Dual-Gated Epistemic Time-Dilation: Autonomous Compute Modulation in Asynchronous MARL</a>
