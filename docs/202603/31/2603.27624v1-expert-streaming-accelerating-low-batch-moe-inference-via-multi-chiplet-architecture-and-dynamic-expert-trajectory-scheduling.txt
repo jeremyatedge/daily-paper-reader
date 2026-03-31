@@ -1,0 +1,1150 @@
+Title: Expert Streaming: Accelerating Low-Batch MoE Inference via Multi-chiplet Architecture and Dynamic Expert Trajectory Scheduling
+
+URL Source: https://arxiv.org/pdf/2603.27624v1
+
+Published Time: Tue, 31 Mar 2026 01:07:49 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Expert Streaming: Accelerating Low-Batch MoE Inference via Multi-chiplet Architecture and Dynamic Expert Trajectory Scheduling 
+
+Songchen Ma 1,2†, Hongyi Li 2†, Weihao Zhang 1,2∗, Yonghao Tan 1,2, Pingcheng Dong 1,2, Yu Liu 1, Lan Liu 3,Yuzhong Jiao 1, Xuejiao Liu 1, Luhong Liang 1, Kwang-Ting Cheng 1,2∗
+
+> 1
+
+AI Chip Center for Emerging Smart Systems, Hong Kong SAR, China 
+
+> 2
+
+The Hong Kong University of Science and Technology, Hong Kong SAR, China 
+
+> 3
+
+Shanghai UniVista Industrial Software Group Co., Ltd., Shanghai, China  
+
+> †
+
+Contributted euqally, ∗ Corresponding Authors (timcheng@ust.hk, weihaozhang@ust.hk) 
+
+Abstract —Mixture-of-Experts (MoE) is a promising approach for edge AI with low-batch inference. Yet, on-device deploy-ments often face limited on-chip memory and severe workload imbalance; the prevalent use of offloading further incurs off-chip memory access bottlenecks. Moreover, MoE sparsity and dynamic gating shift distributed strategies toward much finer granularity and introduce runtime scheduling considerations. Recently, high die-to-die (D2D) bandwidth chiplet interconnects create new opportunities for multi-chiplet systems to address workload im-balance and offloading bottlenecks with fine-grained scheduling. In this paper, we propose Fully Sharded Expert Data-parallelism (FSE-DP), a parallelization paradigm specifically architected for low-batch MoE inference on multi-chiplet accelerators. FSE-DP attains adaptive computation–communication overlap and balanced load by orchestrating fine-grained, complementary expert streams along dynamic trajectories across high-bandwidth D2D links. The attendant dataflow complexity is tamed by a minimal, hardware-amenable set of virtualization rules and a lightweight scheduling algorithm. Our approach achieves 1.22-2.00 × speedup over state-of-the-art baselines and saves up to 78.8% on-chip memory. 
+
+I. I NTRODUCTION 
+
+The increasing demand for real-time, privacy-preserving AI services is driving the deployment of Large Language Models (LLMs) onto edge devices. To meet the escalating resource requirements of on-device scenarios such as AI PCs, robotics, and autonomous driving, chiplet-based multi-chiplet accelerators are emerging as a more scalable and cost-effective solution than monolithic designs [80]. A multi-chiplet package designed for on-device AI typically integrates multiple acceler-ator dies interconnected by high-bandwidth links and is usually coupled with large off-package memory, such as DRAM [33], [52], [61] (Figure 1(a)). Concurrently, the Mixture-of-Experts (MoE) architecture has gained prominence for its ability to reduce the number of parameters activated per inference while maintaining a large overall model capacity [11], [22], [34], [39], [72], [75] (Figure 1(b)). The combination of multi-chiplet and MoE presents a powerful paradigm for high-performance on-device AI [28], where the sparsely activated large model can be distributed across chiplets to leverage spatial parallelism and high-speed inter-die communication. Despite this promising synergy, effectively deploying MoE models on multi-chiplet packages, particularly in on-device scenarios characterized by low batch sizes, introduces signif-icant challenges. First, limited on-chip memory : Although chiplet technologies significantly enhance the scalability of computational resources, on-chip SRAM-based cache remains a critical asset for on-device systems relative to LLM capacity [59]. Moreover, even devices with large memory dies or GPUs equipped with high-bandwidth HBM still widely adopt off-loading strategies in edge deployments [3], [9], [10], [63], [81], owing to the persistent demand for ever-larger models. It is therefore essential to minimize redundant storage and max-imize memory efficiency [25], [68]. Second, external mem-ory access bottleneck : Constrained on-chip capacity forces edge systems to off-load models, necessitating frequent, high-volume off-chip traffic for both KV caches and expert weights. The reduced weight reuse in low-batch scenarios further exacerbates this issue. Third, dynamic workload imbalance :During each forward pass, the number of tokens assigned to each expert varies—some experts process many tokens (hot experts), while others handle few or none (cold experts) [10], [25], [27], [85]. This long-tail distribution introduces two aspects of workload imbalance: (1) the compute-to-data-transfer ratio differs across experts, posing additional obstacles to overlapping off-chip memory access with computation; (2) the storage footprint and compute load diverge among chiplets, reducing overall utilization. Furthermore, low-batch conditions render traditional expert-balancing training [11], [71] or elastic containers [38], [60] used in the cloud ineffective. These three challenges are tightly coupled with the characteristics of multi-chiplet architectures, and the latter two are further amplified by low-batch, on-device MoE workloads. Commonly-adopted parallel strategies—such as expert par-allelism (EP) [20], [34], [73] or hybrids that combine data parallelism (DP) [16], tensor parallelism (TP) [14], [19], [56], and pipeline parallelism (PP) [4]—fail to adequately address the aforementioned challenges in multi-chiplet inference set-tings. Most prior optimizations for edge devices target GPUs and seldom exploit the distinctive characteristics of chiplet-1
+
+> arXiv:2603.27624v1 [cs.AR] 29 Mar 2026 Fig. 1. Typical template of (a) multi-chiplet-based AI accelerator. (b) Mixture-of-Experts network.
+
+based packages. Recently, several methods specialized for MoE inference on multi-chiplet have been proposed [17], [78]. These approaches generally aim to optimize inter-die communication, especially all-to-all communications in MoE, but they place less emphasis on addressing the long-tail issue and the external memory access bottleneck. Propelled by rapid advancements in advanced packaging and high-speed communication technologies, the emergence of cost-effective and power-efficient die-to-die (D2D) intercon-nects with massive bandwidth and low latency—now being standardized by protocols like UCIe [53]—is fundamentally recasting inter-die data transfer from a performance bottleneck into a rich architectural resource. Capitalizing on this sig-nificant opportunity, a novel parallelization strategy is ex-pected to not only fully exploit the intra-package communi-cation resource to enhance on-chip memory efficiency and curtail off-chip traffic, but also replace the expensive col-lective communication, inherent to traditional EP/TP, with highly efficient point-to-point transfers. Complementing the interconnection benefit, each chiplet typically possesses an independent control path, enabling chiplet arrays to exhibit a Multi-Instruction-Multi-Data (MIMD) character that supports asymmetric execution patterns. Consequently, load balance can be systematically engineered through a non-uniform yet mutually complementary mapping space [51], [80]. Collec-tively, these two factors unlock opportunities for fine-grained, synchronization-free dataflow among chiplets [79]. Grounded in these observations, we propose Fully Sharded Expert Data-parallelism (FSE-DP), a specialized parallelization strategy tailored for MoE inference on multi-chiplet packages that delivers the following advantages: 
+
+Save on-chip memory and reduce off-chip memory traffic. The root cause of duplicated on-chip memory is the rigid ”one-chip-one-slice” mapping assumed by EP or TP. FSE-DP breaks this assumption by treating the whole chiplet array as a single, pooled buffer: only one physical copy of any token/expert slice is kept in the entire package. Leveraging high D2D bandwidth, FSE-DP streams the expert slice along a scheduled trajectory. The saved on-chip memory provides more data-reuse opportunities to reduce external memory access. 
+
+Dynamic computation-communication overlap and load balancing. The long-tail distribution and dynamic features of MoE render fixed scheduling infeasible. FSE-DP introduces a dynamic fine-grained dataflow to realize each expert’s trajec-tory, which turns this heterogeneity into an opportunity. By fusing and complementing the dataflow of expert trajectories with different load characteristics at fine granularity, FSE-DP achieves dynamic computation-communication overlap under non-unified memory access (D2D and die-to-DDR), minimizes on-chip memory, and enables load balancing. 
+
+Streamline fine-grained complexities with hardware-efficient rules and algorithms. The fine-grained dataflow fusion ostensibly introduces intricate memory-access and com-munication patterns, significantly elevating execution com-plexity. Nevertheless, FSE-DP’s dataflow is steered by ahandful of lightweight, self-acting rules. Each chiplet receives the slice, computes its local token batch, and immediately forwards the slice to the next chiplet. These rules transparently abstract away memory and inter-die communication details from the programmer while letting the hardware spontaneously materialize the expert trajectories. Building upon this virtual-ization, a hardware-efficient runtime-scheduling algorithm and a dedicated hardware scheduler can be devised. Overall, this paper makes the following contributions:  
+
+> •
+
+Leveraging high D2D bandwidth, we introduce FSE-DP, a distributed-parallel strategy tailored for multi-chiplet architectures that eliminates on-chip redundancy and re-duces off-chip DRAM traffic.  
+
+> •
+
+Architecting a fine-grained dataflow for expert trajecto-ries and fusing heterogeneous flows to achieve adaptive computation-communication overlap and load balancing. Along with this, we present a paired-load policy and token-buffering policy to mitigate bandwidth bottlenecks.  
+
+> •
+
+Establishing a minimal set of virtualization rules for execution abstraction that automatically orchestrate dy-namic expert trajectories under diverse workload scenar-ios, drastically simplifying both software programming and hardware-runtime complexity.  
+
+> •
+
+Presenting a hardware-efficient scheduling algorithm that unites temporal QoS-pressure-based queuing with spatial expert-trajectory planning.  
+
+> •
+
+Developing a system to accelerate MoE-based large model inference. Our system includes a taped-out 2 × 2
+
+5nm MCM test chip integrating a UCIe-compliant high-speed D2D interconnect, along with a lightweight, spe-cialized scheduler implemented as a synthesized RTL module that realizes our proposed algorithm.  
+
+> •
+
+Comprehensive evaluations on our system demonstrate that our approach not only achieves significant perfor-mance gains over state-of-the-art baselines but exhibits scalability and robustness. II. B ACKGROUND AND MOTIVATION 
+
+A. Related Works 
+
+MoE mitigates the widening gap between exploding model capacity and constrained hardware by activating only a sparse subset of expert sub-networks for each token. A gating func-tion selects the Top-K experts and aggregates their outputs, an 2idea that can be applied to any parameter block, including the attention layer (Mix-of-transformers, MoT) [24], [70]. Originally popularized in the cloud, relatively small-scale MoE is now rapidly developed for edge scenarios [1], [35], [36], [43], [54], [65], [74], [75], [86]. Current MoE optimizations primarily focus on GPU sys-tems. Cloud-scale MoE deployments on GPU clusters predom-inantly optimize two points: (1) the all-to-all token–expert per-mutation traffic inherent in EP, and (2) load imbalance caused by skewed expert popularity. Hybrid parallelism (EP+TP+DP) [19], [20], [56], pipelined or fused collective communication [45], [55], [69], and specialized communication libraries [34], [48] are the main research topics for reducing inter-node traf-fic. For load balancing, auxiliary-loss-based training [11], [71] or elastic expert computation [7], [77] are common strategies to keep workloads uniform under large batches. MoETuner [13] optimizes expert placement across GPUs by solving an integer linear programming that jointly considers per-expert to-ken load and inter-layer routing dependencies, reducing inter-GPU token routing skew and tail latency. Some techniques use Fully Sharded Data Parallelism (FSDP) [82] to optimize MoE training, further sharding individual experts across GPUs and replacing all-to-all with cheaper all-gather/reduce-scatter operations [44]. Rotation-style distributed GEMM dataflows [12], [15] also explore how structured cyclic shifting can improve locality and overlap when data movement is unavoidable. For example, WaferLLM’s MeshGEMM targets wafer-scale mesh NoCs and accelerates the prefill phase by combining cyclic shifting with an interleaving mapping, so that each core exchanges tiles with a fixed set of nearby neighbors and bounds the per-step communication cost to a constant hop distance (reducing both long-range latency and routing pressure). More broadly, these designs suggest that converting global exchange into neighbor transfers can help overlap data movement and computation, although they primarily target static , dense , and predictable 
+
+GEMM. These efforts provide insights that we extend to chiplet systems via pure point-to-point weight transfers. For on-device inference scenarios with very limited GPU memory (e.g. NVIDIA RTX 3060 laptop only has 6GB mem-ory), systems usually rely on off-loading strategies, paging experts to CPU memory or SSD. This creates a cross-level data exchange and turns external bandwidth into the dominant bottleneck. Consequently, on-device-oriented studies focus on (1) expert prefetching with learned or heuristic predictors [8], [9], [30], [58], [76], (2) on-chip caching of hot experts [18], [83], and (3) run-time schedulers that overlap expert I/O with computation [26], [31], [68]. Emerging multi-chiplet accelerators open an under-explored design space. Current studies mainly focus on expert map-ping/placement to mitigate all-to-all communication [17], [78] or propose Content-Addressable Memory (CAM) to bypass token permutation [17]; some also explore run-time migration of experts toward near-memory processors [19]. Yet, in on-device multi-chiplet settings, the off-loading pressure inherent to GPU-based systems and the statistical load imbalance persist simultaneously. 
+
+B. Motivation 
+
+Figure 2(a) characterizes contemporary MoE models. The results show that the dimension of a single expert ( DExpert ) is generally smaller compared to the FFN ( DF F N ) and hidden size ( DM odel ). This makes the computational granularity of the experts finer-grained, with lower computational demands but still places very high demands on memory bandwidth [85]. Expert s (sorted by token count)                                  
+
+> Count of Tokens
+> Experts (sorted by token count)
+> Count of Tokens
+> (c) Qwen3 -30B -A3B -Layer 24 (Wino Grande)
+> (a) MoE Model Parameters
+> Model DModel DFFN DExpert
+> DeepSeek
+> MoE 2048 10944 1408
+> DeepSeek
+> -V3 7168 18432 2048
+> Qwen3 -
+> 30B -A3B 2048 6144 768
+> Qwen1.5 -
+> MoE 2048 5632 1408
+> OLMoE 2048 8192 1024
+> DeepSeek
+> -V2 7168 18432 2048
+> Multiple experts with limited experts
+> size compared to hidden size.
+> (b) DeepSeekMoE -16B -Layer 13 (Wikitext -2)
+> Fig. 2. (a) Shapes for different models (b,c) Long-tail effect of MoE models under different batch sizes. The figure shows the number of tokens processed in a specific layer for DeepSeek-MoE-16B [48] on the Wikitext-2 dataset [41] and Qwen3-30B-A3B [75] on WinoGrande [49]. Experts on the x-axis are sorted by the number of tokens they process; the y-axis gives the token count per expert. The long-tail effect is more pronounced at smaller token numbers. R denotes different requests.
+
+Furthermore, we profile expert activation in state-of-the-art MoE networks on language datasets. Figure 2 (b) and (c) highlight the pronounced long-tail effect : although these MoE models incorporate expert-balancing losses during training, inference still exhibits large disparities in per-expert token counts for batched tokens ranging from 16 to 256. A non-negligible fraction of experts process only a handful of tokens, yet their full weights must be fetched, creating severe band-width pressure and necessitating strategies that maximize data reuse once loaded onto the chip. However, existing DP and sequence parallelism (SP) [29] replicate entire experts across chiplets, incurring weight redundancy. TP shards experts but duplicates tokens, while EP also mandates token replication, compounding the memory-traffic challenge. Many edge deployments also operate in a low-batch regime that aggregates the long-tail effect: on-device systems in-creasingly run multiple concurrent, mixed-latency tasks (e.g., agentic workloads with time-varying concurrency, robotics pipelines that couple perception/reasoning/action, and multi-sensor streaming). Compared with cloud serving, effective concurrency is typically smaller, which weakens cross-request weight reuse and makes off-chip expert fetch under long-tailed activations a primary bottleneck. The evolution towards multi-chiplet AI accelerators, driven by advanced packaging, has unlocked new architectural affordances for large-scale models: ultra-high-bandwidth, low-latency D2D links and per-chiplet independent con-trol that enables MIMD-style asymmetric dataflows. Multi-3chiplet design disaggregates the system into smaller, function-specific dies for better manufacturing yield and design reuse [50], allowing for fine-grained, synchronization-free pipelines rather than device/rack-level pipelines in GPU-based systems. This progression began with standard pack-aging, Multi-Chip-Modules (MCMs), exemplified by Nvidia’s Simba accelerator, which used a proprietary D2D intercon-nect to achieve 100 GB/s/chiplet bandwidth at 20 ns/hop and 0.82–1.75 pJ/bit [52]. Subsequent advancements in 2.5D heterogeneous integration [5], [62] have pushed performance further, with recent systems demonstrating an aggregate band-width of 20 Tb/s across 20 chiplets [59]. However, realizing the full potential of this packaging spectrum—from cost-effective 2D MCMs [66], [84] to high-performance 2.5D systems—was historically hindered by a fragmented landscape of proprietary interconnects (e.g., AMD’s Infinity Fabric) and early open specifications (e.g., OCP-ODSA’s BOW). The emergence of the UCIe standard [53] marked a pivotal shift, creating a unified ecosystem by providing optimized options for both advanced (UCIe-A) and standard (UCIe-S) packages [42]. This dual-pronged strategy’s strength is confirmed by recent industrial implementations. For advanced packages, D2D links in 3nm have demonstrated a remarkable bandwidth density of up to 10.5 Tb/s/mm [32], while other work has shown an energy efficiency of just 0.29 pJ/b [40]. Concurrently, for standard packages, 3nm UCIe-S transceivers provide a competitive 0.448 Tbps/mm at 0.52 pJ/bit [67]. This convergence of versatile packaging technologies with a proven, unified open standard [23], [59], [62] is finally de-livering the low-latency, energy-efficient, and high-bandwidth D2D interconnects essential for next-generation computing. This robust hardware foundation creates an unprecedented opportunity to leverage a rich “communication bandwidth resource,” yet exploiting its diverse affordances demands novel parallelization strategies. III. N AIVE FULLY SHARDED EXPERT PARALLEL 
+
+When the D2D interconnect ceases to be a performance bottleneck and instead becomes an exploitable resource, the optimization paradigm shifts from intra-die communication, which is the main focus of existing parallel strategies, to off-chip access and the elimination of on-chip redundancy, thereby maximizing data reuse. Building on this insight, we introduce Fully Sharded Expert-Data Parallelism (FSE-DP). Inspired by FSDP in distributed neural-network training, where both inputs and model parameters are sharded across devices, FSE-DP also partitions token sequences and expert weights across chiplets. We refer to each forward pass as an iteration. During an iter-ation, FSE-DP processes the MoE network layer-wise, keeping token activations on-chip while fetching expert weights from DDR on demand. To illustrate the core idea, consider a 4-chiplet array that handles one expert at a time (Figure 3). The current iteration aggregates tokens from multiple requests (combining prefilling and decoding, a widely adopted strategy called chunked prefill [2]). These tokens are evenly sharded across the four chiplets, so every chiplet holds one fourth of the tokens. In Figure 3, “R1-T9” denotes the activation vector of the 9th token from Request-1. For each expert, the set of tokens that activate it varies dynamically. Consequently, prior to computing each expert, we redistribute the tokens that activate the current expert to ensure that the number of tokens processed by each chiplet is approximately equal for load balancing. In this example, we designate the token sequences computed by each chiplet as Seq-A to Seq-D, with the lengths of Seq-A through Seq-D kept roughly equal. We also partition expert 1 into four slices (E1-S1 through E1-S4) across chiplets. In the first computation phase, illus-trated in Figure 3, chiplet 1 processes Seq-A with E1-S1, chiplet 2 processes Seq-B with E1-S2, and so on. In the second phase, as shown in Figure 3(a), we perform a circular transfer of expert slices across chiplets: chiplet 1 sends E1-S1 to chiplet 2; chiplet 2 sends E1-S2 to chiplet 3; chiplet 3 sends E1-S3 to chiplet 4; and chiplet 4 sends E1-S4 to chiplet 1. Each chiplet then computes its token sequence using the newly received expert slice. In subsequent phases, this pattern of expert-slice circulation and computation continues under the same rules until all computations for this expert are completed. In current MoE-parallelism approaches, transmitting ex-pert weights is seldom adopted because the weight volume typically exceeds that of token activations. Indeed, when a multi-chiplet system computes a single isolated expert, fix-ing the weights and exchanging token sequences achieves comparable parallelism, as illustrated in Figure 3(b). When the token sequence is small, inter-chiplet token transmission is more attractive. However, as discussed earlier, properly engineered advanced interconnects broaden the design space for weight-transmission strategies. When D2D communication is acceptable, transmitting expert slices offers additional ben-efits, enabling improved overlap between DDR loading and computation while reducing on-chip memory and bypassing token redistribution. IV. FSE-DP WITH MICRO -S LICE FLOW 
+
+We improve FSE-DP by centering on computation-communication overlap. Computation-communication overlap is essential in neural-network acceleration to mitigate perfor-mance loss from communication overhead. In multi-chiplet systems, beyond the attention phase, overlap should be ex-ploited in three key scenarios: (1) inter-chiplet data exchange, where chiplets compute on the current data while simultane-ously transmitting the next expert slice or token sequence; (2) on-chip computation of the current expert while pre-loading weights for the next expert from DDR. Considering these scenarios, we identify two principal limitations of the basic FSE-DP approach: (1) regardless of whether weights or tokens are exchanged between chiplets during expert computation, each chiplet requires extra storage to hold data for the up-coming computation; for example, when expert slices are transmitted in FSE-DP, every chiplet needs additional space for the next expert slice, nearly doubling the on-chip memory requirement for expert weights; and (2) although FSE-DP alone can balance computation and storage, coordinating it 4Time 
+
+1. Token redispatch  2. Computation and Data Circling 
+
+Expert computing - phase 1  Phase 2  Phase 3  Phase 4 
+
+> Token Buffer Token Buffer
+
+... 
+
+> Redispatch
+> R1-T9
+> R2-T8
+> R3-T8
+> R4-T5
+> R5-T3
+> Chiplet 1
+> R1-T9
+> R2-T8
+> R3-T8
+> R4-T5
+> R7-T5
+> Seq-A
+> R7-T1
+> R7-T2
+> R7-T3
+> R7-T4
+> R5-T3 Seq-B
+> R8-T6
+> R8-T7
+> R8-T8
+> R8-T9
+> R8-T10
+> Chiplet 4
+> R8-T1
+> R8-T2
+> R8-T8
+> R8-T9
+> R8-T10 Seq-D
+> R8-T6
+> R8-T7
+> R8-T3
+> R8-T4
+> R8-T5
+> Seq-C
+> Chiplet 3
+> R8-T1
+> R8-T2
+> R8-T3
+> R8-T4
+> R8-T5
+> R7-T1
+> R7-T2
+> R7-T3
+> R7-T4
+> R7-T5
+> Chiplet 2
+
+An expert is fully sharded across chiplets. Fix token sequences,  exchange expert slice 
+
+Fix expert, exchange token sequence     
+
+> Seq-B
+> E1-S 3
+> Seq-A
+> E1-S 2
+> Seq-B
+> E1-S 4
+> Seq-A
+> E1-S 3
+> Seq-A
+> E1-S 4
+> Seq-B
+> E1-S 1
+> Seq-D
+> E1-S 1
+> Seq-C
+> E1-S 4
+> Seq-D
+> E1-S 2
+> Seq-C
+> E1-S 1
+> Seq-D
+> E1-S 3
+> Seq-C
+> E1-S 2
+> Seq-D
+> E1-S3
+> Seq-A
+> E1-S4
+> Seq-A
+> E1-S3
+> Seq-B
+> E1-S4
+> Seq-B
+> E1-S3
+> Seq-C
+> E1-S4
+> Seq-B
+> E1-S1
+> Seq-C
+> E1-S2
+> Seq-D
+> E1-S2
+> Seq-C
+> E1-S1
+> Seq-A
+> E1-S2
+> Seq-D
+> E1-S1
+> Expert Buffer R1-T9
+> R2-T8
+> R3-T8
+> R4-T5
+> R7-T5
+> Seq-A Chiplet 1
+> Expert Buffer R7-T1
+> R7-T2
+> R7-T3
+> R7-T4
+> R5-T3
+> Seq-B Chiplet 2
+> Expert 1-Slice 1 (E1-S1)
+> Other Experts
+> Expert 1-Slice 2 (E1-S2)
+> Other Experts
+> Expert Buffer R8-T6
+> R8-T7
+> R8-T3
+> R8-T4
+> R8-T5
+> Seq-D Chiplet 3
+> Expert Buffer R8-T1
+> R8-T2
+> R8-T8
+> R8-T9
+> R8-T10
+> Seq-C Chiplet 4
+> Expert 1-Slice 4 (E1-S4)
+> Other Experts
+> Expert 1-Slice 3 (E1-S3)
+> Other Experts
+
+Fig. 3. Fully sharded expert–data parallelism (example: four chiplets compute expert 1). The figure illustrates how a single expert is computed within one MCM: expert 1 is evenly sharded into slices across chiplets (E1-S1–E1-S4). black tokens denote the tokens that activate expert 1, while non-highlighted (gray/black) tokens are other buffered tokens on that chiplet that do not activate expert 1. Before computing expert 1, tokens are redispatched across chiplets to balance the number of black tokens per chiplet for load balancing. R denotes a request, and Seq denotes the activated token sequence stored on a chiplet. During expert computation, chiplets can exchange data in two equivalent ways to cover all black tokens: (a) keep token sequences fixed and circulate expert-1 slices so each slice visits the chiplets holding black tokens; or (b) keep expert 1 slices fixed and circulate black-token sequences so they visit all chiplets containing slices of expert 1. Time 
+
+E1-S1 E1-S4 E1-S3 E1-S2 Time 
+
+E1-S1 E1-S4 E1-S3 E1-S2 
+
+Send  M1 Send  M2 Send  M4 Send  M3 
+
+Recieve 
+
+M1 
+
+Recieve 
+
+M2 
+
+Recieve 
+
+M4 
+
+Recieve 
+
+M3 
+
+Send  E1-S4 Send  E1-S3 Send  E1-S1 
+
+Recieve 
+
+E1-S3 
+
+Recieve 
+
+E1-S2 
+
+Chiplet 1 
+
+Compute 
+
+Seq-A , E1-S4 
+
+Compute 
+
+Seq-A , E1-S1 
+
+Compute 
+
+Seq-A , E1-S3 
+
+Compute 
+
+Seq-A , E1-S2 
+
+Discard 
+
+A Micro-slice E1-S2-M1 E1-S3-M1 E1-S4-M1 
+
+Compute 
+
+Seq-A , M1 Discard 
+
+Compute 
+
+Seq-A , M2 Discard 
+
+Compute 
+
+Seq-A , M4 Discard 
+
+Compute 
+
+Seq-A , M3 Discard 
+
+> E1-S1-M1
+
+（a） （b）
+
+Recieve 
+
+E1-S4 
+
+Expert Buffer 
+
+1
+
+2
+
+3
+
+4
+
+1
+
+2
+
+2
+
+3
+
+4
+
+1
+
+2
+
+3
+
+3
+
+4
+
+1
+
+2
+
+3
+
+4
+
+4
+
+1
+
+2
+
+3
+
+4
+
+1
+
+1
+
+2
+
+3
+
+4
+
+1
+
+2
+
+3
+
+3
+
+4
+
+1
+
+2
+
+3
+
+4
+
+4
+
+1
+
+2
+
+3
+
+4
+
+1
+
+1
+
+2
+
+3
+
+4
+
+1
+
+2
+
+2
+
+3
+
+4
+
+1
+
+2
+
+3
+
+4
+
+4
+
+1
+
+2
+
+3
+
+4
+
+1
+
+2
+
+3
+
+4
+
+2
+
+3
+
+4
+
+3
+
+4
+
+A Buffer Slot 
+
+2
+
+3
+
+4
+
+2
+
+2
+
+3
+
+4
+
+2
+
+2
+
+3
+
+4
+
+2
+
+3
+
+4
+
+2
+
+3
+
+4
+
+3
+
+3
+
+4
+
+3
+
+3
+
+4
+
+3
+
+4
+
+3
+
+4
+
+4
+
+4
+
+4
+
+4
+
+4 4
+
+1
+
+2
+
+3
+
+4
+
+1
+
+1
+
+2
+
+3
+
+4
+
+1
+
+1
+
+2
+
+3
+
+4
+
+1
+
+2
+
+3
+
+4
+
+1
+
+> E1-S1-M1
+
+Fig. 4. Micro-slice flow for overlapping D2D communication and computation (example: chiplet 1 while computing expert 1). Each expert slice (E1-S1–E1-S4) is further partitioned into micro-slices (M1–M4). (a) Baseline micro-slice overlap. In each step, chiplet 1 computes its local sequence using the current micro-slice, while concurrently receiving the next micro-slice from a neighbor chiplet and sending the just-computed micro-slice to the next chiplet; arrows indicate the D2D transfers that overlap with the compute stage. The weight buffer show the micro-slice storage on chiplet 1 over time, where each row is one micro-slice-sized buffer slot and each column is a time step. A colored cell indicates that the slot stores a micro-slice from a specific expert slice (see the color legend), and the numeral in the cell is the micro-slice index within that slice. Blank cells are free slots, and bold numerals mark the micro-slice being computed in that step. (b) Eager micro-slice usage. Chiplet 1 immediately forwards the micro-slice under computation and, in the next step, computes the most recently received micro-slice, so each micro-slice quickly traverses all chiplets and can be discarded earlier, reducing average weight-buffer occupancy. 
+
+with attention computation is challenging because varying KV-cache sizes across requests preclude uniform partitioning of expert and sequence slices at the start of expert computation. To reduce the storage overhead of communication buffers, a straightforward approach is to reduce the granularity of computation-communication operations. Using expert weight transmission in FSE-DP as the example, we further partition each expert slice on a chiplet into multiple micro-slices, treating each micro-slice as the fundamental unit for FSE-DP computation and transmission. As illustrated in Figure 4(a), while a chiplet computes one micro-slice of its current expert slice, it concurrently receives a micro-slice from the next expert slice scheduled for computation. Upon completing the current micro-slice, the chiplet releases the associated storage space. After all micro-slices of the current expert have been processed, the chiplet will have accumulated the full set of weight slices for the next expert. This approach can be implemented with a micro-slice–based ring buffer—a mature hardware technique—thereby reducing the additional storage overhead of computation-communication overlap to the size of a single micro-slice. The number of micro-slices reflects a trade-off between overlap opportunity and over-head. Finer micro-slices improve pipelining and reduce the required communication-buffer, but also increase relative con-trol/scheduling overhead and per-transfer header cost, leading to diminishing returns when a micro-slice becomes too small. A practical approach is to choose a micro-slice size such that its computation time is roughly comparable to its D2D transfer time, maximizing overlap while preventing control/dispatch overhead from becoming the bottleneck. 5Departing from the straightforward approach, we introduce an unconventional micro-slice–centric optimization of the fine-grained flow shown in Figure 4(a). When a token completes computation in a given layer, it produces a new activation vector of the same size. By contrast, once weight computation finishes, those weights are not reused within the current iter-ation; hence, their on-chip memory can be released immedi-ately. Guided by this observation, the principle for fine-grained optimization is to complete all computations for each micro-slice as quickly as possible, release its space, and then proceed with computations for other micro-slices . Applying this rule yields the pipelined pattern shown in Figure 4(b). Although the pattern may appear complex, its rules are simple: 
+
+each chiplet immediately transmits the micro-slice it is currently computing and, in the next time step, processes the most recently received micro-slice . These rules ensure that once a micro-slice begins computation, it is promptly swept into the dataflow circulating among chiplets, completes all token computations, and occupies on-chip memory for the shortest possible time. As shown in Figure 4(b), this approach can save nearly half of the on-chip memory (more than half if an expert is not pre-loaded). 
+
+A. Expert Load Optimization 
+
+To capitalize on the buffer headroom and timing regularity created by the micro-slice flow and to prepare the subsequent fusion of DDR load with D2D flow, we first present our expert-load order optimization. Hot experts incur intensive computa-tion workloads, whereas cold experts exhibit prominent com-munication bottlenecks in the long tail, which suggests pairing hot and cold experts. Accordingly, we sort experts by their token-activation counts and pair experts from opposite ends of the list, interleaving on-chip fetch and compute, as shown in Figure 5. This paired-load policy aligns with the micro-slice cadence, increases overlap between communication-bound and compute-bound experts (Section IV-B). Experts (Sorted by token count)    
+
+> Number of Tokens
+> 4 8 12  16 0 ······
+> Token Buffering Zone
+> Paired Expert Load
+> Hot experts Cold experts
+> Fig. 5. Demonstration of paired-load policy and token buffering policy.
+
+For long-tail experts activated by only a few tokens, loading them onto the chip leads to highly inefficient bandwidth utilization due to low data reuse. Accordingly, rather than processing these tokens in the current iteration, we use token buffering as a per-request deferral mechanism at the specific MoE layer: when a request’s tokens are routed to an extremely cold expert that is not scheduled for immediate execution, the scheduler can pause the entire request at that MoE layer, holding its intermediate activations. In the following iterations, these tokens can be combined with newly arriving tokens of other requests to evaluate expert-activation patterns. While this increases that request’s latency, LLMs typically require multiple forward passes during decoding. For example, when generating 4k tokens of text, permitting a 10% increase in total completion time yields more than 400 opportunities for token buffering. Moreover, in LLM scenarios, per-request quality-of-service (QoS) requirements are often flexible, making it rea-sonable to trade some per-request performance for improved overall system efficiency. In Section V, we present detailed methods for applying token buffering. The paired-load and token-buffering policies are compatible with expert-prediction prefetch techniques, such as Pre-Gated MoE [21]. During the computation between the previous layer’s FFN and the current layer’s attention, expert load can be reordered based on predicted expert-activation patterns. With accurate prediction, the scheduler can commit to an expert order early and start prefetching to better hide latency. If predictions are inaccurate, both load reordering and token buffering can be updated again after the MoE gate of the current layer. Moreover, because scheduling operates at ex-pert granularity, much of the remaining decision latency can overlap with the execution of other experts. 
+
+B. Flow Fusion 
+
+While the micro-slice flow effectively optimizes D2D com-munication, the primary performance bottleneck often remains the communication between the chip and off-chip DDR mem-ory, which is substantially slower. Accordingly, we leverage the on-chip memory saved by the D2D flow to fuse it with the chip-to-DDR flow, thereby achieving further overlap of com-putation with DDR loading within the same on-chip memory budget. We illustrate this fusion using chiplet 1 in Figure 6. In this example, we complementarily load and compute E1 and E4 on-chip (paired-load policy): chiplet 1 loads slice 1 of E1 and E4 from DDR and receives slices 2–4 from other chiplets. We assume that loading a micro-slice from DDR takes four times as long as computing a micro-slice. In Figure 6, the first two rows of the weight buffer store micro-slices of E1 and E4 loaded from DDR, respectively, while the subsequent three rows are reserved for the inter-leaved reception of micro-slices from other chiplets. Through fine-grained fusion of the DDR-load flow and the D2D flow, we overlap transmission and computation for two experts. At each time step, a chiplet computes one micro-slice from E1 and one from E4, preserving load balance while keeping the maximum expert-buffer usage the same as in Figure 4(b). This figure shows an ideal model to illustrate the principle. Note that different ratios of DDR load time to micro-slice compute time yield different expert-buffer utilization patterns. Ratios larger than those shown in Figure 6 may require more buffer storage (Section VI-D), although the allocation rules and overall fusion pattern remain consistent (Section IV-C). 
+
+C. Execution Abstraction via Virtualization Rules 
+
+Up to this point, we have detailed the benefits of fine-grained pipelining and its basic arrangement. Nevertheless, a 6Chiplet 1                            
+
+> Expert Buffer
+> Time
+> E1-S1 E1-S4 E1-S3 E1-S2
+> E4-S1 E4-S4 E4-S3 E4-S2
+> Compute Send M3 Send M2
+> Send M4
+> Send M4 Send M1
+> Recieve M1 Recieve M2 Recieve M3 Recieve M4
+> Send M1 Sned M2 Send M3
+> Recieve M4 Recieve M3 Recieve M2 Recieve M1
+> Compute
+> DDR load
+> E1-S1-M1
+> DDR load
+> E1-S1-M2
+> DDR load
+> E4-S1-M1
+> DDR load
+> E4-S1-M2
+> DDR load
+> E1-S1-M3
+> DDR load
+> E1-S1-M4
+> DDR load
+> E4-S1-M3
+> DDR load
+> E4-S1-M4
+> Compute Compute
+> 2
+> 2
+> 2
+> 1
+> 1
+> 3
+> 2
+> 2
+> 2
+> 1
+> 3
+> 2
+> 2
+> 2
+> 2
+> 3
+> 3
+> 2
+> 2
+> 2
+> 3
+> 3
+> 3
+> 2
+> 2
+> 4
+> 3
+> 3
+> 3
+> 2
+> 4
+> 3
+> 3
+> 3
+> 3
+> 4
+> 4
+> 3
+> 3
+> 3
+> 4
+> 4
+> 4
+> 3
+> 3
+> 4
+> 4
+> 3
+> 3
+> 4
+> 4
+> 3
+> 4
+> 4
+> 4
+> 4
+> 1
+> 1
+> 1
+> 2
+> 1
+> 1
+> 1
+> 2
+> 1
+> 1
+> 1
+> 1
+> 2
+> 2
+> 1
+> 1
+> 1
+> 1
+> 1
+> 1
+> 4
+> 4
+> 1
+> 4
+> Die-to-Die
+
+Fig. 6. Flow fusion of DDR load and D2D micro-slice flow (example: chiplet 1 while computing expert 1 paired expert 4). This figure extends Figure 4(b) by fusing off-chip DDR loading with the on-chip D2D micro-slice circulation, illustrated on chiplet 1 while co-executing two experts (E1 in red and E4 in purple under paired-load). DDR loads of the locally assigned micro-slices (e.g., E1-S1-M* and E4-S1-M*) are pipelined with computation and D2D receive/send of micro-slices from other chiplets. DDR load latency is assumed to be 4× one micro-slice compute step. The expert-buffer grid is read as in Figure 4: the first two rows cache DDR-loaded micro-slices for E1 and E4, respectively, while the remaining rows serve as a shared staging area for interleaved D2D-received micro-slices from both experts. Bold numerals indicate the micro-slices being computed at each time step. 
+
+significant challenge arises: under dynamic and imbalanced workloads, when multiple experts are fused concurrently, and with heterogeneous DDR and D2D links, the resulting micro-slice storage and communication patterns can become exceed-ingly complex. Even the flow in Figure 4(b)—an idealized case with two uniformly distributed experts—already exhibits substantial complexity for manual pipeline scheduling. Di-rectly orchestrating this level of complexity at runtime is prohibitive for both software programmability and hard-ware implementation. Therefore, this section introduces a “virtualization” method. The “virtualization” abstracts away dynamic physical details, e.g., which micro-slice resides in which buffer slot and which link it traverses at which cycle. Behind a small set of rules, the scheduler can reason at the level of expert trajectories rather than per-micro-slice book-keeping. By following these rules, complex flow orchestration can be realized while ensuring low hardware implementation costs. From our previous discussion, the core of FSE-DP is to enable expert parameters to flow through all chiplets responsi-ble for token computation along a trajectory. As long as each micro-slice visits every station, the starting point, endpoint, timing, and intra-trajectory ordering of micro-slices are im-material (the result of a token–expert computation can be ac-cumulated on the same chiplet without tracking which micro-slice is being processed). Consequently, the specific storage locations of micro-slices or token activations on chiplets, and their transmission schedules among chiplets, are of secondary importance, provided their paths follow the trajectory. In our dynamic scheduling, trajectories are decided at expert granularity: different experts may choose different chiplets and flow directions at runtime, while once a trajectory is selected for an expert in a scheduling iteration, all micro-slices of that expert follow the same trajectory. We do not implement per-micro-slice dynamic paths because tracking per-micro-slice trajectory state and next-hop decisions would substantially increase scheduler metadata and hardware complexity. Even Sharding                           
+
+> (a)
+> t=1 t=2 (c)
+> t= 1
+> E1 -M1
+> Chiplet 2
+> E1 -M1
+> Chiplet 1
+> E1 -M5
+> Chiplet 3
+> E1 -M13
+> Chiplet 4
+> E1 -M5
+> E1 -M9
+> E1 -M9
+> E1 -M13
+> t=2
+> E1 -M1
+> Chiplet 2
+> E1 -M9
+> Chiplet 1
+> E1 -M5
+> Chiplet 3
+> E1 -M5
+> Chiplet 4
+> E1 -M13
+> E1 -M1
+> E1 -M9
+> E1 -M13
+> t=3
+> E1 -M9
+> Chiplet 2
+> E1 -M9
+> Chiplet 1
+> E1 -M13
+> Chiplet 3
+> E1 -M5
+> Chiplet 4
+> E1 -M13
+> E1 -M1
+> E1 -M1
+> E1 -M5
+> (b)
+> Chiplet 2
+> E1 -M1
+> Chiplet 1
+> E1 -M9
+> E1 -M9
+> Chiplet 3
+> E1 -M10
+> E1 -M16
+> Chiplet 4
+> E1 -M10
+> E1 -M16
+> E1 -M1
+> Chiplet 2
+> E1 -M10
+> Chiplet 1
+> E1 -M16
+> E1 -M9
+> Chiplet 3
+> E1 -M1
+> E1 -M9
+> Chiplet 4
+> E1 -M10
+> E1 -M16
+> E1 -M1
+> Chiplet 2
+> E1 -M10
+> Chiplet 1
+> E1 -M16
+> E1 -M16
+> Chiplet 3
+> E1 -M1
+> E1 -M9
+> Chiplet 4
+> E1 -M1
+> E1 -M9
+> E1 -M10
+> Chiplet 2
+> E1 -M9
+> Chiplet 1
+> E1 -M1
+> Chiplet 5Chiplet 4
+> E2 -M9
+> E2 -M9
+> E1 -M9
+> E1 -M10
+> E2 -M1
+> Chiplet 3
+> E3 -M9
+> Chiplet 6
+> E2 -M1
+> E3 -M8
+> E1 -M10
+> DDR
+> E1 -M1
+> E2 -M9
+> E1 -M1
+> Chiplet 2
+> E1 -M1
+> Chiplet 1
+> E1 -M9
+> Chiplet 5
+> E1 -M10
+> Chiplet 4
+> E2 -M1
+> E2 -M9
+> E1 -M9
+> E2 -M1
+> Chiplet 3
+> E3 -M8
+> Chiplet 6
+> E2 -M9
+> E3 -M8
+> Steady
+> Streaming
+> (1 micro -slice per
+> chiplet per step)
+> Uneven
+> Placement
+> Steady
+> Streaming
+> (1 micro -slice per
+> chiplet per step)
+> Fused Uneven
+> Flows
+> 12
+> 45
+> E1 :
+> Chiplet
+> E3 :
+> Chiplet 3
+> 6
+> E2 :
+> Chiplet 23
+> 564
+> Compute
+> Receive
+
+Fig. 7. Virtualization demonstration under micro-slice streaming (ex-ample: 4 chiplets, ring expert trajectory). Each panel shows the on-chip storage state of the four chiplets at three consecutive time steps ( t=1 –3): each block is a stored micro-slice (labeled by expert and index, e.g., E1-M1), and arrows indicate next-hop forwarding along the ring trajectory. (a) Baseline case where expert 1 is evenly sharded across chiplets; achieving efficient overlap with explicit buffer assignment requires careful placement (as in Figure 6). (b) Expert 1 is unevenly distributed across chiplets, yet the computation proceeds correctly once micro-slices start streaming along the trajectory. For simplicity, (a) and (b) assume a ring topology in which micro-slices move from Chiplet 1 to 2, 2 to 3, and so on, to introduce the background of virtualization.(c) There experts execute concurrently with highly uneven on-chip arrangement. Despite the seemingly irregular trajectories, virtualization rules abstract away these runtime details and still realize a smooth flow. The key message is that the hardware scheduler need not reason about per-chiplet implementation: as long as micro-slices follow the prescribed trajectory, correct and efficient execution emerges without fine-grained bookkeeping. 
+
+Figure 7 illustrates how runtime storage details are irrelevant to the smooth streaming of micro-slices along an expert tra-jectory. Figure 7(a) shows the baseline case where expert 1 is evenly sharded across 4 chiplets. The per-chiplet weight buffer is shown over three time steps. Figure 7(b) then shows that even when E1’s micro-slices are unevenly distributed across chiplets, once the micro-slices begin to flow among chiplets, we can still realize a fine-grained flow equivalent to that in Figure 4(b) while maintaining balanced expert computation across all chiplets. For clarity, we simplify the notation by moving from a two-level partitioning (expert slice to micro-slice) to a single level, in which an expert is directly partitioned into a set of micro-slices. For instance, if expert E1 is divided into 16 micro-slices, we denote them as E1-M1 through E1-M16. This change does not alter the concepts discussed previously. 7This equivalence further extends to the case where multiple experts execute concurrently, as shown in Figure 7(c), where different colors denote micro-slices from distinct experts. Like-wise, the expert flow fusion achieves a similar effect to Figure 4(b); the specific distribution and the per-chiplet compute duration of a micro-slice (how many tokens are processed) do not affect the aggregate four-expert flow. This “computation and storage-distribution independence” also extends to DDR memory: regardless of storage location, weights can be swept into the dataflow once loaded onto the chip during expert computation. The DDR-load flow can be naturally fused with the D2D flow without detailed pipeline coordination. Based on the preceding analysis, the expert flow can be re-alized automatically; the key question is whether it is efficient. Yes—under the following virtualization rules: 
+
+Rule 1: A micro-slice received in the previous time step is computed immediately in the current time step while simultaneously being transmitted to the next chiplet along the trajectory. 
+
+Rule 2: If no micro-slice was received in the previous time step, the chiplet selects any micro-slice from its local storage for immediate computation and transmission. 
+
+Rule 3: If there is no next chiplet on the path, the storage occupied by the micro-slice is released immediately after computation. 
+
+Rule 4: Chiplets sequentially load the next micro-slice from DDR whenever there is available space. 
+
+Rule 5: DDR controller ”sends” micro-slices to the chiplet with the greatest available storage among those pro-cessing the expert (Optional). With these rules, similar “communication-pattern indepen-dence” can be deduced: under varying ratios of DDR-load to D2D bandwidth, runtime fluctuations, or backpressure, the fused flows self-adapt without detailed pipeline coordination. Such adaptivity is essential when handling dynamically vary-ing and imbalanced on-chip memory, link utilization, and per-expert token counts, as it enables the expert flow to automatically exploit computation (Rules 1 and 2) and com-munication (Rules 1 and 4) while minimizing on-chip memory (Rules 2 and 3) resources. Furthermore, because different experts exhibit distinct computation-communication character-istics, these rules allow the fused expert flow to adaptively complement heterogeneous resource usage. In essence, this mechanism functions as a form of hardware-level virtualiza-tion, where the shared physical resources—buffers, D2D links, and compute units—are dynamically multiplexed across the logical dataflows of multiple experts. By decoupling the log-ical trajectory of micro-slices from static physical allocation, the system allows concurrent expert flows to fluidly contend for and utilize the chiplet array’s aggregate capacity, resolving local contention and maximizing utilization without the need for cycle-accurate global orchestration. In our evaluation, we also find that this complementation effectively addresses inter-expert load imbalance and intra-expert differences in the number of tokens that must be processed along the expert trajectory. In other words, FSE-DP no longer needs token redistribution , and all intra-package communication can be simplified to expert point-to-point exchange. Rule 5 is an 
+
+optional optimization and is not implemented in our end-to-end system; our ablation study (Section VI-C) shows that its incremental benefit is limited when other mechanisms (paired-load and flow fusion) are enabled in MoE scenarios, while efficient implementation may require complex metadata tracking in the scheduler or DDR controller. V. C HIPLET SYSTEM WITH MOE S CHEDULER 
+
+Thanks to virtualization, deployment and scheduling reduce to managing expert trajectories. We propose a scheduling algorithm that orchestrates these trajectories to sustain high hardware utilization under dynamic MoE workloads and asym-metric spatio-temporal chiplet execution patterns. Guided by the virtualization rules, we design and synthesize a lightweight hardware scheduler that realizes this algorithm on a multi-chiplet system equipped with high-speed D2D transceivers. 
+
+A. Scheduling Algorithm 
+
+Algorithm 1 Spatiotemporal Trajectory Scheduling Algorithm 
+
+Require: Expert set E, chiplet set C, idle chiplet set Cidle ← C .
+
+Ensure: A dynamic loading sequence of experts with the trajectory Te for each expert e that pursues Cidle = ∅. 
+
+> 1:
+
+Sort E by paired-load policy to an ordered list Esorted . 
+
+> 2:
+
+while not all experts is scheduled ( Esorted ̸ = ∅) do  
+
+> 3:
+
+if Cidle ̸ = ∅ then  
+
+> 4:
+
+for each expert pair (e1, e 2) in Esorted do  
+
+> 5:
+
+Get Te from chiplets with tokens for e in (e1, e 2). 
+
+> 6:
+
+if there are idle chiplets in the trajectory ( Te ∩Cidle ̸ = ∅) then  
+
+> 7:
+
+Stream e’s micro-slice to c∗ ∈ T e ∩ C idle . 
+
+> 8:
+
+Update idle chiplets: Cidle ← C idle \ T e. 
+
+> 9:
+
+Remove e from Esorted . 
+
+> 10:
+
+break  
+
+> 11:
+
+end if  
+
+> 12:
+
+Rule 4: Pre-load e to any idle buffer.  
+
+> 13:
+
+end for  
+
+> 14:
+
+end if  
+
+> 15:
+
+When expert e′ completes: Cidle ← Cidle ∪
+
+new idle chiplets in Re′ . 
+
+> 16:
+
+end while 
+
+Algorithm 1 presents a dynamic expert scheduler that assigns experts to chiplets based on token locality and re-source availability. Its objective is complete resource utiliza-tion—pursuing the condition Cidle = ∅—so that all chiplets remain actively engaged in computation. Scheduling begins by ordering experts under a paired-load policy, which prioritizes experts according to complementary computation and com-munication requirements, yielding an ordered priority queue 
+
+Esorted . The main loop repeatedly fetches schedulable experts in priority order and performs resource-aware allocation that respects chiplet availability and trajectory constraints. 8For each expert e, the algorithm derives a trajectory Te
+
+representing the path across chiplets that hold cached tokens relevant to e. The expert is scheduled only if its trajectory intersects the idle-chiplet set ( T e ∩ C idle ̸ = ∅). When such an intersection exists, the algorithm selects an idle chiplet c∗ to load a micro-slice of e; execution then proceeds automatically under Rules 1–3. Upon successful allocation, the idle set is updated by removing chiplets assigned to the expert’s resource requirements ( Re), and the scheduled expert is removed from 
+
+Esorted . If the paired expert cannot cover any idle chiplet at the moment, it is pre-loaded on any chiplet with an idle buffer according to Rule 4. Rule 5 is not considered for implementation. When any expert e′ completes, chiplets not engaged by other running experts are returned to the idle set, enabling reallocation for subsequent decisions. 
+
+Algorithm 2 Token Buffering Algorithm 
+
+Require: Given request r, its QoS timer value TQoS (r), token activation threshold θmin , count of consecutive forward passes Cfw (r), forward pass threshold to increment the timer Nthreshold . 
+
+> 1:
+
+Let A(r) be the set of experts activated by r at the current MoE layer, and let ne be the number of tokens (across all active requests) activating expert e. 
+
+> 2:
+
+if Cfw (r) ≥ Nthreshold then  
+
+> 3:
+
+Increment the QoS timer: TQoS (r) ← TQoS (r) + 1 . 
+
+> 4:
+
+Reset the forward pass counter: Cfw (r) ← 0. 
+
+> 5:
+
+end if  
+
+> 6:
+
+if (∃e ∈ A (r) : ne < θ min ) and TQoS (r) > 0 then  
+
+> 7:
+
+Defer request r at this MoE layer (token buffering).  
+
+> 8:
+
+Decrement the QoS timer: TQoS (r) ← TQoS (r) − 1. 
+
+> 9:
+
+end if 
+
+The token-buffering policy (Algorithm 2) is applied at each MoE layer boundary after gating is computed and before 
+
+scheduling the layer’s experts. It decides whether to defer an entire request at that layer, based on (i) whether any of its activated experts are cold under the current per-iteration input-token count and (ii) whether the request has remaining QoS slack. Deferring a request preserves correctness by keeping its intermediate activations and gating results unchanged; the request simply resumes from the same layer in a later iteration. For each request, we maintain a QoS timer TQoS (r). When 
+
+TQoS (r) > 0, token buffering is available for that request. The timer is governed by two rules. First, whenever the consecutive-forward-pass counter Cfw (r) reaches the threshold 
+
+Nthreshold , the algorithm increments TQoS (r) and resets Cfw (r),granting the request one buffering opportunity after a sustained sequence of forward passes. Second, each buffering action decrements TQoS (r). When buffering triggers, request r is paused at the current MoE layer (its tokens for that layer are not scheduled this iteration), while other requests and experts proceed normally. 
+
+B. Scheduler Hardware 
+
+To enable efficient execution of the proposed scheduling algorithms in real-world multi-chiplet systems, we design a dedicated hardware scheduler that implements trajectory-aware dynamic scheduling and token buffering in silicon, as shown in Figure 8. The implementation comprises key components that operate synergistically to deliver low-latency scheduling decisions while sustaining high resource utilization. …………                       
+
+> Token
+> Buffering
+> Experts
+> Pairing
+> Bitonic
+> Sort  Hot
+> Experts
+> Col d
+> Experts
+> Idle Chiplet
+> Vector
+> Router
+> Expert
+> 1
+> Token
+> 32
+> 216 ……
+> N27
+> 028
+> EIT  (Layer  i)
+> (x,y),(x -1,y) …
+> Trajectory
+> (x,y),(x,y -4)…
+> …
+> …
+> E-C
+> Matcher
+> EIT Reloader
+> DDR 0Chiplet 0,0Chiplet 0,1Chiplet 0, M …
+> DDR K Chiplet N, 0Chiplet N, 1Chiplet N, M …
+> Expert
+> Trajectory
+> Fig. 8. Scheduler hardware design. The scheduler is implemented in the IO die for task allocation.
+
+Expert Information Table (EIT) serves as a low-latency lookup that maps expert identifiers to trajectory masks. Imple-mented in single-cycle SRAM with expert IDs as keys, it stores the relative trajectory and the number of activating tokens as values. This structure enables immediate trajectory resolution without iterative searches, which reduces scheduling overhead. To classify hot and cold experts, a bitonic sorter performs parallel sorting of all experts by their token counts. Hot experts are paired as illustrated in Figure 5, whereas tokens associated with cold experts are diverted to token buffering. 
+
+Idle Chiplet Vector (ICV) tracks chiplet availability in real time via a dedicated N-bit register bank. It supports concur-rent reads for scheduling decisions and asynchronous writes triggered by expert-completion events. Efficient updates are realized with bit-wise operations: allocation uses AND–NOT masking with trajectory patterns, while completion-driven re-leases use OR with completion masks. 
+
+Expert–Chiplet Matcher (E–C Matcher) assigns comput-ing chiplets and their communication paths based on the ICV and the trajectory required for each expert’s execution. We synthesized this scheduler architecture and integrated its RTL into a fabricated 4-chiplet prototype. The complete scheduler occupies only 0.43 mm 2, as reported by Synopsys Design Compiler in UMC 28-nm technology, and achieves sub-microsecond scheduling latency under typical expert con-figurations. This implementation demonstrates the practical feasibility of our algorithms and enables comprehensive eval-uation of the proposed FSE-DP framework. Detailed perfor-mance results are presented in Section VI. 
+
+C. Hardware Implementation of Accelerator 
+
+Finally, we introduce the hardware architecture and the accelerator design within each chiplet. Figure 1 shows that each chiplet comprises a PE array and SRAM-based on-chip 9memory [57]. For each computing die, the basic architecture is a transformer-oriented accelerator architecture, similar to [6]. Each compute die integrates a PE array for linear operations, a non-linear unit (NLU), UCIe IP modules, and a data movement unit (DMU) for data transfer and format conversion. In addi-tion, each die incorporates a router that receives task sequences issued by the scheduler and enables communication with other compute dies. After the scheduler assigns tasks, the compute die loads weights from DDR or from peer dies into private memory for expert inference. For programming, each chiplet internally stores a static instruction sequence for transformer operations, but the communication routing table is generated in real time. In other words, whether data are sent/received to/from DDR or another die is determined by the trajectory provided by the real-time scheduler. VI. E VALUATION 
+
+A. Experimental Setup 
+
+Models and Datasets. We evaluate FSE-DP on four repre-sentative MoE models: Phi-3.5-MoE [64], Yuan2.0-M32 [74], DeepSeek-MoE [48], and Qwen3-30B-A3B [75]. These mod-els respectively contain 16, 32, 64, and 128 experts per layer, offering a diverse spectrum of model scales; detailed specifications are listed in Table I. For evaluation, we employ two widely used language-modeling benchmarks, Wikitext-2 [41] and C4 [47]. Our goal is to stress MoE activation skew and off-chip expert fetch behavior under controlled per-iteration input-token counts; in addition, we use WinoGrande in our motivation profiling (Section II) to show that the long-tail activation pattern persists across task types.                                     
+
+> TABLE I HARDWARE AND MODEL CONFIGURATIONS FOR EVALUATION
+> Component Specification
+> DDR3-1600 4 ×25.6 GB/s, 800 MHz NoP & DDR 2D Mesh, Multiple UCIe D2D IPs: 288 GB/s 4-24 Gbps/pin, FDI-to-FDI Latency: 4.02 ns Samsung 5nm 1P13M CMOS, 800 MHz Compute Die 2048 MACs, 0.675-0.9 V, 736.5 -2187 mW 2.69mm ×4.72mm, 4.865 TOPS
+> Model Dmodel Df f n EEact Head Para.
+> Phi-3.5 4096 3200 16 232 41.9B Yuan2.0-M32 2048 4096 32 216 40B DeepSeek-MoE 2048 1408 64 6+2 16 16.4B Qwen3-A3B 2048 768 128 832 30B
+
+Baseline. We evaluate two representative baselines for MoE inference. EP is the de facto method in this field, distributing experts across devices (each device hosting a distinct subset of experts) and routing tokens via all-to-all; its convenient implementation and relatively acceptable performance serve as a widely adopted reference. Hydra is a software–hardware co-designed scheme optimized for multi-chiplet systems; here, we isolate its optimization of EP: it exploits cross-layer expert popularity to relocate experts and reduce inter-chiplet com-munication [17]. Using both allows us to compare against the standard EP paradigm and a state-of-the-art chiplet-specialized distributed strategy. 
+
+Implementation and configuration. In this work, evalu-ation results are produced by cycle-accurate simulators with RTL-synthesized expert trajectory scheduler of a tape-out 2×2 5nm test chip that executes expert activation and execution for the aforementioned networks on datasets. We further use the test chip and RTL-synthesized performance to calibrate behavioral-level simulations [46] for other hardware config-urations during design space exploration (DSE). Figure 10 illustrates our prototype multi-chiplet system, and Table I presents the basic specifications based on this chip. Given a low-batch scenario, the number of concurrent requests is small, and contexts from different requests (prefill and decode phases) are mixed for inference. Accordingly, we quantify the “effective batch” using tokens-per-iteration 
+
+(micro-batch tokens): the number of input tokens aggregated across a small set of concurrent requests and processed in one forward scheduling iteration. We report fixed tokens-per-iteration settings—16, 64, 256, and 1024—with requests sampled from the Wikitext-2 and C4 datasets. This avoids ambiguity in request-count “batch size” under mixed pre-fill/decode, variable context lengths, and chunked prefill, and directly reflects system pressure and weight-reuse intensity. These values are not the output length nor the context length of a single request. When involving token buffering, we configure three slackness levels of 10%, 20%, and 30%, which denote the fraction of an iteration that a request is allowed to be deferred at a MoE layer boundary, emulating diverse QoS. 
+
+Methodology. We structure our evaluation into four phases. First, since most MoE in LLMs is applied within FFN blocks while attention remains dense, we isolate expert computation to avoid confounding factors from attention implementations and benchmark EP, Hydra, and FSE-DP with and without paired load on a single FFN MoE layer. Next, we implement a basic attention scheduling scheme and obtain end-to-end performance across 100 consecutive forward iterations; we also conduct five ablation configurations to quantify the con-tribution of individual optimizations under varying conditions. Token buffering, which involves cross-iteration operations, is enabled only in the end-to-end set. Then, we perform DSE to study FSE-DP sensitivity to on-chip memory, off-chip and D2D bandwidth. Finally, we assess the scalability of our spatiotemporal scheduling on different arrays ( 3 × 3, 4 × 4). In the evaluation, we schedule an expert trajectory as a ring, using next-hop forwarding for implementation simplicity. The ring is a logical route and is not tied to a physical ring topology. When the array is larger than 2×2, we use a 2D-mesh interconnect to apply multiple ring trajectories concurrently. 
+
+B. Isolated Expert-Compute Performance 
+
+Firstly, we focus on the performance of the MoE part only. Figure 9 illustrates the latency results, averaged across all layers of the network. In most configurations, FSE-DP achieves the lowest latency. Specifically, when the token count is relatively low, the paired-load mechanism yields significant improvements. As the token count increases, each expert performs more computation and the DDR bottleneck gradually 10 Fig. 9. Single MoE layer latency with different models, datasets and input token counts. Floorplan   
+
+> &Package
+> Fig. 10. Chiplet floorplan and package photo
+
+eases; the performance advantage of FSE-DP then stems from its full utilization of the chiplet’s D2D bandwidth compared with other solutions. Hydra mainly focuses on optimizing the collective communication of tokens, which is less beneficial in low-batch, high-D2D-bandwidth scenarios; consequently, it shows no obvious improvement over EP. Figure 11 analyzes the performance differences among the four scheduling approaches from a temporal perspective. The utilization curves reveal the source of the performance gain: FSE-DP exhibits much smaller performance fluctuations than EP and Hydra. These benefits arise from expert sharing and dynamic trajectories that avoid spatiotemporal congestion on both bandwidth and compute resources during the inference of complementary experts.  
+
+> Fig. 11. Utilization fluctuation during inference of one layer.
+
+Figure 12 illustrates the on-chip memory usage of the different models that achieve the performance reported in the previous Figure 9. Compared with EP and Hydra, FSE-DP shows a significant reduction in memory cost, especially when the expert dimension is large. FSE-DP achieves this by shard-ing each expert into micro-slices and applying Rules 1–4 to ensure that a micro-slice is rapidly released from the package. Consequently, we compress the on-chip memory overhead of the multi-chiplet system to less than 32 MB—about one-fifth of that required by EP and Hydra. Without token replication, token storage usage is also reduced. Note that the fine-grained expert flow endows FSE-DP with a degree of elasticity in the on-chip buffer: smaller buffer sizes are permissible at the cost of some performance loss, while larger buffers can further improve performance (as discussed in DSE section).  
+
+> Fig. 12. On-chip memory usage of different models.
+
+To further illustrate the efficacy of complementary flows, we decompose the activities across four chiplets in Fig-ure 13. Given the substantial overlap of D2D communication (send/receive), DDR load, and computation, we depict them as a clock-aligned timeline. Two complementary mechanisms boost performance. First, because the workload assigned to each chiplet for every expert micro-slice varies dynamically, the on-chip micro-slice buffer acts as an elastic reservoir that absorbs mismatches between D2D traffic and DDR access, keeping both interfaces highly utilized. Second, the interleav-ing of heterogeneous expert flows injects computations of varying durations into each chiplet, balancing computation-bound and communication-bound phases. Still, when an ex-pert’s demand exceeds the adaptive ceiling, a resource bound still occurs.  
+
+> Fig. 13. Activity timeline of expert trajectories across chiplets under FSE-DP (paired load). Qwen3-MoE, C4 with 256 input tokens, a runtime snapshot segment.
+
+11 C. End-to-End Evaluation with Ablation Studies 
+
+Next, we evaluate end-to-end performance by combining the attention phase with 100 forward iterations of the aforemen-tioned workloads and perform ablation studies. For attention, we perform head parallelism on different chiplets. Figure 14 compares different strategies, including token buffering. FSE-DP with moderate buffering slack significantly improves throughput; however, excessive slack can degrade perfor-mance. Token buffering deliberately delays the processing of a request, and when the total token count is small, the resulting reduction in compute volume amplifies the data-transfer bottleneck, yielding no net gain in utilization. Note also that in networks such as Phi3.5-MoE the FFN fraction is small, so MoE-centric optimizations have limited impact.   
+
+> Fig. 14. End-to-end throughput comparison across model–dataset combi-nations. +10% means paired-load policy with 10% token buffering slackness.
+
+We define five ablation configurations. A1: naive FSE-DP without fine-grained flows. A2: FSE-DP with fine-grained flows governed by Rules 1–4. A3: A2 + paired-load policy. A4: A3 + Rule 5 ( optional , excluded from our main end-to-end implementation). A5: A3 + 20% token buffering. Note that A2 and A3 are the configurations adopted in the preceding experiments. Figure 15 reports the utilization achieved by each setup. Both paired-load and token buffering significantly improve performance, whereas Rule 5 yields only marginal gains.  
+
+> Fig. 15. Ablation study on key design knobs of FSE-DP.
+
+D. Design Space Exploration with Sensitivity Analysis 
+
+We investigate the sensitivity of hardware configuration to FSE-DP performance. We impose two constraints in the search process: 
+
+⌈ BW D2D
+
+BW U CIe 
+
+⌉AU CIe + ACompute + ABuf f er ≤ Ath (1) 
+
+PCompute + PD2D + PDDR ≤ Pth (2) They respectively represent the area constraints of individual chiplets and the peak power consumption constraints of the   
+
+> Fig. 16. DSE. Qwen3-MoE-A3B, C4, 64 input tokens. The star is the position of our test chip. Much larger scales are preferred in practice. (a) Fix D2D bandwidth at 288 GB/s. (b) Fix buffer size at 14MB.
+
+entire package. Figure 16 illustrates the evaluation results and marks the domain satisfying the constraints as shaded. In Figure 16(a), we fix the D2D bandwidth and then analyze the relationship between the on-chip buffer size and the DDR bandwidth. When we set the upper limit of the die area to 30 mm 2, the total power consumption of the entire package is less than 60W. The results show that in order to achieve a utilization rate higher than 60%, 48 GB/s of DDR bandwidth per die and 16MB or more of on-chip memory are required. Figure 16(b) further analyzes the trade-off between DDR bandwidth and D2D bandwidth. We fix the on-chip memory to only 14MB, which is outside the shaded area in Figure 16(a). The results show that in this case, the area that can meet the constraints and performance requirements is very limited. Moreover, a very high D2D bandwidth is required to compensate for the capacity of the on-chip memory, even up to 512GB/s, which is equivalent to 3 UCIe ( × 32) modules. This still poses very significant design challenges. In conclusion, the lesson this experiment teaches us is as follows: For ideas similar to T10 [37], where trading com-munication performance for DDR bandwidth, a relatively large on-chip memory capacity is necessary as a guarantee in multi-chiplet MoE inference .  
+
+> Fig. 17. Granularity sensitivity. Latency heatmap over on-chip expert weight storage size and micro-slice number, evaluated on (a) Phi-3.5 and (b) Qwen3-MoE-A3B using C4.
+
+Complementary to the DSE results on memory and band-width, we further evaluate how micro-slice granularity and the available on-chip expert storage affect end-to-end latency. Figure 17 reports a latency heatmap for Phi-3.5 and Qwen3-MoE-A3B on C4. Because Phi-3.5 has larger experts while Qwen3-MoE-A3B uses smaller per-expert models, the two exhibit different sensitivities to the micro-slice granularity. When micro-slices are overly fine-grained, the per-micro-slice control overhead cannot be overlapped by the computation within each micro-slice, making control cost a considerable performance factor. This effect is more pronounced for models 12 with smaller experts (e.g., Qwen3-MoE-A3B). Empirically, a micro-slice number below 10 is preferred. In contrast, for Phi-3.5, performance is more strongly influenced by the on-chip buffer size, where increasing on-chip memory yields a clearer speedup. Conversely, overly coarse granularity prevents our method from leveraging fine-grained, adaptive dataflow and can also degrade performance. As a result, increasing the micro-slice number may first improve and then worsen performance. Due to the coupling among multiple factors and the inherent stochasticity of MoE routing, these trends may not always appear clearly in end-to-end measurements. 
+
+E. Scalability 
+
+Fig. 18. Scalability (utilization) evaluation based on Qwen3-MoE-A3B, C4. 
+
+We then analyzed scalability from 2 × 2 to 4 × 4 chiplet arrays in Figure 18. This figure reports utilization . Higher utilization generally correlates with lower expert-layer latency under fixed frequency, but utilization alone could mask latency increases caused by additional hops and congestion at larger scales. Our simulator models D2D transfer time along the chosen trajectories, so the utilization trend reflects additional idle cycles due to inter-chiplet movement. As the array grows, EP’s efficiency decreases significantly. In contrast, Hydra improves scalability by optimizing collective communication. FSE-DP also scales well: compared with EP and Hydra, the utilization of FSE-DP with only point-to-point communication decreases significantly less in larger arrays, benefiting from trajectory-aware scheduling and the avoidance of all-to-all. VII. C ONCLUSION 
+
+This paper presents FSE-DP, a multi-chiplet parallel strategy for low-batch MoE inference, which effectively addresses key challenges in edge deployment such as on-chip memory constraints, off-chip bandwidth bottlenecks, and load imbal-ance through dynamic expert trajectory scheduling. The fine-grained dataflow opens the opportunity for adaptive comple-mentary resource utilization. Our method can directly apply to MoT-style designs where attention blocks are expertized; beyond expertized networks, the virtualization method can be extended to a broader programming model for other dynamic workloads, such as KV-Cache management, in the future. However, our method imposes requirements on hardware: sufficient D2D link efficiency and fine-grained capabilities in computation, memory access, and communication, which limits the range of platforms on which it can be applied. We design and synthesize a lightweight hardware scheduler and evaluate FSE-DP using an RTL cycle-accurate simulator of a 2 × 2 5-nm test chip. Experimental results show that it outperforms existing schemes across models and tokens-per-iteration configurations, improving latency and on-chip memory overhead. REFERENCES [1] A. Abouelenin, A. Ashfaq, A. Atkinson, H. Awadalla, N. Bach, J. Bao, A. Benhaim, M. Cai, V. Chaudhary, C. Chen et al. , “Phi-4-mini technical report: Compact yet powerful multimodal language models via mixture-of-loras,” arXiv preprint arXiv:2503.01743 , 2025. [2] A. Agrawal, A. Panwar, J. Mohan, N. Kwatra, B. S. Gulavani, and R. Ramjee, “Sarathi: Efficient llm inference by piggybacking decodes with chunked prefills,” arXiv preprint arXiv:2308.16369 , 2023. [3] S. Cao, S. Liu, T. Griggs, P. Schafhalter, X. Liu, Y. Sheng, J. E. Gon-zalez, M. Zaharia, and I. Stoica, “Moe-lightning: High-throughput moe inference on memory-constrained gpus,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2025, pp. 715–730. [4] X. Chen, H. Zhang, X. Gu, K. Bi, L. Xie, and Q. Tian, “Pipeline moe: A flexible moe implementation with pipeline parallelism,” arXiv preprint arXiv:2304.11414 , 2023. [5] T. Chou, W. Tang, M. D. Rotaru, C. Liu, R. Dutta, S. L. P. Siang, D. H. S. Wee, S. Bhattacharya, and Z. Zhang, “Netflex: A 22nm multi-chiplet perception accelerator in high-density fan-out wafer-level packaging,” in 2022 IEEE Symposium on VLSI Technology and Circuits (VLSI Technology and Circuits) . IEEE, 2022, pp. 208–209. [6] P. Dong, Y. Tan, X. Liu, P. Luo, Y. Liu, L. Liang, Y. Zhou, D. Pang, M.-T. Yung, D. Zhang, X. Huang, S.-Y. Liu, Y. Wu, F. Tian, C.-Y. Tsui, F. Tu, and K.-T. Cheng, “A 28nm 0.22 μj/token memory-compute-intensity-aware cnn-transformer accelerator with hybrid-attention-based layer-fusion and cascaded pruning for semantic-segmentation,” in 2025 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 68, 2025, pp. 01–03. [7] Z. Doucet, R. Sharma, M. de Vos, R. Pires, A.-M. Kermarrec, and O. Balmau, “Harmoeny: Efficient multi-gpu inference of moe models,” 
+
+arXiv preprint arXiv:2506.12417 , 2025. [8] Z. Du, S. Li, Y. Wu, X. Jiang, J. Sun, Q. Zheng, Y. Wu, A. Li, H. Li, and Y. Chen, “Sida: Sparsity-inspired data-aware serving for efficient and scalable large mixture-of-experts models,” Proceedings of Machine Learning and Systems , vol. 6, pp. 224–238, 2024. [9] A. Eliseev and D. Mazur, “Fast inference of mixture-of-experts language models with offloading,” arXiv preprint arXiv:2312.17238 , 2023. [10] Z. Fang, Y. Huang, Z. Hong, Y. Lyu, W. Chen, Y. Yu, F. Yu, and Z. Zheng, “Klotski: Efficient mixture-of-expert inference via expert-aware multi-batch pipeline,” in Proceedings of the 30th ACM Interna-tional Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , 2025, pp. 574–588. [11] W. Fedus, B. Zoph, and N. Shazeer, “Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity,” Journal of Machine Learning Research , vol. 23, no. 120, pp. 1–39, 2022. [12] M. Gao, X. Yang, J. Pu, M. Horowitz, and C. Kozyrakis, “Tangram: Optimized coarse-grained dataflow for scalable nn accelerators,” in Pro-ceedings of the Twenty-Fourth International Conference on Architectural Support for Programming Languages and Operating Systems , 2019, pp. 807–820. [13] S. Go and D. Mahajan, “Moetuner: Optimized mixture of expert serving with balanced expert placement and token routing,” arXiv preprint arXiv:2502.06643 , 2025. [14] V. Gupta, K. Sinha, A. Gavrilovska, and A. P. Iyer, “Lynx: Enabling efficient moe inference through dynamic batch-aware expert selection,” 
+
+arXiv preprint arXiv:2411.08982 , 2024. [15] C. He, Y. Huang, P. Mu, Z. Miao, J. Xue, L. Ma, F. Yang, and L. Mai, “{WaferLLM }: Large language model inference at wafer scale,” in 19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25) , 2025, pp. 257–273. [16] S. He, W. Cai, J. Huang, and A. Li, “Capacity-aware inference: Mitigating the straggler effect in mixture of experts,” arXiv preprint arXiv:2503.05066 , 2025. [17] S. He, H. Zhu, J. Zheng, L. Wu, B. Jiao, Q. Liu, X. Zeng, and C. Chen, “Hydra: Harnessing expert popularity for efficient mixture-of-expert inference on chiplet system,” in 2025 62nd ACM/IEEE Design Automation Conference (DAC) . IEEE, 2025, pp. 1–7. 
+
+13 [18] X. He, S. Zhang, Y. Wang, H. Yin, Z. Zeng, S. Shi, Z. Tang, X. Chu, I. Tsang, and O. Y. Soon, “Expertflow: Optimized expert activation and token allocation for efficient mixture-of-experts inference,” arXiv preprint arXiv:2410.17954 , 2024. [19] H. Huang, S. Zhong, Z. Zhang, S. Li, D. Niu, H. Zheng, R. Wang, and M. Li, “Hd-moe: Hybrid and dynamic parallelism for mixture-of-expert llms with 3d near-memory processing,” arXiv preprint arXiv:2509.09420 , 2025. [20] C. Hwang, W. Cui, Y. Xiong, Z. Yang, Z. Liu, H. Hu, Z. Wang, R. Salas, J. Jose, P. Ram et al. , “Tutel: Adaptive mixture-of-experts at scale,” 
+
+Proceedings of Machine Learning and Systems , vol. 5, pp. 269–287, 2023. [21] R. Hwang, J. Wei, S. Cao, C. Hwang, X. Tang, T. Cao, and M. Yang, “Pre-gated moe: An algorithm-system co-design for fast and scalable mixture-of-expert inference,” in 2024 ACM/IEEE 51st Annual Interna-tional Symposium on Computer Architecture (ISCA) . IEEE, 2024, pp. 1018–1031. [22] A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary, C. Bam-ford, D. S. Chaplot, D. d. l. Casas, E. B. Hanna, F. Bressand et al. ,“Mixtral of experts,” arXiv preprint arXiv:2401.04088 , 2024. [23] B. Jiao, H. Zhu, Y. Zeng, Y. Li, J. Liao, S. Jia, M. Tian, Z. Chen, J. Zhu, D. Wen et al. , “37.4 shinsai: A 586mm 2 reusable active tsv interposer with programmable interconnect fabric and 512mb 3d underdeck memory,” in 2025 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 68. IEEE, 2025, pp. 01–03. [24] P. Jin, B. Zhu, L. Yuan, and S. Yan, “Moh: Multi-head attention as mixture-of-head attention,” arXiv preprint arXiv:2410.11842 , 2024. [25] T. Kim, K. Choi, Y. Cho, J. Cho, H.-J. Lee, and J. Sim, “Monde: Mixture of near-data experts for large-scale sparse models,” in Proceedings of the 61st ACM/IEEE Design Automation Conference , 2024, pp. 1–6. [26] F. Kossmann, Z. Jia, and A. Aiken, “Optimizing mixture of experts using dynamic recompilations,” arXiv preprint arXiv:2205.01848 , 2022. [27] J. Li, Y. Jiang, Y. Zhu, C. Wang, and H. Xu, “Accelerating distributed 
+
+{MoE } training and inference with lina,” in 2023 USENIX Annual Technical Conference (USENIX ATC 23) , 2023, pp. 945–959. [28] N. Li, S. Guo, T. Zhang, M. Li, Z. Hong, Q. Zhou, X. Yuan, and H. Zhang, “The moe-empowered edge llms deployment: Architecture, challenges, and opportunities,” arXiv preprint arXiv:2502.08381 , 2025. [29] S. Li, F. Xue, C. Baranwal, Y. Li, and Y. You, “Sequence paral-lelism: Long sequence training from system perspective,” arXiv preprint arXiv:2105.13120 , 2021. [30] Y. Li, P. Zheng, S. Chen, Z. Xu, Y. Lai, Y. Du, and Z. Wang, “Speculative moe: Communication efficient parallel moe inference with speculative token and expert pre-scheduling,” arXiv preprint arXiv:2503.04398 ,2025. [31] Y. Li, Y. Li, J. Zhang, B. Chen, X. Chen, L. Duan, Y. Jin, Z. Li, X. Liu, H. Wang et al. , “Static batching of irregular workloads on gpus: Framework and application to efficient moe model inference,” arXiv preprint arXiv:2501.16103 , 2025. [32] M.-S. Lin, C.-C. Tsai, S. Li, W.-C. Chen, W.-H. Huang, Y.-C. Chen, Y.-J. Huang, A. Drake, C.-H. Wen, P. Ranucci et al. , “36.1 a 32gb/s 10.5 tb/s/mm 0.6 pj/b ucie-compliant low-latency interface in 3nm featuring matched-delay for dynamic clock gating,” in 2025 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 68. IEEE, 2025, pp. 586–588. [33] X. Lin, H. Xu, Y. Han, and Y. Gan, “Hex-sim: Evaluating multi-modal large language models on multi-chiplet npus,” in 2024 IEEE Interna-tional Symposium on Workload Characterization (IISWC) . IEEE, 2024, pp. 108–120. [34] A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan et al. , “Deepseek-v3 technical report,” arXiv preprint arXiv:2412.19437 , 2024. [35] J. Liu, J. Su, X. Yao, Z. Jiang, G. Lai, Y. Du, Y. Qin, W. Xu, E. Lu, J. Yan et al. , “Muon is scalable for llm training,” arXiv preprint arXiv:2502.16982 , 2025. [36] L. Liu, Y. J. Kim, S. Wang, C. Liang, Y. Shen, H. Cheng, X. Liu, M. Tanaka, X. Wu, W. Hu et al. , “Grin: Gradient-informed moe,” arXiv preprint arXiv:2409.12136 , 2024. [37] Y. Liu, Y. Xue, Y. Cheng, L. Ma, Z. Miao, J. Xue, and J. Huang, “Scaling deep learning computation over the inter-core connected intelligence processor with t10,” in Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles , ser. SOSP ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 505–521. [Online]. Available: https://doi.org/10.1145/3694715.3695955 [38] Z. Liu, B. Tian, G. Wang, Z. Jiang, P. Sun, Z. Han, T. Tang, X. Hu, Y. Jia, Y. Zhang et al. , “Expert-as-a-service: Towards efficient, scalable, and robust large-scale moe serving,” arXiv preprint arXiv:2509.17863 ,2025. [39] Y. Ma, Y. Zhuang, J. Hao, and I. King, “3d-moe: A mixture-of-experts multi-modal llm for 3d vision and pose diffusion via rectified flow,” 
+
+arXiv preprint arXiv:2501.16698 , 2025. [40] D. T. Melek, R. Navinkumar, J. Vandersand, P. Sarkar, B. Prakash, A. Leuciuc, K. Geary, S. Ma, C. M. Mehta, S. Jain et al. , “A 0.29 pj/b 5.27 tb/s/mm ucie advanced package link in 3nm finfet with 2.5 d cowos packaging,” in 2025 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 68. IEEE, 2025, pp. 590–592. [41] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel mixture models,” arXiv preprint arXiv:1609.07843 , 2016. [42] G. Mota, “UCIe: Universal Chiplet Interconnect Express,” in Chiplet Summit , jan 2023, [Online]. Available: https://chipletsummit.com/ proceeding files/a0q5f000001WuE0/20230126 A-201 Mota.PDF. [43] N. Muennighoff, L. Soldaini, D. Groeneveld, K. Lo, J. Morrison, S. Min, W. Shi, P. Walsh, O. Tafjord, N. Lambert et al. , “Olmoe: Open mixture-of-experts language models,” arXiv preprint arXiv:2409.02060 , 2024. [44] X. Pan, W. Lin, L. Zhang, S. Shi, Z. Tang, R. Wang, B. Li, and X. Chu, “Fsmoe: A flexible and scalable training system for sparse mixture-of-experts models,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2025, pp. 524–539. [45] K. Punniyamurthy, K. Hamidouche, and B. M. Beckmann, “Optimiz-ing distributed ml communication with fused computation-collective operations,” in SC24: International Conference for High Performance Computing, Networking, Storage and Analysis . IEEE, 2024, pp. 1–17. [46] H. Qu, W. Zhang, J. Lin, S. Ma, H. Li, L. Shi, and C. Xu, “Mldse: Scal-ing design space exploration infrastructure for multi-level hardware,” 
+
+arXiv preprint arXiv:2503.21297 , 2025. [47] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena, Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning with a unified text-to-text transformer,” Journal of machine learning research , vol. 21, no. 140, pp. 1–67, 2020. [48] S. Rajbhandari, C. Li, Z. Yao, M. Zhang, R. Y. Aminabadi, A. A. Awan, J. Rasley, and Y. He, “Deepspeed-moe: Advancing mixture-of-experts inference and training to power next-generation ai scale,” in International conference on machine learning . PMLR, 2022, pp. 18 332–18 346. [49] K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi, “Winogrande: An adversarial winograd schema challenge at scale,” Communications of the ACM , vol. 64, no. 9, pp. 99–106, 2021. [50] A. Sangiovanni-Vincentelli, Z. Liang, Z. Zhou, and J. Zhang, “Automated design of chiplets,” in Proceedings of the 2023 International Symposium on Physical Design , ser. ISPD ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 1–8. [Online]. Available: https://doi.org/10.1145/3569052.3578917 [51] G. Shan, Y. Zheng, C. Xing, D. Chen, G. Li, and Y. Yang, “Architecture of computing system based on chiplet,” Micromachines , vol. 13, no. 2, p. 205, 2022. [52] Y. S. Shao, J. Clemons, R. Venkatesan, B. Zimmer, M. Fojtik, N. Jiang, B. Keller, A. Klinefelter, N. Pinckney, P. Raina et al. , “Simba: Scaling deep-learning inference with multi-chip-module-based architecture,” in 
+
+Proceedings of the 52nd annual IEEE/ACM international symposium on microarchitecture , 2019, pp. 14–27. [53] D. D. Sharma, G. Pasdast, Z. Qian, and K. Aygun, “Universal chiplet interconnect express (ucie): An open industry standard for innovations with chiplets at package level,” IEEE Transactions on Components, Packaging and Manufacturing Technology , vol. 12, no. 9, pp. 1423– 1431, 2022. [54] Y. Shen, Z. Guo, T. Cai, and Z. Qin, “Jetmoe: Reaching llama2 performance with 0.1 m dollars,” arXiv preprint arXiv:2404.07413 ,2024. [55] S. Shi, X. Pan, X. Chu, and B. Li, “Pipemoe: Accelerating mixture-of-experts through adaptive pipelining,” in IEEE INFOCOM 2023-IEEE Conference on Computer Communications . IEEE, 2023, pp. 1–10. [56] S. Singh, O. Ruwase, A. A. Awan, S. Rajbhandari, Y. He, and A. Bhatele, “A hybrid tensor-expert-data parallelism approach to optimize mixture-of-experts training,” in Proceedings of the 37th International Conference on Supercomputing , 2023, pp. 203–214. [57] A. Smith, E. Chapman, C. Patel, R. Swaminathan, J. Wuu, T. Huang, W. Jung, A. Kaganov, H. McIntyre, and R. Mangaser, “11.1 amd 
+
+14 instincttm mi300 series modular chiplet package – hpc and ai accelerator for exa-class systems,” in 2024 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 67, 2024, pp. 490–492. [58] X. Song, Z. Zhong, R. Chen, and H. Chen, “Promoe: Fast moe-based llm serving using proactive caching,” arXiv preprint arXiv:2410.22134 ,2024. [59] S. R. Srinivasa, D. Kurian, P. Aseron, P. Budhkar, A. Radhakrishnan, A. C. Lopez, J. Sundaram, V. Honkote, L. Azarenkov, D. Lake et al. ,“A 300mb sram, 20tb/s bandwidth scalable heterogenous 2.5 d system inferencing simultaneous streams across 20 chiplets with workload-dependent configurations,” in 2025 IEEE International Solid-State Cir-cuits Conference (ISSCC) , vol. 68. IEEE, 2025, pp. 50–52. [60] J. Suo, X. Liao, L. Xiao, L. Ruan, J. Wang, X. Su, and Z. Huo, “Coserve: Efficient collaboration-of-experts (coe) model inference with limited memory,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , 2025, pp. 178–191. [61] Z. Tan, H. Cai, R. Dong, and K. Ma, “Nn-baton: Dnn workload orches-tration and chiplet granularity exploration for multichip accelerators,” in 2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA) . IEEE, 2021, pp. 1013–1026. [62] Z. Tan, Y. Wu, Y. Zhang, H. Shi, W. Zhang, and K. Ma, “A scalable multi-chiplet deep learning accelerator with hub-side 2.5 d heteroge-neous integration,” in 2023 IEEE Hot Chips 35 Symposium (HCS) .IEEE, 2023, pp. 1–17. [63] P. Tang, J. Liu, X. Hou, Y. Pu, J. Wang, P.-A. Heng, C. Li, and M. Guo, “Hobbit: A mixed precision expert offloading system for fast moe inference,” arXiv preprint arXiv:2411.01433 , 2024. [64] P. Team et al. , “Phi-3 technical report: A highly capable language model locally on your phone,” arXiv preprint arXiv:2404.14219 , 2024. [65] Q. Team. (2024) Qwen1.5-moe: Matching 7b model performance with 1/3 activated parameters. [Online]. Available: https://qwenlm.github.io/ blog/qwen-moe/ [66] F. Tu, Y. Wang, Z. Wu, W. Wu, L. Liu, Y. Hu, S. Wei, and S. Yin, “16.4 tensorcim: A 28nm 3.7 nj/gather and 8.3 tflops/w fp32 digital-cim tensor processor for mcm-cim-based beyond-nn acceleration,” in 2023 IEEE International Solid-State Circuits Conference (ISSCC) . IEEE, 2023, pp. 254–256. [67] J. Vandersand, D. T. Melek, K. Geary, P. BS, S. Jain, B. Bothra, P. Sarkar, P. Sabharwal, R. Navinkumar, and K. Chang, “A 0.52 pj/bit 0.448 tbps/mm ucie standard package die-to-die transceiver with low-latency tx clock alignment in 3nm finfet,” in 2025 Symposium on VLSI Technology and Circuits (VLSI Technology and Circuits) . IEEE, 2025, pp. 1–3. [68] H. Wang, Q. Zhou, Z. Hong, and S. Guo, “D 2moe: Dual routing and dynamic scheduling for efficient on-device moe-based llm serving,” 
+
+arXiv preprint arXiv:2504.15299 , 2025. [69] H. Wang, Y. Xia, D. Yang, X. Zhou, and D. Cheng, “Harnessing inter-gpu shared memory for seamless moe communication-computation fusion,” in Proceedings of the 30th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming , 2025, pp. 170–182. [70] K.-C. Wang, D. Ostashev, Y. Fang, S. Tulyakov, and K. Aberman, “Moa: Mixture-of-attention for subject-context disentanglement in personalized image generation,” in SIGGRAPH Asia 2024 Conference Papers , 2024, pp. 1–12. [71] L. Wang, H. Gao, C. Zhao, X. Sun, and D. Dai, “Auxiliary-loss-free load balancing strategy for mixture-of-experts,” arXiv preprint arXiv:2408.15664 , 2024. [72] H. Wei, Y. Sun, and Y. Li, “Deepseek-ocr: Contexts optical compres-sion,” arXiv preprint arXiv:2510.18234 , 2025. [73] Y. Weihao, H. Hao, W. Donglei, L. Ningke, P. Yanqi, Z. Qiyang, X. Wen, L. Shiyi, and W. Qiang, “Hybridep: Scaling expert parallelism to cross-datacenter scenario via hybrid expert/data transmission,” arXiv preprint arXiv:2510.19470 , 2025. [74] S. Wu, J. Luo, X. Chen, L. Li, X. Zhao, T. Yu, C. Wang, Y. Wang, F. Wang, W. Qiao et al. , “Yuan 2.0-m32: Mixture of experts with attention router,” arXiv preprint arXiv:2405.17976 , 2024. [75] A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv et al. , “Qwen3 technical report,” arXiv preprint arXiv:2505.09388 , 2025. [76] J. Yao, Q. Anthony, A. Shafi, H. Subramoni, and D. K. D. Panda, “Exploiting inter-layer expert affinity for accelerating mixture-of-experts model inference,” in 2024 IEEE International Parallel and Distributed Processing Symposium (IPDPS) . IEEE, 2024, pp. 915–925. [77] D. Yu, L. Shen, H. Hao, W. Gong, H. Wu, J. Bian, L. Dai, and H. Xiong, “Moesys: A distributed and efficient mixture-of-experts training and inference system for internet services,” IEEE Transactions on Services Computing , vol. 17, no. 5, pp. 2626–2639, 2024. [78] Z. Yu, Y. Guan, Z. Yu, C. Zhou, S. Pei, Y. Kang, Y. Ding, and P.-A. Tsai, “Orders in chaos: Enhancing large-scale moe llm serving with data movement forecasting,” arXiv preprint arXiv:2510.05497 , 2025. [79] J. Zhang, X. Fan, Y. Ye, X. Wang, G. Xiong, X. Leng, N. Xu, Y. Lian, and G. He, “Indm: Chiplet-based interconnect network and dataflow mapping for dnn accelerators,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 43, no. 4, pp. 1107–1120, 2023. [80] J. Zhang, X. Wang, Y. Ye, D. Lyu, G. Xiong, N. Xu, Y. Lian, and G. He, “M2m: A fine-grained mapping framework to accelerate multiple dnns on a multi-chiplet architecture,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , 2024. [81] Y. Zhang, S. Aggarwal, and T. Mitra, “Daop: Data-aware offloading and predictive pre-calculation for efficient moe inference,” in 2025 Design, Automation & Test in Europe Conference (DATE) . IEEE, 2025, pp. 1–7. [82] Y. Zhao, A. Gu, R. Varma, L. Luo, C.-C. Huang, M. Xu, L. Wright, H. Shojanazeri, M. Ott, S. Shleifer et al. , “Pytorch fsdp: experiences on scaling fully sharded data parallel,” arXiv preprint arXiv:2304.11277 ,2023. [83] S. Zhong, L. Liang, Y. Wang, R. Wang, R. Huang, and M. Li, “Adapmoe: Adaptive sensitivity-based expert gating and management for efficient moe inference,” in Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design , 2024, pp. 1–9. [84] H. Zhu, B. Jiao, J. Zhang, X. Jia, Y. Wang, T. Guan, S. Wang, D. Niu, H. Zheng, C. Chen et al. , “Comb-mcm: Computing-on-memory-boundary nn processor with bipolar bitwise sparsity optimization for scalable multi-chiplet-module edge machine learning,” in 2022 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 65. IEEE, 2022, pp. 1–3. [85] R. Zhu, Z. Jiang, C. Jin, P. Wu, C. A. Stuardo, D. Wang, X. Zhang, H. Zhou, H. Wei, Y. Cheng et al. , “Megascale-infer: Serving mixture-of-experts at scale with disaggregated expert parallelism,” arXiv preprint arXiv:2504.02263 , 2025. [86] T. Zhu, X. Qu, D. Dong, J. Ruan, J. Tong, C. He, and Y. Cheng, “Llama-moe: Building mixture-of-experts from llama with continual pre-training,” arXiv preprint arXiv:2406.16554 , 2024. 
+
+15

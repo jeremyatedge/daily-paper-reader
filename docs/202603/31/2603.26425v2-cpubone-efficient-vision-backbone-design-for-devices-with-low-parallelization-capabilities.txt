@@ -1,0 +1,499 @@
+Title: CPUBone: Efficient Vision Backbone Design for Devices with Low Parallelization Capabilities
+
+URL Source: https://arxiv.org/pdf/2603.26425v2
+
+Published Time: Tue, 31 Mar 2026 02:08:45 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# CPUBone: Efficient Vision Backbone Design for Devices with Low Parallelization Capabilities 
+
+## Moritz Nottebaum 1
+
+nottebaum.moritz@spes.uniud.it 
+
+## Matteo Dunnhofer 1,2 
+
+matteo.dunnhofer@uniud.it 
+
+## Christian Micheloni 1
+
+christian.micheloni@uniud.it 
+
+> 1
+
+## University of Udine, Italy 2York University, Canada 
+
+## Abstract 
+
+Recent research on vision backbone architectures has pre-dominantly focused on optimizing efficiency for hardware platforms with high parallel processing capabilities. This category increasingly includes embedded systems such as mobile phones and embedded AI accelerator modules. In contrast, CPUs do not have the possibility to parallelize op-erations in the same manner, wherefore models benefit from a specific design philosophy that balances amount of oper-ations (MACs) and hardware-efficient execution by having high MACs per second (MACpS). In pursuit of this, we in-vestigate two modifications to standard convolutions, aimed at reducing computational cost: grouping convolutions and reducing kernel sizes. While both adaptations substantially decrease the total number of MACs required for inference, sustaining low latency necessitates preserving hardware-efficiency. Our experiments across diverse CPU devices confirm that these adaptations successfully retain high hardware-efficiency on CPUs. Based on these insights, we introduce CPUBone, a new family of vision backbone mod-els optimized for CPU-based inference. CPUBone achieves state-of-the-art Speed-Accuracy Trade-offs (SATs) across a wide range of CPU devices and effectively transfers its ef-ficiency to downstream tasks such as object detection and semantic segmentation. Models and code are available at 
+
+https://github.com/altair199797/CPUBone .
+
+## 1. Introduction 
+
+The design of vision backbone architectures has advanced significantly in recent years [1, 2, 26, 30, 33], with increas-ing emphasis on improving the Speed-Accuracy Trade-off (SAT) of models. However, numerous publications have shown that relying solely on the number of multiply and ac-cumulate (MAC) operations is insufficient to assess model 
+
+Figure 1. Comparison of ARM CPU latency and ImageNet top-1 accuracy of recent image classification architectures, includ-ing our proposed CPUBone models. Markers refer to different model sizes within each architecture family. CPUBone consis-tently achieves lower latency at comparable accuracy, highlighting its CPU-optimized design. 
+
+efficiency [22, 24, 29], as execution performance varies sub-stantially across hardware architectures due to differences in design and computational characteristics [22, 24]. As a result, recent vision backbone architectures often target op-timization for specific device classes, tailoring their designs to the characteristics and constraints of particular hardware subsets [4, 20, 28, 30]. However, the majority of these backbone architectures are still designed to exploit high degrees of computational parallelism to enhance runtime efficiency [28–30]. This trend is driven by the fact that, beyond Graphics Processing Units (GPUs), embedded systems such as mobile phones and AI modules like NVIDIA Jetson devices have increas-ingly demonstrated substantial parallel processing capabil-ities – often matching or exceeding traditional GPUs in in-ference latency for various vision backbone architectures 
+
+> arXiv:2603.26425v2 [cs.CV] 30 Mar 2026
+
+[28]. On the other side, Central Processing Units (CPUs) – which remain widely used [9, 31] in many practical and resource-constrained scenarios – operate under fundamen-tally different architectural constraints [2]. In contrast to GPUs, CPUs offer limited parallelism, wherefore existing models optimized for devices with high parallelization ca-pabilities [2, 28, 29] often fail to translate their efficiency to CPU-based systems [20]. This is largely due to the ex-cessive number of MAC operations, which become a per-formance bottleneck under the CPU’s limited concurrency [2]. To address this gap, we propose CPUBone (Section 4), a novel architecture family of vision backbone models specif-ically designed to optimize performance on CPUs by mini-mizing MAC count, while maintaining a hardware-efficient execution of the MAC operations. Following [2], we mea-sure hardware-efficiency for execution time by counting how many MACs are processed per second and will further abbreviate this metric by MACpS ( MAC s per second). A key component of CPUBone is a modification of the mobile inverted bottleneck block (MBConv) [25], whose ef-ficiency benefits on CPU-based systems are demonstrated in Section 3. CPUBone models consistently achieve state-of-the-art results in the SAT across a variety of CPU devices and maintain their effectiveness when applied to down-stream tasks such as object detection and semantic segmen-tation. Our contributions can be summarized as follows: • We introduce two new MBConv variants that achieve both reduced MAC count and hardware-efficient execu-tion (high MACpS): Grouped Fused MBConv (GrFuMB-Conv) block and Grouped MBConv (GrMBConv) block. • We conduct a comprehensive analysis of hardware-efficiency (MACpS) on both CPUs and GPU for the pro-posed MBConv variants, and further investigate the effect of reducing convolutional kernel sizes from 3×3 to 2×2.• We present the vision backbone family CPUBone, which achieves state-of-the-art SATs on CPU-based devices. 
+
+## 2. Related Work 
+
+2.1. Hardware-aware Architecture Design 
+
+Recent studies have shifted from using theoretical oper-ation counts (e.g., MACs) towards direct measurements of latency and throughput to evaluate execution efficiency [1, 5, 29]. This transition reflects the growing recognition that a model’s efficiency can vary substantially across hard-ware platforms, as hardware characteristics strongly influ-ence execution behaviour [22, 24]. Consequently, many works have explored hardware-aware model design, adapt-ing architectures to specific devices or classes of hardware to maximize practical performance [2, 30]. While models such as FasterNet [2] and EfficientMod [20] achieve competitive performance across multiple hard-ware categories – particularly GPU throughput/latency and CPU latency – there has been an increasing trend to-wards optimizing architectures primarily for mobile devices [24, 29, 30]. For instance, MobileNetV4 [24] evaluates per-formance across a wide range of mobile devices, whereas RepViT [30], next to reporting GPU throughput, focuses on device-specific latency evaluation on the iPhone 12. Other architectures, such as SHViT [35], concentrate on through-put optimization, however on CPU and GPU devices. On the other side MobileOne [29] demonstrates that hardware-aware design can simultaneously benefit mobile phones, CPUs, and GPUs, highlighting the potential of flexible, multi-platform efficient architectures. We, however, focus our study specifically on CPU devices, which are inherently limited in their parallelization capabil-ities [17] and differ substantially in that regard from GPUs and embedded AI accelerators (e.g. Nvidia Jetson devices), that feature significantly more compute cores. Additionally, unlike many mobile chips, CPUs usually lack an integrated neural processing unit (NPU) and are unable to match the low-latency performance of modern mobile devices [35]. Overall, these factors make hardware-aware architecture de-sign uniquely challenging on CPUs. 
+
+2.2. Efficient Micro Design 
+
+Many state-of-the-art vision backbone architectures adopt relatively simple macro designs while relying on sophis-ticated micro-architectural blocks to achieve high perfor-mance [2, 11, 25, 27, 30]. Among the most widely used are the MBConv block [25] and the ResNet bottleneck block [11]. Recently, Chen et al. [2] introduced the Partial Con-volution (PConv), which has a reduced MAC count com-pared to a standard convolution, as it only convolves over a portion of the channels, and is followed by lightweight pointwise convolutions. Next to a low MAC count, they demonstrate efficient execution with high MACpS on GPU, Intel CPU and ARM CPU platforms. On the other side, the RepViT-block [30] adopts the MetaFormer structure [34], with a lightweight depthwise convolution as token mixer, achieving state-of-the-art results on the iPhone 12. Instead of using depthwise convolutions (RepViT [30]) or processing only a portion of the channels (PConv [2]), we reduce the MAC count of convolutions by increasing the groups parameter and reducing the kernel size. Similarly to [2], we analyze how these adaptations influence MACpS on CPU and GPU devices. 
+
+## 3. CPU-Efficient Design Strategies 
+
+A high MAC count can significantly hinder fast execution on devices with limited parallelization capabilities, such as CPUs. To overcome this we propose two adaptations to the Figure 2. Design of MBConv variants, including the two pro-posed Grouped MBConv (GrMBConv) and Grouped Fused MB-Conv (GrFuMBConv). In both grouped variants, the first convo-lution is configured with groups = 2 . All variants expand the channel dimension in the first convolution by the expansion factor (set to four in this figure) and reduce it again by the expansion fac-tor in the last convolution. 
+
+standard configuration of convolutions: setting groups = 2 
+
+and reducing the kernel size from the common 3 × 3 kernel [33] to a 2 × 2 kernel. 
+
+Overview of Grouped Convolutions. The number of 
+
+groups in a convolutional layers is a decisive parameter, as it has a strong influence on the MAC count of the convolu-tion. When groups = 1 , every output feature map is a com-bination of all input feature maps, while when groups =
+
+Cin (where Cin is the number of input channels), the con-volutions becomes depthwise (DWConv). Depthwise con-volutions process each input channel independently to pro-duce the corresponding output channel. On the other side, for values between 1 and Cin , the convolution is divided into groups separate ungrouped sub-convolutions, where each sub-convolution processes a disjoint subset of the channels of size Cin /groups . Input channel dimension and output channel dimension always must both be divisible by 
+
+groups .In the following sub-sections, we first quantify how grouping and a smaller kernel size reduce the MAC count compared to a standard ungrouped 3 × 3 convolution (see Subsection 3.1). We then analyze whether these reductions affect hardware-efficiency – specifically, how they affect MACpS (see Section 3.2). 
+
+Grouping for MBConv Block. In order to narrow down the configuration space we specifically analyze how the hardware-efficiency changes, when setting groups = 2 in the first convolution of the mobile inverted bottleneck (MB-Conv) block [25] and the fused mobile inverted bottleneck (FuMBConv) block [10]. We chose both blocks, as they are popular components in vision backbones, due to their high efficiency [1, 22, 26]. The grouped variants are denoted as Grouped MBConv (GrMBConv) and Grouped Fused MB-Conv (GrFuMBConv), as illustrated in Figure 2. 
+
+3.1. Effect of Groups and Kernel Size on MAC Count 
+
+Grouping. The MAC count ( M ) of a single convolution with no bias is given by 
+
+M = KH × KW × Cin × Cout × Hout × Wout 
+
+groups , (1) where Cout is the output channel dimension, KH the height of the kernel and KW the width of the kernel. By treating all variables except groups in Equation (1) as constants, we can transform it and get a clearer understanding how the 
+
+groups parameter influences MAC count: 
+
+M ∝ 1
+
+groups . (2) Equation (2) shows that the MAC count ( M ) is inversely proportional to the number of groups. Therefore by increas-ing the number of groups to two, we halve the number of MAC operations required for execution. We can now apply Equation (1) to calculate how much less MACs the grouped MBConv variants have, compared to their ungrouped coun-terpart, leaving aside normalization and activation functions (see supplementary material for exact calculation). The Gr-FuMBConv block has 45% less MACs than the FuMBConv, independent of the channel dimension. The GrMBConv has 23% less MACs than the MBConv block, averaged over the five channel dimensions featured in Table 1. 
+
+Kernel Size. By treating all variables in Equation (1) un-related to the kernel size as constants, we obtain: 
+
+M ∝ KH × KW . (3) From this we can see, that the MAC count of a convolu-tion is also proportional to the product of the kernel di-mensions. Consequently, reducing the kernel size directly lowers computational cost; for instance replacing a 3 × 3
+
+kernel ( K2 = 9) with a 2 × 2 kernel ( K2 = 4) de-creases the MAC count of the convolution by approximately 
+
+(1 − 4/9) ∼ 56% . Similarly to grouping, we also apply the reduced 2 × 2 kernel to the FuMBConv and GrFuMBConv block. While the total MAC of the FuMBConv is reduced by exactly 50%, the GrFuMBConv block has approximately 46% less MACs, compared to a 3×3 kernel (see supplemen-tary material for exact calculation). 
+
+3.2. Hardware-Efficiency Analysis 
+
+While grouping and a smaller kernel size significantly re-duce the MAC count of a convolution, it is not clear, if this advantage also translates to a significant reduction of latency. This is due to factors like degree of parallelism and memory access costs [2, 22, 24]. This phenomena can for Grouping Experiment Channel Dimension Device Variant 32 64 128 256 512 Avg.                                                                                                                     
+
+> MBConv 7.8 13.3 21.4 26.4 26.2 19.0 Pi5 CPU Gr MBConv 6.3 10.6 16.7 22.1 23.3 15.8 (-16%)
+> (MMACs/ms) Fu MBConv 40.6 45.3 40.7 32.4 24.5 36.7
+> GrFu MBConv 31.0 42.1 44.4 34.7 30.4 36.5 (-0%)
+> MBConv 51.0 59.8 60.9 53.4 44.5 53.9 Pixel 4 CPU Gr MBConv 45.3 56.7 59.2 58.3 45.9 53.1 (-1%)
+> (MMACs/ms) Fu MBConv 67.3 63.0 53.2 39.9 34.1 51.5
+> GrFu MBConv 64.3 65.6 61.6 43.2 36.2 54.2 (+5%)
+> MBConv 78.0 111.6 124.5 129.0 126.4 113.9 Snapdragon 8 CPU Gr MBConv 66.3 105.9 120.7 125.0 125.3 108.6 (-5%)
+> (MMACs/ms) Fu MBConv 121.4 128.8 133.4 130.3 115.4 125.9
+> GrFu MBConv 114.0 129.4 133.8 125.1 113.9 123.2 (-2%)
+> MBConv 34.2 112.3 428.6 1747.3 3494.0 1163.3 TITAN RTX GPU Gr MBConv 25.0 88.4 308.8 1260.6 2679.1 872.4 (-25%)
+> (MMACs/ms) Fu MBConv 185.1 622.6 2394.6 3612.2 3849.0 2132.7
+> GrFu MBConv 96.8 330.3 1307.3 2963.3 3878.9 1715.3 (-20%)
+> Table 1. Execution efficiency of MACs, measured in MMACs/ms, for the four MBConv variants (MBConv, GrMBConv, FuMBConv and GrFuMBConv) for different channel dimensions. Bold entries indicate whether the grouped or ungrouped variant has higher MACpS.
+
+example be observed for DWConvs [22], which have con-siderably lower MACpS compared to ungrouped convolu-tions ( groups = 1 ). Therefore, it is crucial to analyze how grouping or smaller kernel sizes affect MACpS. 
+
+Execution Time Measurement. In order to quantify hardware-efficiency in execution (MACpS), we need to measure latency. We feature several CPU devices for this: the CPU of the Raspberry Pi 5, the CPU of the Google Pixel 4, and the CPU of the Snapdragon 8 Elite QRD. We fur-ther compare these results with latency measurements on a device with high parallelization capability – the Nvidia TI-TAN RTX GPU. Latency is always measured with a batch size of 1. 
+
+3.2.1. Effect of Grouping on Hardware-Efficiency Setting. In Table 1, we compare the MACpS of the MB-Conv and FuMBConv block with their grouped counterparts (GrMBConv and GrFuMBConv). We do so by measuring the number of MMACs (million MACs) each architectural block executes per millisecond (MMAC/ms). While we fix the operating resolution to 14 × 14 , we feature five different input channel dimensions (32, 64, 128, 256 and 512) and an expansion factor of 4 (see Figure 2). 
+
+Observation 1. Across all CPU devices and channel di-mensions, GrMBConv have on average 5% lower MACpS compared to MBConv, while having 23% less MACs. On the other side, GrFuMBConv have 1% higher MACpS than FuMBConv, while having 45% less MACs. 
+
+Observation 2. Averaged across all CPU devices, the fused variants (FuMBConv and GrFuMBConv) have ap-proximately 25% lower MACpS, when the channel dimen-sion is ≥ 256 , compared to < 256 , while the unfused vari-ants (MBConv and GrMBConv) have 27% higher MACpS. However, for channel dimensions below 256, the fused vari-ants achieve 70% higher MACpS than the unfused variants. This behaviour was previously observed by [22], though only on devices with higher parallelization capabilities. 
+
+Operating Resolution. We repeated the experiment for additional input resolutions ( 7 × 7, 28 × 28 and 56 × 56 ) on ARM CPU (see supplementary material), yielding a similar result as in Table 1. Across the resolutions, GrMBConvs have 18% lower MACpS than MBConv, while GrFuMB-Convs have 2% lower MACpS than FuMBConvs. 
+
+Effect on GPU. In Table 1 we also feature the same ex-periment on GPU (Nvidia Titan RTX), however both obser-vations do not hold on GPU anymore. The GrMBConv has on average 23% less MACs, however on GPU it also has 25% lower MACpS, making the GrMBConv block slower on average. Similarly, the GrFuMBConv has on average 20% lower MACpS than the FuMBConv, making it still faster however due to having approximately half the MAC count. Additionally, similarly to what we observed on the CPU devices, the fused MBConv variants (GrFuMBConv & FuMBConv) remain considerably more hardware-efficient (higher MACpS) than their unfused counterpart (GrMB-Conv & MBConv), especially for channel dimensions be-low 256. They execute up to 5× more MACs in the same time. We also repeated the same experiments for differ-ent resolutions (see supplementary material), leading to the same conclusion. 
+
+Higher Groups parameter. So far we have only consid-ered groups = 2 , however we also repeated the experiment on an ARM CPU with groups = 4 (see supplementary ma-terial). The averaged result we discussed with groups = 2 
+
+are largely similar for groups = 4 , however the fused vari-ants (GrFuMBConv & FuMBConv) exhibit a different be-haviour. For channel dimensions below 128, GrFuMBConv has 20% lower MACpS, when groups = 4 , compared to 
+
+groups = 2 . However for channel dimensions over 128, they have 36% higher MACpS. 
+
+Conclusion. The grouped variants achieve similar MACpS compared to their ungrouped counterparts (ob-servation 1), while featuring a considerably lower MAC count, leading to improved execution time. However, on ARM CPU we observe, that the GrMBConv’s hardware-efficiency degrades significantly (-16% MACpS) compared to the MBConv block, making it nevertheless faster, as it has 23% less MACs. Additionally in order to optimize hardware efficiency, fused variants (FuMBConv and GrFuMBConv) are better suited for layers with fewer than 256 channels, while unfused variants (MBConv and GrMBConv) perform best with channel dimensions of 256 or more (observation 2).                                                   
+
+> Dwise Channel Dimension Resol. Type 128 256 512 1024 Avg. 7×7 nmk 0.75 0.78 0.78 0.80 0.78
+> smk 0.66 0.70 0.70 0.73 0.70
+> 14×14 nmk 1.26 1.28 1.27 1.24 1.26
+> smk 1.13 1.15 1.16 1.08 1.13
+> 28×28 nmk 1.97 1.82 1.64 1.64 1.77
+> smk 1.73 1.50 1.26 1.19 1.42
+> Table 2. Execution efficiency experiment on ARM CPU on the ef-fect of kernel size reduction for depthwise convolutions, by mea-suring MMACs/ms. Resol. refers to operating resolution, Type
+> refers to the kernel size ( nmk = 3 ×3,smk = 2 ×2). Bold entries indicate whether nmk or smk variant has higher MACpS.
+
+3.3. Effect of Kernel Reduction on Hardware-Efficiency 
+
+Setting. As shown before Subsection 3.1, reducing the kernel size considerably reduces the MAC count. However, similarly to grouping, we need to ensure that the MACpS do not deteriorate. In order to have a comprehensive anal-ysis, also fitting to the previous grouping analysis and to our macro architecture, we feature three different kind of convolutions or blocks: Depthwise convolutions (as cen-tral part of the MBConv block, see Figure 2), the FuM-BConv block (see Figure 2) and the GrFuMBConv block,                                                              
+
+> Ungrouped Groups=2 Resol. Type Channel Dim. Channel Dim.
+> 128 256 Avg. 128 256 Avg. 7×7 nmk 39.36 28.63 33.99 37.88 32.42 35.15
+> smk 41.21 33.13 37.17 36.11 36.42 36.27 14×14 nmk 40.90 33.45 37.17 44.56 35.21 39.88
+> smk 46.94 36.01 41.48 43.86 40.58 42.22 28×28 nmk 40.70 29.23 34.96 47.45 36.37 41.91
+> smk 42.95 31.60 37.28 46.67 38.02 42.35
+> Table 3. Execution efficiency experiment on ARM CPU on the effect of kernel size reduction. We test the GrFuMBConv (Groups=2) and FuMBConv (Ungrouped) block by measuring MMACs/ms. Resol. refers to operating resolution, Type refers to the kernel size ( nmk = 3 ×3,smk = 2 ×2). Bold entries indicate whether nmk or smk variant has higher MACpS.
+
+with groups = 2 . Both MBConv versions feature an ex-pansion factor of 4. For depthwise convolutions we span channel dimensions from 128 to 1024, because this is the usual range occurring in the later stages of vision backbones [1, 22, 28, 35]. On the other side, for the FuMBConv and GrFuMBConv, we only test for channel dimensions 128 and 256, as our previous analysis in Subsection 3.2.1 as well as [22] conclude that a channel dimension higher than 256 for fused MBConv versions results in a considerable reduction of MACpS, wherefore we deem it less relevant. In Table 2 and 3 we compare two settings of kernel sizes: nmk, re-ferring to 3 × 3 kernel and smk, referring to 2 × 2 kernel. All results are measured on the ARM CPU of the Raspberry Pi5, featuring a batch size of 1. 
+
+Observation 1. While for the depthwise convolutions (see Table 2) the reduction of the kernel size leads to a small reduction of MACpS (-10%), for the FuMBConv and the GrFuMBConv ( groups = 2 ) block (see Table 3 ) the hardware-efficiency increases on average. Since the kernel size reductions approximately halve the MAC count for the tested MBConv variants (as mentioned in Subsection 3.1), they lead to a considerable latency improvement. 
+
+Observation 2. The absolute magnitude of MACpS for the depthwise convolution (Table 2) is considerably lower than for the ungrouped or groups = 2 convolutions (see Table 3). The latter two have approximately 40 × higher MACpS, compared to the depthwise convolution. A simi-lar gap can also be seen, when repeating the experiments on GPU (see supplementary material). Since depthwise con-volutions exhibit low MACpS on devices with both low and with high parallelization capability, degree of parallelism is not the main factor, influencing the hardware-efficiency of depthwise convolutions. We believe memory access cost is mainly responsible for that. Model Params MACs Pi5 CPU Pixel 7 Pro CPU Intel CPU Top-1 (M) (M) (ms) ↓ (ms) ↓ (ms) ↓ (%) EffFormerV2-S0 [14] 3.5 400 36.3 39.4 7.9 73.7 GhostNetV2 x1.0 [27] 6.2 183 35.2 5.8 9.0 75.3 FastViT-T8 [30] 3.6 705 65.9 44.0 10.6 75.6 MobileViG-Ti [21] 5.3 661 48.2 45.2 9.2 75.7 EfficientMod-xxs [20] 4.7 579 47.5 25.3 9.2 76.0 FasterNet-T1 [2] 7.6 850 32.8 24.4 6.3 76.2 RepViT-M0.9 [30] 5.1 816 40.8 35.1 10.2 77.4 CPUBone-B0 (ours) 10.4 519 24.2 13.8 6.9 77.6 
+
+EffFormerV2-S1 [14] 6.1 650 57.4 54.6 10.9 77.9 MobileViG-S [21] 7.3 983 73.9 69.5 13.0 78.2 EfficientMod-xs [20] 6.6 773 53.8 28.1 11.5 78.3 LowFormer-B0 [22] 14.1 944 39.1 20.8 9.4 78.4 CPUBone-B1 (ours) 12.4 746 33.5 18.6 9.4 78.7 
+
+FasterNet-T2 [2] 15.0 1910 61.7 28.5 10.1 78.9 MobileOne-S4 [29] 14.8 2978 122.9 43.6 13.3 79.4 RepViT-M1.1 [30] 8.2 1338 63.5 48.7 12.0 79.4 LowFormer-B1 [22] 17.9 1410 59.1 30.6 13.2 79.9 CPUBone-B2 (ours) 23.9 1354 60.3 32.4 16.1 80.3 
+
+EffFormerV2-S2 [14] 12.6 1250 102.3 91.5 18.9 80.4 FastViT-SA12 [28] 10.9 1943 136.4 86.2 20.0 80.6 LowFormer-B15 [22] 33.9 2573 111.6 56.8 22.8 81.2 FasterNet-S [2] 31.1 4560 153.6 70.7 20.6 81.3 BiFormer-T [37] 13.1 2200 523.9 578.6 178.0 81.4 Resnet101 [11] 44.5 7801 293.8 115.6 30.8 81.9 RepViT-M2.3 [30] 22.9 4520 227.0 148.0 37.7 82.5 FasterNet-M [2] 53.5 4370 318.1 151.5 41.6 83.0 CPUBone-B3 (ours) 40.7 4054 199.8 83.1 34.1 83.1 
+
+FasterNet-L [2] 93.5 7760 644.8 290.1 65.5 83.5 MIT-EfficientViT-B3 [1] 49.0 3953 340.2 98.2 44.1 83.5 LowFormer-B3 [22] 57.1 6098 273.8 124.0 44.4 83.6 BiFormer-S [37] 26.0 4500 1134.1 1290.0 391.0 83.8   
+
+> Table 4. Performance on ImageNet-1K validation set. Evaluation resolution is 224×224, except for FastViT models who operate on 256x256. Besides MobileVig [21], no distillation nor pretraining is used for fair comparison. Models are sorted and grouped by top-1 accuracy. The highest top-1 accuracy in each group is bold.
+
+Effect on GPU. Similarly to how grouping reduces MACpS on GPU, reducing the kernel size deteriorates per-formance completely on GPU. To show that we repeat the same experiments of Tables 2 and 3 on the Nvidia TI-TAN RTX GPU (see supplementary material). For depth-wise convolutions, the MACpS reduces by 80% approxi-mately, making the smaller kernel version slower than the one with the original 3 × 3 kernel. Similarly, the FuM-BConv and the GrFuMBConv block approximately have 50% lower MACpS. Consequently, reducing the kernel size consistently leads to higher execution time on GPU, even though less MACs need to be executed. 
+
+Conclusion. Reducing the kernel size of a convolution from 2×2 to 3×3, leads to a reduction of MACs by approx-imately 50%. On CPU, this advantage is retained, as the MACpS remain similar (depthwise) or even improve (FuM-BConv & GrFuMBConv). However on GPU, similarly to grouping, reducing the kernel size leads to minimal latency benefits or even an increase in latency, as the MACpS dete-riorates. 
+
+## 4. CPUBone 
+
+The macro architecture of CPUBone is inspired by Low-Former [22, 23], as it represents one of the most recent vi-sion backbone approaches incorporating MBConv blocks as a main component. Following [22, 23], we also integrate LowFormer Attention in the final two stages of CPUBone. However, based on the findings in Section 3, we exclu-Figure 3. CPUBone macro architecture design. Attention refers to Low-Former Attention [22].                                             
+
+> Stage B0 B1 B2 B3 0C=16, N=0, GrFu C=16, N=0, GrFu C=20, N=0, GrFu C=32, N=1, GrFu
+> 1C=32, N=0, GrFu C=32, N=0, GrFu C=40, N=0, GrFu C=64, N=1, GrFu
+> 2C=64, N=0, GrFu C=64, N=0, GrFu C=80, N=0, GrFu C=128, N=2, GrFu
+> 3C=128, N= 3,GrFu C=128, N= 5,GrFu C=160, N= 6,GrFu C=256, N= 6,Gr
+> 4C=256, N= 4,Gr C=256, N= 5,Gr C=320, N= 6,Gr C=512, N= 6,Gr
+
+Table 5. Specification of CPUBone architecture versions B0-B3. C, N, Gr and GrFu stand for channel dimension, the number of layers, GrMBConv and GrFuMBConv. Number of layer higher than two, are bold.                                
+
+> Backbone Pi5 CPU Lat. mIoU (ms) (%) ResNet50 [11] 940.0 36.7 PVTv2-B0 [32] 587.7 37.2 CPUBone-B0 (ours) 131.5 37.9
+> FastViT-SA12 [28] 603.9 38.0 CPUBone-B1 (ours) 189.9 39.2
+> RepViT-M1.1 [30] 468.9 40.6 FastViT-SA24 [28] 1161.5 41.0 EdgeViT-XS [5] 461.5 41.4 FAT-B0 [8] 763.3 41.5 CPUBone-B2 (ours) 338.2 42.1
+> PVTv2-B1 [32] 1296.4 42.5 LowFormer-B2 [22] 808.1 42.8 FAT-B1 [8] 1102.1 42.9 CPUBone-B3 (ours) 1181.6 44.1
+
+Figure 4. Results on semantic segmentation, using Se-mantic FPN [13], trained and evaluated on ADE20K [36]. Backbone latency is measured under resolution 
+
+512 × 512 . Models are grouped by mIoU. Best value in each group is made bold. 
+
+sively use the grouped MBConv variants (GrMBConv and GrFuMBConv), applying the fused version when the input channel dimension is below 256 and the unfused version otherwise. We further only reduce the kernel size to 2 × 2
+
+in the last two stages of CPUBone, where the bulk of com-putation is concentrated. We believe higher kernel size is especially important in earlier layers to have a higher re-ceptive field and consequently better accuracy. In contrast to the LowFormer architecture, we also omit the transpose convolution in the LowFormer Attention and replace it with nearest neighbour upsampling. We ablate this decision in Subsection 5.3. In total, we feature four model variants with increasing model size: CPUBone-B0, B1, B2 and B3. The overall architecture is illustrated in Figure 3 and specifics to each model variant are listed in Table 5. 
+
+## 5. Experiments 
+
+5.1. ImageNet Classification 
+
+Settings. We perform image classification experiments on ImageNet-1K [7], which consists of 1.28M training and 50K validation across for 1000 categories. All CPUBone models were trained from scratch using mostly the same setting as [1, 22] and featuring an input resolution of 224 for evaluation. We train for a total of 320 epochs using AdamW [19] optimizer, including 20 warm-up epochs with a linear schedule. We employ cosine decay [18] as learning rate scheduler. For CPUBone-B0 and B1, we use a base learn-ing rate of 10 −3 and a batch size of 512. For CPUBone-B2, the batch size is increased to 1024. For CPUBone-B3, we use a batch size of 2400 and raise the base learning rate to 
+
+3 × 10 −3.
+
+Results. In Table 4 we compare the CPUBone models to recent vision backbones. We compare model efficiency by measuring latency on the ARM CPU of the Raspberry Pi5, the CPU of the Pixel Pro 7 and the Intel(R) Xeon(R) W-2125 CPU, with a batch size of 1. Regarding results, CPUBone-B0 is faster than almost all models with a lower accuracy in Table 4. EffFormerV2-S0 [14] for example has a 50% higher Pi5 latency, a 300% higher Pixel 7 Pro CPU latency, but a 3.9% lower accuracy, than CPUBone-B0. On the other side, FasterNet-T1 [2], an architecture partially designed for CPU latency, achieves a slightly lower Intel CPU latency than CPUBone-B0, however its Pi5 CPU la-tency is 33% higher, its Pixel 7 Pro CPU latency is 76% higher and its top-1 accuracy is 1.4% lower. On the other end of the spectrum regarding model size CPUBone-B3 is considerably faster than RepViT-M2.3 [30] on all three CPU devices, while being 0.6% more accurate on ImageNet [7]. Overall, CPUBone models consistently achieve effi-cient performance across various model sizes and a diverse set of CPU platforms. 
+
+5.2. Downstream Tasks 
+
+To assess transferability of CPUBone backbones to down-stream tasks, we integrate the pretrained models into object detection and semantic segmentation frameworks. Exper-iments are performed on COCO 2017 [15] and ADE20K [36] using the MMDetection [3] and MMSegmentation [6] toolkits. We use RetinaNet [16] for detection and Semantic FPN [13] for segmentation. Results are depicted in Tables 4 and 7. Pi5 CPU latency refers to backbone latency mea-sured under resolution 512 ×512. 
+
+Semantic Segmentation. For semantic segmentation, we train the models for 40K iterations with a batch size of 32, Model version Params MACs Pi5 CPU Lat. Pixel 4 CPU Pixel 7 Pro CPU Lat. Intel CPU Lat. Top-1 (M) (M) (ms) (ms) (ms) (ms) (%)                                                                                  
+
+> Just original MBConvs 13.3 758 48.6 25.4 20.1 12.63 78.5 (-0.2%)
+> Using transpose 14.4 840 39.7 26.3 20.3 10.73 78.9 (+0.2%)
+> Groups=8 11.0 560 28.7 21.2 16.0 8.8 78.0 (-0.7%)
+> Groups=4 11.5 622 29.6 21.9 17.9 9.0 78.4 (-0.3%)
+> B0-plain 14.1 944 39.1 29.6 20.8 9.4 78.4 (-0.3%)
+> Baseline (B1) 12.4 746 33.5 23.8 18.6 9.4 78.7 Table 6. Ablation study of CPUBone-B1, featuring singular changes. We also include B0-plain, an ablation to CPUBone-B0. Backbone Pi5 CPU Lat. AP (ms) (%) MobileNetV3 [12] 158.0 29.9 MNv4-Conv-M [24] 299.5 32.6 PVTv2-B0 [32] 587.7 37.2 CPUBone-B0 (ours) 131.5 37.5
+> LowFormer-B0 [22] 226.9 38.6 EdgeViT-XXS [5] 281.0 38.7 CPUBone-B1 (ours) 189.9 39.0
+> LowFormer-B1 [22] 313.2 39.4 FAT-B0 [8] 763.3 40.4 CPUBone-B2 (ours) 338.2 40.4
+> EdgeViT-XS [5] 461.5 40.6 PVTv2-B1 [32] 1296.4 41.2 LowFormer-B2 [22] 808.1 41.4 FAT-B1 [8] 1102.1 42.5 CPUBone-B3 (ours) 1181.6 42.9
+> Table 7. Results on object detection using RetinaNet head [16]. Backbone latency is measured under resolution 512 ×512 . Models are grouped by AP. Best value in each group is made bold.
+
+following the protocols in [8, 20, 28, 30]. Regarding results, CPUBone consistently achieves lower latency and higher mIoU across a wide range of model sizes (see Table 4). CPUBone executes up to 3× faster than comparable models with similar or lower mIoU. 
+
+Object Detection. We train all models for 12 epochs us-ing the standard 1× schedule, following the setup in [1, 8]. Similarly to semantic segmentation, CPUBone is able to outperform all compared models with a similar AP (see Ta-ble 7) and executes up to 4× faster than comparable models with a similar or lower AP. 
+
+5.3. Ablation Study 
+
+To verify that our design choices yield a CPU-optimal model, we perform the following ablations on CPUBone-B1 in Table 6: setting groups=4 instead of two in all MB-Conv blocks, setting groups=8 instead of two in all MB-Conv blocks, featuring just original MBConvs [25] instead of grouped or fused variants and using transpose convolu-tions in LowFormer Attention [22], as originally designed, instead of nearest neighbour upsampling. Finally, we also ablate CPUBone-B0 in B0-plain , where we revert each of our contributions: grouping, reduced kernel size, and the re-placement of the transpose convolution with nearest neigh-bour upsampling. 
+
+B0-plain does have a increased accuracy, compared to CPUBone-B0, however when we directly compare it to CPUBone-B1, it not only is considerably slower on all de-vices, but also has a lower top-1 accuracy. 
+
+Groups=4 or Groups=8 on the other side, improve latency due to a lower MAC count, however lead to a considerable reduction in accuracy. Higher group numbers further lead to an increasingly declining hardware-efficiency. On the ARM CPU, the Groups=4 model shows a 5% reduction in MACpS, while Groups=8 shows a 13% reduction relative to the baseline. Further, we can see that the efficiency ben-efit on Intel CPU is minimal for those models. Our baseline (B1) with groups set to two is therefore a good balance be-tween MAC count and hardware-efficiency (MACpS). 
+
+Using transpose convolutions in LowFormer Attention im-proves accuracy by 0.2%, but it increases latency consider-ably on all CPU devices. On ARM CPU it further leads to 5% lower MACpS, compared to the Baseline. 
+
+Just original MBConv blocks instead of GrMBConv or GrFuMBConv blocks lead to a significantly lower accu-racy and degrades latency on all devices. This is the case, even though it has a similar MAC count as our Baseline B1, demonstrating the enormous hardware-efficiency benefit of our design by optimizing MACpS. 
+
+## 6. Conclusion 
+
+In this work, we investigated strategies for CPU-efficient model design. We pointed out, that a major limitation for CPUs is their low parallelization capability, making them less suited for models with a high MAC count. A common approach to efficient model design is the use of depthwise convolutions. While they feature a comparably low MAC count, they also suffer from low MACpS, even on CPU de-vices. To address this, we proposed two alternative design adaptations for standard convolutions: setting the number of groups to two and reducing the kernel size. We explic-itly computed the MAC reduction for both modifications and verified experimentally that the hardware-efficiency of the convolution, measured in MACpS, is maintained dur-ing execution on CPU. Building on these insights, we intro-duced CPUBone, a new vision backbone architecture fam-ily, specifically optimized for CPU-based inference. At its core, the Grouped Fused MBConv (GrFuMBConv) block effectively combines low MAC count and high MACpS. CPUBone consistently outperforms existing models across a wide range of CPU devices and effectively transfers its efficiency to downstream tasks such as object detection and semantic segmentation. 
+
+Acknowledgements. This research has been funded by the European Union, NextGenerationEU – PNRR M4 C2 I1.1, RS Micheloni. Progetto PRIN 2022 PNRR - “Track-ing in Egovision for Applied Memory (TEAM)” Code P20225MSER 001 Code CUP G53D23006680001. Mat-teo Dunnhofer received funding from the European Union’s Horizon Europe research and innovation programme un-der the Marie Skłodowska-Curie grant agreement n. 101151834 (PRINNEVOT CUP G23C24000910006). We also acknowledge ISCRA for awarding this project access to the LEONARDO supercomputer, owned by the EuroHPC Joint Undertaking, hosted by CINECA (Italy). 
+
+## References 
+
+[1] Han Cai, Junyan Li, Muyan Hu, Chuang Gan, and Song Han. Efficientvit: Lightweight multi-scale attention for high-resolution dense prediction. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 17302– 17313, 2023. 1, 2, 3, 5, 6, 7, 8 [2] Jierun Chen, Shiu-hong Kao, Hao He, Weipeng Zhuo, Song Wen, Chul-Ho Lee, and S-H Gary Chan. Run, don’t walk: Chasing higher flops for faster neural networks. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 12021–12031, 2023. 1, 2, 3, 6, 7 [3] Kai Chen, Jiaqi Wang, Jiangmiao Pang, Yuhang Cao, Yu Xiong, Xiaoxiao Li, Shuyang Sun, Wansen Feng, Ziwei Liu, Jiarui Xu, Zheng Zhang, Dazhi Cheng, Chenchen Zhu, Tian-heng Cheng, Qijie Zhao, Buyu Li, Xin Lu, Rui Zhu, Yue Wu, Jifeng Dai, Jingdong Wang, Jianping Shi, Wanli Ouyang, Chen Change Loy, and Dahua Lin. MMDetection: Open mmlab detection toolbox and benchmark. arXiv preprint arXiv:1906.07155 , 2019. 7 [4] Yinpeng Chen, Xiyang Dai, Dongdong Chen, Mengchen Liu, Xiaoyi Dong, Lu Yuan, and Zicheng Liu. Mobile-former: Bridging mobilenet and transformer. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 5270–5279, 2022. 1 [5] Zekai Chen, Fangtian Zhong, Qi Luo, Xiao Zhang, and Yan-wei Zheng. Edgevit: Efficient visual modeling for edge com-puting. In International Conference on Wireless Algorithms, Systems, and Applications , pages 393–405. Springer, 2022. 2, 7, 8 [6] MMSegmentation Contributors. MMSegmentation: Openmmlab semantic segmentation toolbox and benchmark. https : / / github . com / open -mmlab/mmsegmentation , 2020. 7 [7] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hierarchical image database. In 2009 IEEE conference on computer vision and pattern recognition , pages 248–255. Ieee, 2009. 7 [8] Qihang Fan, Huaibo Huang, Xiaoqiang Zhou, and Ran He. Lightweight vision transformer with bidirectional interac-tion. Advances in Neural Information Processing Systems ,36, 2023. 7, 8 [9] Goutam Yelluru Gopal and Maria A Amer. Separable self and mixed attention transformers for efficient object track-ing. In Proceedings of the IEEE/CVF winter conference on applications of computer vision , pages 6708–6717, 2024. 2 [10] Suyog Gupta and Mingxing Tan. Efficientnet-edgetpu: Cre-ating accelerator-optimized neural networks with automl. 
+
+https://ai.googleblog.com/2019/08/efficientnetedgetpu-creating.html , 2019. 3, 1 [11] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition. In Proceed-ings of the IEEE conference on computer vision and pattern recognition , pages 770–778, 2016. 2, 6, 7 [12] Andrew Howard, Mark Sandler, Grace Chu, Liang-Chieh Chen, Bo Chen, Mingxing Tan, Weijun Wang, Yukun Zhu, Ruoming Pang, Vijay Vasudevan, et al. Searching for mo-bilenetv3. In Proceedings of the IEEE/CVF international conference on computer vision , pages 1314–1324, 2019. 8 [13] Alexander Kirillov, Ross Girshick, Kaiming He, and Piotr Doll´ ar. Panoptic feature pyramid networks. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 6399–6408, 2019. 7 [14] Yanyu Li, Ju Hu, Yang Wen, Georgios Evangelidis, Kamyar Salahi, Yanzhi Wang, Sergey Tulyakov, and Jian Ren. Re-thinking vision transformers for mobilenet size and speed. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 16889–16900, 2023. 6, 7 [15] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays, Pietro Perona, Deva Ramanan, Piotr Doll´ ar, and C Lawrence Zitnick. Microsoft coco: Common objects in context. In 
+
+Computer Vision–ECCV 2014: 13th European Conference, Zurich, Switzerland, September 6-12, 2014, Proceedings, Part V 13 , pages 740–755. Springer, 2014. 7 [16] Tsung-Yi Lin, Priya Goyal, Ross Girshick, Kaiming He, and Piotr Doll´ ar. Focal loss for dense object detection. In Pro-ceedings of the IEEE international conference on computer vision , pages 2980–2988, 2017. 7, 8 [17] Alejandro L´ opez-Ortiz, Alejandro Salinger, and Robert Su-derman. Toward a generic hybrid cpu-gpu parallelization of divide-and-conquer algorithms. In 2013 IEEE International Symposium on Parallel & Distributed Processing, Work-shops and Phd Forum , pages 601–610. IEEE, 2013. 2 [18] Ilya Loshchilov and Frank Hutter. Sgdr: Stochas-tic gradient descent with warm restarts. arXiv preprint arXiv:1608.03983 , 2016. 7 [19] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. arXiv preprint arXiv:1711.05101 , 2017. 7 [20] Xu Ma, Xiyang Dai, Jianwei Yang, Bin Xiao, Yinpeng Chen, Yun Fu, and Lu Yuan. Efficient modulation for vision net-works. arXiv preprint arXiv:2403.19963 , 2024. 1, 2, 6, 8 [21] Mustafa Munir, William Avery, and Radu Marculescu. Mo-bilevig: Graph-based sparse attention for mobile vision ap-plications. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Work-shops , pages 2211–2219, 2023. 6 [22] Moritz Nottebaum, Matteo Dunnhofer, and Christian Mich-eloni. Lowformer: Hardware efficient design for convolu-tional transformer backbones. In 2025 IEEE/CVF Winter Conference on Applications of Computer Vision (WACV) ,pages 7008–7018. IEEE, 2025. 1, 2, 3, 4, 5, 6, 7, 8 [23] Moritz Nottebaum, Matteo Dunnhofer, and Christian Mich-eloni. Beyond macs: Hardware efficient architecture design for vision backbones, 2026. 6 [24] Danfeng Qin, Chas Leichner, Manolis Delakis, Marco Fornoni, Shixin Luo, Fan Yang, Weijun Wang, Colby Ban-bury, Chengxi Ye, Berkin Akin, et al. Mobilenetv4: universal models for the mobile ecosystem. In European Conference on Computer Vision , pages 78–96. Springer, 2024. 1, 2, 3, 8 [25] Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zh-moginov, and Liang-Chieh Chen. Mobilenetv2: Inverted residuals and linear bottlenecks. In Proceedings of the IEEE conference on computer vision and pattern recogni-tion , pages 4510–4520, 2018. 2, 3, 8, 1 [26] Mingxing Tan and Quoc Le. Efficientnetv2: Smaller models and faster training. In International conference on machine learning , pages 10096–10106. PMLR, 2021. 1, 3 [27] Yehui Tang, Kai Han, Jianyuan Guo, Chang Xu, Chao Xu, and Yunhe Wang. Ghostnetv2: Enhance cheap operation with long-range attention. Advances in Neural Information Processing Systems , 35:9969–9982, 2022. 2, 6 [28] Pavan Kumar Anasosalu Vasu, James Gabriel, Jeff Zhu, On-cel Tuzel, and Anurag Ranjan. Fastvit: A fast hybrid vision transformer using structural reparameterization. In Proceed-ings of the IEEE/CVF International Conference on Com-puter Vision , pages 5785–5795, 2023. 1, 2, 5, 6, 7, 8 [29] Pavan Kumar Anasosalu Vasu, James Gabriel, Jeff Zhu, Oncel Tuzel, and Anurag Ranjan. Mobileone: An im-proved one millisecond mobile backbone. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 7907–7917, 2023. 1, 2, 6 [30] Ao Wang, Hui Chen, Zijia Lin, Jungong Han, and Guiguang Ding. Repvit: Revisiting mobile cnn from vit perspective. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vi-sion and Pattern Recognition (CVPR) , pages 15909–15920, 2024. 1, 2, 6, 7, 8 [31] Ao Wang, Hui Chen, Lihao Liu, Kai Chen, Zijia Lin, Jun-gong Han, et al. Yolov10: Real-time end-to-end object de-tection. Advances in Neural Information Processing Systems ,37:107984–108011, 2024. 2 [32] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao. Pvt v2: Improved baselines with pyramid vision transformer. 
+
+Computational Visual Media , 8(3):415–424, 2022. 7, 8 [33] Haiping Wu, Bin Xiao, Noel Codella, Mengchen Liu, Xiyang Dai, Lu Yuan, and Lei Zhang. Cvt: Introducing con-volutions to vision transformers, 2021. 1, 3 [34] Weihao Yu, Mi Luo, Pan Zhou, Chenyang Si, Yichen Zhou, Xinchao Wang, Jiashi Feng, and Shuicheng Yan. Metaformer is actually what you need for vision. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 10819–10829, 2022. 2 [35] Seokju Yun and Youngmin Ro. Shvit: Single-head vision transformer with memory efficient macro design. arXiv preprint arXiv:2401.16456 , 2024. 2, 5 [36] Bolei Zhou, Hang Zhao, Xavier Puig, Sanja Fidler, Adela Barriuso, and Antonio Torralba. Scene parsing through ade20k dataset. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , 2017. 7 [37] Lei Zhu, Xinjiang Wang, Zhanghan Ke, Wayne Zhang, and Rynson WH Lau. Biformer: Vision transformer with bi-level routing attention. In Proceedings of the IEEE/CVF con-ference on computer vision and pattern recognition , pages 10323–10333, 2023. 6 CPUBone: Efficient Vision Backbone Design for Devices with Low Parallelization Capabilities 
+
+# Supplementary Material 
+
+## 7. Additional Details to CPU-Efficient Design Strategies 
+
+7.1. MAC calculations 
+
+With Equation (1) we can calculate the MACs of a convolu-tion with no bias. This further allows us to compute the re-duction in MACs of the grouped MBConv variants (GrMB-Conv & GrFuMBConv) compared to their ungrouped coun-terparts (MBConv & FuMBConv), which we needed in Subsection 3.2.1. As well as calculate how the reduction of the kernel size from 3 × 3 to 2 × 2 affects MACs of the whole FuMBConv and GrFuMBConv block, which we need in Subsection 3.3. For MAC calculations, we leave out any batch normalization and activation functions of the MBConv blocks [25], due to having a minor influence on the MAC count. We further assume for simplicity, that the input channel dimension ( Cin ) and the output channel di-mension ( Cout ) are the same, that the expansion factor is 4 and the stride is 1. 
+
+7.1.1. FuMBConv vs. GrFuMBConv 
+
+Following Equation (1), the MACs of the fused MBConv block ( Mf mb ) or the GrFuMBConv block can be computed as 
+
+Mf mb = KH × KW × Cin × Cin × Hout × Wout 
+
+groups 
+
++Cin × Cin × 4 × Hout × Wout ,
+
+(4) where the first part refers to the standard convolution and the second part to the pointwise convolution (see Figure 2). By pulling out common multiplicative factors, Equation (4) can be simplified as: 
+
+Mf mb =( Cin × Cin × 4 × Hout × Wout )×
+
+(KH × KW
+
+groups + 1) , (5) where the term of the pointwise convolution is reduced to a single number in the second bracket. The only distinc-tion between FuMBConv [10] and GrFuMBConv in Equa-tion (4) lies in the groups parameter. Therefore, Equation (5) allows us to compute the proportion of MACs that Gr-FuMBConv requires relative to FuMBConv. When having a kernel of size 3 × 3 (and groups = 1 for the FuMBConv and groups = 2 for the GrFuMBConv, while all other pa-rameters are the same), the MAC count of GrFuMBConv divided by FuMBConv is: 
+
+= (Cin × Cin × 4 × Hout × Wout )(Cin × Cin × 4 × Hout × Wout ) ×
+
+(3 × 32 + 1) (3 × 31 + 1) ,
+
+(6) which can be further simplified to: 
+
+= 11 × 5.510 = 0 .55 . (7) Consequently, the GrFuMBConv always has 45% less MACs than its ungrouped counterpart (when they only dif-fer in the groups paramter), independent of the channel di-mension. 
+
+7.1.2. MBConv vs GrMBConv 
+
+The original MBConv block [25] consists out of two point-wise convolutions and one depthwise convolution (see Fig-ure 2). Following Equation (1), we can calculate the MAC count of the MBConv ( Mmb ) and GrMBConv block (only differing in the groups parameter) as follows: 
+
+Mmb = Cin × Cin × 4 × Hout × Wout 
+
+groups 
+
++Cin × 4 × KH × KW × Hout × Wout 
+
++Cin × Cin × 4 × Hout × Wout .
+
+(8) Similarly to what we did in Equation (5), we can simplify Equation (8) by pulling out the commmon multiplicative factors, leaving us with this: 
+
+Mmb =Cin × 4 × Hout × Wout ×
+
+( Cin 
+
+groups + KH × KW + Cin ). (9) Similarly to Equation (6), we can now easily compute the relative MAC count of GrMBConv, compared to MBConv, by dividing the number of MACs of GrMBConv ( groups =2) with the MAC count of MBConv (with kernel size set to 
+
+3 × 3 for both): 
+
+= Cin × 4 × Hout × Wout 
+
+Cin × 4 × Hout × Wout 
+
+×
+
+( Cin  
+
+> 2
+
++ 3 × 3 + Cin )( Cin  
+
+> 1
+
++ 3 × 3 + Cin ) ,
+
+(10) which can be further simplified to: 
+
+= 11 × ( Cin  
+
+> 2
+
++ 9 + Cin )( Cin  
+
+> 1
+
++ 9 + Cin ) = (1 .5 × Cin + 9) (2 × Cin + 9) = 1.52 × Cin + 6 
+
+Cin + 4 .5 .
+
+(11) Equation (11) above shows us, that the relative MAC count of GrMBConv divided by MBConv, depends on the channel dimension. However it further shows that with increasing 
+
+Cin , it converges to 1.5/2 = 0 .75 , meaning the grouped MBConv variant has 25% less MACs than its ungrouped counterpart. For the channel dimensions in Table 1, namely 32, 64, 128, 256 and 512, the relative MACs in percent-age rounded accordingly are, respectively: 78.1%, 76.6%, 75.8%, 75.4%, 75.2%. The average is 76.2%. 
+
+7.1.3. Impact of Kernel Size Reduction on MAC Count for GrFuMBConv and FuMBConv 
+
+In Subsection 3.3 we compared how a reduction of the ker-nel size from 3 × 3 to 2 × 2 affects MACpS for the depth-wise convolution, the FuMBConv and the GrFuMBConv with groups = 2 . In Subsection 3.1 we calculated for con-volutions in general, how the reduced kernel affects MAC count, leading to approximately 56% always. Therefore the MAC count of the depthwise convolution is reduced by 56%, when reducing the kernel size. However, the FuMB-Conv block and GrFuMBConv block also include an addi-tional pointwise convolution, whose kernel is not reduced, making the calculation a bit more complicated. However, we need the MAC count of the full MBConv blocks, since we also tested the full MBConv block in Subsection 3.3. Starting from Equation (5), which describes the MAC count of the GrFuMBConv or the FuMBConv, we can di-vide the MACs of the 2 × 2 FuMBConv by the 3 × 3 FuM-BConv block to obtain the percentage reduction (similarly to what we did in Equation (6)): 
+
+= (Cin × Cin × 4 × Hout × Wout )(Cin × Cin × 4 × Hout × Wout ) ×
+
+2 × 21 + 1 3 × 31 + 1 = 11 × 510 = 0 .5.
+
+(12) Consequently, the kernel reduction does exactly halve the MAC count of the FuMBConv block. By doing the same thing now for the GrFuMBConv block, we yield: 
+
+= (Cin × Cin × 4 × Hout × Wout )(Cin × Cin × 4 × Hout × Wout ) ×
+
+2 × 22 + 1 3 × 32 + 1 = 11 × 35.5 = 0 .54 ,
+
+(13) meaning for the GrFuMBConv block the kernel reduction leads to approximately 46% less MACs. 
+
+7.2. Kernel Experiment GPU 
+
+In Table 8 & 9, we repeat the experiments of Subsection 3.3 from table 2 & 3, but on GPU instead of the ARM CPU of the Raspberry Pi5. Table 8 & 9 show an extreme deteriora-tion of the MACpS, when reducing the kernel of a convolu-tion from 3 × 3 to 2 × 2. Especially for depthwise convolu-tions, this change leads to a higher execution time than com-pared to the original 3 × 3 kernel. For FuMBConv and Gr-FuMBConv, the MACpS also decrease significantly; how-ever, both variants retain at least a similar latency compared to the original 3 × 3 kernel. While they achieve roughly half the MACs, the corresponding reduction in MACpS offsets the expected efficiency gain, effectively nullifying it.                                         
+
+> Dwise GPU Channel Dimension Resol. Type 128 256 512 1024 Avg. 7×7 nmk 6.6 13.1 26.5 52.4 24.7
+> smk 1.2 2.3 4.7 9.3 4.4
+> 14×14 nmk 26.4 52.7 103.8 205.3 97.0
+> smk 4.7 9.0 18.7 36.3 17.2
+> 28×28 nmk 103.2 203.5 300.3 308.0 228.7
+> smk 18.1 35.7 71.5 68.9 48.5
+
+Table 8. Execution efficiency experiment on GPU on the effect of kernel size reduction for depthwise convolutions, by measuring MMACs/ms. Resol. refers to operating resolution, Type refers to the kernel size ( nmk = 3 × 3, smk = 2 × 2). Bold entries indicate whether nmk or smk variant has higher MACpS. Same as Table 2, but on GPU.                                                  
+
+> GPU Ungrouped Groups=2 Resol. Type Channel Dim. Channel Dim.
+> 128 256 Avg. 128 256 Avg. 7×7 nmk 661.6 1075.7 868.6 355.1 893.7 624.4
+> smk 284.4 882.9 583.6 145.3 627.2 386.2
+> 14×14 nmk 2374.3 3545.5 2959.9 1422.6 3026.8 2224.7
+> smk 1081.8 2021.3 1551.5 627.0 1671.9 1149.4
+> 28×28 nmk 4892.2 5385.9 5139.0 4068.5 4785.6 4427.0
+> smk 2333.9 2669.0 2501.5 2000.5 2538.2 2269.3
+
+Table 9. Execution efficiency experiment on GPU on the effect of kernel size reduction. We test the GrFuMBConv (Groups=2) and FuMBConv (Ungrouped) block by measuring MMACs/ms. 
+
+Resol. refers to operating resolution, Type refers to the kernel size ( nmk = 3 × 3, smk = 2 × 2). Bold entries indicate whether nmk or smk variant has higher MACpS. Same as Table 3, but on GPU. 
+
+7.3. Grouping ARM CPU - additional Resolutions 
+
+Table 10 shows a similar experiment as Table 1, however we focus only on ARM CPU, but feature the additional Grouping=2 Experiment ARM CPU Channel Dimension Resolution Variant 32 64 128 256 512 Avg. 
+
+MBConv 4.1 8.5 14.9 22.4 23.5 14.7 
+
+7x7 Gr MBConv 3.7 6.5 11.6 17.7 19.5 11.8 (-19%) 
+
+(MMACs/ms) Fu MBConv 25.5 36.3 38.7 27.8 24.3 30.5 
+
+GrFu MBConv 14.7 28.3 37.2 32.3 26.5 27.8 (-8%) 
+
+MBConv 7.8 13.3 21.4 26.4 26.2 19.0 
+
+14x14 Gr MBConv 6.3 10.6 16.7 22.1 23.3 15.8 (-16%) 
+
+(MMACs/ms) Fu MBConv 40.6 45.3 40.7 32.4 24.5 36.7 
+
+GrFu MBConv 31.0 42.1 44.4 34.7 30.4 36.5 (-0%) 
+
+MBConv 11.7 18.6 22.5 26.3 26.9 21.2 
+
+28x28 Gr MBConv 9.4 14.8 18.1 21.3 26.8 18.1 (-14%) 
+
+(MMACs/ms) Fu MBConv 53.2 54.6 41.2 30.0 25.9 41.0 
+
+GrFu MBConv 45.5 53.4 44.1 37.5 29.2 41.9 (+2%) 
+
+MBConv 8.4 12.8 19.1 22.7 30.8 18.8 
+
+56x56 Gr MBConv 7.2 9.9 14.3 18.4 25.4 15.0 (-20%) 
+
+(MMACs/ms) Fu MBConv 42.3 37.5 31.7 24.4 23.2 31.8 
+
+GrFu MBConv 35.3 37.3 34.8 27.2 24.0 31.7 (-0%) 
+
+Table 10. Execution efficiency of MACs, measured in MMACs/ms on the ARM CPU of the Raspberry Pi5, for the four MBConv variants (MBConv, GrMBConv, FuMBConv and GrFuMBConv) for different channel dimensions and operating resolutions. Bold entries indicate whether the grouped or ungrouped variant has higher MACpS. All grouped variants have groups = 2 . It is similar to Table 1, but for resolutions 7 × 7, 14 × 14 , 28 × 28 and 56 × 56 and only on ARM CPU. 
+
+resolutions 7 × 7, 28 × 28 and 56 × 56 . The numbers are mostly very similar to 1, independent of the resolu-tions. However the GrMBConv consistently underperforms on ARM CPU, compared to the other CPU devices fea-tured in Table 1 (Snapdragon 8 Elite CPU, Google Pixel 4 CPU). The FuMBConv block however consistently shows high MACpS, only on resolution 7 × 7 it falls off a bit. 
+
+7.4. Grouping 4 on ARM CPU 
+
+In Table 11 we repeat the experiment of Table 1 for addi-tional resolutions ( 7×7, 14 ×14 , 28 ×28 and 56 ×56 ) and on the ARM CPU, but for groups = 4 instead of groups = 2 .The averaged numbers with groups = 4 (Table 11) are very similar to groups = 2 (Table 1), however the distribution over the channels is different: For channel dimensions be-low 128, GrFuMBConv with groups = 4 has 20% lower MACpS, compared to groups = 2 . However for chan-nel dimensions over 128, they have 36% higher MACpS. Consequently, depending on the channel dimension, either 
+
+groups = 2 (below 128) or groups = 4 (over 128) is more hardware efficient. 
+
+7.5. Grouping GPU - additional Resolutions 
+
+In Table 12 we repeat the experiment of Table 1 for addi-tional resolutions ( 7 × 7, 14 × 14 , 28 × 28 and 56 × 56 )on the Nvidia TITAN RTX GPU. We observe that at lower resolutions, the grouped variants perform worse, likely due                                                                                                                         
+
+> Grouping=4 Experiment ARM CPU Channel Dimension Resolution Variant 32 64 128 256 512 Avg.
+> MBConv 4.1 8.5 14.9 22.4 23.5 14.7
+> 7x7 Gr MBConv 3.1 5.4 10.2 17.4 19.9 11.2 (-23%)
+> (MMACs/ms) Fu MBConv 25.5 36.3 38.7 27.8 24.3 30.5
+> GrFu MBConv 10.2 18.5 31.4 34.9 32.0 25.4 (-16%)
+> MBConv 7.8 13.3 21.4 26.4 26.2 19.0
+> 14x14 Gr MBConv 5.6 9.2 16.1 22.1 28.1 16.2 (-14%)
+> (MMACs/ms) Fu MBConv 40.6 45.3 40.7 32.4 24.5 36.7
+> GrFu MBConv 24.8 36.4 43.2 41.4 39.8 37.1 (+1%)
+> MBConv 11.7 18.6 22.5 26.3 26.9 21.2
+> 28x28 Gr MBConv 8.4 13.0 17.1 23.6 36.6 19.7 (-7%)
+> (MMACs/ms) Fu MBConv 53.2 54.6 41.2 30.0 25.9 41.0
+> GrFu MBConv 36.7 47.1 49.5 50.5 45.7 45.9 (+12%)
+> MBConv 8.4 12.8 19.1 22.7 30.8 18.8
+> 56x56 Gr MBConv 6.3 8.9 14.2 21.6 33.8 17.0 (-9%)
+> (MMACs/ms) Fu MBConv 42.3 37.5 31.7 24.4 23.2 31.8
+> GrFu MBConv 31.3 30.8 39.7 43.4 39.5 36.9 (+16%)
+
+Table 11. Execution efficiency of MACs, measured in MMACs/ms on the ARM CPU of the Raspberry Pi5, for the four MBConv vari-ants (MBConv, GrMBConv, FuMBConv and GrFuMBConv) for different channel dimensions and operating resolutions. Bold en-tries indicate whether the grouped or ungrouped variant has higher MACpS. It is similar to Table 1, but for resolutions 7 × 7, 14 × 14 ,
+
+28 × 28 and 56 × 56 , only on ARM CPU and all grouped variants have groups = 4 instead of groups = 2 of Table 1. 
+
+to reduced opportunities for parallelizing the convolutional operations. From Table 12 we can conclude, that grouping convolutions does not fully translate lower MAC count to a similarly low latency on GPU. Grouping=2 Experiment GPU Channel Dimension Resolution Variant 32 64 128 256 512 Avg. 
+
+MBConv 8.6 31.7 114.4 474.0 1746.1 475.0 
+
+7x7 Gr MBConv 5.6 20.4 82.4 328.4 1094.9 306.3 (-35%) 
+
+(MMACs/ms) Fu MBConv 45.6 182.4 672.7 1089.9 1309.8 660.1 
+
+GrFu MBConv 23.5 85.6 342.2 878.4 1264.3 518.8 (-21%) 
+
+MBConv 34.2 112.3 428.6 1747.3 3494.0 1163.3 
+
+14x14 Gr MBConv 25.0 88.4 308.8 1260.6 2679.1 872.4 (-25%) 
+
+(MMACs/ms) Fu MBConv 185.1 622.6 2394.6 3612.2 3849.0 2132.7 
+
+GrFu MBConv 96.8 330.3 1307.3 2963.3 3878.9 1715.3 (-19%) 
+
+MBConv 140.0 530.1 1865.3 3053.0 4114.5 1940.6 
+
+28x28 Gr MBConv 96.7 384.0 1350.1 2395.3 3769.6 1599.1 (-17%) 
+
+(MMACs/ms) Fu MBConv 752.8 3043.4 4882.2 5472.1 5676.0 3965.3 
+
+GrFu MBConv 395.0 1452.0 4237.8 4839.3 5703.9 3325.6 (-16%) 
+
+MBConv 524.9 1503.4 2518.9 3820.4 4717.1 2617.0 
+
+56x56 Gr MBConv 379.8 1048.2 1953.9 3171.3 4416.1 2193.8 (-16%) 
+
+(MMACs/ms) Fu MBConv 2930.6 4971.6 6183.8 7226.3 7576.2 5777.7 
+
+GrFu MBConv 1402.0 3654.2 5068.1 6606.4 7288.1 4803.8 (-17%) 
+
+Table 12. Execution efficiency of MACs, measured in MMACs/ms on the Nvidia TITAN RTX GPU, for the four MBConv variants (MBConv, GrMBConv, FuMBConv and GrFuMBConv) for different channel dimensions and operating resolutions. Bold entries indicate whether the grouped or ungrouped variant has higher MACpS. All grouped variants have groups = 2 . It is similar to Table 1, but for resolutions 7 × 7, 14 × 14 , 28 × 28 and 56 × 56 and only on GPU.
