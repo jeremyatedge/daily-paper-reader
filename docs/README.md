@@ -6,82 +6,64 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-31
-- 运行时间：2026-03-31 20:21:10 UTC
+- 最新运行日期：2026-04-01
+- 运行时间：2026-04-01 20:11:44 UTC
 - 运行状态：成功
-- 本次总论文数：20
-- 精读区：9
-- 速读区：11
+- 本次总论文数：14
+- 精读区：6
+- 速读区：8
 
 ### 今日简报（AI）
-今日深度研读20篇前沿成果，重点攻克视觉架构硬件效率瓶颈与自动驾驶能效感知难题。
-核心结论指出，应超越单一MAC指标优化视觉骨干网，并利用运动感知近似内存实现自动驾驶的高能效感知。
-建议关注硬件协同设计与碳中和边缘计算框架，在追求极致性能的同时兼顾算力可持续性。
-- 详情：[/202603/31/README](/202603/31/README)
+今日深挖 14 篇前沿文献，重点揭示了工业边缘云智能化的潜在弊端及数据流网络的能效权衡。
+最值得关注边缘云连续体中的架构风险，以及通过线性设计问题实现的可扩展协同设计理论。
+建议优先阅读 GreenFLag 相关研究，掌握在联邦学习中兼顾性能与绿色节能的最新策略。
+- 详情：[/202604/01/README](/202604/01/README)
 
 ### 精读区论文标签
-1. [Beyond MACs: Hardware Efficient Architecture Design for Vision Backbones](/202603/31/2603.26551v1-beyond-macs-hardware-efficient-architecture-design-for-vision-backbones)  
-   标签：评分：10.0/10、query:aiot
-   evidence：边缘设备视觉骨干网的硬件高效架构设计
-2. [MotiMem: Motion-Aware Approximate Memory for Energy-Efficient Neural Perception in Autonomous Vehicles](/202603/31/2603.27108v1-motimem-motion-aware-approximate-memory-for-energy-efficient-neural-perception-in-autonomous-vehicles)  
-   标签：评分：10.0/10、query:aiot
-   evidence：针对能效感知的软硬件协同设计
-3. [K-Means Based TinyML Anomaly Detection and Distributed Model Reuse via the Distributed Internet of Learning (DIoL)](/202603/31/2603.27393v1-k-means-based-tinyml-anomaly-detection-and-distributed-model-reuse-via-the-distributed-internet-of-learning-diol)  
-   标签：评分：10.0/10、query:aiot
-   evidence：MCU上的TinyML异常检测与分布式模型重用
-4. [EdgeDiT: Hardware-Aware Diffusion Transformers for Efficient On-Device Image Generation](/202603/31/2603.28405v1-edgedit-hardware-aware-diffusion-transformers-for-efficient-on-device-image-generation)  
-   标签：评分：10.0/10、query:aiot
-   evidence：移动端NPU上扩散Transformer的硬件感知优化
-5. [CPUBone: Efficient Vision Backbone Design for Devices with Low Parallelization Capabilities](/202603/31/2603.26425v2-cpubone-efficient-vision-backbone-design-for-devices-with-low-parallelization-capabilities)  
+1. [Downsides of Smartness Across Edge-Cloud Continuum in Modern Industry](/202604/01/2603.29289v1-downsides-of-smartness-across-edge-cloud-continuum-in-modern-industry)  
    标签：评分：9.0/10、query:aiot
-   evidence：嵌入式系统的高效视觉骨干网络设计
-6. [An Energy-Efficient Spiking Neural Network Architecture for Predictive Insulin Delivery](/202603/31/2603.27589v1-an-energy-efficient-spiking-neural-network-architecture-for-predictive-insulin-delivery)  
+   evidence：工业物联网(IIoT)与边缘云协同中的AI解决方案
+2. [Exploration of Energy and Throughput Tradeoffs for Dataflow Networks](/202604/01/2603.29367v1-exploration-of-energy-and-throughput-tradeoffs-for-dataflow-networks)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于可穿戴边缘设备的能效脉冲神经网络
-7. [Expert Streaming: Accelerating Low-Batch MoE Inference via Multi-chiplet Architecture and Dynamic Expert Trajectory Scheduling](/202603/31/2603.27624v1-expert-streaming-accelerating-low-batch-moe-inference-via-multi-chiplet-architecture-and-dynamic-expert-trajectory-scheduling)  
+   evidence：硬件数据流网络的能效与吞吐量权衡
+3. [Quantization with Unified Adaptive Distillation to enable multi-LoRA based one-for-all Generative Vision Models on edge](/202604/01/2603.29535v1-quantization-with-unified-adaptive-distillation-to-enable-multi-lora-based-one-for-all-generative-vision-models-on-edge)  
    标签：评分：9.0/10、query:aiot
-   evidence：边缘AI MoE推理的多芯粒架构
-8. [AceleradorSNN: A Neuromorphic Cognitive System Integrating Spiking Neural Networks and DynamicImage Signal Processing on FPGA](/202603/31/2603.28429v1-aceleradorsnn-a-neuromorphic-cognitive-system-integrating-spiking-neural-networks-and-dynamicimage-signal-processing-on-fpga)  
+   evidence：边缘生成式模型的量化与蒸馏
+4. [AI-Programmable Wireless Connectivity: Challenges and Research Directions Toward Interactive and Immersive Industry](/202604/01/2603.29752v1-ai-programmable-wireless-connectivity-challenges-and-research-directions-toward-interactive-and-immersive-industry)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于FPGA的类脑硬件加速
-9. [Trust-Aware Routing for Distributed Generative AI Inference at the Edge](/202603/31/2603.28622v1-trust-aware-routing-for-distributed-generative-ai-inference-at-the-edge)  
-   标签：评分：9.0/10、query:aiot
-   evidence：跨异构边缘设备的分布式生成式AI推理
+   evidence：用于节能无线连接的微型和实时机器学习
+5. [AXON: An Automated Netlist Optimization Framework for High-Speed Adders](/202604/01/2603.28184v1-axon-an-automated-netlist-optimization-framework-for-high-speed-adders)  
+   标签：评分：8.0/10、query:aiot
+   evidence：针对功耗、性能和面积的自动网表优化
+6. [OneComp: One-Line Revolution for Generative AI Model Compression](/202604/01/2603.28845v1-onecomp-one-line-revolution-for-generative-ai-model-compression)  
+   标签：评分：8.0/10、query:aiot
+   evidence：生成式AI模型压缩的资源自适应流水线
 
 ### 速读区论文标签
-1. [Efficient CMOS Invertible Logic Using Stochastic Computing](/202603/31/2603.27030v1-efficient-cmos-invertible-logic-using-stochastic-computing)  
+1. [Scalable Co-Design via Linear Design Problems: Compositional Theory and Algorithms](/202604/01/2603.29083v1-scalable-co-design-via-linear-design-problems-compositional-theory-and-algorithms)  
    标签：评分：8.0/10、query:aiot
-   evidence：使用随机计算的CMOS硬件脉冲神经网络
-2. [A 64-Spin All-to-All CMOS Ising Machine with Landscape Perturbation Achieving 2.28 nJ/Edge-Bit Energy-to-Solution](/202603/31/2603.27402v1-a-64-spin-all-to-all-cmos-ising-machine-with-landscape-perturbation-achieving-228-njedge-bit-energy-to-solution)  
+   evidence：可扩展软硬件协同设计的组合理论
+2. [GreenFLag: A Green Agentic Approach for Energy-Efficient Federated Learning](/202604/01/2603.29933v1-greenflag-a-green-agentic-approach-for-energy-efficient-federated-learning)  
    标签：评分：8.0/10、query:aiot
-   evidence：用于优化的低功耗CMOS伊辛机
-3. [CarbonEdge: Carbon-Aware Deep Learning Inference Framework for Sustainable Edge Computing](/202603/31/2603.27420v1-carbonedge-carbon-aware-deep-learning-inference-framework-for-sustainable-edge-computing)  
-   标签：评分：8.0/10、query:aiot
-   evidence：边缘计算中碳感知的深度学习推理
-4. [Pre-Deployment Complexity Estimation for Federated Perception Systems](/202603/31/2603.28282v1-pre-deployment-complexity-estimation-for-federated-perception-systems)  
-   标签：评分：8.0/10、query:aiot
-   evidence：边缘AI系统的复杂度评估
-5. [MoE-Sieve: Routing-Guided LoRA for Efficient MoE Fine-Tuning](/202603/31/2603.24044v1-moe-sieve-routing-guided-lora-for-efficient-moe-fine-tuning)  
+   evidence：最小化移动网络联邦学习的能耗
+3. [Per-Bank Memory Bandwidth Regulation for Predictable and Performant Real-Time System](/202604/01/2603.26054v1-per-bank-memory-bandwidth-regulation-for-predictable-and-performant-real-time-system)  
    标签：评分：7.0/10、query:aiot
-   evidence：通过路由引导的LoRA进行高效MoE微调
-6. [USAM: A Unified Safety-Age metric for Timeliness in Heterogeneous IoT Systems](/202603/31/2603.26628v1-usam-a-unified-safety-age-metric-for-timeliness-in-heterogeneous-iot-systems)  
+   evidence：实时SoC的内存带宽调节
+4. [Subspace Optimization for Backpropagation-Free Continual Test-Time Adaptation](/202604/01/2603.28678v1-subspace-optimization-for-backpropagation-free-continual-test-time-adaptation)  
    标签：评分：7.0/10、query:aiot
-   evidence：异构物联网系统的安全感知时效性指标
-7. [Attacking AI Accelerators by Leveraging Arithmetic Properties of Addition](/202603/31/2603.27439v1-attacking-ai-accelerators-by-leveraging-arithmetic-properties-of-addition)  
+   evidence：无反向传播的自适应技术以提高运行效率
+5. [Understand and Accelerate Memory Processing Pipeline for Disaggregated LLM Inference](/202604/01/2603.29002v1-understand-and-accelerate-memory-processing-pipeline-for-disaggregated-llm-inference)  
    标签：评分：7.0/10、query:aiot
-   evidence：AI加速器硬件的可靠性
-8. [Interpretable Ensemble Learning for Network Traffic Anomaly Detection: A SHAP-based Explainable AI Framework for Embedded Systems Security](/202603/31/2603.28654v1-interpretable-ensemble-learning-for-network-traffic-anomaly-detection-a-shap-based-explainable-ai-framework-for-embedded-systems-security)  
-   标签：评分：7.0/10、query:aiot
-   evidence：用于嵌入式系统安全的各种可解释AI框架
-9. [On the Codesign of Scientific Experiments and Industrial Systems](/202603/31/2603.26613v1-on-the-codesign-of-scientific-experiments-and-industrial-systems)  
+   evidence：在异构系统上加速大语言模型推理的内存处理
+6. [AgentCollab: A Self-Evaluation-Driven Collaboration Paradigm for Efficient LLM Agents](/202604/01/2603.26034v1-agentcollab-a-self-evaluation-driven-collaboration-paradigm-for-efficient-llm-agents)  
    标签：评分：6.0/10、query:aiot
-   evidence：复杂系统的硬件和软件参数协同设计
-10. [GSR-GNN: Training Acceleration and Memory-Saving Framework of Deep GNNs on Circuit Graph](/202603/31/2603.27156v1-gsr-gnn-training-acceleration-and-memory-saving-framework-of-deep-gnns-on-circuit-graph)  
+   evidence：提高执行效率的协作推理框架
+7. [Semantic Sensing: A Task-Oriented Paradigm](/202604/01/2603.29102v1-semantic-sensing-a-task-oriented-paradigm)  
    标签：评分：6.0/10、query:aiot
-   evidence：电路图上GNN的省内存训练框架
-11. [TurboAngle: Near-Lossless KV Cache Compression via Uniform Angle Quantization](/202603/31/2603.27467v1-turboangle-near-lossless-kv-cache-compression-via-uniform-angle-quantization)  
+   evidence：面向任务的感知与通信范式
+8. [Quantale-Enriched Co-Design: Toward a Framework for Quantitative Heterogeneous System Design](/202604/01/2603.29921v1-quantale-enriched-co-design-toward-a-framework-for-quantitative-heterogeneous-system-design)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于模型优化的KV缓存压缩
+   evidence：异构系统定量协同设计的理论框架
 
 
 <div class="dpr-home-promo-card">
