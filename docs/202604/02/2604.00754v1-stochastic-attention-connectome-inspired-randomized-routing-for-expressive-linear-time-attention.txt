@@ -1,0 +1,890 @@
+Title: Stochastic Attention: Connectome-Inspired Randomized Routing for Expressive Linear-Time Attention
+
+URL Source: https://arxiv.org/pdf/2604.00754v1
+
+Published Time: Thu, 02 Apr 2026 01:04:47 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+Preprint. Under review. 
+
+# Stochastic Attention: Connectome-Inspired Randomized Routing for Expressive Linear-Time Attention 
+
+Zehao Jin 
+
+Tsinghua University 
+
+lunamos.thu@gmail.com 
+
+Yanan Sui 
+
+Tsinghua University 
+
+ysui@tsinghua.edu.cn 
+
+# Abstract 
+
+The whole-brain connectome of a fruit fly comprises over 130K neurons connected with a probability of merely 0.02%, yet achieves an average shortest path of only 4.4 hops. Despite being highly structured at the cir-cuit level, the network’s long-range connections are broadly distributed across brain regions, functioning as stochastic shortcuts that enable efficient global communication. Inspired by this observation, we propose Stochastic Attention (SA), a drop-in enhancement for sliding-window attention (SWA) that applies a random permutation to the token sequence before windowed attention and restores the original order afterward. This transforms the fixed local window into a stochastic global one within the same O(nw ) per-layer budget. Through depth, independently sampled permutations yield exponentially growing receptive fields, achieving full sequence coverage in 
+
+O(log w n) layers versus O(n/w) for SWA. We validate SA in two settings: pre-training language models from scratch, where a gated SA + SWA com-bination achieves the best average zero-shot accuracy, and training-free inference on Qwen3-8B and Qwen3-30B-A3B, where SA consistently out-performs SWA and matches or exceeds Mixture of Block Attention at com-parable compute budgets. These results suggest that connectome-inspired stochastic routing is a practical primitive for improving the expressivity of efficient attention, complementary to existing linear and sparse approaches. 
+
+# 1 Introduction 
+
+How should an efficient attention mechanism route information? A compelling answer comes from neuroscience. The whole-brain connectome of fruit fly ( Drosophila melanogaster )(Lin et al., 2024; Dorkenwald et al., 2024) reveals a network of ∼130,000 neurons with a connection probability of merely 0.02%, yet an average path length of only ∼4.4 hops and a small-worldness coefficient of ∼141. The Drosophila connectome is highly structured, fea-turing rich-club organization, elevated reciprocity, and selective motif over-representation (Lin et al., 2024). Yet it also exhibits small-world topology: dense local clustering coexists with broadly distributed long-range connections. From any local neighborhood’s perspec-tive, the targets of these long-range projections resemble stochastic shortcuts scattered across brain regions. This suggests a design principle: global information flow can emerge from the interplay of structured local computation and distributed long-range shortcuts accumulated over a few synaptic steps. This principle contrasts sharply with sliding-window attention (SWA) (Beltagy et al.; Jiang et al., 2023; Liu et al.), which restricts each token to a local window of size w at O(nw ) cost per layer. SWA has been widely adopted in production models: Mistral (Jiang et al., 2023) uses it throughout, while Gemma 2 (Team et al., 2024) and gpt-oss (OpenAI, 2025) alternate SWA with full attention. However, SWA’s deterministic locality limits the receptive field to 
+
+ℓw after ℓ layers, leaving large portions of the sequence unreachable when w ≪ n. Existing remedies introduce global tokens (Beltagy et al.), hand-crafted sparse patterns (Zaheer et al., 2021), or block-level routing (Lu et al.), each adding architectural complexity. 1
+
+> arXiv:2604.00754v1 [cs.CL] 1 Apr 2026
+
+Preprint. Under review. Inspired by this organization, we propose Stochastic Attention (SA) : before applying windowed attention, we randomly permute the token sequence, and after attention, we restore the original order. In the permuted space, the fixed local window spans a random subset of the full sequence, giving each token a uniform probability of attending to any other regardless of distance. Through depth, independently sampled permutations yield exponentially growing receptive fields. When combined with SWA via a learned gate, SA + SWA reproduces the connectome’s small-world regime: structured local clustering from SWA and distributed long-range shortcuts from SA. The mechanism adds no learnable parameters to the attention itself and only O(n) index-permutation overhead, implemented as simple permutation operations around any existing SWA kernel. 
+
+Figure 1: Overview of Stochastic Attention (SA). (a) A standard SWA Transformer layer. (b) The fruit fly whole-brain connectome: the adjacency matrix, shown after Reverse Cuthill– McKee reordering to expose block structure, lacks clear diagonal blocks, indicating that connections are broadly distributed across brain regions rather than confined to local modules. (c) An SA layer: token sequences are randomly permuted before windowed attention and restored afterward, producing stochastic long-range shortcuts analogous to the cross-regional connections in (b). We evaluate SA in two complementary settings. First, we pre-train language models from scratch, comparing SA, SWA, and their gated combination under identical architectures and training recipes. The combined SA + SWA model achieves the best average zero-shot accuracy, demonstrating that the two mechanisms are complementary: SWA provides local coherence while SA provides global coverage. Second, we apply SA as a training-free attention replacement in Qwen3-8B and Qwen3-30B-A3B (Yang et al., a), where it consistently outperforms SWA and matches or exceeds MoBA (Lu et al.) at comparable compute budgets, demonstrating that stochastic routing is effective even when applied post-hoc to models trained with full attention. 
+
+Contributions. (1) We introduce Stochastic Attention (SA) , a parameter-free enhance-ment for SWA that randomly permutes token order before windowed attention, achieving exponential receptive field growth ( O(log w n) full coverage) within the same O(nw ) budget. (2) We propose a gated SA + SWA combination that reproduces the connectome’s small-world regime (local clustering from SWA, stochastic long-range shortcuts from SA) and provides theoretical analysis of coverage depth, pairwise connectivity, and bias-variance trade-offs. (3) Experiments on pre-training (360M) and training-free inference (Qwen3-8B, 2Preprint. Under review. Qwen3-30B-A3B) show SA + SWA consistently outperforms SWA and matches or exceeds full attention and MoBA at comparable compute. 
+
+# 2 Related Work 
+
+Windowed, sparse, and linear attention. Longformer (Beltagy et al.) augments local windows with global tokens. Swin Transformer (Liu et al.) uses shifted windows for cross-window interaction in vision. BigBird (Zaheer et al., 2021) combines local, random, and global connections with expressivity guarantees. MoBA (Lu et al.) routes each query to the top-k most relevant KV blocks. Linear attention replaces softmax with kernelized or recurrent formulations (Katharopoulos et al.), and Gated Linear Attention (Yang et al., b) adds data-dependent gating for improved expressivity. Further advances include Yang et al. (c); Dao & Gu; Oren et al.; Guo et al.; Lei et al.. SA is complementary: it does not alter the attention formulation or define a sparse pattern, but changes which tokens become local neighbors across layers via random permutations, enabling global mixing within any existing windowed or linear attention kernel. 
+
+Token shuffling and rearrangement. Several vision methods employ deterministic token rearrangement to improve efficiency. Shuffle Transformer (Huang et al.) permutes tokens across spatial windows using a fixed pattern inspired by channel shuffle, enabling cross-window information flow. Token-Shuffle (Ma et al.) merges local visual tokens along the channel dimension (a spatial-to-depth reshape) to reduce token count in autoregressive image generation. DeepStack (Meng et al.) distributes visual tokens across different Trans-former layers rather than concatenating them all at the input. These methods use structured, deterministic rearrangements specific to vision architectures. SA differs in two key respects: the permutations are random and resampled per layer, which provides provable coverage guarantees ( O(log w n) depth), and the mechanism is modality-agnostic, applying directly to sequential language modeling. 
+
+# 3 Method 
+
+We first introduce notation and background (§3.1), then present the biological motivation (§3.2), the SA mechanism (§3.3), and the gated SA + SWA combination (§3.4). 
+
+3.1 Preliminaries 
+
+Consider an input sequence X = ( x1, x2, . . . , xn) ∈ Rn×d, where n is the sequence length and d is the hidden dimension. Standard multi-head attention computes, for each head, the query, key, and value projections Q = XWQ, K = XWK, V = XWV ∈ Rn×dh , where 
+
+dh = d/H and H is the number of heads. For each position i ∈ [n], sliding window attention (SWA) restricts the attention to a local neighborhood Nw(i) of size w. For the theoretical analysis, we use a symmetric circular window Nw(i) = {j ∈ [n] : |i − j|n < w/ 2}, where |i − j|n = min (|i − j|, n − | i − j|) denotes circular distance. 1 The SWA output is: SWA (i) = ∑ 
+
+> j∈N w(i)
+
+αij Vj, αij = exp (Q⊤ 
+
+> i
+
+Kj/√dh)
+
+∑k∈N w (i) exp (Q⊤ 
+
+> i
+
+Kk/√dh) . (1) SWA achieves O(nw ) time and memory complexity, but its effective receptive field is limited to a linear growth of ℓw after ℓ layers.             
+
+> 1In practice, causal language models use a one-sided window Nw(i) = {j:0≤i−j≤w−1}.The theoretical results hold under either convention.
+
+3Preprint. Under review. 
+
+3.2 From Connectome to Stochastic Attention 
+
+The fruit fly connectome comprises ∼130 , 000 neurons with connection probability p ≈ 0.02% and average degree ¯k ≈ 21, yet exhibits a short average path length of ∼4.4 hops, clustering coefficient ∼0.048, and small-worldness ∼141 (Lin et al., 2024). The network is highly structured, but its short paths require broadly distributed long-range connections that, from any local neighborhood’s perspective, function as stochastic shortcuts (Watts & Strogatz, 1998). Neither SWA (high clustering, diameter Θ(n/w)) nor a random graph (short paths, negligible clustering) can achieve this regime alone. We formalize this by modeling attention as a graph on n tokens. In SA, a random per-mutation σℓ ∼ Uniform (Sn) is drawn independently at each layer, and token i attends to 
+
+σ−1 
+
+> ℓ
+
+(Nw(σℓ(i))) . The pairwise connection probability is (see Appendix A): Pr j ∈ σ−1(Nw(σ(i)))  = w − 1
+
+n − 1 ≈ wn , (2) producing approximately uniform edges over all token pairs, analogous to the connectome’s distributed long-range shortcuts. The gated SA + SWA combination thus mirrors the Watts–Strogatz construction: SWA preserves local clustering, SA adds distributed shortcuts. Through multi-layer composition, the reachable set grows as E[|Rℓ(i)|] = Ω(wℓ) (Ap-pendix A.2), giving full coverage in O(log w n) layers vs. O(n/w) for SWA. With n ≈ 130 , 000 and ¯k ≈ 21, this predicts ⌈log 21 130 ,000 ⌉ = 4 layers for all-pairs reachability, matching the connectome’s mean path length of ∼4.4 (Lin et al., 2024). Figure 2 illustrates these properties. 
+
+Figure 2: Left: Receptive field coverage as a function of depth ( n=2048, w=32). SA achieves full sequence coverage in O(log w n) layers via exponential growth, while SWA requires 
+
+O(n/w) layers with linear growth. Right: Computational cost scaling with sequence length (w=256). Both SA and SWA maintain O(nw ) linear scaling, while full attention grows quadratically. 
+
+3.3 Stochastic Attention 
+
+The core idea is to apply a random permutation to the token sequence before performing sliding window attention, and then restore the original order afterward. This transforms the positionally local attention pattern into a stochastic global one. Concretely, let σ ∼ Uniform (Sn) be a random permutation drawn uniformly from the symmetric group Sn, and let Pσ ∈ { 0, 1 }n×n be the corresponding permutation matrix. Stochastic Attention operates in three stages: 1. Permute. Rearrange all representations: ˜ Q = PσQ, ˜ K = PσK, ˜ V = PσV.2. Windowed Attention. Apply standard SWA in permuted space: ˜Y = SWA ( ˜Q, ˜K, ˜V; w).4Preprint. Under review. 3. Undo Permute. Restore original order: Ysto = Pσ−1 ˜Y.In the original token space, position i now attends to the random neighborhood ˜N σ 
+
+> w
+
+(i) = j ∈ [n] : |σ(j) − σ(i)|n < w/2 , (3) which is a random subset of [n] of expected size w, uniformly spread across the full sequence regardless of the original distance |i − j|. Equivalently, the mechanism is characterized by a binary random mask Mσ ∈ { 0, 1 }n×n with Mσ 
+
+> ij
+
+= 1[|σ(i) − σ(j)|n < w/ 2], and the full operation can be written compactly as: 
+
+Ysto = softmax 
+
+ QK ⊤
+
+√dh
+
+⊙ Mσ + ( 1 − Mσ) · (−∞)
+
+
+
+V. (4) The permutation σ is sampled independently per layer and shared across all attention heads within that layer. During inference, σ can be either freshly sampled (stochastic mode) or fixed to a predetermined permutation (deterministic mode). We use stochastic mode throughout our experiments. In autoregressive language models, each token i may only attend to tokens j ≤ i. Under SA, this causal constraint is applied after permutation: in the permuted space, token σ(i) attends to {j′ ∈ N w(σ(i)) : σ−1(j′) ≤ i}. The effective neighborhood in the original space thus consists of tokens that are both within the permuted window and causally accessible. This preserves the autoregressive property while still enabling stochastic long-range connections. The connection probability in Eq. 2 becomes approximately w−12(n−1) on average (since roughly half of window neighbors are causally masked), which does not change the asymptotic 
+
+O(log w n) coverage depth. The permute and undo-permute operations are O(n) index rearrangements. The SWA computation in the permuted space costs O(nw ), identical to standard SWA. In practice, both steps are implemented via in-place index gather/scatter operations on GPU, which fuse naturally with FlexAttention (Dong et al., 2024): the forward permutation is realized as 
+
+Q[sigma], K[sigma], V[sigma] and the inverse as Y[sigma inv] , where both σ and σ−1 are precomputed as integer index tensors. The entire Stochastic Attention layer is thus a thin wrapper around any existing SWA implementation with negligible overhead. Pseudocode is provided in Algorithm 1 (Appendix B). 
+
+3.4 Combining SA and SWA 
+
+As discussed in §3.2, the fruit fly connectome achieves its small-world property through the coexistence of dense local connectivity and sparse long-range shortcuts. Pure SA provides the shortcuts but disrupts locality: the random permutation scatters positionally adjacent tokens, and when n ≫ w the probability that two neighboring tokens share a stochastic window drops to w/n ≪ 1. To recover the small-world regime (high clustering and short paths), we combine SA and SWA in a dual-path architecture with learned attention gates: 
+
+Y = gsa ⊙ Ysa + gswa ⊙ Yswa , (5) where Ysa is the output of Stochastic Attention, Yswa is the output of standard SWA, and 
+
+gsa , gswa ∈ Rn×d are per-token, per-dimension gating weights. Each gate is computed from its corresponding attention output via an independent sigmoid projection: 
+
+gswa = sigmoid (Wswa  
+
+> g
+
+(Yswa )⊤)⊤, gsa = sigmoid (Wsa  
+
+> g
+
+(Ysa )⊤)⊤, (6) where Wswa  
+
+> g
+
+, Wsa  
+
+> g
+
+∈ Rd×d are learnable parameters. Unlike a softmax gate that enforces 
+
+gsa  
+
+> i
+
++ gswa  
+
+> i
+
+= 1, the two sigmoid gates are independent, allowing the model to up-weight or down-weight both paths simultaneously. This design mirrors the single-path attention gate used in the non-fusion variants (see Appendix B). 5Preprint. Under review. Both attention paths run in parallel. The total cost is O(nw ) for SWA +O(nw ) for SA +O(nd )
+
+for the gating projections, giving O(nw + nd ) overall. Since both d and w are constants with respect to n, the per-layer complexity remains O(n). Pseudocode is provided in Algorithm 2 (Appendix B). We additionally show that SA is an approximately unbiased estimator of uniform full attention (bias O(1 /w), variance O(B2/w)), and that the gated SA + SWA combination admits a bias-variance decomposition where the gate learns to balance SWA’s systematic bias against SA’s stochastic variance. While a single SA layer has the same spectrum as SWA (permutation is a similarity transform), multi-layer composition with independent permutations breaks this similarity and yields rapid mixing consistent with the O(log w n)
+
+receptive field bound. Full theoretical analysis, proofs, and a comparison table are provided in Appendix A. 
+
+# 4 Experiments 
+
+We evaluate Stochastic Attention in two complementary settings. First, we pre-train lan-guage models ( ∼360M parameters) from scratch to assess whether SA can close the expres-sivity gap between SWA and full attention (§4.1). Second, we apply SA as a training-free attention replacement in Qwen3-8B and Qwen3-30B-A3B to test whether stochastic routing benefits pretrained models without retraining (§4.2). We conclude with an efficiency analysis (§4.3). 
+
+4.1 Pre-training: language modeling 
+
+Following the training recipe of (Yang et al., b), we train ∼360M-parameter decoder-only Transformers on a 6B-token subset of SlimPajama (Soboleva et al., 2023) for 2.5 epochs (∼15B tokens) with 24 layers, d=1024, 16 heads, w=256, and sequence length 2048. We compare four attention variants: Full Attention, SWA, SA, and SA + SWA. 2 All models are evaluated zero-shot on WikiText (Merity et al., 2016), LAMBADA (Paperno et al., 2016), PIQA (Bisk et al., 2019), HellaSwag (Zellers et al., 2019), WinoGrande (Sakaguchi et al., 2019), and ARC-Easy (Clark et al., 2018).                                                   
+
+> Model Wiki. ↓LMB-o ↓LMB-s ↓LMB-o LMB-s PIQA Hella. Wino. ARC-e Avg.
+> Full Attention 51.34 185.3 469.2 19.5 15.4 59.9 27.2 51.3 35.8 34.9 SWA ( w=256) 57.05 156.1 370.6 21.3 17.0 59.6 27.6 48.9 36.0 35.1 SA ( w=256) 75.83 260.1 785.9 20.1 14.1 59.3 26.4 51.9 34.2 34.3 SA + SWA ( w=256) 51.98 131.7 371.6 22.8 17.6 59.6 27.5 50.5 37.5 35.9
+
+Table 1: Zero-shot evaluation of language models trained on SlimPajama (15B tokens). All models share identical training setup, differing only in the attention mechanism. Wiki. and LMB ppl report perplexity ( ↓), all others report accuracy ( ↑). Best in bold , second best underlined. Table 1 reports zero-shot results. The gated SA + SWA combination achieves the best average downstream accuracy (35.9) and the best LAMBADA scores (ppl 131.7, acc 22.8/17.6), while matching Full Attention in WikiText perplexity (51.98 vs. 51.34). Pure SA alone suffers substantially higher perplexity than SWA (75.83 vs. 57.05), confirming that local coherence from fixed windows is essential for language modeling. However, SA retains competitive downstream accuracy (avg 34.3 vs. SWA’s 35.1), suggesting that stochastic global routing captures complementary information. The SA + SWA fusion recovers the best of both: SWA’s local coherence keeps perplexity low, while SA’s global coverage lifts downstream tasks, particularly LAMBADA, which requires integrating broad discourse context to predict the final word.  
+
+> 2All single-path variants (Full, SWA, SA) have 360M parameters. SA+SWA adds one extra gate (d
+
+× d per layer, ∼25M total, 385M overall). Full training details and hyperparameters are provided in Appendix B and Appendix C. 
+
+6Preprint. Under review. 
+
+Figure 3: Attention weight visualization (Layer 11, Head 0) on a 27-token sequence with window size w=8. Gray regions are masked (structurally invisible). Blue intensity indicates attention weight. Full Attention exhibits the complete lower-triangular pattern. SWA shows a strict diagonal band with all out-of-window positions masked. Stochastic Attention intro-duces scattered non-zero entries beyond the diagonal band. These are distant tokens that became local neighbors after random permutation, enabling direct long-range information flow within the same O(nw ) budget. SA + SWA combines both patterns: the SWA path provides the dense diagonal band for local coherence, while the SA path adds stochastic long-range connections, with the learned gate adaptively balancing the two. To provide further intuition, Figure 3 visualizes the attention patterns of different mech-anisms. SWA produces a strict diagonal band: tokens can only attend within their local window. Stochastic Attention, by contrast, introduces scattered attention entries far from the diagonal. These correspond to originally distant tokens that became neighbors in the permuted sequence, enabling direct long-range information pathways. The SA + SWA combination exhibits both the dense diagonal band from SWA and the scattered long-range entries from SA, explaining its strong performance across tasks requiring both local coherence and global reasoning. 
+
+4.2 Training-free inference on Qwen3 
+
+To evaluate whether SA can serve as a drop-in replacement for SWA in pretrained LLMs without additional training, we modify the attention mechanism of Qwen3-8B and Qwen3-30B-A3B (Yang et al., a) at inference time. We implement four attention modes sharing the same model weights: (1) Full : standard full causal attention (baseline), (2) SWA : sliding-window attention with window size w, (3) Stochastic : SA (random permutation + SWA with the same w), (4) MoBA : Mixture of Block Attention (Lu et al.) with block size c
+
+and top-k selection (effective window ≈ c × k). All modes apply only during prefill. Decoding uses full KV-cache attention. For Stochastic mode, RoPE position encodings use the original token positions (not the permuted positions), consistent with the pre-training setup and ensuring compatibility with the model’s learned positional representations. We evaluate on 7 benchmarks using lm-evaluation-harness (Gao et al., 2024): HellaSwag (Zellers et al., 2019), MMLU (Hendrycks et al., 2021), LAMBADA (Paperno et al., 2016), ARC-Easy, ARC-Challenge (Clark et al., 2018), BoolQ (loglikelihood) (Clark et al., 2019), and HumanEval (generation) (Chen et al., 2021). We sweep the effective window size across 
+
+w ∈ { 16, 32, 64, 128, 256, 512 } for SWA and Stochastic. For MoBA, the minimum viable chunk size is 32 (smaller chunks trigger CUDA kernel errors), so we test c ∈ { 32, 64, 128, 256 } with 
+
+k=2 (effective windows 64–512). Since Qwen3 is trained with full attention, its representations already encode long-range dependencies. SWA at inference time abruptly removes all out-of-window information, creating a distribution shift. SA mitigates this by ensuring that each token can still attend to a random global subset, approximately preserving the full-attention information flow within an O(nw ) budget and making it a closer approximation to training-time attention than SWA’s strict locality. 7Preprint. Under review. 
+
+Figure 4: Average accuracy across 7 benchmarks as a function of effective window size for Qwen3-8B (left) and Qwen3-30B-A3B (right). Stochastic Attention (red) recovers the full-attention baseline (dashed gray) most rapidly as window size increases, consistently outpacing SWA (blue) and matching or exceeding MoBA (green) at comparable compute budgets. 
+
+4.2.1 Main results 
+
+Figure 4 presents average accuracy as a function of window size for both models. Per-task breakdowns are shown in Figures 5–6, and full numerical results are provided in Tables 4–5 (Appendix E). Several consistent patterns emerge across model scales. First , Stochastic recovers full-attention quality fastest: on Qwen3-8B at weff =128, it already achieves 70.9% average accuracy (within 1 point of the 71.5% baseline), while SWA lags at 62.2%. The gap is even larger on Qwen3-30B-A3B, where Stochastic reaches 73.2% at weff =64 (vs. 47.0% for SWA and 66.3% for MoBA). Second , Stochastic consistently outperforms MoBA ( k=2) by 3–7 points at weff =64 and 128 across both models, with particularly large gains on MMLU, BoolQ, and LAMBADA. Third , at very small windows ( weff =32), SWA collapses on knowledge-intensive tasks (MMLU: 29.0 on 8B, 34.9 on 30B), while Stochastic retains substantially higher scores (44.4 / 52.0), confirming effective global information flow even with very local windows. 
+
+Figure 5: Per-task accuracy vs. window size on Qwen3-8B for four representative bench-marks. Figures 5–6 show per-task scaling curves on both models. On MMLU and BoolQ, tasks that require aggregating information across contexts, Stochastic converges to the full-attention baseline substantially faster than SWA. The advantage is consistent across both model scales. All Qwen3 results use a single random seed. We did not observe significant variance across preliminary runs with different seeds. Additional per-task results are provided in Appendix D. 8Preprint. Under review. 
+
+Figure 6: Per-task accuracy vs. window size on Qwen3-30B-A3B for four representative benchmarks. 
+
+4.3 Efficiency analysis 
+
+We profile attention throughput and memory by isolating the attention computation (for-ward + backward) at various sequence lengths on a single A100 80GB GPU. Each sequence length is benchmarked in a separate process to avoid compilation interference. 
+
+Seq. Length SA ( w=256 ) Full Attn Speedup 
+
+2,048 5.4 ms 8.0 ms 1.5 ×
+
+4,096 7.9 ms 27.2 ms 3.5 ×
+
+8,192 15.2 ms 99.7 ms 6.6 ×
+
+16,384 29.6 ms 379.9 ms 12.8 ×
+
+32,768 52.8 ms 1,477 ms 28.0 ×
+
+Table 2: Attention layer latency (ms, forward+backward) on A100 80GB. SA uses compiled FlexAttention (Dong et al., 2024) with w=256. Full attention sets w=L. Measured with 
+
+B=16, H=16, dh=64, bf16. Table 2 reports results from the training sequence length of 2,048 onward, where the speedup is stable and meaningful. 3 The speedup approximately doubles with each doubling of sequence length (1.5 × at 2K → 6.6 × at 8K → 28 × at 32K), consistent with the theoretical 
+
+O(nw ) vs. O(n2) scaling. For the dual-path SA + SWA configuration, the attention cost is approximately 2 × that of single-path SA, but remains O(nw ) and retains substantial speedups over full attention at long sequences. 
+
+# 5 Conclusion 
+
+We have introduced Stochastic Attention (SA), a parameter-free enhancement for sliding-window attention that applies random permutations before windowed attention to trans-form fixed local windows into stochastic global ones. SA preserves the O(nw ) per-layer cost of SWA while achieving exponentially growing receptive fields through depth. When combined with SWA via a lightweight learned gate, the resulting architecture reproduces the small-world regime observed in the fruit fly connectome: dense local clustering from SWA and distributed long-range shortcuts from SA. Pre-training experiments show the gated SA + SWA combination outperforms both pure SWA and full attention in average downstream accuracy, and training-free inference on Qwen3-8B and Qwen3-30B-A3B demonstrates that SA applied post-hoc to pretrained models matches full-attention quality at a fraction of the compute. Because SWA is already widely    
+
+> 3At shorter sequences ( n≤1,024), FlexAttention’s fixed block-level overhead (128 ×128 granularity) dominates, making wall-clock comparisons noisy.
+
+9Preprint. Under review. deployed in modern foundation models (e.g., Mistral, Gemma 2, gpt-oss), SA can serve as a drop-in upgrade wherever windowed attention layers exist. More broadly, these results reinforce a lesson from neuroscience: global information flow need not rely on dense all-to-all connectivity, but can emerge from the interplay of structured local computation and sparse long-range shortcuts accumulated through depth. 
+
+# Ethics Statement 
+
+This work proposes a general-purpose attention mechanism for Transformer architectures. The method itself does not introduce new ethical risks beyond those inherent to large language models. All experiments use publicly available models (Qwen3) and datasets (SlimPajama, standard NLP benchmarks). No private or sensitive data was used. As with any improvement to language model efficiency or expressivity, downstream applications should be evaluated for potential misuse independently of the architectural contribution. 
+
+# Reproducibility Statement 
+
+We provide full architectural and training details in Appendix B and Appendix C, includ-ing model dimensions, optimizer hyperparameters, learning rate schedules, batch sizes, and hardware specifications. The SA mechanism requires no additional hyperparameters beyond the window size w, which is shared with standard SWA. Pseudocode for both Stochastic Attention and the gated SA + SWA combination is provided in Algorithms 1–2. All proofs and derivations are given in Appendix A. The training-free inference experiments modify only the attention mask of publicly available Qwen3 models and are evaluated using the public lm-evaluation-harness framework (Gao et al., 2024). We will release our implementation upon acceptance. 10 Preprint. Under review. 
+
+# References 
+
+Iz Beltagy, Matthew E. Peters, and Arman Cohan. Longformer: The long-document trans-former. URL http://arxiv.org/abs/2004.05150 .Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. Piqa: Reasoning about physical commonsense in natural language, 2019. URL https://arxiv.org/abs/ 1911.11641 .Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, et al. Evaluating large language models trained on code, 2021. URL https://arxiv.org/abs/2107.03374 .Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, et al. Boolq: Exploring the surprising difficulty of natural yes/no questions, 2019. URL https://arxiv.org/abs/ 1905.10044 .Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, et al. Think you have solved question answering? try arc, the ai2 reasoning challenge, 2018. URL https://arxiv.org/abs/1803. 05457 .Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. URL http://arxiv.org/abs/2405.21060 .Juechu Dong, Boyuan Feng, Driss Guessous, Yanbo Liang, and Horace He. Flex attention: A programming model for generating optimized attention kernels, 2024. URL https: //arxiv.org/abs/2412.05496 .Sven Dorkenwald, Arie Matsliah, Amy R. Sterling, Philipp Schlegel, et al. Neuronal wiring diagram of an adult brain. Nature , 634(8032):124–138, October 2024. ISSN 0028-0836, 1476-4687. doi: 10.1038/s41586-024-07558-y. Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, et al. The language model evaluation harness, 07 2024. URL https://zenodo.org/records/12608602 .Han Guo, Songlin Yang, Tarushii Goel, Eric P. Xing, et al. Log-linear attention. URL 
+
+http://arxiv.org/abs/2506.04761 .Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, et al. Measuring massive multitask language understanding, 2021. URL https://arxiv.org/abs/2009.03300 .Zilong Huang, Youcheng Ben, Guozhong Luo, Pei Cheng, et al. Shuffle transformer: Re-thinking spatial shuffle for vision transformer. URL http://arxiv.org/abs/2106.03650 .Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, et al. Mistral 7b, 2023. URL https://arxiv.org/abs/2310.06825 .Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and Fran c¸ ois Fleuret. Transformers are rnns: Fast autoregressive transformers with linear attention. URL http://arxiv.org/ abs/2006.16236 .Jingdi Lei, Di Zhang, and Soujanya Poria. Error-free linear attention is a free lunch: Exact solution from continuous-time dynamics. URL http://arxiv.org/abs/2512.12602 .Albert Lin, Runzhe Yang, Sven Dorkenwald, Arie Matsliah, et al. Network statistics of the whole-brain connectome of drosophila. Nature , 634(8032):153–165, October 2024. ISSN 0028-0836, 1476-4687. doi: 10.1038/s41586-024-07968-y. Ze Liu, Yutong Lin, Yue Cao, Han Hu, et al. Swin transformer: Hierarchical vision trans-former using shifted windows. URL http://arxiv.org/abs/2103.14030 .Enzhe Lu, Zhejun Jiang, Jingyuan Liu, Yulun Du, et al. Moba: Mixture of block attention for long-context llms. URL http://arxiv.org/abs/2502.13189 .Xu Ma, Peize Sun, Haoyu Ma, Hao Tang, et al. Token-shuffle: Towards high-resolution image generation with autoregressive models. URL http://arxiv.org/abs/2504.17789 .11 Preprint. Under review. Lingchen Meng, Jianwei Yang, Rui Tian, Xiyang Dai, et al. Deepstack: Deeply stacking visual tokens is surprisingly simple and effective for lmms. URL http://arxiv.org/abs/ 2406.04334 .Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models, 2016. URL https://arxiv.org/abs/1609.07843 .OpenAI. gpt-oss-120b & gpt-oss-20b model card, 2025. URL https://arxiv.org/abs/2508. 10925 .Matanel Oren, Michael Hassid, Nir Yarden, Yossi Adi, and Roy Schwartz. Transformers are multi-state rnns. URL http://arxiv.org/abs/2401.06104 .Denis Paperno, Germ ´an Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, et al. The lambada dataset: Word prediction requiring a broad discourse context, 2016. URL 
+
+https://arxiv.org/abs/1606.06031 .Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial winograd schema challenge at scale, 2019. URL https://arxiv.org/abs/ 1907.10641 .Daria Soboleva, Faisal Al-Khateeb, Robert Myers, Jacob R Steeves, et al. SlimPajama: A 627B token cleaned and deduplicated version of RedPajama. https://www.cerebras.net/ blog/slimpajama-a-627b-token-cleaned-and-deduplicated-version-of-redpajama ,2023. URL https://huggingface.co/datasets/cerebras/SlimPajama-627B .Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, et al. Roformer: Enhanced transformer with rotary position embedding. URL http://arxiv.org/abs/2104.09864 .Gemma Team, Morgane Riviere, Shreya Pathak, Pier Giuseppe Sessa, et al. Gemma 2: Improving open language models at a practical size, 2024. URL https://arxiv.org/abs/ 2408.00118 .Duncan J. Watts and Steven H. Strogatz. Collective dynamics of ‘small-world’ networks. 
+
+Nature , 393(6684):440–442, June 1998. ISSN 1476-4687. doi: 10.1038/30918. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, et al. Qwen3 technical report, a. URL 
+
+http://arxiv.org/abs/2505.09388 .Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training, b. URL http://arxiv.org/abs/ 2312.06635 .Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transformers with the delta rule over sequence length, c. URL http://arxiv.org/abs/ 2406.06484 .Manzil Zaheer, Guru Guruganesh, Avinava Dubey, Joshua Ainslie, et al. Big bird: Trans-formers for longer sequences, January 2021. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence?, 2019. URL https://arxiv.org/abs/1905.07830 .12 Preprint. Under review. 
+
+# A Proofs and Derivations 
+
+Throughout this section, we use the circular window convention Nw(i) = {j : |i − j|n <
+
+w/2 } as defined in §3.1. 
+
+A.1 Connection Probability (Eq. 2) Proposition 1. For a uniform random permutation σ ∼ Uniform (Sn) and any fixed pair (i, j)
+
+with i ̸ = j, 
+
+Pr j ∈ σ−1(Nw(σ(i)))  = w − 1
+
+n − 1 .
+
+Proof. Since σ is uniform, σ(i) is uniform over [n]. Conditioned on σ(i) = a, the circular window Nw(a) contains exactly w positions (including a itself). The image σ(j) is uniform over [n] \ { a} (the remaining n − 1 positions). Of these, exactly w − 1 fall in Nw(a) \{a}. Therefore Pr [j ∈ σ−1(Nw(σ(i))) | σ(i) = a] = ( w − 1)/(n − 1) for every a, and marginalizing gives the result. 
+
+A.2 Receptive Field Expansion Proposition 2. Let Rℓ(i) denote the set of tokens reachable from token i through ℓ SA layers with independent permutations, and let r = |Rℓ(i)|. Then 
+
+E|Rℓ+1(i)| |Rℓ(i)| = r ≥ r + ( n − r)
+
+h
+
+1 −
+
+
+
+1 − w − 1
+
+n − 1
+
+r i
+
+.
+
+When rw ≪ n , this implies E[|Rℓ+1(i)|] = Ω(rw ), giving E[|Rℓ(i)|] = Ω(( w/ 4)ℓ) and full coverage in O (log w n) layers. Proof. At layer ℓ + 1, a fresh permutation σℓ+1 is drawn independently. For any target token 
+
+k /∈ Rℓ(i), the probability that k is not reached by any of the r tokens in Rℓ(i) is: Pr [k /∈ Rℓ+1(i) | Rℓ(i)] = Pr 
+
+h \ 
+
+> j∈Rℓ(i)
+
+{k /∈ σ−1
+
+> ℓ+1
+
+(Nw(σℓ+1(j))) }
+
+i
+
+.All edges share the same permutation σℓ+1, so the events are not independent. However, the product bound still holds as an upper bound. To see this, condition on σℓ+1(k) = s for some fixed slot s. Given this conditioning, σℓ+1 restricted to the remaining n − 1 tokens is a uniform permutation on [n] \ { s}. For each j ∈ Rℓ(i), j reaches k iff σℓ+1(j) lands within the window around s, i.e., |σℓ+1(j) − s|n < w/ 2. Since the σℓ+1(j) values for distinct j are drawn without replacement from [n] \ { s}, placing one token near s reduces the number of remaining slots near s for others. This is a negatively correlated sampling scheme, so: Pr [k /∈ Rℓ+1(i) | Rℓ(i)] ≤ ∏ 
+
+> j∈Rℓ(i)
+
+
+
+1 − w − 1
+
+n − 1
+
+
+
+=
+
+
+
+1 − w − 1
+
+n − 1
+
+r
+
+.By linearity of expectation over all n − r unreached tokens: 
+
+E[|Rℓ+1(i)| | | Rℓ(i)| = r] ≥ r + ( n − r)
+
+h
+
+1 −
+
+
+
+1 − w − 1
+
+n − 1
+
+r i
+
+.For the asymptotic bound when rw ≪ n: let p = ( w − 1)/(n − 1) ≈ w/n. Using 1 − (1 −
+
+p)r ≥ 1 − e−rp ≥ rp (1 − rp /2 ), valid for rp ≤ 1, and noting (n − r) ≥ n/2 when r ≤ n/2: 
+
+E[|Rℓ+1(i)|] ≥ r + n
+
+2 · rp · 12 = r + rw 
+
+4 = r
+
+
+
+1 + w
+
+4
+
+
+
+= Ω(rw ).Iterating from |R0(i)| = 1 gives E[|Rℓ(i)|] = Ω(( w/ 4)ℓ). Full coverage ( Rℓ(i) = [ n]) is achieved when (w/ 4)ℓ ≥ n, i.e., ℓ = O(log n/ log w). Note that the base of the exponential is w/ 4 rather than w due to the approximation used. This affects only the constant factor in the coverage depth, not the O(log w n) scaling. 13 Preprint. Under review. 
+
+A.3 Approximation of Full Attention and Variance Bound 
+
+In the high-temperature limit τ → ∞, the expected SA output satisfies: lim  
+
+> τ→∞
+
+Eσ
+
+h
+
+StoAttn (τ) 
+
+> σ
+
+(i)
+
+i
+
+= 1
+
+n
+
+> n
+
+# ∑
+
+> j=1
+
+Vj + O
+
+ 1
+
+w
+
+
+
+, (7) making SA an approximately unbiased estimator of uniform full attention (bias O(1/ w)). 
+
+Proposition 3. Assuming ∥Vj∥ ≤ B for all j ∈ [n], the variance of the SA output satisfies: 
+
+Eσ
+
+h
+
+StoAttn σ(i) − Eσ[StoAttn σ(i)] 2i
+
+≤ 4B2
+
+w .
+
+Proof. Conditioned on σ, the SA output is StoAttn σ(i) = ∑j∈ ˜N σ  
+
+> w(i)
+
+ασ
+
+> ij
+
+Vj, which is a weighted average over | ˜N σ 
+
+> w
+
+(i)| = w value vectors. Since ∥ ∑j αjVj∥ ≤ B for any convex combination when ∥Vj∥ ≤ B, we have ∥StoAttn σ(i)∥ ≤ B.The variance decomposes as: Var σ[StoAttn σ(i)] = Eσ[∥StoAttn σ(i)∥2] − ∥ Eσ[StoAttn σ(i)] ∥2
+
+≤ Eσ[∥StoAttn σ(i)∥2] ≤ B2.For a tighter bound, observe that the randomness enters through the choice of which w
+
+tokens appear in the window. The SA output can be viewed as an importance-weighted sample from the full set of n values. Under uniform attention ( αij = 1 /w), the output is  
+
+> 1
+> w
+
+∑j∈S Vj where S is a random subset of size w. This is a sample mean of w draws without replacement from {V1, . . . , Vn}. By standard results on sampling without replacement, the variance is: Var 
+
+h 1
+
+w ∑
+
+> j∈S
+
+Vj
+
+i
+
+= 1
+
+w · n − wn − 1 · σ2 
+
+> V
+
+≤ σ2
+
+> V
+
+w ,where σ2 
+
+> V
+
+= 1 
+
+> n
+
+∑nj=1 ∥Vj − ¯V∥2 ≤ 4B2. The bound above holds under uniform attention. For finite temperature with data-dependent softmax weights, the effective number of attended tokens may be smaller than w (due to concentration of attention mass), and the variance bound becomes O(B2/weff ) where weff is the effective window size. In the worst case of fully concentrated attention ( weff = 1), the variance is O(B2).
+
+A.4 Spectral Mixing: Single Layer vs. Multi-Layer 
+
+Under uniform attention, the transition matrix for a single SA layer is Aσ = 1 
+
+> w
+
+P⊤ 
+
+> σ
+
+AwPσ,where Aw is the adjacency matrix of the circulant Cn,w. Since Pσ is an orthogonal (per-mutation) matrix, Aσ is similar to Aw/w and has identical eigenvalues. In particular, 
+
+|λ2(Aσ)| = |λ2(Aw/w)| for every σ, giving the same single-layer spectral gap as SWA: 
+
+O(w2/n2).The advantage emerges through multi-layer composition. For L SWA layers, the composed transition matrix is simply (Aw/w)L, inheriting the slow spectral gap of the circulant. For L
+
+SA layers with independent permutations, the composed matrix is A(1: L) = AσL · · · Aσ1 = 
+
+> 1
+> wL
+
+P⊤ 
+
+> σL
+
+AwPσL · · · P⊤ 
+
+> σ1
+
+AwPσ1 . Crucially, this product is not similar to (Aw/w)L because the conjugating permutations differ across layers. The receptive field expansion result (Section A.2) implies that the reachability graph after 
+
+L SA layers is an expander with high probability when L = O(log w n): starting from any token, Ω(wL) tokens are reachable. This corresponds to rapid mixing of the composed random walk, in contrast to the O(n/w) layers required for SWA. The key insight is that independent permutations at each layer prevent the slow eigenmodes of the circulant from persisting across depth. Table 3 summarizes the comparison. 14 Preprint. Under review. 
+
+Mechanism Cost / Layer Receptive Field Coverage Depth 
+
+Full Attention O(n2) n (layer 1) 1Sliding Window O(nw ) ℓw O(n/w)
+
+SA (ours) O(nw ) Ω(( w/4 )ℓ) O(log w n)
+
+SA + SWA 2 · O(nw ) Ω(( w/4 )ℓ) O(log w n)
+
+Table 3: Comparison of attention mechanisms. n: sequence length, w: window size, ℓ:number of layers. 
+
+A.5 Bias-Variance Decomposition 
+
+Let Y∗ 
+
+> i
+
+= FullAttn (Q, K, V)i denote the full attention output. Conditioning on X (so that gsa  
+
+> i
+
+,
+
+gswa  
+
+> i
+
+, and Yswa  
+
+> i
+
+are all deterministic), the MSE decomposes as: 
+
+Eσ
+
+h
+
+Yi − Y∗
+
+> i
+> 2
+
+i
+
+= gsa  
+
+> i
+
+⊙ bsa  
+
+> i
+
++ gswa  
+
+> i
+
+⊙ bswa 
+
+> i
+> 2
+
+| {z }
+
+> bias 2
+
++ gsa  
+
+> i
+> 2
+
+· vsa 
+
+> i
+
+| {z }
+
+> variance
+
+. (8) 
+
+Proof. Write: 
+
+Yi − Y∗ 
+
+> i
+
+= gsa  
+
+> i
+
+⊙ (Ysa  
+
+> i
+
+− Y∗ 
+
+> i
+
+) + gswa  
+
+> i
+
+⊙ (Yswa  
+
+> i
+
+− Y∗ 
+
+> i
+
+)= gsa  
+
+> i
+
+⊙ (Ysa  
+
+> i
+
+− E[Ysa  
+
+> i
+
+]) + bsa 
+
+> i
+
+ + gswa  
+
+> i
+
+⊙ bswa  
+
+> i
+
+,where bsa  
+
+> i
+
+= Eσ[Ysa  
+
+> i
+
+] − Y∗ 
+
+> i
+
+and bswa  
+
+> i
+
+= Yswa  
+
+> i
+
+− Y∗ 
+
+> i
+
+. Taking Eσ[∥ · ∥ 2] and using the fact that the zero-mean term Ysa  
+
+> i
+
+− E[Ysa  
+
+> i
+
+] is uncorrelated with the deterministic bias terms: 
+
+Eσ[∥Yi − Y∗ 
+
+> i
+
+∥2] = ∥gsa  
+
+> i
+
+⊙ bsa  
+
+> i
+
++ gswa  
+
+> i
+
+⊙ bswa  
+
+> i
+
+∥2 + ∥gsa  
+
+> i
+
+∥2 · vsa  
+
+> i
+
+,where vsa  
+
+> i
+
+= Eσ[∥Ysa  
+
+> i
+
+− E[Ysa  
+
+> i
+
+]∥2]. The variance term follows from E[∥a ⊙ X∥2] =
+
+∑k a2 
+
+> k
+
+E[X2 
+
+> k
+
+], which holds exactly since the components of X = Ysa  
+
+> i
+
+− E[Ysa  
+
+> i
+
+] are uncor-related with the deterministic vector a = gsa  
+
+> i
+
+. If the per-component variances E[X2 
+
+> k
+
+] are approximately uniform across dimensions ( E[X2 
+
+> k
+
+] ≈ vsa  
+
+> i
+
+/d), this simplifies to ∥gsa  
+
+> i
+
+∥2 · vsa  
+
+> i
+
+/d.The expression in Eq. 8 uses this approximation, absorbing the 1 /d factor into the definition of vsa  
+
+> i
+
+.
+
+# B Model Architecture Details 
+
+All pre-training models follow a decoder-only Transformer++ architecture (RMSNorm, SwiGLU, RoPE, no bias), with the components described below. The four model variants (Full Attention, SWA, SA, SA+SWA) differ only in the attention mechanism. All other components are identical. 
+
+Embedding. We use a learned token embedding of dimension d = 1024 with vocabulary size 32,000 (Mistral tokenizer). The output LM head shares weights with the input embedding (tied embeddings). 
+
+Transformer layers. The model consists of 24 identical layers, each containing: • Pre-norm. RMSNorm is applied before both the attention and MLP sub-layers. • Attention. Multi-head attention with 16 heads ( dh = 64). The Q, K, V projections are fused into a single linear layer ( d → 3d, no bias), followed by an output projection ( d → d,no bias). RoPE (Su et al.) is applied to Q and K using the tokens’ original sequence positions (prior to any shuffling). An attention gate ( d → d, sigmoid) modulates the attention output before projection: gate (Yattn ) ⊙ Yattn .• MLP. SwiGLU activation with hidden dimension ⌊2.67 × d⌋ = 2 , 734, implemented as three linear layers: gate ( d → dff ), up ( d → dff ), and down ( dff → d), all without bias. 15 Preprint. Under review. 
+
+Attention variants. 
+
+• Full Attention (360M params): standard causal attention with window size w = L (full sequence). • SWA (360M params): causal sliding-window attention with w = 256. • SA (360M params): causal sliding-window attention in shuffled space with w = 256. A fresh random permutation is sampled independently for each layer (shared across heads) at each training step. • SA+SWA (385M params): dual-path architecture where the single attention gate is replaced by two independent gates ( gate local , gate global ), each d → d with sigmoid, producing the fused output gate local (Yswa ) ⊙ Yswa + gate global (Ysa ) ⊙ Ysa . This adds 
+
+∼25M parameters ( ∼1.05M × 24 layers) compared to the single-path variants. 
+
+Stochastic attention mask. In the SA and SA+SWA variants, the attention mask at each layer is constructed as the intersection of two constraints: (1) causal in original space: pos (q) ≥ pos (k), where pos (·) denotes the original sequence position, and (2) window in shuffled space: |σ(i) − σ(j)|n < w/ 2, where σ is the layer-specific random permutation. This mask is implemented efficiently via FlexAttention (Dong et al., 2024). 
+
+Pseudocode. Algorithm 1: Stochastic Attention (Single Head) 
+
+Input: Q , K, V ∈ Rn×dh ; window size w
+
+Output: Y sto ∈ Rn×dh 
+
+> 1
+
+Sample σ ∼ Uniform (Sn); 
+
+> 2
+
+˜Q ← PσQ; ˜K ← PσK; ˜V ← PσV; 
+
+> 3
+
+˜Y ← SWA ( ˜Q, ˜ K, ˜ V; w); 
+
+> 4
+
+Ysto ← Pσ−1 ˜Y; 
+
+> 5
+
+return Y sto ;
+
+Algorithm 2: Gated SA + SWA 
+
+Input: X ∈ Rn×d; window size w; gate parameters Wswa  
+
+> g
+
+, Wsa  
+
+> g
+
+∈ Rd×d
+
+Output: Y ∈ Rn×d 
+
+> 1
+
+Compute Q, K, V from X;
+
+// Stochastic Attention  
+
+> 2
+
+Ysa ← STOCHASTIC ATTN (Q, K, V; w) ; // Algorithm 1 // Sliding-Window Attention  
+
+> 3
+
+Yswa ← SWA (Q, K, V; w);
+
+// Gated Combination  
+
+> 4
+
+gswa ← sigmoid (Wswa  
+
+> g
+
+(Yswa )⊤)⊤; gsa ← sigmoid (Wsa  
+
+> g
+
+(Ysa )⊤)⊤; 
+
+> 5
+
+Y ← gsa ⊙ Ysa + gswa ⊙ Yswa ; 
+
+> 6
+
+return Y ;16 Preprint. Under review. 
+
+# C Pre-training Setup Details 
+
+The models follow a decoder-only Transformer layout with 24 layers, hidden dimension 
+
+d = 1024, 16 attention heads ( dh = 64), SwiGLU feed-forward networks (expansion ratio 2.67), RMSNorm, and RoPE (Su et al.). All models use window size w = 256. In SA layers, a random permutation is applied before windowed attention and inverted afterward, with RoPE using the original (pre-permutation) position indices. We tokenize with the Mistral tokenizer (Jiang et al., 2023) (vocabulary size 32,000) and train with AdamW ( β1=0.9, β2=0.95) at peak learning rate 3 ×10 −4 with cosine decay to 3 ×10 −5
+
+after linear warmup over 0.5B tokens. Training uses 4 ×A100 80GB GPUs with per-GPU batch size 16, gradient accumulation over 30 steps, and sequence length 2048, yielding 
+
+∼3.9M tokens per optimizer step in bf16 mixed precision. 
+
+# D Per-Task Scaling Results 
+
+Figures 7 and 8 provide per-task accuracy as a function of effective window size for all 7 evaluated benchmarks on Qwen3-8B and Qwen3-30B-A3B, respectively. 
+
+Figure 7: Per-task accuracy vs. effective window size for Qwen3-8B across all evaluated benchmarks. 
+
+# E Detailed Numerical Results 
+
+17 Preprint. Under review. 
+
+Figure 8: Per-task accuracy vs. effective window size for Qwen3-30B-A3B across all evalu-ated benchmarks. 
+
+weff Mode Hella. MMLU ARC-C BoolQ LMB ARC-E HuEval Avg. 
+
+∞ Full 74.9 73.0 56.4 86.6 64.6 80.9 64.0 71.5 32 SWA 47.7 29.0 44.3 59.7 15.1 71.1 0.0 38.1 Stochastic 53.5 44.4 52.5 59.3 33.2 79.0 26.8 49.8 
+
+64 SWA 55.6 46.0 55.6 63.8 50.2 80.2 3.7 50.7 Stochastic 72.4 63.0 56.1 77.1 62.9 80.9 52.4 66.4 
+
+MoBA ( k=2) 67.1 56.4 55.6 75.7 44.7 80.5 60.4 62.9 128 SWA 74.9 65.0 56.4 71.4 64.5 80.9 22.6 62.2 Stochastic 75.0 70.2 56.5 85.1 64.6 80.9 64.0 70.9 
+
+MoBA ( k=2) 74.9 67.1 56.4 82.6 64.5 80.9 68.3 70.7 256 SWA 74.9 69.6 56.4 84.7 64.6 80.9 52.4 69.1 Stochastic 75.0 72.6 56.5 86.6 64.6 80.9 65.2 71.6 
+
+MoBA ( k=2) 74.9 71.0 56.4 86.1 64.6 80.9 67.1 71.6 Table 4: Training-free inference on Qwen3-8B. We report accuracy on 7 benchmarks at selected window sizes. Best result per column among efficient methods in bold , underlined denotes second best. 18 Preprint. Under review. 
+
+weff Mode Hella. MMLU ARC-C BoolQ LMB ARC-E HuEval Avg. 
+
+∞ Full 79.8 80.1 62.3 88.7 71.5 83.8 75.6 77.4 32 SWA 52.2 34.9 53.3 74.2 14.9 77.6 1.2 44.0 Stochastic 64.0 52.0 60.8 62.3 41.4 82.0 39.6 57.4 
+
+64 SWA 51.3 42.6 61.1 64.7 23.6 82.9 3.0 47.0 Stochastic 78.0 69.6 62.7 82.5 69.7 83.9 65.9 73.2 
+
+MoBA ( k=2) 71.2 64.4 61.0 77.7 44.7 83.3 61.6 66.3 128 SWA 79.8 68.5 62.2 72.3 71.3 83.8 21.3 65.6 Stochastic 79.8 78.1 62.9 87.6 71.4 83.9 71.3 76.4 
+
+MoBA ( k=2) 79.7 73.5 62.5 84.1 71.2 83.8 73.2 75.4 256 SWA 79.8 75.8 62.3 86.8 71.5 83.8 64.6 74.9 Stochastic 79.8 79.9 63.0 88.7 71.4 83.9 77.4 77.7 
+
+MoBA ( k=2) 79.7 77.2 62.8 88.1 71.5 83.8 75.0 76.9 Table 5: Training-free inference on Qwen3-30B-A3B. Same setup as Table 4. 19

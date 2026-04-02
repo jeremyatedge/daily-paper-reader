@@ -6,64 +6,49 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-01
-- 运行时间：2026-04-01 20:11:44 UTC
+- 最新运行日期：2026-04-02
+- 运行时间：2026-04-02 20:00:20 UTC
 - 运行状态：成功
-- 本次总论文数：14
-- 精读区：6
-- 速读区：8
+- 本次总论文数：9
+- 精读区：4
+- 速读区：5
 
 ### 今日简报（AI）
-今日深挖 14 篇前沿文献，重点揭示了工业边缘云智能化的潜在弊端及数据流网络的能效权衡。
-最值得关注边缘云连续体中的架构风险，以及通过线性设计问题实现的可扩展协同设计理论。
-建议优先阅读 GreenFLag 相关研究，掌握在联邦学习中兼顾性能与绿色节能的最新策略。
-- 详情：[/202604/01/README](/202604/01/README)
+今日聚焦边缘计算的碳感知推理与脉冲神经网络的硬件加速，共精选 9 篇前沿成果。
+重点推荐 CarbonEdge 框架实现可持续 AI 推理，以及通过整数状态动力学大幅提升量化 SNN 的硬件能效。
+建议关注低功耗算法与异构硬件的协同设计，并持续跟踪 RISC-V 在机器学习领域的落地进展。
+- 详情：[/202604/02/README](/202604/02/README)
 
 ### 精读区论文标签
-1. [Downsides of Smartness Across Edge-Cloud Continuum in Modern Industry](/202604/01/2603.29289v1-downsides-of-smartness-across-edge-cloud-continuum-in-modern-industry)  
+1. [CarbonEdge: Carbon-Aware Deep Learning Inference Framework for Sustainable Edge Computing](/202604/02/2603.27420v2-carbonedge-carbon-aware-deep-learning-inference-framework-for-sustainable-edge-computing)  
    标签：评分：9.0/10、query:aiot
-   evidence：工业物联网(IIoT)与边缘云协同中的AI解决方案
-2. [Exploration of Energy and Throughput Tradeoffs for Dataflow Networks](/202604/01/2603.29367v1-exploration-of-energy-and-throughput-tradeoffs-for-dataflow-networks)  
+   evidence：用于边缘计算的碳感知深度学习推理框架
+2. [Integer-State Dynamics of Quantized Spiking Neural Networks for Efficient Hardware Acceleration](/202604/02/2604.01042v1-integer-state-dynamics-of-quantized-spiking-neural-networks-for-efficient-hardware-acceleration)  
    标签：评分：9.0/10、query:aiot
-   evidence：硬件数据流网络的能效与吞吐量权衡
-3. [Quantization with Unified Adaptive Distillation to enable multi-LoRA based one-for-all Generative Vision Models on edge](/202604/01/2603.29535v1-quantization-with-unified-adaptive-distillation-to-enable-multi-lora-based-one-for-all-generative-vision-models-on-edge)  
-   标签：评分：9.0/10、query:aiot
-   evidence：边缘生成式模型的量化与蒸馏
-4. [AI-Programmable Wireless Connectivity: Challenges and Research Directions Toward Interactive and Immersive Industry](/202604/01/2603.29752v1-ai-programmable-wireless-connectivity-challenges-and-research-directions-toward-interactive-and-immersive-industry)  
-   标签：评分：9.0/10、query:aiot
-   evidence：用于节能无线连接的微型和实时机器学习
-5. [AXON: An Automated Netlist Optimization Framework for High-Speed Adders](/202604/01/2603.28184v1-axon-an-automated-netlist-optimization-framework-for-high-speed-adders)  
+   evidence：用于低功耗数字硬件加速的量化脉冲神经网络
+3. [How Vulnerable Are Edge LLMs?](/202604/02/2603.23822v1-how-vulnerable-are-edge-llms)  
    标签：评分：8.0/10、query:aiot
-   evidence：针对功耗、性能和面积的自动网表优化
-6. [OneComp: One-Line Revolution for Generative AI Model Compression](/202604/01/2603.28845v1-onecomp-one-line-revolution-for-generative-ai-model-compression)  
+   evidence：量化的边缘部署大语言模型
+4. [Semantic Zone-Based Map Management for Stable AI-Integrated Mobile Robots](/202604/02/2603.29627v1-semantic-zone-based-map-management-for-stable-ai-integrated-mobile-robots)  
    标签：评分：8.0/10、query:aiot
-   evidence：生成式AI模型压缩的资源自适应流水线
+   evidence：严格内存预算下边缘机器人的地图管理
 
 ### 速读区论文标签
-1. [Scalable Co-Design via Linear Design Problems: Compositional Theory and Algorithms](/202604/01/2603.29083v1-scalable-co-design-via-linear-design-problems-compositional-theory-and-algorithms)  
-   标签：评分：8.0/10、query:aiot
-   evidence：可扩展软硬件协同设计的组合理论
-2. [GreenFLag: A Green Agentic Approach for Energy-Efficient Federated Learning](/202604/01/2603.29933v1-greenflag-a-green-agentic-approach-for-energy-efficient-federated-learning)  
-   标签：评分：8.0/10、query:aiot
-   evidence：最小化移动网络联邦学习的能耗
-3. [Per-Bank Memory Bandwidth Regulation for Predictable and Performant Real-Time System](/202604/01/2603.26054v1-per-bank-memory-bandwidth-regulation-for-predictable-and-performant-real-time-system)  
+1. [G-ICSO-NAS: Shifting Gears between Gradient and Swarm for Robust Neural Architecture Search](/202604/02/2604.00703v1-g-icso-nas-shifting-gears-between-gradient-and-swarm-for-robust-neural-architecture-search)  
    标签：评分：7.0/10、query:aiot
-   evidence：实时SoC的内存带宽调节
-4. [Subspace Optimization for Backpropagation-Free Continual Test-Time Adaptation](/202604/01/2603.28678v1-subspace-optimization-for-backpropagation-free-continual-test-time-adaptation)  
+   evidence：用于自动模型优化的神经架构搜索
+2. [Is RISC-V Ready for Machine Learning? Portable Gaussian Processes Using Asynchronous Tasks](/202604/02/2604.00736v1-is-risc-v-ready-for-machine-learning-portable-gaussian-processes-using-asynchronous-tasks)  
    标签：评分：7.0/10、query:aiot
-   evidence：无反向传播的自适应技术以提高运行效率
-5. [Understand and Accelerate Memory Processing Pipeline for Disaggregated LLM Inference](/202604/01/2603.29002v1-understand-and-accelerate-memory-processing-pipeline-for-disaggregated-llm-inference)  
-   标签：评分：7.0/10、query:aiot
-   evidence：在异构系统上加速大语言模型推理的内存处理
-6. [AgentCollab: A Self-Evaluation-Driven Collaboration Paradigm for Efficient LLM Agents](/202604/01/2603.26034v1-agentcollab-a-self-evaluation-driven-collaboration-paradigm-for-efficient-llm-agents)  
+   evidence：在 RISC-V 和 ARM 嵌入式架构上评估机器学习性能
+3. [HeteroHub: An Applicable Data Management Framework for Heterogeneous Multi-Embodied Agent System](/202604/02/2603.28010v1-heterohub-an-applicable-data-management-framework-for-heterogeneous-multi-embodied-agent-system)  
    标签：评分：6.0/10、query:aiot
-   evidence：提高执行效率的协作推理框架
-7. [Semantic Sensing: A Task-Oriented Paradigm](/202604/01/2603.29102v1-semantic-sensing-a-task-oriented-paradigm)  
+   evidence：多具身智能体系统与传感器流的数据管理
+4. [See it to Place it: Evolving Macro Placements with Vision-Language Models](/202604/02/2603.28733v1-see-it-to-place-it-evolving-macro-placements-with-vision-language-models)  
    标签：评分：6.0/10、query:aiot
-   evidence：面向任务的感知与通信范式
-8. [Quantale-Enriched Co-Design: Toward a Framework for Quantitative Heterogeneous System Design](/202604/01/2603.29921v1-quantale-enriched-co-design-toward-a-framework-for-quantitative-heterogeneous-system-design)  
+   evidence：VLM引导的芯片布局宏单元放置
+5. [Stochastic Attention: Connectome-Inspired Randomized Routing for Expressive Linear-Time Attention](/202604/02/2604.00754v1-stochastic-attention-connectome-inspired-randomized-routing-for-expressive-linear-time-attention)  
    标签：评分：6.0/10、query:aiot
-   evidence：异构系统定量协同设计的理论框架
+   evidence：用于高效神经通信的线性时间注意力算法
 
 
 <div class="dpr-home-promo-card">
