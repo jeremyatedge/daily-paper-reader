@@ -1,0 +1,486 @@
+Title: Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference
+
+URL Source: https://arxiv.org/pdf/2604.02292v1
+
+Published Time: Fri, 03 Apr 2026 01:15:47 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference 
+
+Dimitrios Danopoulos 1, Enrico Lupi 1,Michael Kagan 4, Maurizio Pierini 1
+
+> 1
+
+European Organization for Nuclear Research (CERN), Geneva, Switzerland 
+
+{dimitrios.danopoulos,enrico.lupi,maurizio.pierini }@cern.ch 
+
+> 4
+
+SLAC National Accelerator Laboratory, Menlo Park, CA, USA makagan@slac.stanford.edu 
+
+Abstract —Softmax can become a computational bottleneck in the Transformer model’s Multi-Head Attention (MHA) block, particularly in small models under low-precision inference, where exponentiation and normalization incur significant overhead. As such, we suggest using Head-Calibrated Clipped-Linear Softmax (HCCS), a bounded, monotone surrogate to the exponential softmax function, which uses a clipped linear mapping of the max centered attention logits. This approximation produces a stable probability distribution, maintains the ordering of the original logits and has non-negative values. HCCS differs from previous softmax surrogates as it includes a set of lightweight calibration parameters that are optimized offline based on a representative dataset and calibrated for each individual attention head to preserve the statistical properties of the individual heads. We describe a hardware-motivated implementation of HCCS for high-throughput scenarios targeting the AMD Versal AI Engines. The current reference implementations from AMD for this platform rely upon either bfloat16 arithmetic or LUTs to perform the exponential operation, which might limit the throughput of the platform and fail to utilize the high-throughput integer vector processing units of the AI Engine. In contrast, HCCS provides a natural mapping to the AI Engines’ int8 multiply accumulate (MAC) units. To the best of our knowledge, this is the first int8 optimized softmax surrogate for AMD AI engines that significantly exceeds the speed performance of other reference implementations while maintaining competitive task accuracy on small or heavily quantized MHA workloads after quantization-aware retraining. 
+
+Index Terms —Softmax, Transformer, quantization, AMD Ver-sal, AI Engine, AIE-ML, hardware acceleration. 
+
+I. I NTRODUCTION 
+
+Transformers are based on Multi-Head Attention (MHA). For MHA, softmax is used to transform dot-products into probability distributions. The matrix multiplication of atten-tion has been heavily optimized in recent years on modern hardware platforms; however, the softmax can still represent a performance and efficiency bottleneck in certain cases due to its characteristics of reduction, exponentiation and nor-malization. In small and edge-deployed Transformer models targeted for low-precision inference, this overhead is much greater since the ratio of non-GEMM operations to GEMM operations grows as the size of matrices decrease. Although the attention logits are quantized down to low bit-widths to improve efficiency (for example, int8), the softmax function is generally computed using either look-up table (LUT) or floating-point arithmetic [1]. In practice, this generally results in converting the quantized logit to a floating-point value and performing an expensive exponential operation. On many ac-celerators and for some workloads (particularly those in cloud-based environments), the overhead of these two operations (i.e., precision crossing and the associated overhead) may be tolerable. AI Engines from AMD are a type of domain-specific ac-celerator integrated into the Versal adaptive compute platform. These are intended to provide high-throughput and low-latency solutions for machine-learning workloads at the edge [2]. Each AI Engine core includes wide-vector units optimized for integer arithmetic, especially for int8 and bfloat16 (BF16) mul-tiply—accumulate (MAC) operations. There is also software-programmable local memory that accompanies each core. AMD provides a reference softmax implementation in BF16 which uses explicit exponential computations. Even though the exponential operation can be performed in BF16, it is still very expensive and represents a significant source of latency. On AI Engine (AIE-ML and AIE-MLv2), LUT accesses occur in 16-bit granularity and exhibit limited throughput. Therefore, softmax implementations are either compute-bound by the exponential approximations or memory-bound by LUT fetches (i.e., up to 4 in parallel in AIE-ML). As a result, there is no native int8 softmax implementation currently available. The use of floating-point softmax in int8-quantized models requires the additional conversions from int8 to float and float to int8. These conversions involve additional unpacking, casting, and pipeline stages that consume a significant portion of the execu-tion cycles. Therefore, softmax implementations in quantized models cannot seamlessly achieve the same throughput as the native int8 computation pipeline on AI Engine. For this reason, the desire for a different approach to softmax for quantized attention was motivated by the previ-ous observations. From an algorithmic standpoint, attention softmax has a constrained operating regime: logits are max-centered, extreme negative values contribute negligibly to the final distribution, and only the relative ordering and approx-imate ratios of the probabilities are important. This implies that exact exponentiation is not always required. From a hardware standpoint, it is preferable to avoid both the floating-point conversion overheads and the LUT-dominant designs. 
+
+> arXiv:2604.02292v1 [cs.LG] 2 Apr 2026
+
+Instead, it is preferable to implement softmax in terms of operations that are consistent with the native execution units of the accelerator. In this work, we introduce Head-Calibrated Clipped-Linear Softmax (HCCS) , a monotonic and bounded softmax surrogate designed for quantized multi-head attention. It preserves ordering and generates numerically stable proba-bility distributions without the need for explicit exponentiation. Furthermore, we introduce a lightweight per-head calibra-tion method that adjusts surrogate parameters offline using representative data, enabling accurate approximation across heterogeneous attention head distributions. This reformulation allows softmax computation to be mapped directly onto the native int8 MAC pipeline on AMD Versal AI Engine, avoiding expensive exponential operations and memory-bound LUT accesses. The main contributions of this work are:  
+
+> •
+
+We propose Head-Calibrated Clipped-Linear Softmax (HCCS) , a monotonic and bounded softmax surrogate for quantized multi-head attention that preserves ordering and produces numerically stable probability distributions without explicit exponentiation.  
+
+> •
+
+We introduce a lightweight per-head calibration method that adjusts surrogate parameters offline using represen-tative data, which allows HCCS to generate accurate approximations over a variety of heterogeneous attention head distributions.  
+
+> •
+
+We describe the first int8-optimized softmax proxy im-plementation on AMD Versal AI Engine. We map the softmax computation directly onto the native int8 MAC pipeline.  
+
+> •
+
+We show that HCCS achieves significantly higher throughput than AMD’s BF16 reference softmax on AI Engine while maintaining the stability of attention behav-ior on small and quantization-stressed MHA workloads. II. R ELATED WORK 
+
+The increasing importance of softmax and its variations comes from how attention uses row-wise normalization with expensive non-linearity operations and global reduction oper-ations (sum, max, reciprocal) inside every transformer layer. Once the surrounding matrix multiplications have been quan-tized and optimized, the remaining (de)quantize → Softmax 
+
+→ (re)quantize” sequence could be the most important on edge devices and would motivate integer- and hardware-friendly versions of softmax. 
+
+A. Integer-domain exponential and softmax approximations 
+
+There has been considerable research in preserving the softmax structure and replacing the exponential operation with a cheaper version in low-precision. I-BERT [3] provides integer-only transformers for all layers and includes integer approximations for all non-linearities. For softmax specifically, I-BERT applies max-subtraction for stability and splits the ar-gument to the exponential function into a logarithmic quotient and remainder such that exp(x) is equal to a product of a bound-range exponential and a power-of-2 term that can be implemented using integer left/right shifts. The bound-range portion is then approximated as a low order polynomial. More recent integer attention pipeline designs build upon the idea of incorporating approximation into both normalization and quantization. IntAttention [4] builds upon this by including the IndexSoftmax approximation method, which (i) performs max-subtraction and sparsity aware clipping in the integer domain, (ii) approximates the exponential using a compact 32 entry look-up table (LUT), and (iii) performs row-wise integer normalization directly into an 8-bit probability tensor without ever using floating point. In terms of accelerators, ITA [5] presents a streaming integer softmax designed to handle quantized attention on embedded hardware. Its design emphasizes on-the-fly processing to minimize the number of memory passes and limits the precision of intermediate values used during the inversion and accumulation process, allowing for a small, energy efficient softmax module to be integrated into a larger attention accelerator. 
+
+B. Hardware–software co-design for synchronization and re-duction bottlenecks 
+
+While these designs approximate the exponential function, other works focus on reducing the hardware overhead associ-ated with the reduction and synchronization steps required for softmax. Softermax [6] replaces ex with 2x to allow for shift friendly renormalization and fuses the max computation into an online normalization step. It removes the need for a separate re-duction, providing better energy/area efficiency than previous implementations of softmax in accelerator designs. ConSmax [7] reduces the need for both max search and denominator summation at inference time by utilizing learnable normal-ization parameters. This approach sacrifices exact unit sum probabilities in favor of increased parallelism and a smaller dedicated hardware unit (for example, bit-width split LUT structures and simple scaling data paths). 
+
+C. Softmax replacements 
+
+Another approach eliminates the need for softmax alto-gether. Sparsemax [8] projects the input logits onto the sim-plex via Euclidean projection. This results in interpretable and sparse output probabilities. However, it also requires the introduction of additional primitives for sorting/selecting and thresholding (such as a naive O(K log K) evaluation via sorting). These primitives can be less amenable to hardware implementation compared to purely arithmetic pipelines. Rec-tified Linear Attention (ReLA) replaces softmax with a ReLU based transformation. It reports competitive translation quality when appropriate stabilization is applied [9]. Similarly, alpha entmax and its adaptive variants generate controllable sparsity and exact zeros in attention weights by generalizing softmax to a class of sparse transformations [10]. 
+
+D. HW implementations in practice 
+
+On current GPUs, softmax can become a significant bottle-neck because exponentiation is often executed through FP32 pathways and incurs datatype-conversion overhead. TurboAt-tention [11] introduces the Sparse Activated Softmax (SAS). SAS combines a hybrid LUT-polynomial exponential approx-imation with a negligible-exponential pruning and integrates it into the FlashAttention style kernels. To avoid the use of the expensive transcendental units, softmax is usually implemented in the FPGA tool flows using the LUT based exponentials and reciprocal approximations. For instance, an implementation of the Transformer in the hls4ml-based Trans-former [12] transforms the softmax computation to {ezi } once, reduces once, inverts once and multiplies. This is represented as a pipelined Exp-LUT/reduction/Inv-LUT/scaling datapath. However, the hls4ml framework [13] discuss LUT based acti-vations and compilation time table generation across quantized precisions to compute an activation function of whatever com-plexity. In case of parallel accesses, BRAM duplication may be required to ensure single clock access. Finally, on AI-engine class accelerators, AMD provides reference implementations that emphasize numerical stability. The Vitis AI Engine soft-max tutorial [14] describes bfloat16 softmax kernels that avoid overflows via max-subtraction and accelerate exponentials via IEEE-754 exponent bit construction. It reports cycle level performance for large-class softmax vectors. Similarly, AMD’s open-source IRON project for Ryzen AI NPUs includes a bfloat16 softmax operator in its operator dashboard, indicating support for such kernels in the close-to-metal NPU software stack [15]. 
+
+E. Positioning relative to our HCCS clipped-linear surrogate 
+
+Our HCCS differs from all other exponential approximation methods (e.g. [3], [4], [11]) by completely replacing the exponential mapping with a calibrated clipped linear surrogate. Thus, we do not need to store any LUT or perform any polynomial MAC chain. Unlike Sparsemax [8], we also do not have to sort/select primitives. Like synchronization free alternatives such as ConSmax [7], we can preserve unit sum normalization while retaining the row wise reduction but guaranteeing a valid probability simplex. However, this is at the cost of one synchronization barrier. Overall, HCCS targets minimal primitive integer datapaths (adds, subtracts, com-pares, shifts/multiples, and a reciprocal/normalization), with calibration (e.g. head-wise) being applied to match empirical attention distributions. III. I MPLEMENTATION OF A FAST SOFTMAX SURROGATE 
+
+The inference-time implementation of the proposed Head-Calibrated Clipped-Linear Softmax (HCCS) surrogate and the design decisions made to achieve a high-throughput implemen-tation on AMD Versal AI Engines are discussed in this section. The primary goal was to replace the computationally expensive exponential and floating-point normalization normally found in the softmax function with a few integer operations (max-reduction, subtraction, clamping, multiply—accumulate, and reciprocal-based normalization) that can be efficiently mapped to the AIE int8 vector MAC pipeline. 
+
+A. Integer-Form Surrogate and Range Mapping 
+
+Given quantized attention logits x ∈ Zn 
+
+> 8
+
+(per row), standard max-centering computes 
+
+di = xi − max  
+
+> j
+
+xj ≤ 0. (1) Directly implementing di as a signed value would obvi-ously produce negative values and necessitate wider signed arithmetic for all subsequent elements of the pipeline. Many hardware architectures have a pure int8 representation that has the most efficient vector subtract and clamp pattern for this workload: 
+
+δi = min   max  
+
+> j
+
+xj − xi, D max ,h 
+
+, δi ∈ [0 , D max ,h ], (2) where Dmax ,h is a per-head clamp bound. Algebraically, the above transformation is equivalent to max-centering fol-lowed by negation and clamping. However, it ensures that the intermediate values fall into a compact interval which may be represented using uint8 . The clamping prevents extreme outlier values (large negative di) from dominating the fixed-point dynamic range, while at the same time preserving the relative ordering of the input logits within the active window. Using δi, the linear surrogate is written as a decreasing 
+
+function of distance: 
+
+si = Bh − Sh δi, (3) with Bh > 0 and Sh ≥ 0. This form is attractive on many hardware accelerators because it is a single int8 MAC followed by normalization. Non-negativity of si for all δi ∈ [0 , D max ,h ]
+
+is guaranteed by enforcing the calibration constraint 
+
+Bh − Sh Dmax ,h ≥ 0, (4) which makes an explicit per-lane max(0 , ·) rectifier redun-dant (see also Section IV-B). 
+
+B. Normalization in Fixed-Point 
+
+The surrogate scores are normalized to form a probability distribution: 
+
+Z = X
+
+> i
+
+si, pi = si
+
+Z . (5) The entire normalization process was designed to be ex-ecuted completely in integer arithmetic and will not require any intermediate conversions to/from floating-point represen-tations. The accumulated sum Z is calculated with 32-bit precision to avoid potential overflow. A reciprocal scaling factor ρ is also calculated once per row: 
+
+ρ =
+
+ TZ
+
+
+
+, (6) where T is the target integer scale ( T = 32767 for int16 output or T = 255 for int8 output). The value ρ fits within 16 bits and is broadcast directly into the vector lanes. The resulting outputs 
+
+ˆpi = si · ρ (7) represent scaled probabilities such that ˆpi ∈ [0 , T ] and P 
+
+> i
+
+ˆpi ≈ T up to integer truncation error, allowing the probabilities to remain in integer form while preserving com-patibility with fixed-point attention pipelines. 
+
+a) Rationale for Q0 Reciprocal Design.: Although a Q15 reciprocal has additional fractional precision, when broadcast into int16 vector lanes, there will be intermediate products that will exceed the int16 range, which means that one would need to do either 32-bit vector multiplications, or add another down-sampling stage. Therefore, we use a Q0 reciprocal formula-tion (6) that has enough precision for attention normalization, and preserves full compatibility with the native and smaller int16 vector pipeline. 
+
+b) int8 output path.: If the desired output format is int8 (i.e. T = 255 ), the normalization will use a shifted fixed-point reciprocal to retain more precision before the final down-shifting. More precisely, the kernel calculates: 
+
+ρu8 =
+
+ 255 · 2R
+
+Z
+
+
+
+, (8) where R is a platform-specific right-shift constant (INV_SHIFT = 15 in the reference implementation). The intermediate product si · ρu8 is then right-shifted by R +
+
+OUT_SHIFT bits to get the final uint8 values. This approach keeps the fractional precision in the multiplication phase, and thus avoids 32-bit vector lanes during the normalization phase. 
+
+c) Reciprocal Approximation via Leading-Bit Detection.: 
+
+To further reduce latency, the reciprocal ρ may optionally be approximated using leading-bit detection (CLB). Let k =
+
+⌊log 2 Z⌋. Then 
+
+ρ ≈ T
+
+2k . (9) Since 2k ≤ Z < 2k+1 , this approximation overestimates the ideal reciprocal by at most a factor of two, replacing the scalar divide with a bit-shift derived from the position of the most significant set bit of Z. Since Z is usually far from being a power of two, the overestimate is typically much less than a factor of 2. In our measurements, the speedup achieved through this substitution is greater than 3× for short sequences, where the latency of calculating the reciprocal is not averaged out over a long sequence. 
+
+C. Offline Calibration 
+
+There are some small number of per-head constants θh =(Bh, S h, D max ,h ), that are determined offline and held fixed during inference. Holding these parameters fixed defines a stable, hardware-constrained attention function to which the rest of the model parameters are adjusted during quantization-aware training. This is analogous to holding the quantization bounds fixed during quantization-aware training: the nonlin-earity is fixed, but the network adapts to compensate for its own errors. From a deployment viewpoint, the fixed parame-ters allow us to enforce explicitly the necessary constraints of monotonicity, bounded range, and non-negative values, particularly Bh −ShDmax ,h ≥ 0 and Dmax ,h ≤ 127 , which are essential for a correct and overflow-free int8 datapath. There 
+
+Algorithm 1 HCCS Softmax Proxy — Inference (Single Row)  
+
+> 1:
+
+Input: Quant. logits x ∈ Zn 
+
+> 8
+
+, (Bh, S h, D max ,h ), scale T 
+
+> 2:
+
+Output: Scaled integer probabilities ˆp ∈ Zn 
+
+> 3:
+
+m ← max i xi 
+
+> 4:
+
+for i = 1 to n do  
+
+> 5:
+
+δi ← min( m − xi, D max ,h ) 
+
+> 6:
+
+si ← Bh − Sh · δi 
+
+> 7:
+
+end for  
+
+> 8:
+
+Z ← Pni=1 si 
+
+> 9:
+
+ρ ← ⌊ T /Z ⌋ 
+
+> 10:
+
+for i = 1 to n do  
+
+> 11:
+
+ˆpi ← si · ρ 
+
+> 12:
+
+end for  
+
+> 13:
+
+return ˆp
+
+is a learnable version of HCCS in principle, e.g. by treating 
+
+θh as differentiable parameters under constrained optimization. We view this as complementary to the current work, and defer consideration of this case until future work. Given the fixed-parameters setting, the calibration problem can be written as: 
+
+( ˆBh, ˆSh, ˆDmax ,h ) = arg min  
+
+> B, S, D
+
+Ex∼D h
+
+h
+
+KL  softmax( x)
+
+∥ ˆpHCCS (x; B, S, D )i
+
+(10) subject to the integer deployment constraints of Sec-tion IV-C. Here Dh represents the empirical distribution of the int8 attention logits at head h, across a representative calibration dataset. The expectation is approximated as the average across all samples in the calibration set. The search is carried out by grid scanning over a bounded integer parameter space. Although the deployment target may be int8 output, we suggest minimizing the KL-divergence in the int16 space (i.e. comparing against the int16 normalized probabilities instead of the uint8 outputs). Minimizing the int8 KL-divergence produces slightly poorer int8-output KL-divergence in prac-tice, due to the presence of local optima in the quantization rounding at 8-bit precision. The int16 probability representa-tion yields a smoother objective function, and the optimized parameters generally have good transfer performance to the uint8 output path. Finally, for completeness, Algorithm 1 outlines the full inference-time computation of HCCS for a single row. IV. H ARDWARE IMPLEMENTATION ON AMD V ERSAL AI ENGINE 
+
+In this section, we describe how the HCCS algorithm can be mapped to an AIE Kernel and how the hardware-based changes were made to create a high-throughput data path using int8. In particular, our design focuses on the common case of attention shape where we apply softmax row-wise over the key dimension (the columns), and process multiple independent rows (queries) in parallel. Furthermore, since processing each row independently, it is natural to partition VecLoad inputs        
+
+> (int8 Logits)
+> VecMax ReduceMax Broadcast (m)
+> VecSub
+> (m - x)
+> VecClamp (<= Dmax) VecMAC
+> s = B - S*d
+> Score Buffer
+> (int16)
+> ReduceSum Reciprocal Unit
+> Integer Divider
+> Leading Bit Detector
+> (Shift-Based Reciprocal)
+> Broadcast (rho)
+> VecMul
+> (s * rho) Output Buffer
+> (Normalized Probabilities)
+> Parameter Memory
+> (B, S, Dmax)
+
+Fig. 1. Illustration of the softmax proxy pipeline on hardware. Five stages; vector max reduction, unsigned distance and clamp, affine score via int8 MAC, sum reduction, and reciprocal-based normalization are all expressed as integer vector operations with no floating-point or LUT-based exponential at any stage. 
+
+the row dimension into multiple parallel processing tasks on different AIE Kernels. 
+
+A. Kernel Overview 
+
+For each row of length n the kernel executes five stages (see Figure 1): 1) Vector max reduction: compute m = max i xi using vectorized max operations followed by a horizontal reduce. 2) Unsigned distance and clamp: compute δi = min( m−
+
+xi, D max ,h ) in uint8 , then bit-reinterpret as int8 for the MAC stage. 3) Affine score via int8 MAC: compute si = Bh − Shδi
+
+using a vectorized int8 multiply–accumulate into 32-bit accumulators; store si in int16 .4) Sum reduction: compute Z = P 
+
+> i
+
+si accumulated in 32-bit. 5) Reciprocal-based normalization: compute a fixed-point reciprocal of Z (exact division or CLB approxi-mation) and multiply each si by this reciprocal, emitting normalized probabilities in uint16 or uint8 .There is one scalar operation, namely the single reciprocal calculation of Z, but the cost of this operation is amortized over the entire row length. Each of the remaining operations are represented as a set of vectorized integer MAC, MUL, and SUB instructions that match the native execution units of the AIE. This contrasts with the BF16 reference design, which uses BF16 exponentials in the AIE-MLv2 architecture or LUT assisted exponentials in the AIE-ML and thus does not operate within the 8 bit pipeline. 
+
+a) Accumulator and normalization overflow analysis.: 
+
+Per-element scores satisfy si ≤ Bh ≤ ⌊32767 /n ⌋. The per-lane 32b accumulator on AIE gives a headroom of 
+
+240 /32767 ≈ 13 .1 × 10 4 elements before overflow, far beyond any practical attention sequence length. The binding overflow constraints arise in the normalization stage, where the recip-rocal ρ is computed as int32 but broadcast into int16 vector lanes. For the int16 output path, the constraint n · Bh ≤ 32767 
+
+ensures Z ≤ 32767 , so ρ = ⌊32767 /Z ⌋ ≥ 1 without requiring a clamp. For the int8 output path, ρ = ⌊255 · 215 /Z ⌋ ≤ 
+
+32767 requires Z ≥ 256 , enforced by the calibration floor 
+
+Bh − ShDmax ,h ≥ ⌈ 256 /n ⌉. Together these two constraints define a valid operating band for Bh:
+
+ShDmax ,h +
+
+ 256 
+
+n
+
+
+
+≤ Bh ≤
+
+ 32767 
+
+n
+
+
+
+. (11) All intermediate products si ·ρ are bounded by Bh ·⌊ 32767 /(n·
+
+Bh)⌋ · n ≤ 32767 , remaining safely within int32 range. 
+
+B. Hardware-Aligned Modifications to the Surrogate 
+
+In comparison to the surrogate implementation defined in Section III, the AIE kernel implementation provides the following modifications to increase the overall throughput of the algorithm: 
+
+a) (1) Max subtraction reordered to stay in uint8 :
+
+Rather than first calculating the signed centered distance di =
+
+xi − m and then negating, we instead calculate δi = m −
+
+xi directly in unsigned integers (Equation (2)). This ensures that the values of δi will always be in the range of [0 , 255] 
+
+and allows us to efficiently perform vector subtraction and clamp in uint8 before casting to int8 for use in the MAC. The transformation is algebraically equivalent to the original transformation and maintains the order of the ranks. 
+
+b) (2) Explicit zero-clamp eliminated by construction: 
+
+We established in Section III-A that the requirement to satisfy the calibration constraint Bh ≥ ShDmax ,h will ensure that 
+
+si ≥ 0 for all clamped distances. Therefore, there is no need for a per-lane max(0 , ·) instruction in the score stage of the design. Thus, we eliminate instructions from the score stage of the design and improve the pipeline efficiency. 
+
+C. Integer Range Constraints 
+
+To guarantee correctness of the int8 MAC stage and the int16 vector normalization pipeline, the following constraints define the admissible parameter region and are enforced during calibration:  
+
+> •
+
+Dmax ,h ≤ 127 : clamped distances remain representable in signed int8.  
+
+> •
+
+Bh−ShDmax ,h ≥ 0: all surrogate scores are non-negative (Section III-A).  
+
+> •
+
+Bh ≤ 32767 : int16 storage of scores is safe.  
+
+> •
+
+n · (Bh − ShDmax ,h ) ≥ 256 : ensures the row sum 
+
+Z ≥ 256 , so that the reciprocal ρ, computed in int32 and broadcast as int16 into the vector normalization pipeline, satisfies ρ ≤ 32767 and does not overflow int16. This is the binding constraint for the int8 output path where ρ =⌊255 ·2R/Z ⌋ with R = 15 , and it is satisfied by enforcing a minimum score floor Bh−ShDmax ,h ≥ ⌈ 256 /n ⌉ during calibration.  
+
+> •
+
+n · Bh ≤ 32767 : ensures the row sum Z ≤ 32767 so that the reciprocal ρ = ⌊32767 /Z ⌋ ≥ 1 without requiring a clamp, keeping the normalization valid. This bounds the maximum usable Bh ≤ ⌊ 32767 /n ⌋ and is the tightest upper constraint on Bh for a given sequence length n.
+
+D. Vectorization and Parallelism Across Rows 
+
+Let the softmax input be a 2D tile X ∈ ZR×C 
+
+> 8
+
+where softmax is applied across C columns for each of R inde-pendent rows. We will process each row independently with vector width V (for example, V = 32 ) to get C/V vector iterations per row. Since the rows are all independent, the overall processing speed can scale through creating a number of separate AIE kernels. 
+
+{0, . . . , R − 1} =
+
+> K−1
+
+[
+
+> k=0
+
+Rk, Rk ∩ R k′ = ∅, k ̸ = k′. (12) Each AIE kernel will compute the softmax for rows in 
+
+Rk, and this parallelism matches common attention-based workloads that compute many query positions per layer and does not require any synchronization among the kernels other than concatenating results after each has finished. V. E VALUATION 
+
+We evaluate HCCS along two orthogonal axes: (i) numerical fidelity relative to standard floating-point softmax, and (ii) throughput on the AMD Versal AI Engine platform. 
+
+A. Experimental Setup a) Hardware: All measurements were obtained using the cycle-accurate AIE simulator provided in the AMD Vi-tis 2025.2 toolchain which is a standard and widely accepted practice in both FPGA and AIE-related research. AIE bench-marks target the AIE-ML and AIE-MLv2 generation of Versal devices (VEK280 and VEK385 platforms respectively). Input data is modeled as delivered directly via PLIO, excluding PS/DDR transfer overheads, consistent with streaming infer-ence pipelines. 
+
+b) Baseline: The baseline was AMD’s reference BF16 softmax kernel from IRON API. To the best of our knowl-edge, it is the only optimized softmax kernel available for this hardware. The BF16 kernel performs an LUT assisted exponential operation on AIE-ML and uses a native BF16 exponential operation instruction on AIE-MLv2. The LUT implementation follows the vendor-provided BF16 exponential primitive, which relies on lookup tables accessed via vector gather instructions and therefore assumes a specific memory layout contract between LUT storage and vector lanes.                                                 
+
+> TABLE I VALIDATION ACCURACY ON SST-2 AND MNLI. ∆IS THE ACCURACY DROP OF THE RETRAINED HCCS MODEL RELATIVE TO THE FLOAT 32
+> BASELINE . M ODE :INT 16+ DIV . MNLI RESULTS REPORT MATCHED ACCURACY ON THE VALIDATION SET .Task Model Baseline No-retrain Retrained ∆
+> SST-2 BERT-tiny 0.825 0.619 0.822 −0.003 SST-2 BERT-small 0.893 0.766 0.878 −0.015 MNLI BERT-tiny 0.653 0.480 0.639 −0.013 MNLI BERT-small 0.742 0.602 0.723 −0.019 TABLE II EFFECT OF LOWER -GRANULARITY CALIBRATION AFTER QAT. SST-2 MNLI Calibration BERT-tiny BERT-small BERT-tiny BERT-small Shared/global 0.817 0.834 0.416 0.545 Per-layer 0.819 0.842 0.552 0.602
+
+c) Models and tasks: We evaluate two encoder Trans-former models on two classification datasets: binary sentiment classification on SST-2 [16] and natural language inference on MNLI [17]. The models are BERT-tiny (2 layers, 2heads, hidden = 128) and BERT-small (4 layers, 8 heads, hidden = 512) [18]. The choice of these models represents the lower and upper bounds of what is typically considered to be the low to mid range number of parameters for edge inference on custom hardware like the AMD Versal AI Engine. We intentionally restrict evaluation to encoder-only classification tasks, as these represent the primary deployment target for edge inference on custom integer hardware, and because the softmax overhead is proportionally most significant in this regime relative to GEMM cost. All of the SST-2 experiments utilized a maximum sequence length of 64 tokens. This allows us to cover greater than 99% of SST-2 training examples without having to truncate them (p99 = 44 tokens, max = 66 tokens on the tokenized version of the SST-2 training split). MNLI contains sentence pairs and thus, we had to increase the maximum sequence length to 128 tokens to minimize the number of instances where we would have to truncate the input sequences, while still allowing us to run the experiments at the same throughput levels. 
+
+d) Calibration.: The calibration process involves deter-mining the set of parameters, θh, for each head, h. The pa-rameters are (Bh, S h, D max ,h ), and are found off-line through the grid search discussed in section III-C using 64 batch samples. The grid search is designed to find the combination of parameters that results in the minimum average KL-divergence calculated during the grid search in int16 arithmetic. Once a set of parameters is determined, they are used to calibrate the model for the remainder of the experiment. As the calibration process requires no additional computation time beyond find-ing the optimal parameters, it is performed once per model without introducing additional inference overhead. 
+
+B. End-to-End Task Accuracy 
+
+To isolate the benefit of calibration granularity, Table II reports an ablation study on lower-granularity HCCS param-0.02               
+
+> 0.04
+> 0.06
+> 0.08
+> Probability
+> Bert-T L0H0
+> 0.01
+> 0.02
+> 0.03
+> Bert-T L0H1
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> Bert-T L1H0
+> 0.00
+> 0.05
+> 0.10
+> Bert-T L1H1
+> 020 40 60
+> Key index
+> 0.012
+> 0.014
+> 0.016
+> 0.018
+> 0.020
+> Probability
+> Bert-S L0H0
+> 020 40 60
+> Key index
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> Bert-S L0H5
+> 020 40 60
+> Key index
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> Bert-S L0H3
+> 020 40 60
+> Key index
+> 0.000
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> Bert-S L2H2
+> Baseline softmax HCCS retrained Fig. 2. Attention probability curves for broad and focused heads from BERT-Tiny (top) and selected BERT-Small heads (bottom), comparing float32 softmax and retrained HCCS. Differences in absolute probabilities are expected, especially on focused heads: HCCS is a surrogate rather than an exact softmax replica, and retraining adapts the model to a new but effective attention distribution.
+
+eterizations (shared/global and per-layer) after QAT. In both cases, the proposed head-wise setting (Table I, “Retrained”) gives the best downstream accuracy. The gap is especially pronounced on MNLI, suggesting that heterogeneous heads benefit from finer-grained calibration. Ta-ble I reports validation accuracy for the float32 baseline, direct HCCS substitution without retraining, and HCCS with QAT. After retraining, HCCS remains within 0.3–1.9 percentage points of the float32 baseline across all model-task pairs. These results show that most of the lost accuracy can be recovered with lightweight adaptation of the baseline weights. The no-retrain results are included to motivate the need for QAT rather than as a practical deployment baseline. The large accuracy drop observed under direct substitution (for example, 20.6 and 12.7 percentage points for BERT-tiny and BERT-small on SST-2, respectively) confirms that retraining is necessary when introducing a surrogate normalization into a compact model. The calibration-stage KL objective is only a proxy for selecting feasible surrogate parameters before retraining; the primary criterion of interest in this work is downstream task accuracy after QAT. We additionally evaluated the i8+CLB normalization path and observed validation accuracy comparable to the i16+div configuration across all model-task pairs, indicating that the reciprocal approximation has negligible impact on downstream task accuracy in this setting. 
+
+C. Attention Distribution Fidelity 
+
+A comparison of the attention probability curves in Fig. 2, for a representative broad and a focused head in BERT-Tiny, and two selected heads in BERT-Small, using both the float32 baseline and the HCCS retrained models on the same data. Attention entropy was calculated for all heads over multiple samples. Broad heads have the greatest mean attention entropy, while focused Heads have the least. The attention probability curves are plotted against the Key Index (there are 64 keys in both models in SST-2) such that any differences represent the method in which each model allocates its attention over positions. Matching exact probabilities is not required. HCCS is a surrogate softmax, and after retraining the model can converge to different but task-effective attention distributions. The HCCS model preserves the structural properties of each type of head. Broad heads maintain the slow decline of probability over many positions. Focused heads continue to concentrate their mass into the top ranks. However, absolute values of probability differ from the float32 reference, because HCCS is a calibrated monotonic surrogate. In addition, the model will adapt to the HCCS surrogate during training. Therefore, the model is no longer attempting to replicate the float32 softmax, but instead find a different solution in weight space that has a similar loss. The results in the Accuracy table I demonstrate that preserving the structural properties of the heads is sufficient for good performance on the target tasks. The HCCS surrogate has a small KL divergence value compared to the float32 softmax over fixed model weights, as quantified (typically ≈ 0.1–0.3 for broad heads and ≈ 0.2–0.3
+
+for focused heads). The KL divergence values can increase when the model is retrained on the surrogate attention rules, but this did not adversely affect the performance of the model for the downstream tasks (Table I). 
+
+D. Throughput on AMD AI Engine 
+
+Kernel throughput for the BF16 reference and both HCCS configurations are presented for sequence lengths of 32, 64 and 128 in the table III, using both AIE-ML and AIE-ML v2. Throughput results represent steady-state kernel execution on the AI Engine. It should be noted that the LUT-based exponential primitive was run as it was delivered within the AMD reference kernel. The actual implementation of this primitive depends on a specific LUT memory layout and gather access contract, thus requiring additional target-specific validation in our Versal AIE-ML implementation. Throughput values of HCCS (CLB) were the largest at all sequence lengths tested. This is attributed to its use of integer MAC operations TABLE III SOFTMAX KERNEL THROUGHPUT (ELEMENTS /S) ON AMD AI E NGINE .SPEEDUP RELATIVE TO AMD’ S BF16 REFERENCE PER DEVICE .BF16 HCCS i16+div HCCS i8+CLB                                    
+
+> nelems/s elems/s Speedup elems/s Speedup
+> AMD Versal VEK280 (AIE-ML)
+> 32 0.09G/s 0.41G/s 4.6 ×1.36G/s 15.1 ×
+> 64 0.16G/s 0.78G/s 4.9 ×2.19G/s 13.7 ×
+> 128 0.25G/s 1.37G/s 5.5 ×2.18G/s 8.72 ×
+> AMD Versal VEK385 (AIE-MLv2)
+> 32 0.24G/s 0.41G/s 1.7 ×1.46G/s 6.1 ×
+> 64 0.46G/s 0.78G/s 1.7 ×2.46G/s 5.4 ×
+> 128 0.77G/s 1.41G/s 1.8 ×2.21G/s 2.9 ×
+
+and a single leading-bit detection instruction instead of the exponential and reciprocal operations used in the reference kernel. The CLB based HCCS kernel eliminates the latency associated with the reciprocal division operation. HCCS (Div), on the other hand, maintains an exact integer division while achieving a throughput that is modestly less than that achieved by the CLB variant. Nevertheless, HCCS (Div) outperformed the BF16 reference kernel at all sequence lengths tested. Throughput generally increased with increasing sequence length due to improved pipeline utilization. At smaller sequence lengths, the overhead of the exponential and reciprocal operations in the BF16 reference kernel was relatively large. In particular, HCCS kernels showed much greater efficiency at lower sequence lengths. As the sequence length increased, the computation became dominated by MAC operations in both kernels. Therefore, the relative throughput improvement decreased somewhat at larger sequence lengths as both kernels approached the limits of the MAC pipelines. Furthermore, under steady-state execution, average row la-tency increases more slowly than sequence length. For ex-ample, in the CLB configuration, it rises from 29 cycles/row at n = 32 to 69 cycles/row at n = 128 , which is substantially less than a 4× increase. This indicates that fixed per-row costs are amortized over longer rows. Finally, in the case of the AIE-MLv2, the BF16 baseline had the benefit of a dedicated BF16 exponential instruction. The LUT-based approximation used in the AIE-ML architecture is limited to four parallel table accesses per operation. This limited the throughput of the exponential primitive, while this limitation did not exist in AIE-MLv2 and therefore it achieved a higher throughput on the VEK385 device. 
+
+Multi-tile scaling: Figure 3 illustrates aggregate through-put as the number of AI Engine tiles grows from 1 to 184 on the AIE-MLv2 array (AMD Versal VEK385). The reason we can use multi-tile scaling is that since each softmax row is completely independent, each tile will process a completely different set of rows than all other tiles with no need for inter-tile communication. Each tile also loads the per-head parameters (Bh, S h, D max ,h ) for its assigned rows from local tile memory based upon the row’s head identifier and therefore does not require any synchronization. Aggregate throughput is obtained by scaling the measured single-tile throughput across independent rows processed on multiple tiles. Due to 8 16 32 64 128 256       
+
+> AIE count
+> 0
+> 200
+> 400
+> Giga elements/s  i16-div
+> 816 32 64 128 256
+> AIE count
+> i8-clb
+> Fig. 3. Aggregate softmax throughput vs. number of AMD AI Engine tiles.
+
+the embarrassingly parallel nature of the softmax operation, it should be expected that throughput will scale linearly with respect to the number of tiles. Therefore, throughput scales linearly with tile count for both HCCS configurations reaching up to 259 G elements/s for HCCS (i16+Div), and 407 G elements/s for HCCS (i8+CLB) at 184 tiles. However, as a full DNN workload will not typically allocate such a large portion of the AI Engine array to the softmax stage, this experiment serves to demonstrate the scaling ceiling of the kernel under conditions where enough parallel work is available. For context, prior FPGA softmax accelerators report opera-tor throughput on the order of hundreds of M elements/s [19], [20]. Compared to these studies, the maximum throughput of a single AIE tile in the current implementation is approximately an order of magnitude greater than those previously reported. As a result, when scaling across the entire AIE array, the total throughput for the softmax operation will reach hundreds of G elements/s. This level of throughput is similar to that which has been reported for the softmax operation using datacenter-class GPUs, such as the NVIDIA A100 in recent studies [21]. VI. C ONCLUSION 
+
+The paper describes HCCS, which is a head-calibrated clipped-linear softmax surrogate that can be used as an alterna-tive to softmax in transformer attention using an integer-only MAC datapath for edge inference. The per-head parameter calibration of HCCS is completed during off-line training and remains fixed at deployment time, allowing the use of HCCS without changing the surrounding model architecture. Evaluation of the entire pipeline on SST-2 and MNLI with BERT-tiny and BERT-small shows that, with the lightweight retraining needed to recover accuracy loss, we can consistently recover accuracy to less than 2% of the float32 baseline. Measurements of kernel throughput show that the speedup provided by HCCS (both HCCS i16+Div and HCCS i8+CLB) can be up to 5.5× and up to 15 .1×, respectively, compared to the vendor BF16 reference on AIE-ML. These results demonstrate that it is possible to achieve both high accuracy and high efficiency when normalizing attention using integer-only methods on production AI Engine hardware. ACKNOWLEDGMENT 
+
+This work has been funded by the Eric & Wendy Schmidt Fund for Strategic Innovation through the CERN Next Gen-eration Triggers project under grant agreement number SIF-2023-004. M.K. is supported by the US Department of Energy (DOE) under Grant No. DE-AC02-76SF00515. REFERENCES [1] D. Danopoulos, G. Zervakis, D. Soudris, and J. Henkel, “Transaxx: Efficient transformers with approximate computing,” IEEE Transactions on Circuits and Systems for Artificial Intelligence , vol. 2, no. 4, pp. 288– 301, 2025. [2] D. Danopoulos, E. Lupi, C. Sun, S. Dittmeier, M. Kagan, V. Loncar, and M. Pierini, “Aie4ml: An end-to-end framework for compiling neural networks for the next generation of amd ai engines,” 2026. [Online]. Available: https://arxiv.org/abs/2512.15946 [3] S. Kim, A. Gholami, Z. Yao, M. W. Mahoney, and K. Keutzer, “I-bert: Integer-only bert quantization,” ArXiv , vol. abs/2101.01321, 2021. [Online]. Available: https://api.semanticscholar.org/CorpusID: 230523998 [4] W. Zhong, H. Feng, Z. Zhou, H. Peng, and S. Yu, “Intattention: A fully integer attention pipeline for efficient edge inference,” ArXiv , vol. abs/2511.21513, 2025. [Online]. Available: https://api.semanticscholar. org/CorpusID:283262105 [5] G. Islamoglu, M. Scherer, G. Paulin, T. Fischer, V. J. Jung, A. Garofalo, and L. Benini, “Ita: An energy-efficient attention and softmax accelerator for quantized transformers,” in 2023 IEEE/ACM International Sympo-sium on Low Power Electronics and Design (ISLPED) , 2023, pp. 1–6. [6] J. R. Stevens, R. Venkatesan, S. Dai, B. Khailany, and A. Raghunathan, “Softermax: Hardware/software co-design of an efficient softmax for transformers,” in Proceedings of the 58th Annual ACM/IEEE Design Automation Conference , ser. DAC ’21. IEEE Press, 2022, p. 469–474. [Online]. Available: https://doi.org/10.1109/DAC18074.2021.9586134 [7] S. Liu, G. Tao, Y. Zou, D. Chow, Z. Fan, K. Lei, B. Pan, D. Sylvester, G. Kielian, and M. Saligane, “Consmax: Hardware-friendly alternative softmax with learnable parameters,” in Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design , ser. ICCAD ’24. New York, NY, USA: Association for Computing Machinery, 2025. [Online]. Available: https://doi.org/10.1145/3676536. 3676766 [8] A. Martins and R. Astudillo, “From softmax to sparsemax: A sparse model of attention and multi-label classification,” in Proceedings of The 33rd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, M. F. Balcan and K. Q. Weinberger, Eds., vol. 48. New York, New York, USA: PMLR, 20–22 Jun 2016, pp. 1614–1623. [Online]. Available: https://proceedings.mlr.press/v48/martins16.html [9] B. Zhang, I. Titov, and R. Sennrich, “Sparse attention with linear units,” 11 2021. [10] B. Peters, V. Niculae, and A. F. Martins, “Sparse sequence-to-sequence models,” in Proc. ACL , 2019. [Online]. Available: https://www.aclweb.org/anthology/P19-1146 [11] H. Kang, S. Bharadwaj, J. Hensman, T. Krishna, V. Ruhle, and S. Rajmohan, “Turboattention: Efficient attention approximation for high throughputs llms,” 2024. [Online]. Available: https://arxiv.org/abs/ 2412.08585 [12] Z. Jiang, D. Yin, Y. Chen, E. Khoda, S. Hauck, S.-C. Hsu, E. Gov-orkova, P. Harris, V. Loncar, and E. Moreno, “Low latency transformer inference on fpgas for physics applications with hls4ml,” Journal of Instrumentation , vol. 20, p. P04014, 04 2025. [13] J.-F. Schulte, B. Ramhorst, C. Sun, J. Mitrevski, N. Ghielmetti, E. Lupi, D. Danopoulos, V. Loncar, J. Duarte, D. Burnette, L. Laatu, S. Tzelepis, K. Axiotis, Q. Berthet, H. Wang, P. White, S. Demirsoy, M. Colombo, T. Aarrestad, S. Summers, M. Pierini, G. D. Guglielmo, J. Ngadiuba, J. Campos, B. Hawks, A. Gandrakota, F. Fahim, N. Tran, G. Constantinides, Z. Que, W. Luk, A. Tapper, D. Hoang, N. Paladino, P. Harris, B.-C. Lai, M. Valentin, R. Forelli, S. Ogrenci, L. Gerlach, R. Flynn, M. Liu, D. Diaz, E. Khoda, M. Quinnan, R. Solares, S. Parajuli, M. Neubauer, C. Herwig, H. F. Tsoi, D. Rankin, S.-C. Hsu, and S. Hauck, “hls4ml: A flexible, open-source platform for deep learning acceleration on reconfigurable hardware,” 2025. [Online]. Available: https://arxiv.org/abs/2512.01463 [14] AMD, “Softmax function,” https://docs.amd.com/r/en-US/ Vitis-Tutorials-AI-Engine-Development/Softmax-Function, accessed: 2026-03-26. [15] E. Hunhoff, J. Melber, K. Denolf, A. Bisca, S. Bayliss, S. Neuendorffer, J. Fifield, J. Lo, P. Vasireddy, P. James-Roxby, and E. Keller, “Efficiency, expressivity, and extensibility in a close-to-metal npu programming interface,” in 2025 IEEE 33rd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) , 2025, pp. 85–94. [16] R. Socher, A. Perelygin, J. Wu, J. Chuang, C. D. Manning, A. Ng, and C. Potts, “Recursive deep models for semantic compositionality over a sentiment treebank,” in Conference on Empirical Methods in Natural Language Processing , 2013. [Online]. Available: https://api.semanticscholar.org/CorpusID:990233 [17] A. Williams, N. Nangia, and S. R. Bowman, “A broad-coverage challenge corpus for sentence understanding through inference,” in North American Chapter of the Association for Computational Linguistics ,2017. [Online]. Available: https://api.semanticscholar.org/CorpusID: 3432876 [18] I. Turc, M.-W. Chang, K. Lee, and K. Toutanova, “Well-read students learn better: On the importance of pre-training compact models,” 2019. [Online]. Available: https://arxiv.org/abs/1908.08962 [19] Y. Kang and D. Wang, “Hardware-oriented approximations of softmax and rmsnorm for efficient transformer inference,” Micromachines ,vol. 17, no. 1, 2026. [Online]. Available: https://www.mdpi.com/ 2072-666X/17/1/84 [20] V. Shatravin, D. Shashev, and S. Shidlovskiy, “Implementation of the softmax activation for reconfigurable neural network hardware accelerators,” Applied Sciences , vol. 13, no. 23, 2023. [Online]. Available: https://www.mdpi.com/2076-3417/13/23/12784 [21] H. Zhang, A. Ning, R. B. Prabhakar, and D. Wentzlaff, “Llmcompass: Enabling efficient hardware design for large language model inference,” in 2024 ACM/IEEE 51st Annual International Symposium on Computer Architecture (ISCA) , 2024, pp. 1080–1096.

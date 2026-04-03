@@ -6,49 +6,62 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-02
-- 运行时间：2026-04-02 20:00:20 UTC
+- 最新运行日期：2026-04-03
+- 运行时间：2026-04-03 19:13:55 UTC
 - 运行状态：成功
-- 本次总论文数：9
+- 本次总论文数：13
 - 精读区：4
-- 速读区：5
+- 速读区：9
 
 ### 今日简报（AI）
-今日聚焦边缘计算的碳感知推理与脉冲神经网络的硬件加速，共精选 9 篇前沿成果。
-重点推荐 CarbonEdge 框架实现可持续 AI 推理，以及通过整数状态动力学大幅提升量化 SNN 的硬件能效。
-建议关注低功耗算法与异构硬件的协同设计，并持续跟踪 RISC-V 在机器学习领域的落地进展。
-- 详情：[/202604/02/README](/202604/02/README)
+- 今日共生成 13 篇推荐（精读 4 篇，速读 9 篇）
+- 精读：《TensorPool: A 3D-Stacked 8.4TFLOPS/4.3W Many-Core Domain-Specific Processor for AI-Native Radio Access Networks》（9.0/10）, 《Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference》（9.0/10）
+- 速读：《Semantic Communication for 6G Networks: A Trade-off between Distortion Criticality and Information Representability》（7.0/10）, 《A Switch-Centric In-Network Architecture for Accelerating LLM Inference in Shared-Memory Network》（6.0/10）, 《ARCS: Autoregressive Circuit Synthesis with Topology-Aware Graph Attention and Spec Conditioning》（6.0/10）
+- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。
+- 详情：[/202604/03/README](/202604/03/README)
 
 ### 精读区论文标签
-1. [CarbonEdge: Carbon-Aware Deep Learning Inference Framework for Sustainable Edge Computing](/202604/02/2603.27420v2-carbonedge-carbon-aware-deep-learning-inference-framework-for-sustainable-edge-computing)  
+1. [TensorPool: A 3D-Stacked 8.4TFLOPS/4.3W Many-Core Domain-Specific Processor for AI-Native Radio Access Networks](/202604/03/2604.02291v1-tensorpool-a-3d-stacked-84tflops43w-many-core-domain-specific-processor-for-ai-native-radio-access-networks)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于边缘计算的碳感知深度学习推理框架
-2. [Integer-State Dynamics of Quantized Spiking Neural Networks for Efficient Hardware Acceleration](/202604/02/2604.01042v1-integer-state-dynamics-of-quantized-spiking-neural-networks-for-efficient-hardware-acceleration)  
+   evidence：用于AI原生无线接入网的多核领域专用处理器
+2. [Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference](/202604/03/2604.02292v1-taming-the-exponential-a-fast-softmax-surrogate-for-integer-native-edge-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于低功耗数字硬件加速的量化脉冲神经网络
-3. [How Vulnerable Are Edge LLMs?](/202604/02/2603.23822v1-how-vulnerable-are-edge-llms)  
+   evidence：用于整数原生边缘推理的快速Softmax替代方案
+3. [Graph Neural Operator Towards Edge Deployability and Portability for Sparse-to-Dense, Real-Time Virtual Sensing on Irregular Grids](/202604/03/2604.01802v1-graph-neural-operator-towards-edge-deployability-and-portability-for-sparse-to-dense-real-time-virtual-sensing-on-irregular-grids)  
    标签：评分：8.0/10、query:aiot
-   evidence：量化的边缘部署大语言模型
-4. [Semantic Zone-Based Map Management for Stable AI-Integrated Mobile Robots](/202604/02/2603.29627v1-semantic-zone-based-map-management-for-stable-ai-integrated-mobile-robots)  
+   evidence：资源受限系统上实时传感的边缘部署能力
+4. [FlatAttention: Dataflow and Fabric Collectives Co-Optimization for Large Attention-Based Model Inference on Tile-Based Accelerators](/202604/03/2604.02110v1-flatattention-dataflow-and-fabric-collectives-co-optimization-for-large-attention-based-model-inference-on-tile-based-accelerators)  
    标签：评分：8.0/10、query:aiot
-   evidence：严格内存预算下边缘机器人的地图管理
+   evidence：针对瓦片式加速器模型推理的数据流与架构协同优化
 
 ### 速读区论文标签
-1. [G-ICSO-NAS: Shifting Gears between Gradient and Swarm for Robust Neural Architecture Search](/202604/02/2604.00703v1-g-icso-nas-shifting-gears-between-gradient-and-swarm-for-robust-neural-architecture-search)  
+1. [Semantic Communication for 6G Networks: A Trade-off between Distortion Criticality and Information Representability](/202604/03/2603.29293v1-semantic-communication-for-6g-networks-a-trade-off-between-distortion-criticality-and-information-representability)  
    标签：评分：7.0/10、query:aiot
-   evidence：用于自动模型优化的神经架构搜索
-2. [Is RISC-V Ready for Machine Learning? Portable Gaussian Processes Using Asynchronous Tasks](/202604/02/2604.00736v1-is-risc-v-ready-for-machine-learning-portable-gaussian-processes-using-asynchronous-tasks)  
-   标签：评分：7.0/10、query:aiot
-   evidence：在 RISC-V 和 ARM 嵌入式架构上评估机器学习性能
-3. [HeteroHub: An Applicable Data Management Framework for Heterogeneous Multi-Embodied Agent System](/202604/02/2603.28010v1-heterohub-an-applicable-data-management-framework-for-heterogeneous-multi-embodied-agent-system)  
+   evidence：面向6G网络和AIoT集成的自适应语义通信
+2. [A Switch-Centric In-Network Architecture for Accelerating LLM Inference in Shared-Memory Network](/202604/03/2603.28239v2-a-switch-centric-in-network-architecture-for-accelerating-llm-inference-in-shared-memory-network)  
    标签：评分：6.0/10、query:aiot
-   evidence：多具身智能体系统与传感器流的数据管理
-4. [See it to Place it: Evolving Macro Placements with Vision-Language Models](/202604/02/2603.28733v1-see-it-to-place-it-evolving-macro-placements-with-vision-language-models)  
+   evidence：用于加速大模型推理通信的网络在轨架构
+3. [ARCS: Autoregressive Circuit Synthesis with Topology-Aware Graph Attention and Spec Conditioning](/202604/03/2603.29068v2-arcs-autoregressive-circuit-synthesis-with-topology-aware-graph-attention-and-spec-conditioning)  
    标签：评分：6.0/10、query:aiot
-   evidence：VLM引导的芯片布局宏单元放置
-5. [Stochastic Attention: Connectome-Inspired Randomized Routing for Expressive Linear-Time Attention](/202604/02/2604.00754v1-stochastic-attention-connectome-inspired-randomized-routing-for-expressive-linear-time-attention)  
+   evidence：使用学习生成器进行快速模拟电路综合
+4. [RePart: Efficient Hypergraph Partitioning with Logic Replication Optimization for Multi-FPGA System](/202604/03/2604.00780v1-repart-efficient-hypergraph-partitioning-with-logic-replication-optimization-for-multi-fpga-system)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于高效神经通信的线性时间注意力算法
+   evidence：多FPGA系统分区与逻辑复制硬件原型设计
+5. [Generative Profiling for Soft Real-Time Systems and its Applications to Resource Allocation](/202604/03/2604.01441v1-generative-profiling-for-soft-real-time-systems-and-its-applications-to-resource-allocation)  
+   标签：评分：6.0/10、query:aiot
+   evidence：复杂硬件上的资源分配与时序行为
+6. [CuTeGen: An LLM-Based Agentic Framework for Generation and Optimization of High-Performance GPU Kernels using CuTe](/202604/03/2604.01489v1-cutegen-an-llm-based-agentic-framework-for-generation-and-optimization-of-high-performance-gpu-kernels-using-cute)  
+   标签：评分：6.0/10、query:aiot
+   evidence：针对机器学习的高性能GPU内核优化
+7. [A Unified Performance-Cost Landscape of Parallel p-bit Ising Machines Based on Update Dynamics](/202604/03/2604.01564v1-a-unified-performance-cost-landscape-of-parallel-p-bit-ising-machines-based-on-update-dynamics)  
+   标签：评分：6.0/10、query:aiot
+   evidence：并行p-bit Ising机上的高效能组合优化
+8. [AI-Assisted Hardware Security Verification: A Survey and AI Accelerator Case Study](/202604/03/2604.01572v1-ai-assisted-hardware-security-verification-a-survey-and-ai-accelerator-case-study)  
+   标签：评分：6.0/10、query:aiot
+   evidence：针对AI加速器的AI辅助硬件安全验证
+9. [A Practical Two-Stage Framework for GPU Resource and Power Prediction in Heterogeneous HPC Systems](/202604/03/2604.02158v1-a-practical-two-stage-framework-for-gpu-resource-and-power-prediction-in-heterogeneous-hpc-systems)  
+   标签：评分：6.0/10、query:aiot
+   evidence：用于高效利用的 GPU 资源与功耗预测
 
 
 <div class="dpr-home-promo-card">
