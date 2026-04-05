@@ -6,62 +6,43 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-03
-- 运行时间：2026-04-03 19:13:55 UTC
+- 最新运行日期：2026-04-05
+- 运行时间：2026-04-05 20:00:19 UTC
 - 运行状态：成功
-- 本次总论文数：13
-- 精读区：4
-- 速读区：9
+- 本次总论文数：7
+- 精读区：3
+- 速读区：4
 
 ### 今日简报（AI）
-- 今日共生成 13 篇推荐（精读 4 篇，速读 9 篇）
-- 精读：《TensorPool: A 3D-Stacked 8.4TFLOPS/4.3W Many-Core Domain-Specific Processor for AI-Native Radio Access Networks》（9.0/10）, 《Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference》（9.0/10）
-- 速读：《Semantic Communication for 6G Networks: A Trade-off between Distortion Criticality and Information Representability》（7.0/10）, 《A Switch-Centric In-Network Architecture for Accelerating LLM Inference in Shared-Memory Network》（6.0/10）, 《ARCS: Autoregressive Circuit Synthesis with Topology-Aware Graph Attention and Spec Conditioning》（6.0/10）
-- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。
-- 详情：[/202604/03/README](/202604/03/README)
+今日聚焦自动驾驶语义异常检测与深度强化学习的软硬协同加速方案。
+重点推荐 VLM 在低延迟感知中的可行性研究，以及 Versal ACAP 平台上 DRL 任务自动划分的性能突破。
+建议关注 AI 算法向异构硬件迁移的效率优化，并同步留意生成式 AI 在中间件及隐私计算中的跨界应用。
+- 详情：[/202604/05/README](/202604/05/README)
 
 ### 精读区论文标签
-1. [TensorPool: A 3D-Stacked 8.4TFLOPS/4.3W Many-Core Domain-Specific Processor for AI-Native Radio Access Networks](/202604/03/2604.02291v1-tensorpool-a-3d-stacked-84tflops43w-many-core-domain-specific-processor-for-ai-native-radio-access-networks)  
+1. [A Semantic Observer Layer for Autonomous Vehicles: Pre-Deployment Feasibility Study of VLMs for Low-Latency Anomaly Detection](/202604/05/2603.28888v1-a-semantic-observer-layer-for-autonomous-vehicles-pre-deployment-feasibility-study-of-vlms-for-low-latency-anomaly-detection)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于AI原生无线接入网的多核领域专用处理器
-2. [Taming the Exponential: A Fast Softmax Surrogate for Integer-Native Edge Inference](/202604/03/2604.02292v1-taming-the-exponential-a-fast-softmax-surrogate-for-integer-native-edge-inference)  
+   evidence：用于自动驾驶低延迟异常检测的量化VLM
+2. [AP-DRL: A Synergistic Algorithm-Hardware Framework for Automatic Task Partitioning of Deep Reinforcement Learning on Versal ACAP](/202604/05/2603.29369v1-ap-drl-a-synergistic-algorithm-hardware-framework-for-automatic-task-partitioning-of-deep-reinforcement-learning-on-versal-acap)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于整数原生边缘推理的快速Softmax替代方案
-3. [Graph Neural Operator Towards Edge Deployability and Portability for Sparse-to-Dense, Real-Time Virtual Sensing on Irregular Grids](/202604/03/2604.01802v1-graph-neural-operator-towards-edge-deployability-and-portability-for-sparse-to-dense-real-time-virtual-sensing-on-irregular-grids)  
+   evidence：Versal ACAP上深度强化学习任务划分的算法-硬件协同框架
+3. [Enabling Programmable Inference and ISAC at the 6GR Edge with dApps](/202604/05/2603.29146v1-enabling-programmable-inference-and-isac-at-the-6gr-edge-with-dapps)  
    标签：评分：8.0/10、query:aiot
-   evidence：资源受限系统上实时传感的边缘部署能力
-4. [FlatAttention: Dataflow and Fabric Collectives Co-Optimization for Large Attention-Based Model Inference on Tile-Based Accelerators](/202604/03/2604.02110v1-flatattention-dataflow-and-fabric-collectives-co-optimization-for-large-attention-based-model-inference-on-tile-based-accelerators)  
-   标签：评分：8.0/10、query:aiot
-   evidence：针对瓦片式加速器模型推理的数据流与架构协同优化
+   evidence：在边缘侧集成推理与感知以用于AIoT应用
 
 ### 速读区论文标签
-1. [Semantic Communication for 6G Networks: A Trade-off between Distortion Criticality and Information Representability](/202604/03/2603.29293v1-semantic-communication-for-6g-networks-a-trade-off-between-distortion-criticality-and-information-representability)  
+1. [Physical Design of UET-RVMCU: A Streamlined Open-Source RISC-V Microcontroller](/202604/05/2603.28709v1-physical-design-of-uet-rvmcu-a-streamlined-open-source-risc-v-microcontroller)  
    标签：评分：7.0/10、query:aiot
-   evidence：面向6G网络和AIoT集成的自适应语义通信
-2. [A Switch-Centric In-Network Architecture for Accelerating LLM Inference in Shared-Memory Network](/202604/03/2603.28239v2-a-switch-centric-in-network-architecture-for-accelerating-llm-inference-in-shared-memory-network)  
+   evidence：用于低面积嵌入式系统的轻量级RISC-V微控制器
+2. [SAGAI-MID: A Generative AI-Driven Middleware for Dynamic Runtime Interoperability](/202604/05/2603.28731v1-sagai-mid-a-generative-ai-driven-middleware-for-dynamic-runtime-interoperability)  
+   标签：评分：7.0/10、query:aiot
+   evidence：用于物联网设备互操作性和模式不匹配解决的中间件
+3. [Key-Embedded Privacy for Decentralized AI in Biomedical Omics](/202604/05/2603.28334v1-key-embedded-privacy-for-decentralized-ai-in-biomedical-omics)  
    标签：评分：6.0/10、query:aiot
-   evidence：用于加速大模型推理通信的网络在轨架构
-3. [ARCS: Autoregressive Circuit Synthesis with Topology-Aware Graph Attention and Spec Conditioning](/202604/03/2603.29068v2-arcs-autoregressive-circuit-synthesis-with-topology-aware-graph-attention-and-spec-conditioning)  
+   evidence：用于类物联网环境下去中心化AI的轻量级联邦学习
+4. [Oscillator-Based Associative Memory with Exponential Capacity: Theory, Algorithms, and Hardware Implementation](/202604/05/2604.01469v1-oscillator-based-associative-memory-with-exponential-capacity-theory-algorithms-and-hardware-implementation)  
    标签：评分：6.0/10、query:aiot
-   evidence：使用学习生成器进行快速模拟电路综合
-4. [RePart: Efficient Hypergraph Partitioning with Logic Replication Optimization for Multi-FPGA System](/202604/03/2604.00780v1-repart-efficient-hypergraph-partitioning-with-logic-replication-optimization-for-multi-fpga-system)  
-   标签：评分：6.0/10、query:aiot
-   evidence：多FPGA系统分区与逻辑复制硬件原型设计
-5. [Generative Profiling for Soft Real-Time Systems and its Applications to Resource Allocation](/202604/03/2604.01441v1-generative-profiling-for-soft-real-time-systems-and-its-applications-to-resource-allocation)  
-   标签：评分：6.0/10、query:aiot
-   evidence：复杂硬件上的资源分配与时序行为
-6. [CuTeGen: An LLM-Based Agentic Framework for Generation and Optimization of High-Performance GPU Kernels using CuTe](/202604/03/2604.01489v1-cutegen-an-llm-based-agentic-framework-for-generation-and-optimization-of-high-performance-gpu-kernels-using-cute)  
-   标签：评分：6.0/10、query:aiot
-   evidence：针对机器学习的高性能GPU内核优化
-7. [A Unified Performance-Cost Landscape of Parallel p-bit Ising Machines Based on Update Dynamics](/202604/03/2604.01564v1-a-unified-performance-cost-landscape-of-parallel-p-bit-ising-machines-based-on-update-dynamics)  
-   标签：评分：6.0/10、query:aiot
-   evidence：并行p-bit Ising机上的高效能组合优化
-8. [AI-Assisted Hardware Security Verification: A Survey and AI Accelerator Case Study](/202604/03/2604.01572v1-ai-assisted-hardware-security-verification-a-survey-and-ai-accelerator-case-study)  
-   标签：评分：6.0/10、query:aiot
-   evidence：针对AI加速器的AI辅助硬件安全验证
-9. [A Practical Two-Stage Framework for GPU Resource and Power Prediction in Heterogeneous HPC Systems](/202604/03/2604.02158v1-a-practical-two-stage-framework-for-gpu-resource-and-power-prediction-in-heterogeneous-hpc-systems)  
-   标签：评分：6.0/10、query:aiot
-   evidence：用于高效利用的 GPU 资源与功耗预测
+   evidence：基于振荡器的关联存储器架构的硬件实现
 
 
 <div class="dpr-home-promo-card">
