@@ -1,0 +1,1241 @@
+Title: RELIEF: Turning Missing Modalities into Training Acceleration for Federated Learning on Heterogeneous IoT Edge
+
+URL Source: https://arxiv.org/pdf/2604.04243v1
+
+Published Time: Tue, 07 Apr 2026 01:28:05 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+IEEE INTERNET OF THINGS JOURNAL 1
+
+# RELIEF: Turning Missing Modalities into Training Acceleration for Federated Learning on Heterogeneous IoT Edge 
+
+Beining Wu, Member, IEEE , Zihao Ding, and Jun Huang, Senior Member, IEEE 
+
+Abstract —Federated learning (FL) over heterogeneous IoT edge devices faces coupled system-modality-data heterogeneity: the lower-cost device carries both fewer sensors and less com-putational power, so the slowest device (straggler) produces the most incomplete gradient signals. Naively averaging their updates dilutes rare-modality information and wastes computation on absent-sensor parameters, whereas existing methods handle the triple heterogeneity (system, modality, data) in isolation and none addresses their coupling. To resolve this issue, we propose 
+
+RELIEF , a framework that partitions the fusion-layer Low-Rank Adaptation (LoRA) projection matrix into modality-aligned column blocks and uses this partition as a unified interface for aggregation, elastic training, and communication. Each block is aggregated only within the cohort of devices possessing that modality, which eliminates cross-modal gradient interference; the server then allocates personalized training budgets by pri-oritizing blocks with the highest cohort-internal divergence, so that resource-constrained devices train fewer but more impactful parameters. We prove that cohort-wise aggregation removes interference from the convergence bound and that the divergence-guided allocation achieves sublinear regret. Experiments on two IoT sensor datasets (PAMAP2, MHEALTH) under both full-parameter (CNN) and parameter-efficient (LoRA) training show that RELIEF achieves up to 9.41 × speedup and 37% energy reduction over FedAvg with up to 15.3 pp rare-modality F1 gains, and real-device validation on a two-Jetson AGX Orin testbed confirms these results. 
+
+Index Terms —Federated learning, multimodal learning, In-ternet of Things, edge computing, low-rank adaptation, device heterogeneity 
+
+I. I NTRODUCTION 
+
+# THE rapid growth of Internet-of-Things (IoT) deployments for health monitoring has created distributed networks of heterogeneous edge devices, ranging from multi-sensor smartwatches to single-axis adhesive patches, that continu-ously collect physiological and environmental data [1]–[3]. Training shared sensing models across such networks demands collaborative learning without transmitting raw health data, making federated learning (FL) a natural framework [4]–[6]. However, real-world IoT networks exhibit a characteristic that distinguishes them from standard FL settings: three dimen-sions of device heterogeneity, namely system (computational capacity), modality (sensor availability), and data (non-IID dis-tributions), are not independent but coupled through the device 
+
+Beining Wu, Zihao Ding, and Jun Huang are with the Depart-ment of Electrical Engineering and Computer Science, South Dakota State University, Brookings, SD 57007, USA. E-mails: {Wu.Beining, Zi-hao.Ding }@jacks.sdstate.edu, Jun.Huang@sdstate.edu. This work was supported in part by the National Science Foundation under grant CNS-2348422. (I) Cross-Model Gradient Interference    
+
+> Full-modal Device Partial-modal Device Single-modal Device ...  Fusion Layer FedAvg
+> Rare-modality signals diluted
+> (II) Coupled Straggler Bottleneck
+> Full-modal Device Partial-modal Device Single-modal Device
+> ...  wasted on absent modalities
+> idle
+> idle
+> (III) Interface Mismatch
+> Multimodal FL
+> grouped by modality
+> Conflicting
+> Elastic Training
+> sorted by importance
+> Problem
+> Solution
+> RELIEF
+> ACC Gyro Mag HR
+> Aggregate Train
+> Communicate
+
+Fig. 1. Problem illustration. (Q1) FedAvg dilutes rare-modality signals by mixing incompatible gradient updates. (Q2) Single-modal stragglers waste computation on absent-modality parameters. (Q3) Multimodal FL and elas-tic training define parameter groups along conflicting axes. RELIEF uses modality-aligned column blocks as a unified interface for all three. 
+
+cost gradient . Lower-cost devices carry both fewer sensors and less computational power, so the slowest devices are precisely those with the fewest modalities and the most incomplete gradient signals. As illustrated in Fig. 1, this coupling creates challenges that existing methods, each addressing at most one dimension in isolation [7]–[9], cannot resolve. When devices with heterogeneous modality configurations jointly train a shared multimodal fusion model via standard FL aggregation [4], the fusion layer receives structurally incompatible gradient updates: a full-modality device produces gradients encoding cross-modal interactions across all column blocks of the Low-Rank Adaptation (LoRA) projection ma-trix [10], while a single-modality device produces non-zero gradients in only one block and near-zero noise elsewhere. Naively averaging these updates dilutes rare-modality signals and corrupts even shared-modality representations, as we em-pirically verify in Section IV-A. This raises the first question (Q1): How can we aggregate fusion-layer updates from devices with heterogeneous modality configurations without cross-modal interference? Even if this aggregation problem were solved, synchronous FL still requires all devices to complete training before the next round can begin. Under the coupled heterogeneity described above, the bottleneck device, typically  
+
+> arXiv:2604.04243v1 [cs.NI] 5 Apr 2026 IEEE INTERNET OF THINGS JOURNAL 2
+
+the one with the least compute and fewest sensors, must train the entire model including parameter groups for modalities it does not possess, resulting in both wasted computation and prolonged round times. This leads to the second question (Q2): How can we accelerate training when the straggler devices are precisely those with the fewest modalities and least compute? A natural approach is to combine existing solutions: use multimodal FL methods [8], [11] to fix aggregation and elastic training methods [7] to fix speed. However, these two lines of work define “parameter groups” differently: the former along modality boundaries, the latter along tensor importance, creating conflicting allocation decisions. An importance-based elastic scheduler, unaware of modality structure, may assign a single-modality device to train parameters for sensors it lacks, producing zero-gradient updates that waste compute and degrade aggregation quality. This gives rise to the fundamental question (Q3): Can a single structural interface inform what to aggregate, what to train, and what to communicate? 
+
+Existing work falls short on all three fronts. In the mul-timodal FL literature, Harmony [8] avoids federating the fusion layer altogether, sacrificing cross-modal knowledge sharing; FediLoRA [11] and Pilot [12] improve modality-heterogeneous aggregation but assume homogeneous device capabilities and provide no acceleration mechanism [13], [14]. In the system-heterogeneous FL literature, FedEL [7] achieves wall-clock speedup through tensor-level elastic training but operates on single-modality models and selects parameters by gradient magnitude without modality semantics [15]– [17]. In the federated LoRA literature, FedSA-LoRA [9] and FedLEASE [18] optimize aggregation under data heterogene-ity, but do not exploit multimodal structure [19], [20]. No existing method addresses the coupled system-modality-data heterogeneity that characterizes real-world IoT deployments, and no work leverages the LoRA projection matrix’s modality-aligned column-block structure as a unified interface for aggregation, training allocation, and communication. We propose RELIEF , a Resource-Efficient mu LtImodal 
+
+Edge Federated learning framework, where a single structural decomposition resolves all three questions. To address Q1, we introduce Modality-Decomposed LoRA (MDLoRA) with cohort-wise aggregation: the fusion-layer LoRA projection matrix is partitioned into modality-aligned column blocks, and each block is aggregated exclusively within the subset of de-vices possessing that modality, which eliminates cross-modal gradient interference. To address Q2, we design divergence-guided modality-aware elastic training: the server computes per-block cohort-internal divergence and assigns each device a personalized training budget that prioritizes high-disagreement blocks while naturally excluding parameters for absent modal-ities, so that resource-constrained devices train fewer but more impactful parameters. To address Q3, both mechanisms share the same modality-aligned column-block structure as their common interface: the block boundaries define the aggregation cohorts, the elastic allocation units, and the communication granularity, which produces gains that exceed the sum of the individual components. In summary, we make the following contributions.  
+
+> •
+
+We identify and formalize the coupled system-modality-data heterogeneity problem in multimodal IoT edge FL, and reveal through diagnostic experiments that cross-modal gradient interference propagates beyond missing-modality blocks to corrupt shared-modality representa-tions, while rare-modality update divergence amplifies rather than converges over training.  
+
+> •
+
+We propose RELIEF , a unified framework that lever-ages the modality-aligned column-block structure of the fusion-layer LoRA matrix as a shared interface for cohort-wise aggregation, divergence-guided modality-aware elastic training, and on-demand communication.  
+
+> •
+
+We provide theoretical analysis showing that cohort-wise aggregation eliminates cross-modal interference from the convergence bound and that divergence-guided allocation achieves near-optimal regret relative to an offline oracle.  
+
+> •
+
+We conduct experiments on two real-world IoT sensor datasets (PAMAP2 and MHEALTH), demonstrating that 
+
+RELIEF achieves significant wall-clock speedup over baselines while maintaining or improving classification accuracy, with particular gains on rare-modality perfor-mance. The remainder of this paper is organized as follows. Sec-tion II reviews related work on system-heterogeneous FL, multimodal FL, and federated LoRA aggregation. Section III presents the system model and problem formulation. Sec-tion IV describes the proposed RELIEF framework, preceded by motivational studies. Section V provides the theoretical analysis. Section VI reports simulation results. Section VII validates the framework on a real-device testbed, and Sec-tion VIII concludes the paper. II. R ELATED WORK 
+
+A. Federated Learning under System Heterogeneity 
+
+Federated learning (FL) enables distributed edge devices to collaboratively train a shared model by exchanging model updates rather than raw data [4]–[6], [21]. A persistent chal-lenge in practical deployments is system heterogeneity, where differences in computational capacity and communication bandwidth across devices create straggler bottlenecks during synchronous training. Classical approaches mitigate the effects of data heterogeneity through proximal regularization [22] or variance-reduced gradient correction [23], but do not address the underlying disparity in per-device training speed. To tackle this, recent works adopt partial or elastic training strategies that allow resource-constrained devices to train only a subset of the model [16], [17]. Zhang et al. [7] introduce FedEL, which selects important tensors within a coordinated runtime budget through a sliding-window mechanism, achieving up to 3.87 × wall-clock speedup on heterogeneous Jetson devices. Other efforts reduce inference-time or communication costs on weak devices through early-exit strategies [15], adaptive layer-wise compression [1], and acceleration via multithreaded federated training [24], [25]. However, the above methods [7], [15]–[17], [26], [27] assume single-modality models, where parameter selection criteria such as gradient magnitude carry no modality seman-tics. When the model contains parallel encoder branches for IEEE INTERNET OF THINGS JOURNAL 3
+
+multiple sensor modalities, importance-based allocation may assign weak devices to train parameters for sensors they do not possess, wasting computation on zero-gradient updates [28], [29]. 
+
+B. Multimodal Federated Learning 
+
+Heterogeneous sensors in IoT edge networks have motivated multimodal FL, where devices with different sensor suites col-laboratively train a shared fusion model [3], [13], [26], [30]– [34]. A central difficulty is modality heterogeneity: devices possessing different subsets of modalities produce structurally incompatible gradient updates for the shared fusion layer, com-plicating aggregation and degrading model quality. Ouyang et al. [8] address this by disentangling training into modality-wise and fusion-wise stages, but avoid federating the fusion layer entirely to sidestep aggregation conflicts. Subsequent works explore alternative strategies, including correlation-adaptive multimodal split networks [35], Shapley-value-based modality scheduling [36], and prototype-based compensation for missing modalities in IoT online learning [14]. In the LoRA-based multimodal FL space, Yang et al. [11] propose dimension-wise aggregation to handle missing modalities, while Xiong et al. [12] build a federated multimodal instruc-tion tuning framework that requires each client to load all task-specific adapters. These methods [8], [11], [12], [36] focus on improving aggregation quality under modality heterogeneity but assume homogeneous device capabilities, providing no training ac-celeration mechanism. In real-world IoT deployments, device cost gradients couple modality availability with computational capacity, so pure aggregation improvements cannot resolve the straggler bottleneck. 
+
+C. Low-Rank Adaptation in Federated Learning 
+
+Low-Rank Adaptation (LoRA) [10] has become the dom-inant parameter-efficient fine-tuning approach in FL owing to its low communication and memory footprint [37]–[41]. A central research question is how to aggregate LoRA ma-trices across heterogeneous clients without introducing bias. Guo et al. [9] discover an asymmetry between the A and 
+
+B matrices and propose sharing only A for aggregation, while Bian et al. [20] reconstruct the ideal global update to correct aggregation residuals. To support devices with different resource budgets, heterogeneous-rank strategies allow clients to fine-tune at different LoRA ranks and reconcile them during aggregation [19], [42]. Further advances address aggregation noise through tensor decomposition [43], residual correction [44], and adaptive expert allocation that clusters clients by representation similarity [18]. These works optimize LoRA aggregation along the data heterogeneity dimension but do not involve multimodal model structures. No existing method exploits the modality-aligned column-block structure of the LoRA projection matrix as a unified interface for cohort-wise aggregation, elastic training allocation, and on-demand communication, which is the ap-proach that RELIEF introduces. III. S YSTEM MODEL AND PROBLEM FORMULATION 
+
+A. System Model 
+
+We consider a multimodal federated learning system for health monitoring in heterogeneous IoT edge networks. A set of N edge devices {C n}Nn=1 collaboratively train a shared multimodal model under the coordination of a central server, without transmitting raw data. Each device Cn is equipped with a modality subset Mn ⊆ { 1, . . . , M } and characterized by its computational capacity (in floating-point operations per second, or FLOPS) and communication bandwidth. For instance, in wearable activity monitoring, devices range from multi-sensor smartwatches ( |M n|=4 ) to single-axis adhesive patches ( |M n|=1 ). In real-world IoT deployments, the three dimensions of device heterogeneity are coupled through the device cost gradient : lower-cost devices carry both fewer sensors and less computational power, so the slowest devices (which determine the synchronous training bottleneck) are precisely those with the fewest modalities (which produce the most incomplete gradient signals). Each device further collects data from a local non-IID distribution Pn. These three forms of heterogeneity, namely system, modality, and data, jointly create two coupled challenges: at the per-round scale, synchronous aggregation forces all devices to wait for the slowest participant while the fusion layer receives structurally incompatible gradients; at the cross-round scale, the accumulation of these inefficien-cies degrades convergence and wastes both computation and communication. 
+
+B. Problem Formulation 
+
+The shared model consists of modality-specific encoders 
+
+{Em}Mm=1 , a fusion layer, and a task head H. Each en-coder Em maps raw input from modality m to a feature 
+
+hm ∈ Rdm . The fusion layer takes the concatenated vector 
+
+h = [h1; . . . ; hM ] ∈ RD , where D = PMm=1 dm, and produces a fused representation for classification by H.We adopt Low-Rank Adaptation (LoRA) for parameter-efficient federated training, keeping pretrained weights W0
+
+frozen and learning a low-rank residual ∆W = BA , where 
+
+B ∈ Rdo×ρ and A ∈ Rρ×di with ρ ≪ min( di, d o). LoRA is applied to the fusion layer, each encoder, and the task head. Since the fusion layer input D is the ordered concatenation of per-modality dimensions d1, . . . , d M , its projection matrix 
+
+A ∈ Rρ×D can be partitioned into M contiguous blocks: 
+
+A = [ A1 | A2 | · · · | AM ], Am ∈ Rρ×dm , (1) where each block Am exclusively processes the feature from modality m. For a device lacking modality m (m / ∈ M n), the input hm is zero and Am receives no gradient. As we show in Section IV, this decomposition provides a structural interface that enables modality-aware elastic training, cohort-wise aggregation, and on-demand communication. We define the modality cohort Cm = {n : m ∈ M n} as the subset of devices possessing modality m. The trainable parameters are organized into parameter groups : M fusion-layer column blocks {Am}Mm=1 , the shared projection B, the LoRA parameters of each encoder Em (with Lm adapted IEEE INTERNET OF THINGS JOURNAL 4Acc Gyro Mag HR 00.2 0.4 0.6 0.8     
+
+> Cosine Similarity
+> Full vs Full Full vs Acc+Gyro Full vs Acc-only Acc+Gyro vs Acc-only
+> Fig. 2. Pairwise cosine similarity of fusion-layer LoRA updates across device pairs, grouped by modality column block. Interference extends beyond missing-modality blocks to shared blocks.
+
+layers), and the task head H (with LH layers), totaling 
+
+G = M +1+ PMm=1 Lm +LH groups (the +1 accounts for B). Each device Cn can only update the subset Gn ⊆ { 1, . . . , G }
+
+corresponding to its modalities Mn.Training proceeds over R rounds. At round r, the server distributes Θr to selected devices ˆCr ⊆ {C 1, . . . , CN }. Each device Cn ∈ ˆCr performs E epochs of local optimization on its dataset Dn ∼ P n:
+
+min  
+
+> {θj}j∈G n
+
+E(x,y )∼D n
+
+ℓ fΘ(xMn ), y  , (2) where fΘ is the full model, xMn zero-pads missing modalities, and ℓ is the cross-entropy loss. Each device then uploads 
+
+{∆θn,j }j∈S n , where Sn ⊆ G n is determined by the elastic training budget (Section IV), and the server aggregates them to obtain Θr+1 .The goal is to maximize classification accuracy while minimizing wall-clock time-to-accuracy (TTA) under joint system, modality, and data heterogeneity. Achieving this is difficult because FedAvg on the full fusion matrix A averages updates from devices with different modality configurations: a full-modality device produces gradients across all M column blocks, while a single-modality device produces non-zero gradients in only one block. Averaging these structurally in-compatible updates conflates informative cross-modal signals with zero-padded regions, introducing a bias that drives the ag-gregated update away from the global optimum. The problem is compounded by the straggler effect: under synchronous FL, the slowest device, typically the one with fewest modalities, must train the entire model including parameter groups for absent modalities, wasting computation and degrading gradient quality. These two effects motivate a unified solution that addresses what to train , how to aggregate , and what to communicate , which we present in the next section. IV. P ROPOSED METHOD 
+
+A. Motivational Studies 
+
+To understand how modality heterogeneity affects fed-erated training of multimodal fusion models, we conduct two diagnostic studies on the PAMAP2 activity recognition dataset [45] under a heterogeneous IoT configuration: 8 clients partitioned into 3 device types (3 ×Full with 4 modalities, Phase 1 Phase 2 Phase 3 Phase 4 Phase 5 
+
+Training Phase  
+
+> 00.2 0.4 0.6 0.8 1
+> Update Divergence  Acc Gyro Mag HR
+> Fig. 3. Update divergence of each modality column block across training phases. Rare-modality blocks (Mag, HR) exhibit amplifying divergence rather than convergence.
+
+3×Acc+Gyro, 2 ×Acc-only), trained with standard FedAvg [4] for 200 rounds. The fusion layer adopts LoRA [10] with its projection matrix A partitioned into four modality-aligned column blocks as defined in Eq. (1). These studies reveal two phenomena that are not addressed by existing methods. 
+
+Observation 1: Gradient interference propagates from missing-modality to shared-modality blocks. We compute pairwise cosine similarity of A-matrix updates between device pairs, broken down by column block (Fig. 2). Blocks for absent modalities (Mag, HR) show near-zero similarity, as expected. Less expected is the Acc block, where all devices have the sensor: similarity between Full and Acc-only pairs drops to 0.41, far below the 0.78 between Full pairs. The full-modality gradient encodes cross-modal interactions absent from the unimodal Acc-only gradient; averaging them via FedAvg corrupts even shared-modality representations. 
+
+Observation 2: Rare-modality divergence amplifies over training. We track cohort-internal update divergence of each column block across five training phases (Fig. 3). The Acc block (cohort size 8) maintains low, stable divergence through-out. In contrast, the Mag and HR blocks (cohort size 3) start high and continue to grow with widening variance, because the small cohort amplifies aggregation noise from zero-padded gradients. Uniform parameter allocation that treats all blocks equally will under-serve rare modalities whose divergence demands more training attention. Together, these observations motivate a framework that addresses how to aggregate (cohort-wise decomposition to eliminate the interference identified in Observation 1) and 
+
+what to train (divergence-guided modality-aware allocation to actively manage the amplifying divergence identified in Observation 2). Existing approaches either avoid federating the fusion layer altogether [8] or apply modality-unaware pa-rameter selection that cannot distinguish meaningful gradients from zero-padded noise. We present our unified solution in the following subsection. 
+
+B. The RELIEF Framework 
+
+Fig. 4 illustrates the RELIEF architecture, which operates in a cyclic three-step protocol: (1) the server computes per-group divergence within each modality cohort and assigns personalized elastic training budgets; (2) each device trains IEEE INTERNET OF THINGS JOURNAL 5Round r-1 Round r Round r+1 
+
+> Server
+> Lora
+> Lora Update
+> Clients Model Server
+> Update
+> (a) Multimodal Federated Learning
+> Voice Image
+> Text
+> Concat Concat
+> (c) RELIEF
+> Missing Modal
+> Missing Modal
+
+Server 
+
+> (b) Heterogeneity Elastic Allocation
+> Server Update
+> Full-modal Device Partial Modal Single Modal
+> ...
+> Wasted on Absent Modalities
+> idle
+> idle
+> Communication Round
+> Dataset
+> The object in the photo is a lighthouse.
+> The object in the photo is a dog.
+
+Fig. 4. Overview of RELIEF . Top: Modality-aligned column-block decomposition of the fusion-layer LoRA matrix and cohort-scoped update aggregation across rounds. Bottom: (a) Multimodal FL with heterogeneous devices, (b) divergence-guided elastic allocation, and (c) cohort-wise server aggregation. 
+
+only its assigned parameter groups; (3) the server aggregates updates through modality-decomposed cohort-wise averaging. All three steps share one structural interface, the modality-aligned column blocks defined in Eq. (1), which serves as the aggregation boundary, the elastic allocation unit, and the communication granularity. 
+
+1) Modality-Decomposed LoRA (MDLoRA) with Cohort-Wise Aggregation: Rather than averaging the full projection matrix A across all devices as in FedAvg [4], RELIEF de-composes the aggregation along the modality-aligned column-block structure of A (Eq. (1)). Let ˜Crm ⊆ C m denote the 
+
+active cohort at round r, i.e., the subset of devices that trained column block Am in this round. The aggregation for each block proceeds as: 
+
+Ar+1  
+
+> m
+
+= Arm + 1
+
+| ˜Crm|
+
+X 
+
+> n∈˜Crm
+
+∆Arm,n , (3) where ∆Arm,n = Arm,n − Arm is the local update from device 
+
+n. This eliminates the cross-modal interference identified in Observation 1: only devices possessing modality m contribute to Am, preventing zero-padded noise from corrupting mean-ingful gradient signals. Modality encoders {Em} follow the same cohort-wise rule. The shared projection matrix B ∈ Rdo×ρ receives gradients from all participating devices. Since full-modality devices produce richer cross-modal projection signals, we aggregate 
+
+B with normalized modality-count weighting: 
+
+Br+1 = Br + X 
+
+> n∈ˆCr
+
+|M n| / M 
+
+P  
+
+> k∈ˆCr
+
+|M k| / M 
+
+| {z }
+
+wn
+
+· ∆Brn. (4) This assigns higher weight to devices whose gradients span the full cross-modal projection space, since single-modality devices cannot capture these interactions. The task head H is aggregated via standard averaging across all devices. 
+
+2) Divergence-Guided Modality-Aware Elastic Training: 
+
+Cohort-wise aggregation resolves the interference problem but does not address the straggler bottleneck. Without elastic training, synchronous FL waits for the slowest device to finish training all its available parameter groups. RELIEF addresses this through divergence-guided allocation that assigns each device a personalized subset of groups, prioritized by their cohort-internal disagreement. 
+
+a) Cohort-internal divergence.: At each round r, the server quantifies how much devices within each cohort dis-agree on the update direction for each parameter group. For the fusion-layer block Am, the cohort-internal divergence is defined as: 
+
+drm = 1
+
+|C m|
+
+X
+
+> n∈C m
+
+∆Ar−1 
+
+> m,n
+
+− 1
+
+|C m|
+
+X
+
+> k∈C m
+
+∆Ar−1
+
+> m,k
+> 2
+> F
+
+. (5) IEEE INTERNET OF THINGS JOURNAL 6
+
+Divergence for encoder layers drm,l and task head layers drh,l 
+
+is computed analogously, with encoders using their modality cohort and the task head using all devices. To reduce sensi-tivity to per-round fluctuations, the server applies exponential moving average (EMA) smoothing: 
+
+¯drj = γ · drj + (1 − γ) · ¯dr−1 
+
+> j
+
+, γ ∈ (0 , 1) , (6) where j indexes over all parameter groups and γ controls the balance between responsiveness and stability. 
+
+b) Personalized elastic allocation.: Given the smoothed divergence estimates { ¯drj }, the server generates a personalized training assignment Sn ⊆ Gn for each device Cn, where 
+
+Gn is the set of parameter groups accessible to device n
+
+(determined by Mn). The assignment maximizes the total divergence P
+
+> j∈S n
+
+¯drj subject to a budget constraint |S n| ≤ kn
+
+and a mandatory inclusion constraint {Am : m ∈ M n} ⊆ S n
+
+that ensures every available fusion-layer block is trained. The mandatory set has cardinality |M n|, which is naturally smaller for devices with fewer sensors: a single-modality device must train at least one block, while a full-modality device must train at least M . Since this is a top-k selection with mandatory inclusions, it admits a greedy solution: include the mandatory set, then fill the remaining kn − |M n| slots by descending ¯dj .The elastic budget kn is determined by the device’s com-putational capacity relative to the per-round time target T ∗:
+
+kn = max 
+
+
+
+|M n|,
+
+ T ∗ − To
+
+τn
+
+ 
+
+, (7) where To is the communication and synchronization overhead, and τn is the profiled per-group training time on device n.The value T ∗ is selected via binary search to minimize the maximum per-round time across all devices. 
+
+c) Local training and communication.: Each device Cn
+
+receives (Θ r , Sn) from the server and performs E local epochs. Forward passes use the full model with zero-padded inputs for missing modalities, while gradient computation and parameter updates are restricted to Sn. Upon completion, the device uploads only the trained groups: 
+
+Urn = (j, ∆θrn,j ) : j ∈ S n , |U rn| ≤ kn, (8) together with its modality configuration Mn. A single-modality device uploads |M n|/M of a full-modality device’s volume, which reduces communication proportionally. Since resource-constrained devices also train fewer parameter groups per round, their average power draw decreases, and the energy savings compound with the wall-clock speedup. 
+
+C. Training Pipeline 
+
+The complete procedure is presented in Algorithm 1. After a one-round initialization where all devices perform full training to bootstrap divergence estimates (line 1), the framework pro-ceeds through R rounds, each with three color-coded stages. In the allocation stage (blue, lines 3–12), the server com-putes EMA-smoothed divergence for every parameter group within its modality cohort, then solves the personalized allo-cation for each selected device. In the local training stage (green, lines 13–22), devices train in parallel on their assigned groups Sn. Forward passes use 
+
+Algorithm 1 The RELIEF Framework ( Server Allocation , Local Training , Cohort-Wise Aggregation ) 
+
+Input: N devices {C n} with modality sets 
+
+{M n}, R rounds, EMA coefficient γ, time target 
+
+T ∗ 
+
+> 1:
+
+Initialization: All devices perform one full-training round; server computes initial divergence { ¯d0 
+
+> j
+
+} 
+
+> 2:
+
+for r = 1 to R do  
+
+> 3:
+
+▷ Server: divergence-guided elastic allocation  
+
+> 4:
+
+for each parameter group j do  
+
+> 5:
+
+Compute drj within its cohort (Eq. (5))  
+
+> 6:
+
+Smooth: ¯drj ← γ d rj + (1 − γ) ¯dr−1 
+
+> j
+> 7:
+
+end for  
+
+> 8:
+
+for each device Cn ∈ ˆCr do  
+
+> 9:
+
+Compute kn via Eq. (7)  
+
+> 10:
+
+Solve allocation → S n (top-kn by ¯dj ) 
+
+> 11:
+
+Send (Θ r , Sn) to Cn 
+
+> 12:
+
+end for  
+
+> 13:
+
+▷ Devices: modality-aware local training  
+
+> 14:
+
+for each Cn ∈ ˆCr in parallel do  
+
+> 15:
+
+for epoch = 1 to E do  
+
+> 16:
+
+for batch (x, y ) ∼ D n do  
+
+> 17:
+
+Forward with zero-padded missing modalities  
+
+> 18:
+
+Backward and update only {j ∈ S n} 
+
+> 19:
+
+end for  
+
+> 20:
+
+end for  
+
+> 21:
+
+Upload Urn and Mn to server  
+
+> 22:
+
+end for  
+
+> 23:
+
+▷ Server: cohort-wise aggregation  
+
+> 24:
+
+for m = 1 , . . . , M do  
+
+> 25:
+
+Ar+1  
+
+> m
+
+← Arm + 1 
+
+> |˜Crm|
+
+P 
+
+> n∈˜Crm
+
+∆Arm,n  
+
+> 26:
+
+Aggregate Em within ˜Crm analogously  
+
+> 27:
+
+end for  
+
+> 28:
+
+Aggregate Br+1 with weights {wn} (Eq. (4))  
+
+> 29:
+
+Aggregate Hr+1 via standard averaging  
+
+> 30:
+
+end for  
+
+> 31:
+
+return ΘR
+
+the full model, but gradient updates are restricted to Sn. Each device uploads only its trained groups (Eq. (8)). In the aggregation stage (orange, lines 23–29), each fusion-layer block Am and encoder Em is aggregated within its active cohort ˜Crm via Eq. (3). The shared projection B is aggregated with modality-count weighting, and the task head follows standard averaging. The server then proceeds to the next round with updated divergence estimates. V. T HEORETICAL ANALYSIS 
+
+This section provides convergence and optimality guaran-tees for RELIEF . Lemma 1 decomposes FedAvg’s aggre-gation error; Theorem 2 shows that cohort-wise aggregation eliminates cross-modal interference; Theorem 3 gives the convergence rate; and Propositions 4–5 establish the optimality and regret of the elastic allocation. IEEE INTERNET OF THINGS JOURNAL 7
+
+A. Assumptions 
+
+Assumption 1 (Per-Group Smoothness) . For each parameter group j ∈ { 1, . . . , G }, the global loss F is Lj -smooth with respect to θj : for any θj , θ ′ 
+
+> j
+
+,
+
+∥∇ θj F (Θ) − ∇ θj F (Θ ′)∥ ≤ Lj ∥θj − θ′ 
+
+> j
+
+∥. (9) 
+
+We write L = max j Lj .
+
+Assumption 2 (Bounded Stochastic Variance) . For each de-vice n and parameter group j, the stochastic gradient has bounded variance: 
+
+E∥∇ θj fn(Θ; x, y ) − ∇ θj Fn(Θ) ∥2 ≤ σ2. (10) 
+
+Assumption 3 (Bounded Heterogeneity) . The local objectives deviate from the global objective by at most ζ2:
+
+1
+
+N
+
+> N
+
+X
+
+> n=1
+
+∥∇ Fn(Θ) − ∇ F (Θ) ∥2 ≤ ζ2. (11) 
+
+Assumption 4 (Modality-Induced Gradient Structure) . For a device n lacking modality m (m / ∈ M n), its update to fusion-layer block Am satisfies ∥∆Arm,n ∥F ≤ ε0, where ε0 → 0 is the numerical noise from zero-padded inputs. 
+
+Assumptions 1–3 are standard in federated optimization [4], [22]. Assumption 4 captures the near-zero gradients from missing sensors, as verified in Fig. 2. 
+
+B. Aggregation Error Analysis 
+
+Lemma 1 (FedAvg Aggregation Error Decomposition) . Con-sider the fusion-layer block Am aggregated via FedAvg: 
+
+ˆgm = 1
+
+> N
+
+PNn=1 ∆Arm,n . The expected squared error relative to the true cohort-mean gradient ¯gm = 1
+
+> |C m|
+
+P 
+
+> n∈C m
+
+∇Am Fn
+
+decomposes as: 
+
+E∥ˆgm − ¯gm∥2
+
+> F
+
+
+
+= |C m|
+
+N ¯gm + N −|C m|
+
+N E[ˆ ϵm] − ¯gm
+
+> 2
+> F
+
+| {z }
+
+> bias 2
+
++ |C m|
+
+N 2 · σ2
+
+E + N −|C m|
+
+N 2 · ε20
+
+| {z }
+
+> variance
+
+,
+
+(12) 
+
+where ˆϵm = 1 
+
+> N−|C m|
+
+P 
+
+> n / ∈C m
+
+∆Arm,n . The bias 2 term sepa-rates into scaling bias and cross-modal interference: 
+
+bias 2 =
+
+ N −|C m|
+
+N
+
+2
+
+∥¯gm − E[ˆ ϵm]∥2
+
+> F
+
+≤
+
+
+
+1 − |C m|
+
+N
+
+2
+
+∥¯gm∥2
+
+> F
+
+| {z }
+
+> (I) scaling
+
++
+
+ N −|C m|
+
+N
+
+2
+
+ε20
+
+| {z }
+
+> (II) interference
+
+, (13) 
+
+yielding the three-term decomposition: E[∥ˆgm − ¯gm∥2 
+
+> F
+
+] ≤
+
+(I) + (II) + (III) , where (III) = |C m|  
+
+> N2
+
+(σ2/E + ζ2
+
+> m
+
+) with 
+
+ζ2 
+
+> m
+
+= 1
+
+> |C m|
+
+P 
+
+> n∈C m
+
+∥∇ Am Fn − ¯gm∥2 
+
+> F
+
+.Proof. Partition the N devices into Cm and ¯Cm. The FedAvg estimate separates as ˆgm = |C m| 
+
+> N
+
+ˆgC 
+
+> m
+
++ N −|C m| 
+
+> N
+
+ˆϵm. The standard bias-variance identity E[∥X − μ∥2] = ∥E[X] − μ∥2 + Var( X)
+
+with E[ˆ gC
+
+> m
+
+] = ¯ gm, ∥E[ˆ ϵm]∥F ≤ ε0 (Assumption 4), and the relaxation ∥a − b∥2 ≤ 2∥a∥2 + 2 ∥b∥2 yields (12)–(13). The variance uses Assumptions 2–4 averaged over E steps and the respective cohort sizes. Term (I) dilutes the update by |C m|/N ; Term (II) quan-tifies cross-modal interference from zero-padded gradients (Observation 1); Term (III) is the irreducible intra-cohort disagreement. 
+
+Theorem 2 (Cohort-Wise Aggregation Error) . Under 
+
+RELIEF ’s aggregation rule (Eq. (3) ), the expected squared error for block Am satisfies: 
+
+E∥˜gm − ¯gm∥2
+
+> F
+
+ ≤ 1
+
+| ˜Crm|
+
+ σ2
+
+E + ζ2
+
+> m
+
+
+
+. (14) 
+
+Terms (I) and (II) of Lemma 1 vanish identically. Proof. Since ˜Crm ⊆ C m, no zero-padded gradient enters the sum (Term (II) = 0), and the 1/| ˜Crm| weight is the exact cohort average (Term (I) = 0). The remaining error ˜gm − ¯gm = 
+
+> 1
+> |˜Crm|
+
+P 
+
+> n∈˜Crm
+
+(∆ Arm,n − ¯gm) separates into stochastic noise (≤ σ2/E ) and heterogeneity ( ζ2
+
+> m
+
+) per device, with the 1/| ˜Crm|
+
+prefactor yielding (14). 
+
+C. Convergence Analysis 
+
+Theorem 3 (Convergence of RELIEF ). Let Assumptions 1–4 hold. With learning rate η = O(1 /√ER ) and E local epochs per round, after R rounds RELIEF satisfies: 
+
+1
+
+R
+
+> R
+
+X
+
+> r=1
+
+E∥∇ F (Θ r )∥2
+
+≤ 2 F (Θ 0) − F ∗
+
+ηER 
+
+| {z }
+
+> optimization
+
++ 4 LηE ζ 2
+
+| {z }
+
+> client drift
+
++ 2Lησ 2
+
+N| {z }
+
+> noise
+
++ 2 Lη 
+
+> M
+
+X
+
+> m=1
+
+σ2/E + ζ2
+
+> m
+
+min r | ˜Crm|
+
+| {z }
+
+> cohort residual
+
+.
+
+(15) 
+
+Proof. Starting from the L-smooth descent lemma, the global update decomposes across parameter groups (fusion blocks, encoders, task head), each aggregated within its respective cohort. Substituting Theorem 2 for the fusion-layer blocks and standard FedAvg bounds [22], [23] for the remaining groups yields the per-round descent: 
+
+EF (Θ r+1 ) ≤ E[F (Θ r )] − ηE 
+
+2 E∥∇ F (Θ r )∥2
+
++ Lη 2E2
+
+2 ζ2 + Lη 2σ2
+
+2N + Lη 2
+
+2
+
+> M
+
+X
+
+> m=1
+
+σ2/E + ζ2
+
+> m
+
+| ˜Crm| .
+
+(16) Rearranging and telescoping over r = 0, . . . , R −1, then dividing by ηER/ 2, yields (15). The cohort residual (last term) is the only aggregation-dependent term. FedAvg incurs additional cross-modal in-terference that does not vanish with more rounds. RELIEF 
+
+further reduces this term by enlarging min r | ˜Crm| for high-divergence modalities via elastic allocation. IEEE INTERNET OF THINGS JOURNAL 8
+
+D. Elastic Allocation Analysis 
+
+Proposition 4 (Optimality of Divergence-Guided Alloca-tion) . Define the weighted cohort residual R({xm}) =PMm=1 ∆m/x m, where ∆m = σ2/E + ζ2 
+
+> m
+
+is the per-block divergence and xm = | ˜Cm|. Under total budget P 
+
+> m
+
+xm ≤ K
+
+(the aggregate elastic budget across all devices), the optimal allocation and minimum residual are: 
+
+x∗ 
+
+> m
+
+=
+
+√∆m
+
+PMm′=1 
+
+√∆m′
+
+· K, R∗ =
+
+PMm=1 
+
+√∆m
+
+2
+
+K .
+
+(17) 
+
+Proof. The Lagrangian L = P 
+
+> m
+
+∆m/x m + λ(P 
+
+> m
+
+xm − K)
+
+has KKT stationarity condition −∆m/x 2 
+
+> m
+
++ λ = 0 , which gives x∗ 
+
+> m
+
+= p∆m/λ . Substituting into the budget constraint: 
+
+> M
+
+X
+
+> m=1
+
+r ∆m
+
+λ = K =⇒ λ∗ =
+
+PMm=1 
+
+√∆m
+
+2
+
+K2 . (18) Back-substituting yields x∗ 
+
+> m
+
+and the optimal objective: 
+
+R∗ =
+
+> M
+
+X
+
+> m=1
+
+∆m
+
+x∗
+
+> m
+
+=
+
+> M
+
+X
+
+> m=1
+
+∆m
+
+P
+
+> m′
+
+√∆m′
+
+K√∆m
+
+=
+
+PMm=1 
+
+√∆m
+
+2
+
+K .
+
+(19) Since x∗ 
+
+> m
+
+∝ √∆m, the divergence-guided greedy allocation (selecting groups by descending ¯dj ) is a rank-preserving discrete approximation. 
+
+Proposition 5 (Regret of EMA-Based Divergence Tracking) .
+
+Let drj denote the true divergence at round r, with temporal variation bounded by δ = max j,r |dr+1  
+
+> j
+
+− drj |. The EMA estimate ¯drj = γ d rj + (1 −γ) ¯dr−1 
+
+> j
+
+induces cumulative regret: 
+
+> R
+
+X
+
+> r=1
+
+R(Sr ) − R (S∗r ) ≤ γ δ √R
+
+(1 − γ)2 . (20) 
+
+Proof. Unrolling the EMA recursion gives ¯drj =
+
+γ Pr−1 
+
+> s=0
+
+(1 −γ)sdr−sj + (1 −γ)r ¯d0 
+
+> j
+
+. The estimation bias is bounded by: 
+
+| ¯drj − drj | ≤ γ
+
+> ∞
+
+X
+
+> s=1
+
+s (1 −γ)s δ = γ δ 
+
+(1 −γ)2 , (21) using |dr−sj − drj | ≤ sδ . Since R is Lipschitz in the diver-gence inputs, follow-the-leader analysis [46] yields O(√R)
+
+cumulative regret with the stated coefficient. The O(√R) rate is sublinear, unlike the O(R) regret of uniform or random allocation. VI. P ERFORMANCE EVALUATION 
+
+A. Experimental Setup 1) Datasets: We evaluate RELIEF on two publicly avail-able multimodal human activity recognition (HAR) datasets that reflect realistic IoT sensor heterogeneity. 
+
+PAMAP2 [45] contains data from 9 subjects wearing in-ertial measurement unit (IMU) sensors, covering 12 activity classes. Each subject provides four sensor modalities: ac-celerometer (Acc), gyroscope (Gyro), magnetometer (Mag), and heart rate (HR). Following prior work [45], we exclude Subject 9 due to insufficient recording length and partition the remaining 8 subjects into 8 FL clients, configured as 3 ×Full (4 modalities, 1 × compute), 3 ×Acc+Gyro (2 modalities, 13 ×
+
+slower), and 2 ×Acc-only (1 modality, 55 × slower), which reflects the coupled cost gradient described in Section III. 
+
+MHEALTH [47] records data from 10 subjects with four modalities: Acc, Gyro, Mag, and electrocardiogram (ECG), across 12 activity classes. We partition by subject into 10 clients: 3 ×Full (1 ×), 3 ×Acc+Gyro (13 ×), and 4 ×Acc-only (55 ×). Both datasets use a sliding window of 5.12 s (256 samples at 50 Hz) with a 1 s stride. We report macro-F1 as the primary metric, wall-clock speedup relative to FedAvg, and per-round communication volume. 
+
+2) Baselines: We compare against 10 methods spanning three categories. 
+
+Classical FL: FedAvg [4] and FedProx [22]. 
+
+System-heterogeneous / elastic FL: FedEL [7], FedICU [48], and DarkDistill [15]. 
+
+Multimodal FL / federated LoRA: Harmony [8], Pilot [12], FedSA-LoRA [9], HeLoRA [19], and FedLEASE [18]. All methods share identical data splits, device heterogeneity configurations, and communication protocols. 
+
+3) Implementation Details: We employ two backbone ar-chitectures to validate RELIEF under both full-parameter and parameter-efficient training. 
+
+Backbone 1 (lightweight CNN): Each modality encoder is a 2-layer 1D convolutional neural network (CNN) with 
+
+<2M total parameters. The fusion layer is a fully connected layer whose weight matrix is partitioned into modality-aligned column blocks for modality-decomposed aggregation. 
+
+Backbone 2 (pretrained Transformer + LoRA): Each modality encoder is an independent MOMENT [49] instance (∼40M parameters, ∼160M total). We freeze the backbone and inject LoRA adapters ( ρ = 8 ) into each attention layer’s Q/V projections and the feed-forward network (FFN), which yields ∼300K trainable parameters ( <0.2%). The fusion-layer LoRA projection matrix A is partitioned into modality-aligned column blocks for MDLoRA. Training uses Adam with learning rate 1 × 10 −3, batch size 32, E = 5 local epochs, and R = 200 rounds. The EMA coefficient is γ = 0 .9. Device heterogeneity is simulated via FLOP-proportional profiling calibrated to edge tera operations per second (TOPS): Full devices at 275 TOPS (Jetson AGX Orin level), Acc+Gyro at 21 TOPS (Xavier NX level), and Acc-only at 5 TOPS (low-end IoT level). We estimate per-round fleet energy as the sum of each device’s active training power, communication power, and idle waiting power multiplied by their respective durations, with active power calibrated from Jetson AGX Orin datasheets (60 W at MAXN, 30 W at 30W mode, 15 W at 15W mode, 5 W for low-end IoT) and idle power set to 20% of the active level. This datasheet-based model provides an approximate estimate; real-device energy profiling with hardware power monitors is presented in Section VII. IEEE INTERNET OF THINGS JOURNAL 9
+
+TABLE I MAIN RESULTS WITH BACKBONE 1 ( LIGHTWEIGHT CNN, FULL -PARAMETER TRAINING ). B EST IN RED , RUNNER -UP IN BLUE . † RARE -M OD F1: PAMAP2 AVG (M AG , HR). TTA: ROUNDS TO REACH 85% F1. 
+
+Method PAMAP2 F1 (%) MHEALTH F1 (%) Rare-Mod F1 (%) † Speedup TTA (rds) Comm (MB) Energy (J) 
+
+FedAvg [AISTATS’17] [4] 92.0 ±0.38 91.6 ±0.45 37.5 ±0.92 1.00 × 75 4.81 847 FedProx [MLSys’20] [22] 92.5 ±0.31 (↑0.5) 91.7 ±0.42 (↑0.1) 38.2 ±0.88 (↑0.7) 1.00 × 65 4.81 852 FedEL [NeurIPS’25] [7] 81.6 ±1.05 (↓10.4) 62.2 ±1.42 (↓29.4) 15.3 ±1.37 (↓22.2) 6.83 × — 3.51 198 
+
+FedICU [ICML’25] [48] 87.6 ±0.62 (↓4.4) 89.6 ±0.53 (↓2.0) 28.4 ±1.05 (↓9.1) 1.15 × 120 3.85 761 DarkDistill [KDD’25] [15] 91.3 ±0.35 (↓0.7) 92.5 ±0.32 (↑0.9) 35.8 ±0.91 (↓1.7) 1.82 × 70 4.81 523 Harmony [MobiSys’23] [8] 88.2 ±0.71 (↓3.8) 88.8 ±0.64 (↓2.8) 42.6 ±1.12 (↑5.1) 1.00 × 110 4.81 839 Pilot [AAAI’25] [12] 91.8 ±0.29 (↓0.2) 91.0 ±0.41 (↓0.6) 34.2 ±0.86 (↓3.3) 1.00 × 60 4.81 855 FedSA-LoRA [ICLR’25] [9] 92.0 ±0.33 (±0.0) 90.6 ±0.47 (↓1.0) 36.8 ±0.85 (↓0.7) 1.00 × 70 4.81 844 HeLoRA [TOIT’25] [19] 90.4 ±0.48 (↓1.6) 90.7 ±0.39 (↓0.9) 33.5 ±0.98 (↓4.0) 1.45 × 85 4.22 614 FedLEASE [NeurIPS’25] [18] 91.0 ±0.36 (↓1.0) 91.2 ±0.40 (↓0.4) 35.1 ±0.90 (↓2.4) 1.00 × 75 4.81 851 
+
+RELIEF (Ours) 90.1 ±0.42 (↓1.9) 93.7 ±0.28 (↑2.1) 52.8 ±1.15 (↑15.3) 2.87 × 55 4.76 312 
+
+TABLE II MAIN RESULTS WITH BACKBONE 2 (MOMENT + L ORA/MDL ORA). B EST IN RED , RUNNER -UP IN BLUE . † RARE -M OD F1: PAMAP2 AVG (M AG , HR). SAVE RELATIVE TO FED AVG -L ORA. 
+
+Method PAMAP2 F1 (%) MHEALTH F1 (%) Rare-Mod F1 (%) † Speedup Comm (KB) Train. (%) Save (%) Energy (J) 
+
+FedAvg [AISTATS’17] [4] 78.3 ±0.52 63.2 ±0.68 4.4 ±0.35 1.00 × 5457 0.98 0.0 1284 FedProx [MLSys’20] [22] 77.8 ±0.48 (↓0.5) 62.9 ±0.71 (↓0.3) 5.1 ±0.42 (↑0.7) 1.00 × 5457 0.98 0.0 1291 FedEL [NeurIPS’25] [7] 58.4 ±1.35 (↓19.9) 42.1 ±1.52 (↓21.1) 1.2 ±0.28 (↓3.2) 7.68 × 2876 0.48 47.3 245 
+
+FedICU [ICML’25] [48] 56.3 ±0.91 (↓22.0) 51.6 ±0.85 (↓11.6) 1.4 ±0.22 (↓3.0) 1.12 × 4365 0.79 20.0 1158 DarkDistill [KDD’25] [15] 63.8 ±0.78 (↓14.5) 54.5 ±0.82 (↓8.7) 1.8 ±0.31 (↓2.6) 1.68 × 5457 0.72 0.0 802 Harmony [MobiSys’23] [8] 37.7 ±1.24 (↓40.6) 22.3 ±1.38 (↓40.9) 0.9 ±0.18 (↓3.5) 1.00 × 5457 0.98 0.0 1276 Pilot [AAAI’25] [12] 64.2 ±0.75 (↓14.1) 55.1 ±0.80 (↓8.1) 1.6 ±0.27 (↓2.8) 1.00 × 5821 1.05 −6.7 1302 FedSA-LoRA [ICLR’25] [9] 78.1 ±0.50 (↓0.2) 53.3 ±0.79 (↓9.9) 4.2 ±0.38 (↓0.2) 1.00 × 5457 0.98 0.0 1280 HeLoRA [TOIT’25] [19] 61.4 ±0.82 (↓16.9) 52.8 ±0.84 (↓10.4) 1.5 ±0.26 (↓2.9) 1.35 × 4092 0.71 25.0 963 FedLEASE [NeurIPS’25] [18] 65.1 ±0.72 (↓13.2) 56.2 ±0.76 (↓7.0) 1.7 ±0.29 (↓2.7) 1.00 × 5638 1.02 −3.3 1295 
+
+RELIEF (Ours) 74.9 ±0.58 (↓3.4) 83.4 ±0.45 (↑20.2) 12.3 ±0.95 (↑7.9) 9.41 × 3408 0.61 37.5 178 0 50 100 150 200 
+
+> Communication Rounds
+> 020 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL Harmony DarkDistill RELIEF
+
+(a) PAMAP2, B1 0 50 100 150 200  
+
+> Communication Rounds
+> 020 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL Harmony DarkDistill RELIEF
+
+(b) MHEALTH, B1 0 50 100 150 200  
+
+> Communication Rounds
+> 020 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL Harmony DarkDistill RELIEF
+
+(c) PAMAP2, B2 0 50 100 150 200  
+
+> Communication Rounds
+> 020 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL Harmony DarkDistill RELIEF
+
+(d) MHEALTH, B2 
+
+Fig. 5. Convergence comparison (macro-F1 vs. communication round) for five representative methods across two datasets and two backbones. 
+
+B. Main Results 
+
+Tables I and II compare 11 methods across two backbones and two datasets. Under Backbone 1, RELIEF attains 93.7% F1 on MHEALTH (the highest) with 2.87 × speedup and 63% energy reduction (312 J vs. 847 J). On PAMAP2 it trades 1.9 pp for the same acceleration. FedEL [7] is faster (6.83 ×) but collapses to 81.6%/62.2% because its modality-unaware selection assigns weak devices to train absent-sensor parameters. Under Backbone 2, FedEL’s advantage reverses (7.68 × vs. RELIEF ’s 9.41 ×): CNN offers many tensor groups for aggressive pruning, while LoRA’s compact structure limits headroom. RELIEF ’s modality-aligned decomposition maps directly onto the LoRA column blocks and scales with the number of modalities. Backbone 2 amplifies the contrast. Most baselines within 2 pp of FedAvg under B1 (e.g., DarkDistill, FedLEASE) drop 13–15 pp under LoRA, because LoRA’s compact space leaves less room to absorb zero-gradient noise. RELIEF maintains competitive F1 on PAMAP2 (74.9% vs. 78.3%) with 9.41 ×
+
+speedup and 37.5% communication savings. On MHEALTH it surpasses FedAvg by 20.2 pp (83.4% vs. 63.2%), because ECG and IMU occupy different feature spaces, which intensifies cross-modal interference and makes cohort-wise aggregation proportionally more beneficial. The Rare-Mod F1 column confirms that RELIEF improves rare modalities by 15.3 pp (B1) and 7.9 pp (B2) over FedAvg, with Harmony as the runner-up under B1 (42.6%) but providing no speedup. Fig. 5 shows convergence trajectories across all four set-tings. Under B1, RELIEF converges comparably to FedAvg on PAMAP2 and faster on MHEALTH and overtakes all baselines by round 40. FedEL plateaus at a low F1 with persistent oscillation. Under B2, Harmony collapses to 37.7%/22.3% because it excludes the LoRA fusion layer from federation, while RELIEF is the only method above 70% on both LoRA IEEE INTERNET OF THINGS JOURNAL 10 
+
+TABLE III ABLATION STUDY . A RROWS SHOW DELTA RELATIVE TO V0 ( FULL RELIEF ). 
+
+Backbone 1 (CNN) Backbone 2 (LoRA) Variant PAMAP2 F1 (%) MHEALTH F1 (%) Speedup PAMAP2 F1 (%) MHEALTH F1 (%) Speedup 
+
+V0 RELIEF (full) 90.1 ±0.42 93.7 ±0.28 2.87 × 74.9 ±0.58 83.4 ±0.45 9.41 ×
+
+V1 w/o elastic training 94.0 ±0.25 (↑3.9) 95.5 ±0.19 (↑1.8) 1.66 × 78.5 ±0.45 (↑3.6) 85.7 ±0.33 (↑2.3) 1.52 ×
+
+V2 w/o cohort-wise agg. 83.7 ±0.89 (↓6.4) 86.5 ±0.78 (↓7.2) 3.84 × 66.8 ±1.15 (↓8.1) 73.8 ±1.05 (↓9.6) 12.6 ×
+
+V3 random elastic alloc. 83.1 ±0.95 (↓7.0) 85.5 ±0.88 (↓8.2) 3.84 × 65.3 ±1.22 (↓9.6) 72.1 ±1.19 (↓11.3) 12.6 ×
+
+TABLE IV SENSITIVITY ANALYSIS ON PAMAP2. F1 (%) UNDER VARYING HETEROGENEITY AND CLIENT COUNT .
+
+Backbone 1 (CNN) Backbone 2 (LoRA) Factor Setting FedAvg FedEL Harmony DarkDist. RELIEF FedAvg FedEL Harmony DarkDist. RELIEF 
+
+Hetero. Mild (10 ×) 92.1 ±0.37 82.4 ±1.02 88.5 ±0.68 91.5 ±0.41 90.4 ±0.39 78.8 ±0.48 60.2 ±1.22 38.9 ±1.15 64.5 ±0.79 75.6 ±0.54 
+
+Moderate (55 ×) 92.0 ±0.38 81.6 ±1.05 88.2 ±0.71 91.3 ±0.35 90.1 ±0.42 78.3 ±0.52 58.4 ±1.35 37.7 ±1.24 63.8 ±0.78 74.9 ±0.58 
+
+Extreme (100 ×) 91.6 ±0.43 80.9 ±1.18 87.8 ±0.82 90.7 ±0.39 88.5 ±0.51 77.9 ±0.59 57.8 ±1.42 36.2 ±1.35 62.4 ±0.91 73.6 ±0.62 
+
+Scale N =8 92.0 ±0.38 81.6 ±1.05 88.2 ±0.71 91.3 ±0.35 90.1 ±0.42 78.3 ±0.52 58.4 ±1.35 37.7 ±1.24 63.8 ±0.78 74.9 ±0.58 
+
+N =20 91.4 ±0.40 80.2 ±1.15 87.5 ±0.79 90.6 ±0.38 89.6 ±0.45 77.6 ±0.55 57.1 ±1.38 35.8 ±1.28 62.1 ±0.85 74.2 ±0.61 
+
+N =50 90.5 ±0.49 78.8 ±1.28 86.1 ±0.88 89.4 ±0.46 88.7 ±0.53 76.8 ±0.64 55.6 ±1.52 33.5 ±1.41 60.2 ±0.98 73.4 ±0.66 
+
+N =100 89.8 ±0.54 77.1 ±1.35 84.8 ±0.95 88.5 ±0.52 88.2 ±0.57 76.1 ±0.70 54.2 ±1.58 31.8 ±1.48 58.5 ±1.05 72.8 ±0.72 
+
+TABLE V SENSITIVITY ANALYSIS ON MHEALTH. F1 (%) UNDER VARYING HETEROGENEITY AND CLIENT COUNT .
+
+Backbone 1 (CNN) Backbone 2 (LoRA) Factor Setting FedAvg FedEL Harmony DarkDist. RELIEF FedAvg FedEL Harmony DarkDist. RELIEF 
+
+Hetero. Mild (10 ×) 91.8 ±0.42 63.5 ±1.32 89.1 ±0.65 92.8 ±0.33 94.0 ±0.31 63.8 ±0.62 43.5 ±1.48 23.8 ±1.28 55.7 ±0.85 83.8 ±0.44 
+
+Moderate (55 ×) 91.6 ±0.45 62.2 ±1.42 88.8 ±0.64 92.5 ±0.32 93.7 ±0.28 63.2 ±0.68 42.1 ±1.52 22.3 ±1.38 54.5 ±0.82 83.4 ±0.45 
+
+Extreme (100 ×) 91.3 ±0.47 61.5 ±1.55 88.1 ±0.78 91.6 ±0.38 92.1 ±0.41 62.5 ±0.75 41.2 ±1.58 21.5 ±1.45 53.2 ±0.93 81.5 ±0.54 
+
+Scale N =10 91.6 ±0.45 62.2 ±1.42 88.8 ±0.64 92.5 ±0.32 93.7 ±0.28 63.2 ±0.68 42.1 ±1.52 22.3 ±1.38 54.5 ±0.82 83.4 ±0.45 
+
+N =20 91.0 ±0.48 60.8 ±1.48 87.9 ±0.75 91.8 ±0.36 93.1 ±0.34 62.4 ±0.71 40.5 ±1.62 20.8 ±1.42 52.8 ±0.89 82.1 ±0.52 
+
+N =50 90.1 ±0.53 57.3 ±1.65 86.5 ±0.85 90.4 ±0.44 92.0 ±0.38 61.2 ±0.78 38.2 ±1.68 18.9 ±1.55 50.6 ±0.97 80.5 ±0.61 
+
+N =100 89.4 ±0.60 54.6 ±1.75 85.2 ±0.92 89.1 ±0.51 91.2 ±0.48 60.3 ±0.85 36.1 ±1.78 17.2 ±1.62 48.3 ±1.05 79.2 ±0.68 
+
+settings. The lower absolute F1 under B2 reflects domain mismatch between MOMENT’s pretraining corpus and HAR signals, not a limitation of RELIEF .
+
+C. Ablation Study 
+
+Table III isolates each component’s contribution. Removing cohort-wise aggregation (V2) drops F1 by 6.4–7.2 pp (B1) and 8.1–9.6 pp (B2), with the larger drop on MHEALTH (−7.2/ −9.6 pp) reflecting its smaller ECG cohort. Random allocation (V3) causes the largest drop ( −7.0 to −8.2 pp on B1, 
+
+−9.6 to −11.3 pp on B2). V2 and V3 share the same budget kn
+
+and speedup (3.84 ×/12.6 ×), which exceeds V0 because V0’s mandatory inclusion constraint raises the minimum workload. Disabling elastic training (V1) raises F1 by 1.8–3.9 pp but cuts speedup to 1.66 ×/1.52 × and increases energy from 312 J to 578 J (B1). This trade-off is by design: in latency-sensitive IoT deployments, V0 is justified by 2.87 × faster rounds; in accuracy-critical scenarios, V1 remains a strong standalone option. 
+
+D. Sensitivity Analysis 
+
+Tables IV and V examine robustness under varying hetero-geneity and fleet size. As the compute gap widens from 10 × to 100 ×, FedAvg F1 remains nearly constant, while FedEL drops steadily (82.4 →80.9% on PAMAP2 B1). RELIEF degrades by only 1.9 pp on both datasets under B1 and maintains the best accuracy-robustness trade-off. Increasing N from 8 to 100 reduces all methods’ F1 as data becomes more fragmented. FedEL degrades most sharply (−4.5/ −7.6 pp under B1) because modality-unaware selection makes more errors with more heterogeneous devices. Harmony under B2 collapses from 22.3% to 17.2% on MHEALTH. 
+
+RELIEF drops only 1.9/2.5 pp under B1, and its advan-tage over FedAvg on MHEALTH persists at all fleet sizes (83.4 →79.2% vs. 63.2 →60.3% under B2). 
+
+E. In-Depth Analysis 
+
+Fig. 6 breaks down F1 by modality. Acc F1 varies by less than 3 pp across methods (all devices contribute Acc gradi-ents), which confirms that cohort-wise aggregation does not harm shared modalities. In contrast, under B1 on PAMAP2, 
+
+RELIEF improves Mag F1 by 15.4 pp and HR F1 by 15.2 pp over FedAvg, while Acc improves by only 1.7 pp. Under B2 on MHEALTH, Mag F1 jumps from 1.7% to 16.9% and ECG from 1.6% to 7.8%. Harmony improves rare modalities under B1 but collapses under B2 because it excludes the fusion layer. The disproportionate rare-modality gain is consistent with Theorem 3: the cohort residual (σ2/E + ζ2
+
+> m
+
+)/| ˜Cm| decreases faster for small cohorts. IEEE INTERNET OF THINGS JOURNAL 11 Acc Gyro Mag HR 020 40 60 80 100 
+
+> Per-Modality F1 (%)  FedAvg FedEL Harmony DarkDistill RELIEF
+
+(a) PAMAP2, B1 Acc Gyro Mag ECG 020 40 60 80 100  
+
+> Per-Modality F1 (%)  FedAvg FedEL Harmony DarkDistill RELIEF
+
+(b) MHEALTH, B1 Acc Gyro Mag HR 020 40 60 80  
+
+> Per-Modality F1 (%)  FedAvg FedEL Harmony DarkDistill RELIEF
+
+(c) PAMAP2, B2 Acc Gyro Mag ECG 020 40 60 80  
+
+> Per-Modality F1 (%)  FedAvg FedEL Harmony DarkDistill RELIEF
+
+(d) MHEALTH, B2 
+
+Fig. 6. Per-modality F1 breakdown. RELIEF yields the largest gains on rare modalities (Mag, HR, ECG), consistent with the theoretical prediction that cohort-wise aggregation benefits smaller cohorts more. Real-time Training Dashboard  
+
+> MAXN 60W · Type-A (Full-modal) 15W / 30W · Type-B / Type-C
+> Server
+> Orin-1 Orin-2
+
+Fig. 7. Real-device testbed deployment. The server coordinates federated training across two Jetson AGX Orin 64 GB devices operating at different power modes to emulate heterogeneous IoT edge devices. TABLE VI REAL -DEVICE TESTBED CONFIGURATION .
+
+Device Power Mode Modality Device Type 
+
+Orin-1 MAXN (60 W) All 4 Type-A (Full) Orin-2 30 W Acc+Gyro Type-B (Mid) Orin-2 15 W Acc-only Type-C (Low) 
+
+VII. R EAL -D EVICE DEPLOYMENT 
+
+The simulation experiments in Section VI rely on FLOP-proportional timing models and datasheet-calibrated energy estimates. To validate that RELIEF ’s efficiency gains transfer to physical hardware, we deploy the framework on a testbed of NVIDIA Jetson AGX Orin devices and measure training time, power draw, and communication volume under real edge computing constraints. Two complementary experiment groups target different granularities: per-device profiling (2 clients) isolates the time and energy savings at the individual device level, while system-level validation (8/10 clients) verifies end-to-end FL performance under the full heterogeneous fleet configuration. 
+
+A. Testbed Configuration 
+
+Table VI summarizes the testbed configuration and Fig. 7 shows the physical deployment. The aggregation server runs on an Intel Core i7 workstation with 16 GB RAM and an NVIDIA RTX A2000 GPU under Ubuntu 22.04. It runs the Flower federated learning framework [50] for server-side aggregation and divergence computation. Two NVIDIA Jetson AGX Orin 64 GB modules serve as edge clients, connected to the server through a dedicated 802.11ac WiFi access point. Communication between the server and clients uses gRPC over TCP. To emulate the coupled system-modality heterogeneity from Section III with two physical devices, we exploit the Jetson’s configurable power modes via nvpmodel . Orin-1 operates at MAXN mode (60 W) as a Type-A (full-modality, high-compute) client, while Orin-2 operates at 15 W or 30 W to emulate Type-C (single-modality, low-compute) or Type-B (dual-modality, mid-compute) clients (Table VI). Both devices share 64 GB of unified CPU-GPU memory, which ensures that both Backbone 1 (CNN) and Backbone 2 (MOMENT + LoRA) execute without memory constraints at all power levels. We compare the same five representative methods used in the simulation sensitivity analysis: FedAvg [4], FedEL [7], DarkDistill [15], Harmony [8], and RELIEF . All hyperparam-eters (learning rate, batch size, local epochs, EMA coefficient) match the simulation settings in Section VI. Experiments cover both datasets (PAMAP2, MHEALTH) and both backbones. 
+
+B. Per-Device Profiling 
+
+The first experiment group assigns each Jetson to exactly one FL client: Orin-1 (60 W, Type-A) and Orin-2 (15 W, Type-C). Both devices train in parallel with exclusive GPU access, which provides interference-free measurements at the individual device level. 
+
+a) Measurement protocol.: Each round proceeds as fol-lows: the server broadcasts the global model and the elastic allocation Sn to both devices; both devices perform local training in parallel; the faster device waits until the slower one completes; and model updates are uploaded via gRPC. We record six per-device metrics every round: (1) training time via torch.cuda.Event timestamps, (2) communication time via gRPC transfer timing, (3) idle waiting time as the residual of the round duration, (4) instantaneous power at 100 ms intervals from the on-board INA3221 power monitor accessed through sysfs , (5) per-round energy as the time integral R P (t) dt , and (6) upload payload size from the actual gRPC message. Each configuration runs for 100 rounds with 3 random seeds across both datasets and both backbones. Per-IEEE INTERNET OF THINGS JOURNAL 12 Compute Comm Idle 0246810 
+
+> Time (s)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(a) Time, PAMAP2 B1 0 2 4 6 8 10  
+
+> Time (s)
+> 46810 12 14
+> Power (W)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(b) Power, PAMAP2 B1 0 100 200 300  
+
+> Cumulative Energy (kJ)
+> 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(c) Energy, PAMAP2 B1 Compute Comm Idle 0510 15 20 
+
+> Time (s)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(d) Time, MHEALTH B2 0 5 10 15 20  
+
+> Time (s)
+> 46810 12 14
+> Power (W)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(e) Power, MHEALTH B2 0 200 400 600 800  
+
+> Cumulative Energy (kJ)
+> 020 40 60 80 100
+> Macro-F1 (%)
+> FedAvg FedEL DarkDistill Harmony RELIEF
+
+(f) Energy, MHEALTH B2       
+
+> Fig. 8. Real-device deployment results. Left column: per-round time breakdown of the Type-C device (compute, communication, idle). Middle column:
+> instantaneous power trace during one training round. Right column: macro-F1 vs. cumulative fleet energy. Top row: PAMAP2 with Backbone 1 (CNN); bottom row: MHEALTH with Backbone 2 (LoRA).
+
+device timing and energy values reported below are averaged over all rounds and seeds. 
+
+C. Results and Analysis 
+
+Fig. 8 presents all profiling and energy results. Under Backbone 1 (Fig. 8a), FedAvg’s Type-C consumes 8.2 s of compute per round, which locks the round time at 9.05 s for all non-RELIEF methods. FedEL finishes in 2.1 s but idles for 6.53 s. RELIEF reduces compute to 3.4 s and shifts the bottleneck to Type-A, so the round time drops to 4.70 s (1.93 ×
+
+speedup). Under Backbone 2 (Fig. 8d), frozen MOMENT encoders impose a fixed ∼12 s forward-pass cost; only the backward pass is reducible (FedAvg ∼6 s vs. RELIEF ∼1.5 s). The round time decreases from 19.02 s to 13.68 s (1.39 ×), with the smaller speedup reflecting the dominance of the fixed forward cost. The power traces (Fig. 8b, 8e) follow a three-phase pat-tern: active compute ( ∼13 W), communication ( ∼8 W), and idle ( ∼3 W). The area under each curve gives the per-round device energy: 48 J ( RELIEF ) vs. 118 J (FedAvg) under B1 (−59%), and 180 J vs. 259 J under B2 ( −30%). We profile each device type separately and compute fleet-level energy as 
+
+3EA + 3 EB + 2 EC for PAMAP2 and 3EA + 3 EB + 4 EC for MHEALTH, with idle power included (Type-A ∼12 W, Type-B ∼6 W, Type-C ∼3 W). Under B1, per-round fleet energy is 846 J ( RELIEF ) vs. 1346 J (FedAvg), a 37% saving. The energy-efficiency curves (Fig. 8c, 8f) combine the F1 trajectory from the full 200-round runs with per-round fleet energy from profiling. Under B1, RELIEF reaches 89.6% F1 at 169 kJ; FedAvg requires 269 kJ for 91.1% F1. FedEL uses 242 kJ but plateaus at 78.8% ( −11 pp). Under B2, RELIEF 
+
+reaches 82.8% at 520 kJ; FedAvg reaches 63.1% at 690 kJ. Harmony stays at 22% regardless of budget. 
+
+RELIEF ’s real-device F1 differs from simulation by less than 1 pp; most baselines fall within 2 pp, with FedEL showing the largest gap (2.8 pp). Under B1, real speedup (1.93 ×) is close to the simulated 2.87 × because forward and backward passes contribute roughly equally. Under B2, real speedup (1.39 ×) is lower than the simulated 9.41 × because the FLOP-proportional model does not separate fixed forward cost from reducible backward cost. Subtracting the shared ∼12 s forward time yields a backward-only speedup of 6.5/1.5 = 4.3×,consistent with RELIEF training ∼23% of the LoRA parame-ters; the remaining gap is attributable to the smaller hardware compute ratio (4 × vs. 55 × in simulation). This confirms that the simulation correctly predicts training-compute reduction, while the overall speedup gap is a systematic artifact of FLOP-proportional timing applied to pretrained architectures with frozen forward passes. VIII. C ONCLUSION 
+
+In this paper, we have investigated federated learning over heterogeneous IoT edge networks where system, modality, and data heterogeneity are coupled through the device cost gradient. We have identified that cross-modal gradient inter-ference propagates beyond missing-modality blocks to corrupt IEEE INTERNET OF THINGS JOURNAL 13 
+
+shared-modality representations, and that rare-modality update divergence amplifies rather than converges under standard aggregation. To address these challenges, we have proposed 
+
+RELIEF , a unified framework that leverages the modality-aligned column-block structure of the fusion-layer LoRA matrix as a shared interface for cohort-wise aggregation, divergence-guided elastic training, and on-demand communi-cation. Our theoretical analysis shows that cohort-wise aggre-gation eliminates cross-modal interference from the conver-gence bound and that divergence-guided allocation achieves sublinear regret. Our evaluation on two IoT sensor datasets un-der both full-parameter (CNN) and parameter-efficient (LoRA) training demonstrates that RELIEF achieves up to 9.41 × wall-clock speedup and 37% energy reduction over FedAvg while improving rare-modality F1 by up to 15.3 pp. Real-device deployment on a two-Jetson AGX Orin testbed confirms these gains on physical hardware. REFERENCES [1] D. C. Nguyen, M. Ding, P. N. Pathirana, A. Seneviratne, J. Li, and H. V. Poor, “Federated Learning for Internet of Things: A Comprehensive Survey,” IEEE Communications Surveys & Tutorials , vol. 23, no. 3, pp. 1622–1658, 2021. [2] B. Wu, Z. Ding, and J. Huang, “A Review of Continual Learning in Edge AI,” IEEE Transactions on Network Science and Engineering , vol. 13, pp. 6571–6588, 2026. [3] B. Wu, J. Huang, and Q. Duan, “Real-Time Intelligent Healthcare Enabled by Federated Digital Twins With AoI Optimization,” IEEE Network , vol. 40, no. 2, pp. 184–191, 2026. [4] B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y Arcas, “Communication-Efficient Learning of Deep Networks from Decentral-ized Data,” in Proceedings of the 20th International Conference on Artificial Intelligence and Statistics (AISTATS) , 2017, pp. 1273–1282. [5] P. Kairouz, H. B. McMahan, B. Avent, A. Bellet, M. Bennis, A. N. Bhagoji, K. Bonawitz, Z. Charles, G. Cormode, R. Cummings, R. G. L. D’Oliveira, H. Eichner, S. El Rouayheb, D. Evans, J. Gardner, Z. Garrett, A. Gascon, B. Ghazi, P. B. Gibbons, M. Gruteser, Z. Harchaoui, C. He, L. He, Z. Huo, B. Hutchinson, J. Hsu, M. Jaggi, T. Javidi, G. Joshi, M. Khodak, J. Konecny, A. Korolova, F. Koushanfar, S. Koyejo, T. Lepoint, Y. Liu, P. Mittal, M. Mohri, R. Nock, A. Ozgur, R. Pagh, H. Qi, D. Ramage, R. Raskar, M. Raykova, D. Song, W. Song, S. U. Stich, Z. Sun, A. T. Suresh, F. Tramer, P. Vepakomma, J. Wang, L. Xiong, Z. Xu, Q. Yang, F. X. Yu, H. Yu, and S. Zhao, “Advances and Open Problems in Federated Learning,” Foundations and Trends in Machine Learning , vol. 14, no. 1–2, pp. 1–210, 2021. [6] B. Wu, J. Huang, and S. Yu, ““X of Information” Continuum: A Survey on AI-Driven Multi-Dimensional Metrics for Next-Generation Net-worked Systems,” IEEE Communications Surveys & Tutorials , vol. 28, pp. 5307–5344, 2026. [7] L. Zhang, B. Chen, J. Bian, L. Wang, and J. Xu, “FedEL: Federated Elastic Learning for Heterogeneous Devices,” in Advances in Neural Information Processing Systems (NeurIPS) , 2025. [8] X. Ouyang, Z. Xie, H. Fu, S. Cheng, L. Pan, N. Ling, G. Xing, J. Zhou, and J. Huang, “Harmony: Heterogeneous Multi-Modal Federated Learn-ing Through Disentangled Model Training,” in Proceedings of the 21st Annual International Conference on Mobile Systems, Applications and Services (MobiSys) , 2023, pp. 530–543. [9] P. Guo, S. Zeng, Y. Wang, H. Fan, F. Wang, and L. Qu, “Selective Aggregation for Low-Rank Adaptation in Federated Learning,” in Inter-national Conference on Learning Representations (ICLR) , 2025. [10] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen, “LoRA: Low-Rank Adaptation of Large Language Models,” in International Conference on Learning Representations (ICLR) , 2022. [11] L. Yang, N. K. Nguygen, P. Hu, W. E. Zhang, Y. Shu, M. Y. Sim, and W. Chen, “FediLoRA: Heterogeneous LoRA for Federated Multimodal Fine-tuning under Missing Modalities,” arXiv preprint arXiv:2509.06984, 2025. [12] B. Xiong, X. Yang, Y. Song, Y. Wang, and C. Xu, “Pilot: Building the Federated Multimodal Instruction Tuning Framework,” Proceedings of the AAAI Conference on Artificial Intelligence , vol. 39, no. 20, pp. 21 716–21 724, 2025. [13] T. Feng, D. Bose, T. Zhang, R. Hebbar, A. Ramakrishna, R. Gupta, M. Zhang, S. Avestimehr, and S. Narayanan, “FedMultimodal: A Bench-mark For Multimodal Federated Learning,” in Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining ,2023, pp. 4035–4045. [14] H. Wang, X. Liu, X. Zhong, L. Chen, F. Liu, and W. Zhang, “Multi-modal Online Federated Learning With Modality Missing in Internet of Things,” IEEE Transactions on Mobile Computing , vol. 25, pp. 2172– 2185, 2026. [15] L. Qu, S. Li, Z. Zhou, B. Liu, Y. Xu, and Y. Tong, “DarkDistill: Difficulty-Aligned Federated Early-Exit Network Training on Heteroge-neous Devices,” in Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining , 2025. [16] Z. Zhang, Z. Gao, Y. Guo, and Y. Gong, “Heterogeneity-Aware Coop-erative Federated Edge Learning With Adaptive Computation and Com-munication Compression,” IEEE Transactions on Mobile Computing ,vol. 24, no. 3, pp. 2073–2084, 2025. [17] J. Liu, Y. Liao, H. Xu, Y. Xu, J. Liu, and C. Qian, “Adaptive Parameter-Efficient Federated Fine-Tuning on Heterogeneous Devices,” 
+
+IEEE Transactions on Mobile Computing , vol. 24, no. 11, pp. 12 533– 12 549, 2025. [18] L. Wang, J. Bian, L. Zhang, and J. Xu, “Adaptive LoRA Experts Allocation and Selection for Federated Fine-Tuning,” in Advances in Neural Information Processing Systems (NeurIPS) , 2025. [19] B. Fan, X. Su, S. Tarkoma, and P. Hui, “HeLoRA: LoRA-heterogeneous Federated Fine-tuning for Foundation Models,” ACM Transactions on Internet Technology , vol. 25, no. 2, 2025. [20] J. Bian, L. Wang, L. Zhang, and J. Xu, “LoRA-FAIR: Federated LoRA Fine-Tuning with Aggregation and Initialization Refinement,” in 
+
+Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2025, pp. 3737–3746. [21] Z. Fang, Z. Liu, J. Wang, S. Hu, Y. Guo, Y. Deng, and Y. Fang, “Task-oriented communications for visual navigation with edge-aerial collabo-ration in low altitude economy,” in Proc. IEEE Global Communications Conference (GLOBECOM) , 2026. [22] T. Li, A. K. Sahu, M. Zaheer, M. Sanjabi, A. Talwalkar, and V. Smith, “Federated Optimization in Heterogeneous Networks,” in Proceedings of Machine Learning and Systems (MLSys) , 2020, pp. 429–450. [23] S. P. Karimireddy, S. Kale, M. Mohri, S. Reddi, S. Stich, and A. T. Suresh, “SCAFFOLD: Stochastic Controlled Averaging for Federated Learning,” in Proceedings of the 37th International Conference on Machine Learning (ICML) , 2020, pp. 5132–5143. [24] J. Huang, B. Wu, Q. Duan, L. Dong, and S. Yu, “A Fast UAV Tra-jectory Planning Framework in RIS-Assisted Communication Systems With Accelerated Learning via Multithreading and Federating,” IEEE Transactions on Mobile Computing , vol. 24, no. 8, pp. 6870–6885, 2025. [25] B. Wu, J. Huang, and Q. Duan, “FedTD3: An Accelerated Learning Approach for UAV Trajectory Planning,” in International Conference on Wireless Artificial Intelligent Computing Systems and Applications (WASA) . Springer, 2025, pp. 13–24. [26] B. Wu, Z. Cai, W. Wu, and X. Yin, “AoI-Aware Resource Management for Smart Health via Deep Reinforcement Learning,” IEEE Access , 2023. [27] D. Pan, B.-N. Wu, Y.-L. Sun, and Y.-P. Xu, “A Fault-Tolerant and Energy-Efficient Design of a Network Switch Based on a Quantum-Based Nano-Communication Technique,” Sustainable Computing: In-formatics and Systems , vol. 37, p. 100827, 2023. [28] B. Wu, J. Huang, Q. Duan, L. Dong, and Z. Cai, “Enhancing Vehic-ular Platooning With Wireless Federated Learning: A Resource-Aware Control Framework,” IEEE/ACM Transactions on Networking , pp. 1–1, 2025. [29] Z. Ding, J. Huang, Q. Duan, C. Zhang, Y. Zhao, and S. Gu, “A Dual-Level Game-Theoretic Approach for Collaborative Learning in UAV-Assisted Heterogeneous Vehicle Networks,” in 2025 IEEE International Performance, Computing, and Communications Conference (IPCCC) .IEEE, 2025, pp. 1–8. [30] Y.-M. Lin, Y. Gao, M.-G. Gong, S.-J. Zhang, Y.-Q. Zhang, and Z.-Y. Li, “Federated Learning on Multimodal Data: A Comprehensive Survey,” 
+
+Machine Intelligence Research , vol. 20, no. 4, pp. 539–553, 2023. [31] C. Anagnostopoulos, A. Gkillas, C. Mavrokefalidis, E.-V. M. Pikoulis, N. Piperigkos, and A. S. Lalos, “Multimodal Federated Learning in AIoT Systems: Existing Solutions, Applications, and Challenges,” IEEE Access , vol. 12, pp. 180 864–180 902, 2024. [32] J. Wang, H. Feng, J. Chen, L. Zhou, M. Zhang, and C. Jiang, “EDP Protocol: Advancing Mobility-Aware Drone Network Connectivity With Adaptive Routing,” IEEE/ACM Transactions on Networking , vol. 34, pp. 2242–2255, 2026. IEEE INTERNET OF THINGS JOURNAL 14 
+
+[33] Z. Fang, S. Hu, J. Wang, Y. Deng, X. Chen, and Y. Fang, “Prioritized Information Bottleneck Theoretic Framework With Distributed Online Learning for Edge Video Analytics,” IEEE Transactions on Networking ,pp. 1–17, 2025. [34] U. Pudasaini, Z. Ding, and J. Huang, “Securing Smart Agriculture with Communication-Efficient Federated Unlearning,” in 2026 IEEE International Conference on High Performance Switching and Routing (HPSR) . IEEE, 2026, pp. 1–8. [35] J. Chen and A. Zhang, “FedMSplit: Correlation-Adaptive Federated Multi-Task Learning across Multimodal Split Networks,” in Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) , 2022, pp. 87–96. [36] J. Bian, L. Wang, and J. Xu, “Prioritizing Modalities: Flexible Impor-tance Scheduling in Federated Multimodal Learning,” arXiv preprint arXiv:2408.06549, 2024. [37] W. Ning, J. Wang, Q. Qi, H. Sun, D. Cheng, C. Liu, L. Zhang, Z. Zhuang, and J. Liao, “Federated Fine-Tuning on Heterogeneous LoRAs With Error-Compensated Aggregation,” IEEE Transactions on Neural Networks and Learning Systems , vol. 36, pp. 17 826–17 840, 2025. [38] R. Li, J. Liu, H. Xu, and L. Huang, “FedQuad: Adaptive Layer-wise LoRA Deployment and Activation Quantization for Federated Fine-Tuning,” IEEE Transactions on Mobile Computing , 2025. [39] Z. Ding, J. Huang, and J. Qi, “Learning to Defend: A Multi-Agent Reinforcement Learning Framework for Stackelberg Security Game in Mobile Edge Computing,” in International Conference on Computing, Networking and Communications (ICNC) . Honolulu, Hawaii, USA: IEEE, February 2026. [40] Z. Fang, J. Wang, Y. Ma, Y. Tao, Y. Deng, X. Chen, and Y. Fang, “R-ACP: Real-Time Adaptive Collaborative Perception Leveraging Robust Task-Oriented Communications,” IEEE Journal on Selected Areas in Communications , 2025. [41] Z. Fang, Y. Guo, J. Wang, Y. Zhang, H. An, Y. Wang, and Y. Fang, “Shared Spatial Memory Through Predictive Coding,” arXiv preprint arXiv:2511.04235, 2025. [42] C. Tian, Z. Shi, Z. Guo, L. Li, and C. Xu, “HydraLoRA: An Asymmetric LoRA Architecture for Efficient Fine-Tuning,” in Advances in Neural Information Processing Systems , 2024. [43] Z. Li, B. Xu, X. Shu, J. Zhang, Y. Yao, G.-S. Xie, and J. Tang, “Tensor-aggregated LoRA in Federated Fine-tuning,” in Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) ,2025, pp. 1058–1067. [44] Y. Yan, C.-M. Feng, W. Zuo, R. S. M. Goh, Y. Liu, and L. Zhu, “Federated Residual Low-Rank Adaptation of Large Language Models,” in The Thirteenth International Conference on Learning Representations (ICLR) , 2025. [45] A. Reiss and D. Stricker, “Introducing a New Benchmarked Dataset for Activity Monitoring,” in 2012 16th International Symposium on Wearable Computers (ISWC) , 2012, pp. 108–109. [46] S. Shalev-Shwartz, “Online Learning and Online Convex Optimization,” 
+
+Foundations and Trends in Machine Learning , vol. 4, no. 2, pp. 107– 194, 2012. [47] O. Banos, R. Garcia, J. A. Holgado-Terriza, M. Damas, H. Pomares, I. Rojas, A. Saez, and C. Villalonga, “mHealthDroid: A Novel Frame-work for Agile Development of Mobile Health Applications,” in Pro-ceedings of the 6th International Work-Conference on Ambient Assisted Living and Active Ageing (IWAAL) , 2014, pp. 91–98. [48] Y. Liao, W. Huang, G. Wan, J. Liang, B. Yang, and M. Ye, “Splitting with Importance-aware Updating for Heterogeneous Federated Learning with Large Language Models,” in Proceedings of the 42nd International Conference on Machine Learning , 2025, pp. 37 495–37 510. [49] M. Goswami, K. Szafer, A. Choudhry, Y. Cai, S. Li, and A. Dubrawski, “MOMENT: A Family of Open Time-Series Foundation Models,” in 
+
+Proceedings of the 41st International Conference on Machine Learning (ICML) , 2024, pp. 16 115–16 152. [50] D. J. Beutel, T. Topal, A. Mathur, X. Qiu, J. Fernandez-Marques, and P. P. B. de Gusmao, “Flower: A Friendly Federated Learning Framework,” arXiv preprint arXiv:2007.14390, 2020. 
+
+Beining Wu (Member, IEEE) received the B.S. degree in mathematics and applied mathematics from Anhui Normal University, Wuhu, China, in 2024. He is currently working toward the Ph.D. degree in computer science with South Dakota State University (SDSU), Brookings, SD, USA. His research interests include continual learning, and Multimodal LLM. 
+
+Zihao Ding received the B.S. degree in electronic and information engineering from Anhui Normal University, Wuhu, China, in 2025. He is currently working toward the Ph.D. degree in computer science with South Dakota State University (SDSU), Brookings, SD, USA. He received the Best Paper Award at IEEE IPCCC. His research focuses on machine unlearning. 
+
+Jun Huang (Senior Member, IEEE) received the Ph.D. degree from Beijing University of Posts and Telecommunications, Beijing, China, in 2012. He is currently an Assistant Professor with the Department of Electrical Engineering and Computer Science, South Dakota State University, Brookings, SD, USA. He was a Guest Professor at the National Institute of Standards and Tech-nology. His honors include the Best Paper Award from IEEE IPCCC (2025), Outstanding Research Award (Tier I) from CQUPT (2019), Best Paper Award from EAI Mobimedia (2019), Outstanding Service Awards from ACM RACS (2017–2019), Best Paper Nomination from ACM SAC (2014), and Best Paper Award from AsiaFI (2011). He currently serves as an Associate Editor for IEEE I NTERNET OF THINGS JOURNAL , Elsevier Digital Communications and Networks, ICT Express, and IET Wireless Sensor Systems, and as Technical Editor for ACM SIGAPP Applied Computing Review. He has served as chair or co-chair for multiple conferences and workshops at major IEEE and ACM events.

@@ -1,0 +1,539 @@
+Title: Efficient Onboard Spacecraft Pose Estimation with Event Cameras and Neuromorphic Hardware
+
+URL Source: https://arxiv.org/pdf/2604.04117v1
+
+Published Time: Tue, 07 Apr 2026 01:03:45 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Efficient Onboard Spacecraft Pose Estimation with Event Cameras and Neuromorphic Hardware 
+
+## Arunkumar Rathinam University of Luxembourg Luxembourg 
+
+> arunkumar.rathinam@uni.lu
+
+## Jules Lecomte Fortiss GmbH Munich, Germany 
+
+> juleslcmt@gmail.com
+
+## Jost Reelsen Technical University of Munich Munich, Germany 
+
+> jost.reelsen@tum.de
+
+## Gregor Lenz Paddington Robotics London, United Kingdom 
+
+> lenz.gregor@gmail.com
+
+## Axel von Arnim Fortiss GmbH Munich, Germany 
+
+> vonarnim@fortiss.org
+
+## Djamila Aouada University of Luxembourg Luxembourg 
+
+> djamila.aouada@uni.lu
+
+## Abstract 
+
+Reliable relative pose estimation is a key enabler for au-tonomous rendezvous and proximity operations, yet space imagery is notoriously challenging due to extreme illumi-nation, high contrast, and fast target motion. Event cam-eras provide asynchronous, change-driven measurements that can remain informative when frame-based imagery sat-urates or blurs, while neuromorphic processors can ex-ploit sparse activations for low-latency, energy-efficient in-ferences. This paper presents a spacecraft 6-DoF pose-estimation pipeline that couples event-based vision with the BrainChip Akida neuromorphic processor. Using the SPADES dataset, we train compact MobileNet-style key-point regression networks on lightweight event-frame rep-resentations, apply quantization-aware training (8/4-bit), and convert the models to Akida-compatible spiking neural networks. We benchmark three event representations and demonstrate real-time, low-power inference on Akida V1 hardware. We additionally design a heatmap-based model targeting Akida V2 and evaluate it on Akida Cloud, yield-ing improved pose accuracy. To our knowledge, this is the first end-to-end demonstration of spacecraft pose estima-tion running on Akida hardware, highlighting a practical route to low-latency, low-power perception for future au-tonomous space missions. 
+
+## 1. Introduction 
+
+Future on-orbit servicing and active debris removal mis-sions demand increasing levels of autonomy, particularly during rendezvous and proximity operations where a chaser must estimate the relative 6-DoF pose of a non-cooperative target. Vision-based pose estimation is attractive because it can provide rich information using compact sensors, but achieveing robust performances in orbit remains dif-ficult. Recent work has shown great progress with deep learning-based monocular pose estimation, supported by dedicated datasets and benchmarks; however, deployment-relevant concerns such as extreme illumination, generaliza-tion across domains, and onboard computing constraints re-main major obstacles [11, 13]. A recurring limitation of frame-based pipelines is their sensitivity to the space imaging regime: strong speculari-ties, hard shadows, and rapid brightness transitions can de-grade feature extraction and tracking, while motion blur and saturation can corrupt individual frames. These effects ex-acerbate the gap between synthetic training data and lab-oratory or on-orbit imagery, which is widely reported as a key barrier to operational adoption [13]. Motivated by these challenges, recent studies have explored event sensing as a way to improve robustness and reduce the simulation-to-real discrepancy by encoding scene changes rather than ab-solute appearance [9, 15]. Event cameras are also being actively investigated in other space-relevant vision tasks. In space situational awareness (SSA), event-based sensing has been demon-strated for detecting and tracking resident space objects, leveraging the modality’s high temporal resolution and re-silience to lighting variations [1, 5, 14]. Event-based sens-ing has similarly been studied for star tracking, where pre-cise temporal information can support robust centroiding and filtering [4, 16]. These results motivate event-based spacecraft pose estimation as a promising direction for proximity operations. Crucially, spacecraft are severely constrained in size, weight, and power (SWaP), and pose-estimation pipelines 1
+
+> arXiv:2604.04117v1 [cs.RO] 5 Apr 2026
+
+must often run continuously with tight latency budgets. Neuromorphic processors provide a complementary com-puting paradigm: by communicating activations as sparse events and operating efficiently at low precision, they can offer favorable performance-per-watt for edge perception [3, 6, 7]. BrainChip’s Akida platform is particularly relevant because it supports conversion of conventional CNNs into event-driven models and has recently flown in low Earth or-bit, underscoring its potential for spaceborne AI workloads [2]. However, despite rapid progress in both event-based space perception and neuromorphic edge AI, an end-to-end demonstration of spacecraft pose estimation on Akida-class neuromorphic hardware has not been established. This work investigates whether event-based spacecraft pose estimation can be executed efficiently on neuro-morphic hardware, and what representation/model design choices best support this goal. We adopt a hybrid pose pipeline in which a compact network regresses 2D key-points from event-derived frames, and a geometric PnP solver recovers the final 6-DoF pose. 
+
+Contributions. 
+
+• We present an end-to-end spacecraft pose-estimation pipeline that runs keypoint regression on BrainChip Akida, demonstrating the viability of event-based pose estimation on commercially available neuromorphic hardware. • We develop hardware-aware keypoint regression models for Akida V1 and Akida V2 (cloud-simulated), includ-ing quantization-aware training and conversion to Akida-compatible spiking networks. • We benchmark multiple event-frame representations un-der single pipeline to characterize the accuracy–efficiency trade-offs most relevant to spaceborne deployment. 
+
+## 2. Related Work 
+
+2.1. Event-based vision in space applications 
+
+Event cameras have gained attention in space applications where conventional imaging is challenged by large bright-ness variations and fast apparent motion. In SSA, early work established event-based sensing as a practical modal-ity for detecting and tracking resident space objects, demon-strating robustness to illumination dynamics and the poten-tial for efficient processing [5]. Subsequent work expanded these ideas with event-based object detection and tracking pipelines tailored to SSA settings [1], and learning-based feature consolidation/tracking methods designed for real-time event streams [14]. Event sensors have also been explored for star tracking, a foundational spacecraft navigation function. Chin et al. 
+
+demonstrated star tracking with an event camera, showing that asynchronous events can support robust star observa-tions [4]. More recently, Reed et al. proposed an event-based star tracking pipeline with an Extended Kalman Fil-ter, highlighting the synergy between event measurements and state-space filtering [16]. These lines of work motivate event-based sensing for relative navigation and pose estima-tion in proximity operations. In the specific context of spacecraft pose estimation, event sensing has been proposed as a way to mitigate the domain gap between synthetic training and real imagery [9]. SPADES further supports this direction by providing a re-alistic, large-scale dataset for event-based spacecraft pose estimation with both simulated and real event data [15]. Our work builds on these efforts, focusing on deployment-oriented design choices for neuromorphic execution. 
+
+2.2. Monocular 6-DoF spacecraft pose estimation with standard cameras 
+
+Monocular spacecraft pose estimation has seen rapid progress driven by deep learning and new benchmarks. A recent survey by Pauly et al. [13] categorizes modern meth-ods into (i) direct end-to-end regression of the pose and (ii) hybrid modular pipelines that combine learned intermediate predictions (e.g., keypoints) with geometric pose solvers. Hybrid approaches are often preferred because they lever-age projective geometry constraints and can be more data-efficient and interpretable than direct regression [13]. A major driver of research has been the availability of datasets spanning synthetic rendering and hardware-in-the-loop validation. SPEED+ extends prior dataset efforts to-ward higher fidelity and improved validation pathways, sup-porting work that targets operational constraints beyond pure accuracy [11]. Despite this progress, robustness un-der extreme illumination and generalization across domains remain key challenges for monocular pipelines [13], moti-vating alternative sensing modalities such as event cameras. 
+
+2.3. Neuromorphic hardware and edge deployment 
+
+Neuromorphic processors aim to provide energy-efficient computation by using event-driven communication and spiking neural representations. Intel’s Loihi demonstrated a manycore digital neuromorphic design with on-chip learn-ing primitives, enabling efficient execution of spiking work-loads [6]. SpiNNaker represents a complementary archi-tecture built for scalable spike-based computation with effi-cient event routing [7]. These platforms have spurred inter-est in deploying spiking models for perception and control under tight power budgets. BrainChip’s Akida platform targets edge inference by running event-domain networks with low-precision weights/activations and sparse internal activity [3]. Within remote sensing, Lenz and McLelland demonstrated low-power ship detection from satellite imagery using Akida, illustrating the relevance of neuromorphic processing for bandwidth- and power-constrained aerospace workloads 2[10]. BrainChip has also reported the launch of Akida tech-nology into low Earth orbit, indicating early space heritage for the platform [2]. Our work complements these develop-ments by focusing on spacecraft relative pose estimation— a core autonomy function for proximity operations—and demonstrating it on Akida hardware. 
+
+## 3. Methodology 
+
+3.1. System overview 
+
+We implement a hybrid pose-estimation pipeline that fol-lows a common structure in spacecraft pose estimation: (i) obtain a target region-of-interest (ROI), (ii) regress 2D key-points within the ROI, and (iii) recover the 6-DoF pose us-ing a Perspective-n-Point (PnP) solver. This paper focuses on stages (ii) and (iii), with the keypoint regression network designed to run on Akida. The ROI may be produced by a separate detector (not the focus here) or taken from ground-truth for controlled benchmarking. 
+
+3.2. Event-frame representations 
+
+Event cameras output an asynchronous stream of events, each represented as e = ( x, y, p,t) where (x, y) are pixel co-ordinates, p ∈ {− 1, +1} is polarity, and t is the timestamp. For CNN/SNN processing, we convert events in a tempo-ral accumulation window into an image-like tensor. We fo-cus on three lightweight representations that are compatible with compact models and hardware execution, following prior event-vision practice and the SPADES setup [8, 15]: • Event-to-Frame (E2F): a polarity-coded image showing the most recent event per pixel within the window. Pix-els are assigned a value/color based on the polarity of the last event (with a default background value when no event occurred). • 2D Histogram (2DHist): an event count image obtained by accumulating the number of events per pixel over the window (optionally with polarities merged or stored in separate channels), followed by normalization. • Locally-Normalised Event Surfaces (LNES): a two-channel (positive/negative) representation that accumu-lates events while weighting them by normalized times-tamp within the window, thereby preserving coarse tem-poral ordering [15]. These representations trade temporal fidelity against simplicity and computational cost; we evaluate them under a consistent pose-estimation pipeline. 
+
+3.3. Keypoint regression networks 
+
+Given an ROI event-frame tensor, the network predicts the 2D locations of a predefined set of spacecraft keypoints. 
+
+Akida V1 (coordinate regression). For Akida V1, we use a MobileNet-style architecture constrained to opera-tions supported efficiently by the platform (standard and depthwise-separable convolutions followed by a small fully-connected head). The model directly regresses 2 K
+
+scalars for K keypoints (x/y per keypoint). This choice avoids high-resolution decoder layers typically required for dense heatmap prediction, which can be difficult to fit within V1 resource constraints. 
+
+Akida V2 (heatmap regression). To exploit Akida V2 capabilities (evaluated via Akida Cloud simulation), we also implement an encoder–decoder network that outputs 
+
+K heatmaps, one per keypoint. Heatmaps provide a spa-tial probability distribution and often improve localiza-tion robustness in keypoint pipelines, at the cost of higher compute and memory. The V2-oriented design lever-ages architectural blocks better supported by the newer toolchain/hardware model (e.g., skip connections and trans-pose convolutions, when available). 
+
+3.4. Pose recovery via PnP 
+
+Given predicted 2D keypoints { ˆui}Ki=1, known correspond-ing 3D keypoints {Xi}Ki=1 in the target body frame, and camera intrinsics, we recover the relative pose (R, t) by solving a standard PnP problem. In practice, any estab-lished PnP solver (e.g., EPnP, optionally with robust es-timation) can be used; this work emphasizes the accu-racy/efficiency of the keypoint stage under neuromorphic constraints. 
+
+3.5. Quantization, SNN conversion & Deployment 
+
+We train the networks in floating point, then apply Quantization-Aware Training (QAT) to meet Akida pre-cision constraints. For Akida V1, we use low 4-bit weights/activations (with an optional higher 8 bit precision for the first layer input/weights when supported) and con-vert the resulting model to an Akida-compatible spiking network using the BrainChip toolchain [3]. Akida V2 sup-ports the 8-bit quantization for all network parameters, lim-iting accuracy decrease during deployment. We benchmark throughput and accuracy directly on Akida V1 hardware for the coordinate-regression model, and on Akida Cloud for the V2 heatmap model to characterize performance on the next-generation platform. 
+
+## 4. Experiments and Results 
+
+4.1. Dataset and Preprocessing 
+
+We utilize the SPADES dataset [15], which provides a com-prehensive collection of simulated and laboratory-captured event streams for spacecraft proximity operations. The dataset contains 179,400 synthetic event frames derived from 300 unique trajectories and 15,500 real event frames from 31 trajectories captured using a Prophesee EVK4-HD 3camera. However, for this study, we only used the synthetic dataset, the real data is not considered for evaluation. To evaluate model performance and convergence, we partition the synthetic dataset into three subsets: • Training Set: 107,634 frames used for the initial floating-point training and subsequent Quantization-Aware Training (QAT). • Validation Set: 35,877 frames utilized for hyperparame-ter tuning and model selection. • Test Set: 35,889 frames reserved for final performance characterization and hardware benchmarking. Ground truth labels consist of the relative 6-DoF pose, represented by a translation vector t ∈ R3 and a unit quater-nion q. We define a set of K = 8 keypoints corresponding to the corners of the target spacecraft bus. For the keypoint regression network input, a Region-of-Interest (ROI) is cropped around the target spacecraft bus using ground-truth bounding boxes. These crops are resized to a fixed spatial resolution of 224 × 224 pixels. Events are accumulated into frames using a fixed temporal win-dow of ∆t = 50 ms, resulting in input tensors that are com-patible with the convolutional backbones of the Akida V1 and V2 platforms. The dataset specifically includes chal-lenging space-representative illumination conditions, such as high-intensity specularities and hard shadows, to test the robustness of the event-based modality. 
+
+4.2. Evaluation metrics 
+
+We evaluate the pipeline using standard spacecraft pose metrics. Let (˜t, ˜q) and (t, q) represent estimated and ground-truth translation and unit quaternions, respectively. • Translation error ( ET ): ∥˜t − t∥2. We also report the nor-malized error Enorm T = ET /∥t∥.• Rotation error ( ER): 2 arccos ⟨ ˜q, q⟩ .• Pose error ( EP): EP = ER[rad ] + Enorm T , as in [12]. • Percentage of correct keypoints ( PCK ): The fraction of predicted keypoints within a d-pixel threshold of the ground truth. • Pose rejection ( Re j ): To maintain the integrity of the per-formance characterization, we define a rejection criterion based on solver convergence and physical plausibility. An estimated pose is discarded if the PnP solver fails to yield a numerical solution or if the resulting translation magni-tude exceeds a safety threshold of ∥˜t∥ > 30 m. These re-jected samples are recorded separately and are excluded from aggregate error calculations ( ET , ER, and EP). 
+
+4.3. Architectural baselines and training 
+
+4.3.1. Akida V1 coordinate regression 
+
+For the Akida V1 baseline, we adopted a direct coordinate regression approach using a modified MobileNet backbone consisting of 1.88 M parameters ( ∼7.19 MB). The network processes event-frame representations through 12 separable convolutional blocks. A global flatten layer followed by a dense head regresses 16 scalar values, corresponding to the Cartesian (x, y) coordinates of the 8 keypoints. Models were trained for 300 epochs using the synthetic SPADES dataset (107,634 samples) with a multi-GPU MirroredStrategy to ensure convergence of the scalar outputs. All 8 keypoints were used for the PnP optimization stage. 
+
+4.3.2. Akida V2 heatmap regression 
+
+To exploit the enhanced capabilities of the Akida V2 plat-form, we implement a hardware-aware encoder–decoder ar-chitecture optimized for spatial heatmap regression. The network utilizes a MobileNetV2-style backbone and a de-coder sub-network employing transposed convolutions to regress 56 × 56 × 8 heatmaps. This model consists of 1,718,410 parameters ( ∼6.56 MB). By outputting spatial probability distributions rather than absolute coordinates, the network achieves significantly faster convergence; validation PCK scores > 0.96 were reached in only 60 epochs (one-fifth of the training duration required for V1). To ensure fidelity on neuromorphic hard-ware, the network was trained using Quantization-Aware Training (QAT) to 8-bit precision. With the heatmaps al-lows selection of confident keypoints, we performed PnP optimization with both top-5 and 8 (all) keypoints. 
+
+4.4. Pose estimation performance 
+
+Tables 1 and 2 summarize the performance of the Akida V1 and Akida V2 models. 
+
+V1 analysis (coordinate regression). Floating-point V1 models achieve competitive SPEED scores ( ∼0.036), but performance degrades significantly upon 4-bit quantization. The PCK drops from > 93% to ∼30% for E2F and 2DHist, while the LNES representation collapses entirely (PCK 0.20, 2370 rejections). This indicates that direct scalar re-gression is highly sensitive to precision loss in the fully con-nected Akida V1 layers. 
+
+V2 analysis (heatmap regression). The Akida V2 mod-els show remarkable robustness to quantization. The tran-sition from floating-point to quantized weights results in negligible accuracy loss; the quantized E2F model achieves a SPEED score of 0.0208, even slightly outperforming its floating-point counterpart. This suggests that heatmap re-gression is inherently more compatible with low-precision neuromorphic activations. 
+
+4.5. Impact of event representations 
+
+Figures 1a and 1b illustrate the cumulative distribution of SPEED scores. While floating-point models are largely in-variant to representation choice, E2F and 2DHist are sig-4Table 1. Comparison of pose estimation performance of AKIDA V1 models across different event representation.                                                                       
+
+> Event Keypoint Pose Metrics Rej Rep. PCK ↑ET[m]↓Enorm T[.]↓ER[°] ↓Epose [.]↓
+> V1 Float Models
+> LNES 0.9424 0.1114 0.0128 1.3793 0.0367 1E2F 0.9439 0.1065 0.0122 1.3759 0.0361 12DHist 0.9303 0.1018 0.0117 1.4752 0.0373 0
+> Quantized
+> LNES 0.2036 0.8710 0.1083 8.4068 0.2550 2370 E2F 0.3328 0.2560 0.0304 4.0433 0.1009 162 2DHist 0.3094 0.2913 0.0348 4.1512 0.1072 165
+> Deployed
+> LNES 0.2110 0.8468 0.1072 8.7214 0.2594 259 E2F 0.3344 0.2617 0.0316 4.0106 0.1016 17 2DHist 0.3127 0.3063 0.0363 4.1123 0.1081 13
+
+nificantly more robust than LNES for V1 hardware. How-ever, for V2 models, LNES provides the highest accuracy after quantization ( EP = 0.0207), suggesting that the LNES representation holds valuable temporal information that the higher-capacity V2 architecture can effectively exploit. 
+
+4.6. Impact of Quantization 
+
+Figures 3 and 4 compare the performance of floating point models vs quantization models. V1’s regression head turns quantization noise into direct coordinate error with no buffering, while V2’s heatmap head absorbs that noise spatially and was architecturally designed and trained to be quantization-aware from the outset. Quantization precision also affects the model performance: Akida-V1 operates at 4-bit precision, while Akida-V2 supports 8-bit inference. This difference alone has a substantial impact on represen-tational capacity and is clearly visible on the performance between both models. 
+
+4.7. Qualitative analysis 
+
+Qualitative results (Fig. 2) demonstrate that pose errors are driven primarily by illumination. High-performing sam-ples typically feature well-defined edges on the satellite bus, whereas poor samples coincide with high-noise regions or sparse event clusters at high ranges. Variations in lighting conditions remain the most significant factor that impacts model performance. 
+
+4.8. Hardware benchmarking 
+
+We benchmark the throughput and power on the AKD1000 (V1) SoC and the Akida Cloud simulation (V2). Our re-sults are compared with a NVIDIA Jetson Orin Nano board, a common platform for edge uses cases, in 3. The Jetson Nano board runs the floating point model converted to a ten-sorrt engine for optimized speed and power performances. As expected, both static and dynamic power is 3 to 4 times lower using the AKD1000 chip. However, inference speed 
+
+Table 2. Comparison of pose estimation performance of AKIDA V2 models across different event representation                                                                                         
+
+> Event Keypoint Pose Metrics Rej Rep. PCK ↑ET[m]↓Enorm T[.]↓ER[°] ↓Epose [.]↓
+> V2 Float Models
+> LNES (5) 0.9669 0.0719 0.0080 0.9084 0.0236 0LNES (8) 0.9669 0.0704 0.0078 0.8301 0.0220 3E2F (5) 0.9684 0.0722 0.0080 0.9252 0.0239 0E2F (8) 0.9684 0.0690 0.0076 0.8261 0.0217 32DHist (5) 0.9668 0.0682 0.0077 0.9274 0.0236 02DHist (8) 0.9668 0.0730 0.0080 0.8932 0.0233 13
+> Quantized
+> LNES (8) 0.9704 0.0648 0.0072 0.7914 0.0207 5E2F (8) 0.9712 0.0660 0.0072 0.7941 0.0208 62DHist (8) 0.9688 0.0691 0.0076 0.8464 0.0221 9
+> Deployed - AKIDA cloud [1000 samples]
+> LNES (8) -0.0714 0.0076 0.9393 0.0237 0E2F (8) -0.0588 0.0065 0.7171 0.0188 02DHist (8) -0.0747 0.0082 0.9723 0.0249 0
+
+Table 3. Comparison of power and latency metrics for Akida V1 and Jetson Orin Nano. Tests are run for 4000 samples per repre-sentation and average values are given. 
+
+Event Dynamic Power Idle Power Speed Rep. [mW] ↓ [mW] ↓ [fps] ↑
+
+Jetson Orin Nano (Floating Point) 
+
+LNES 2491 3997 321 E2F 2519 3983 330 2DHist 2650 4009 349 
+
+Akida V1 (Deployed Quantized) 
+
+LNES 917 927 16 E2F 919 927 16 2DHist 928 927 17 
+
+is much lower than on the Jetson board (17 forward passes per second while the jetson 349). One explanation of this difference is that Akida chip interface with the host com-puter has not been optimized yet and doest not allow to fully leverage its fast, even based processing capabilities. 
+
+Latency and Complexity. The Akida V1 model achieves 
+
+17 FPS on the physical AKD1000. In contrast, the Akida V2 heatmap model achieves 2.43 FPS (25MHz). This discrepancy is explained by architectural complexity: the V2 model utilizes an encoder–decoder structure with trans-posed convolutions, whereas the V1 regressor is a compact backbone. However, as shown in Table 4, assuming linear frequency scaling, the V2 model is projected to reach 37.21 FPS at 400 MHz. This estimate does not account for poten-tial bandwidth or routing constraints and represents an ideal scaling scenario. 
+
+Sparsity-Power Trade-off. On the AKD1000, power consumption is strongly correlated with input activation sparsity. The 2DHist and E2F representations resulted 5(a) Akida V1: Float vs. Quantized (b) Akida V1 vs. V2: Quantized Comparison 
+
+Figure 1. Cumulative distribution of SPEED scores on the SPADES dataset. (a) shows the impact of quantization on various representations for Akida V1, while (b) compares the performance of quantized Akida V1 and V2 architectures. 
+
+in lower dynamic power draw compared to LNES due to their sparser activation patterns. Power consumption on the Akida platform is inherently event-driven; with the ob-served cycle counts and high activation sparsity, the esti-mated power draw remains within the milliwatt range typi-cal for edge neuromorphic processors. 
+
+Figure 2. Qualitative results on LNES. Rows show samples with high (a-b), median (c-d), and low (e-f) SPEED scores. Table 4. Akida V2 Hardware Metrics: Measured (25 MHz) and Projected (400 MHz)                    
+
+> Representation Latency Throughput (FPS) ↑Params (10 6Cycles) @ 25 MHz @ 400 MHz
+> Event Frame (EF) 11.04 2.18 36.78 1.71M 2D Histogram 10.70 2.33 37.21 1.71M LNES 11.03 2.25 36.04 1.71M
+
+## 5. Discussion 
+
+The transition from floating-point training to quantized de-ployment reveals a significant performance gap tied to re-gression methodology. For Akida V1, hardware limita-tions forced the use of direct keypoint regression, which proved highly vulnerable to quantization noise. In con-trast, Akida V2 enabled heatmap regression, which trans-forms the problem into a spatial classification task. This higher-capacity architecture proved far more resilient to low-precision activations. Furthermore, the event-driven nature of the hardware allows for a ”power-on-demand” ap-proach where sparser representations like E2F reduce the thermal footprint of the processor. 
+
+## 6. Conclusion 
+
+This work demonstrated the first end-to-end event-based spacecraft pose-estimation pipeline on BrainChip Akida hardware. While quantization remains a hurdle for direct coordinate-regression, encoder–decoder heatmap networks on Akida V2 provide a robust pathway for autonomous nav-igation. Future work will investigate recurrent architectures to further leverage the temporal dynamics of event streams and evaluate the pipeline on physical Akida V2 as it be-comes available. 6Event Frame LNES 2D Hist. 
+
+200 
+
+400 
+
+600 
+
+800 
+
+> Localization Error (m) (%)
+
++140.4% 
+
++681.8% 
+
++186.2% 
+
+Event Frame LNES 2D Hist. 
+
+200 
+
+400 
+
+600 
+
+800 
+
+> Normalized Loc. Error (%)
+
++148.4% 
+
++747.2% 
+
++197.4% 
+
+Event Frame LNES 2D Hist. 
+
+200 
+
+300 
+
+400 
+
+500 
+
+600 
+
+> Orientation Error (°) (%)
+
++193.9% 
+
++509.5% 
+
++181.4% 
+
+Event Frame LNES 2D Hist. 
+
+200 
+
+300 
+
+400 
+
+500 
+
+600 
+
+700 
+
+> Pose Error (%)
+
++179.4% 
+
++594.0% 
+
++187.3% 
+
+QAT vs. FP: Relative (%) Akida-V1  
+
+> QAT better than FP QAT worse than FP
+
+Event Frame LNES 2D Hist. 
+
+10 
+
+8
+
+6
+
+4
+
+2
+
+> Localization Error (m) (%)
+
+-4.5% 
+
+-9.8% 
+
+-5.4% 
+
+Event Frame LNES 2D Hist. 
+
+10 
+
+8
+
+6
+
+4
+
+2
+
+> Normalized Loc. Error (%)
+
+-4.6% 
+
+-10.3% 
+
+-4.8% 
+
+Event Frame LNES 2D Hist. 
+
+12.5 
+
+10.0 
+
+7.5 
+
+5.0 
+
+2.5 
+
+> Orientation Error (°) (%)
+
+-3.9% 
+
+-12.9% 
+
+-5.2% 
+
+Event Frame LNES 2D Hist. 
+
+12 
+
+10 
+
+8
+
+6
+
+4
+
+2
+
+> Pose Error (%)
+
+-4.2% 
+
+-12.3% 
+
+-5.2% 
+
+QAT vs. FP: Relative (%) Akida-V2  
+
+> QAT better than FP QAT worse than FP
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+> Mean Localization Error (m)
+
+Akida-V1 
+
+FP 
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+2
+
+1
+
+0
+
+1
+
+2
+
+3
+
+4
+
+Akida-V1 
+
+QAT 
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+0.4 
+
+0.2 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+Akida-V2 
+
+FP 
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+0.4 
+
+0.2 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+Akida-V2 
+
+QAT 
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+> Mean Orientation Error (°)
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+4
+
+2
+
+0
+
+2
+
+4
+
+6
+
+8
+
+5.0 7.5 10.0 12.5 
+
+GT Distance (m) 
+
+4
+
+2
+
+0
+
+2
+
+4
+
+6
+
+Prediction Error vs. Ground-Truth Distance Akida-V1 & Akida-V2 
+
+Event Frame (line: mean, band: ±1 SD) LNES (line: mean, band: ±1 SD) 2D Hist. (line: mean, band: ±1 SD) Figure 3. Comprehensive Quantization and Error Analysis: Top two rows display the performance impact of quantization across different representations. Bottom two rows Mean localization and orientation error binned by ground-truth object distance for full-precision (FP) and quantization-aware trained (QAT) models between V1 and V2 architectures. Shaded regions denote ±1 standard deviation. 
+
+7Figure 4. Scatter distribution of per-sample localization error versus orientation error for full-precision (FP) and quantization-aware trained (QAT) models across Akida-V1 and Akida-V2 architectures. Each point represents one test sample, coloured by input representation. 
+
+## Acknowledgement 
+
+This research was partially funded by the Luxem-bourg National Research Fund (FNR), project reference C21/IS/15965298/ELITE. The work was started during the NeuroTUM Hackathon’24 in Munich, hosted by Fortiss GmbH, where Roua Brini, Jakub Kuspien and Manoj Bhat made valuable contributions. The authors thank Gilles B´ ezard (BrainChip), Alf Kuchenbuch (BrainChip), and Priyadarshini Kannan (Fortiss) for their assistance with the Akida BrainChip platform. 
+
+## References 
+
+[1] Saeed Afshar, Alison P. Nicholson, Andr´ e van Schaik, and Gregory Cohen. Event-based object detection and tracking for space situational awareness. IEEE Sensors Journal , 20 (24):15117–15132, 2020. 1, 2 [2] BrainChip Holdings Ltd. Brainchip boosts space heritage by launching akida into low earth orbit. Press release, 2024. Accessed 2026-02-21. 2, 3 [3] BrainChip Inc. AKD1000 Akida System-on-Chip product brief (version 2.2). Product brief, 2025. Accessed 2026-02-21. 2, 3 [4] Tat-Jun Chin, Sabyasachi Bagchi, Anders Eriksson, Andr´ evan Schaik, and David Suter. Star tracking using an event camera. In Proceedings of the IEEE/CVF Confer-
+
+8ence on Computer Vision and Pattern Recognition Work-shops (CVPRW) , 2019. 1, 2 [5] Gregory Cohen, Saeed Afshar, Brittany Morreale, Travis Bessell, Andrew Wabnitz, Mark Rutten, and Andr´ e van Schaik. Event-based sensing for space situational aware-ness. The Journal of the Astronautical Sciences , 66:125–141, 2019. 1, 2 [6] Mike Davies, Narayan Srinivasa, Tsung-Han Lin, Gau-tham Chinya, Yongqiang Cao, Sri Harsha Choday, Geor-gios Dimou, Prasad Joshi, Nabil Imam, Shweta Jain, Yuyun Liao, Chit-Kwan Lin, Andrew Lines, Ruokun Liu, Deepak Mathaikutty, Steve McCoy, Arnab Paul, Jonathan Tse, Guruguhanathan Venkataramanan, Yi-Hsin Weng, Andreas Wild, Yoonseok Yang, and Hong Wang. Loihi: A neuromor-phic manycore processor with on-chip learning. IEEE Micro ,38(1):82–99, 2018. 2 [7] Steve B. Furber, Francesco Galluppi, Steve Temple, and Luis A. Plana. The SpiNNaker project. Proceedings of the IEEE , 102(5):652–665, 2014. 2 [8] Guillermo Gallego, Tobi Delbr¨ uck, Garrick Orchard, Chiara Bartolozzi, Brian Taba, Andrea Censi, Stefan Leutenegger, Andrew J. Davison, J¨ org Conradt, Kostas Daniilidis, and Davide Scaramuzza. Event-based vision: A survey. IEEE Transactions on Pattern Analysis and Machine Intelligence ,44(1):154–180, 2022. 3 [9] Mohsi Jawaid, Ethan Elms, Yasir Latif, and Tat-Jun Chin. Towards bridging the space domain gap for satellite pose estimation with events. arXiv preprint arXiv:2209.11945 ,2022. 1, 2 [10] Gregor Lenz and Douglas McLelland. Low-power ship de-tection in satellite images using neuromorphic hardware. 
+
+arXiv preprint arXiv:2406.11319 , 2024. 3 [11] Tae Ha Park, Shashank Sharma, and Simone D’Amico. SPEED+: Next-generation spacecraft pose estimation dataset for hardware-in-the-loop applications. arXiv preprint arXiv:2110.03101 , 2021. 1, 2 [12] T. H. Park, M. M¨ artens, M. Jawaid, Z. Wang, B. Chen, T.-J. Chin, D. Izzo, and S. D’Amico. Satellite pose estima-tion competition 2021: Results and analyses. 204:640–665, 2023. 4 [13] Leo Pauly, Wassim Rharbaoui, Carl Shneider, Arunkumar Rathinam, Vincent Gaudilli` ere, and Djamila Aouada. A sur-vey on deep learning-based monocular spacecraft pose esti-mation: Current state, limitations and prospects. Acta Astro-nautica , 212:339–360, 2023. 1, 2 [14] Nicholas Ralph, Reuben Joubert, Matthew Jolley, Saeed Af-shar, Gregory Cohen, and Andr´ e van Schaik. Real-time event-based unsupervised feature consolidation and tracking for space situational awareness. Frontiers in Neuroscience ,16:821157, 2022. 1, 2 [15] Arunkumar Rathinam, Haytam Qadadri, and Djamila Aouada. SPADES: A realistic spacecraft pose estimation dataset using event sensing. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , 2024. 1, 2, 3 [16] Albert W. Reed, Connor Hashemi, Dennis Melamed, Nitesh Menon, Keigo Hirakawa, and Scott McCloskey. EBS-EKF: Event-based star tracking with an extended kalman filter. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vi-sion and Pattern Recognition (CVPR) , 2025. 1, 2 
+
+9

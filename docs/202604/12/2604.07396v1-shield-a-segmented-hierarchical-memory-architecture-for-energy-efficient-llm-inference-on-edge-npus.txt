@@ -1,0 +1,243 @@
+Title: SHIELD: A Segmented Hierarchical Memory Architecture for Energy-Efficient LLM Inference on Edge NPUs
+
+URL Source: https://arxiv.org/pdf/2604.07396v1
+
+Published Time: Fri, 10 Apr 2026 00:02:04 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+# SHIELD: A Segmented Hierarchical Memory Architecture for Energy-Efficient LLM Inference on Edge NPUs 
+
+Jintao Zhang, Xuanyao Fong 
+
+Department of Electrical and Computer Engineering, National University of Singapore, Singapore Email: zhangjintao@u.nus.edu, kelvin.xy.fong@nus.edu.sg 
+
+Abstract —Large Language Model (LLM) inference on edge Neural Processing Units (NPUs) is fundamentally constrained by limited on-chip memory capacity. Although high-density embedded DRAM (eDRAM) is attractive for storing activation workspaces, its periodic refresh consumes substantial energy. Prior work has primarily focused on reducing off-chip traffic or optimizing refresh for persistent Key-Value (KV) caches, while transient and error-resilient Query and Attention Output (QO) activations are largely overlooked. We propose SHIELD, a lifecycle-aware segmented eDRAM architecture that jointly exploits temporal residency and bit-level sensitivity in bfloat16 (BF16) activations. SHIELD isolates the sign and exponent fields from the mantissa, disables refresh for transient QO mantissas, and applies relaxed refresh to persistent KV mantissas. Across multiple LLMs and inference scenarios, SHIELD reduces eDRAM refresh energy by 35% relative to a standard-refresh baseline while preserving accuracy on WikiText-2, PIQA, and ARC-Easy. 
+
+Index Terms —Hardware-Software Co-Design, Large Language Models 
+
+I. I NTRODUCTION 
+
+The “Memory Wall” is a central obstacle to deploying LLMs on edge NPUs, where intermediate activations often exceed the limited on-chip SRAM capacity [1]. A practical solution is to place these activations in higher-density on-chip eDRAM, but the required periodic refresh can consume a substantial fraction of memory energy [2]. Among these activations, the attention workspace is particularly costly because each layer produces multiple large N × d tensors, including Query (Q), Key (K), Value (V), and Attention Output (O), defined as follows [3]: 
+
+Qi, K i, V i = XW Qi , XW Ki , XW Vi ; (1) 
+
+Hi = Softmax 
+
+ QiKTi
+
+√dk
+
+
+
+Vi; (2) 
+
+O = Concat[ Hi]mi=1 (3) where m is the number of attention heads. For example, in 
+
+Qwen3-8B [4], the transient QO workspace alone requires about 32 MB, far beyond the 1 to 8 MB SRAM budget of rep-resentative edge NPUs such as AMD XDNA [5]. These inter-mediates must therefore be placed in eDRAM, making refresh energy a first-order design concern. Existing approaches only partially address this problem (see Table I). RANA [6] opti-mizes refresh for Convolutional Neural Network (CNN) and 
+
+TABLE I COMPARISON OF PRIOR MEMORY -OPTIMIZATION METHODS FOR AI 
+
+> ACCELERATORS
+
+.
+
+Work Granularity Domain Target 
+
+RANA [2018] Layer / Row CNN/DNN Refresh (short-lived) FlashAttn [2022] Block LLM Access (HBM I/O) LEAP [2025] Block / Tile LLM Access (PIM NoC) Kelle [2025] 2D (col/row) LLM Refresh (KV only) 
+
+SHIELD Segmented LLM Refresh (QO + KV) 
+
+Deep Neural Network (DNN) workloads but does not provide the granularity required for LLM inference. FlashAttention [7] and LEAP [8] reduce off-chip I/O through tiling and do not address the refresh energy of eDRAM. Kelle [2] is the closest prior work, as it optimizes eDRAM refresh for the persistent KV cache; however, it does not address the substantial refresh cost of transient QO activations. To address these limitations, we propose SHIELD : Segmented Hierarchical Inference with 
+
+Ephemeral Lifecycle Design, which jointly exploits lifecycle asymmetry and bit-level error tolerance across the activation workspace. Our contributions are:  
+
+> •
+
+Segmented Data Mapping: Partitioning activations by lifecycle (QO vs. KV) and numerical significance (ex-ponent vs. mantissa).  
+
+> •
+
+Hierarchical Refresh Control: Assigning refresh intervals according to each segment’s error tolerance and residency time.  
+
+> •
+
+Refresh-less Workspace: Eliminating refresh for QO man-tissas while applying a relaxed refresh ( Trel = 1216 μs )to persistent KV mantissas. II. B ACKGROUND AND MOTIVATION 
+
+A. LLM Activation Lifecycle 
+
+In transformer-based LLM inference, activation tensors exhibit distinct temporal behaviors. The QO matrices are strictly limited to intra-layer dependencies. In contrast, the KV matrices are persistent and must be maintained across the entire context window to support autoregressive generation. To characterize activation residency, we performed a sys-tematic profiling across a suite of open-source models, in-cluding Qwen [4], Mistral [9], and Llama [10] families across varying parameter scales (1B to 9B). As illustrated in Fig. 1(a), our profiling results indicate that the self-attention mechanism  
+
+> arXiv:2604.07396v1 [cs.AR] 8 Apr 2026 Fig. 1. Lifecycle characterization of transient QO activations. (Left) Per-layer runtime composition across evaluated LLMs, showing that attention occupies a limited fraction of execution time. (Right) Measured QO retention time across models remains below 1.5 ms, supporting refresh-less storage for transient mantissas.
+> Fig. 2. Fault-injection characterization for BF16 activation storage. (Left) Uniform bit errors rapidly degrade perplexity, motivating bit-level segmenta-tion. (Center) Transient QO mantissas tolerate high BER, enabling refresh-less storage. (Right) Persistent KV mantissas require a stricter BER bound for stable long-context generation, motivating relaxed refresh instead of refresh elimination.
+
+consistently accounts for less than 60% of the total per-layer execution time. The remaining cycles are consumed by Feed-Forward Networks (FFN) and normalization layers, during which the QO buffers remain idle. This implies that for a large portion of the inference duty cycle, maintaining QO data through active refresh is energy-inefficient. The feasibility of a refresh-less policy depends on whether the required residency time of activations is shorter than the eDRAM retention time. We performed a layer retention analysis using a storytelling task with a context length of 2048 on a single NVIDIA H100 GPU. As shown in Fig. 1(b), the intra-layer processing time and thus, the effective lifetime of QO activations, remains within 1.5 ms across all evaluated models. These findings establish the rationale for using a refresh-less workspace for transient mantissas. 
+
+B. Error Tolerance Heterogeneity 
+
+To evaluate the feasibility of lifecycle-aware refresh gat-ing, we conduct fault-injection experiments with Algorithm 1 on BF16 activation storage. The results reveal heterogeneity along two dimensions: bit-level sensitivity and tensor-level resilience. When errors are injected uniformly across the QO workspace as shown in Fig. 2(a), model perplexity degrades rapidly once the Bit Error Rate (BER) exceeds 10 −6, indicat-ing that even transient activations remain highly sensitive to corruption in critical bit fields. This observation motivates a 
+
+Algorithm 1 SHIELD Lifecycle-Aware Fault Simulation 
+
+Require: LLM M, BER (ρkv , ρ qo ), Mantissa Mask M 
+
+> 1:
+
+for each layer L ∈ M do  
+
+> 2:
+
+Register ForwardHook (L) → Output X 
+
+> 3:
+
+ρ ← (L ∈ { WK , W V })? ρkv : ( L ∈ { WQ, W O })? ρqo : 0  
+
+> 4:
+
+if ρ > 0 then  
+
+> 5:
+
+Bf lip ← RandomUniform (shape (X)) < ρ  
+
+> 6:
+
+Nbits ← RandomInt16 () AND M 
+
+> 7:
+
+Xnoisy ← Reinterpret (X) ⊕ (Nbits · Bf lip ) 
+
+> 8:
+
+return ReinterpretAsBF16( Xnoisy ) 
+
+> 9:
+
+end if  
+
+> 10:
+
+end for  
+
+> 11:
+
+return LMEval (M, Tasks ) 
+
+> Fig. 3. Overview of the SHIELD Architecture, showcasing the segmented memory controller and the mapping of BF16 activations to heterogeneous eDRAM banks.
+
+segmented design in which the sign and exponent fields are physically isolated from the more error-tolerant mantissa. After isolating the critical fields, we evaluate the resilience of the 7-bit mantissa for transient QO data as shown in Fig. 2(b). Specifically, we define the threshold for numerical instability as a 3% degradation in the perplexity score com-pared to the baseline at a 0% error rate. The results show that transient QO mantissas tolerate substantially higher error rates, with stable output quality maintained even at an injected error rate of up to 25%. Since the measured QO lifetime remains within 1.5 ms, this tolerance supports a refresh-less policy for QO mantissa banks. In contrast, persistent KV cache mantissas are more sensi-tive to cumulative error propagation. Fig. 2(c) highlights the stricter BER requirement for persistent KV mantissas. We observe that the KV mantissa tolerates BERs up to 10 −4
+
+before long-context generation degrades noticeably. Accord-ingly, SHIELD employs relaxed refresh rather than refresh elimination for persistent KV mantissa. III. SHIELD A RCHITECTURE 
+
+The SHIELD architecture is designed to bridge the gap between high-density activation storage and power efficiency. As illustrated in Fig. 3, the system consists of a segmented memory controller that orchestrates data placement across heterogeneous eDRAM banks based on activation lifecycle and bit-level significance. Fig. 4. Characterization of 3T-eDRAM BER vs. Retention Time. The plot identifies the optimal relaxation point for the KV cache mantissas.  
+
+> Fig. 5. System-level energy evaluation of SHIELD. Left: efficiency gain across representative inference scenarios. Right: energy reduction ratio ( η)over the inference lifecycle.
+
+A. Segmented Memory Hierarchy 
+
+SHIELD organizes the eDRAM workspace into three banks according to numerical sensitivity and data lifetime in order to support the BF16 format. The 1-bit sign and 8-bit exponent are stored in Standard Refresh Banks, while the 7-bit mantissa is divided by residency: persistent KV cache mantissas are mapped to Relaxed Refresh Banks, and transient QO mantissas are mapped to Refresh-less Banks. Standard and Relaxed Refresh Banks are governed by a lifecycle-aware refresh controller, whereas Refresh-less Banks are operated without refresh. 
+
+B. Lifecycle-Aware Refresh Policy 
+
+SHIELD derives its efficiency from the dependence of BER on charge-retention time. To obtain the safe operating region of each memory bank, we conducted empirical characterization on a 3T-eDRAM cell model [11]. Our results indicate that keeping the BER of the 7-bit KV mantissa field below 10 −4 re-quires a refresh interval of Trel = 1216 μs . By comparison, the BER of the 7-bit transient QO mantissa field remains bounded at 0.04% over its effective lifetime. These observations provide the empirical basis for the refresh configuration adopted in SHIELD and for the evaluation that follows. IV. E VALUATION 
+
+We evaluate SHIELD from four perspectives. First, we justify the eDRAM-based activation pool used in SHIELD. Second, we formulate the baseline and segmented refresh-power models and derive the resulting energy reduction. Third, we measure efficiency gains across representative workloads and over the prefill-to-decode lifecycle. Finally, we evaluate robustness across diverse LLMs under lifecycle-aware refresh gating. 
+
+A. Density and Baseline Efficiency 
+
+We first justify the use of an eDRAM-based activation pool using DESTINY [12]. For a 2 MB workspace, a pure SRAM implementation consumes 452.25 mW of leakage power, whereas the eDRAM data array leaks only 0.95 mW. Even after accounting for standard refresh overhead, eDRAM remains more energy-efficient for the high-density storage required by edge LLM inference. This result motivates the eDRAM-based workspace assumed in SHIELD. 
+
+B. Energy Efficiency 
+
+We model the total power consumption of the activation workspace as the sum of leakage power and refresh power. The baseline power of a conventional eDRAM-based workspace is 
+
+Pbase = Pleak + Pref std = Pleak + Eref cycle 
+
+Tstd 
+
+(4) where Pleak is the array leakage power, Eref cycle is the energy consumed per refresh cycle, and Tstd = 45 μs is the standard refresh interval [11]. SHIELD partitions the activation workspace into three banks according to numerical sensitivity and tensor lifecycle. Let Btotal denote the total workspace capacity, with BKV 
+
+and BQO corresponding to the KV cache and QO allocations, respectively. The resulting power consumption is 
+
+PSHIELD = Pleak + Pref,exp + Pref,kv + Pref,qo . (5) The exponent and sign segment, Pref,exp , corresponds to the 9 most significant bits in BF16 and is refreshed at the standard interval: 
+
+Pref,exp = 916 ·
+
+ Eref cycle 
+
+Tstd 
+
+
+
+. (6) The KV cache mantissa segment, Pref,kv , corresponds to the 7-bit mantissas of persistent KV cache. These banks use a relaxed refresh interval of Trel = 1216 μs , giving 
+
+Pref,kv =
+
+ 716 · BKV 
+
+Btotal 
+
+
+
+·
+
+ Eref cycle 
+
+Trel 
+
+
+
+. (7) The transient QO mantissa segment, Pref,qo , corresponds to the 7-bit mantissas of QO tensors. Because QO is short-lived, these banks operate under a refresh-less policy: 
+
+Pref,qo =
+
+ 716 · BQO 
+
+Btotal 
+
+
+
+· 0 = 0 . (8) TABLE II ROBUSTNESS EVALUATION ACROSS MODELS 
+
+Model WikiText-2 (PPL) ↓ PIQA Accuracy ↑ ARC-Easy Accuracy ↑
+
+Baseline Kelle ( ∆) SHIELD ( ∆) Baseline Kelle ( ∆) SHIELD ( ∆) Baseline Kelle ( ∆) SHIELD ( ∆)Qwen3-1.7B 22.03 +0.03 +0.02 72.25% -0.43% 0.00% 72.77% -0.55% -0.55% Qwen3-4B 17.31 +0.00 +0.02 75.19% -0.38% +0.22% 80.43% +0.04% 0.00% Qwen3-8B 12.74 +0.01 +0.00 76.61% -0.44% -0.22% 83.42% +0.12% +0.08% Mistral-7B 8.67 -0.00 0.00 81.99% 0.00% +0.06% 83.54% -0.21% +0.05% Llama-3-8B 9.01 +0.00 +0.00 79.98% -0.11% +0.27% 82.15% -0.08% 0.00% 
+
+The normalized energy reduction of SHIELD relative to the baseline is 
+
+η = 1 − PSHIELD 
+
+Pbase 
+
+≈ 1 −
+
+ 916 + 716 
+
+ BKV 
+
+Btotal 
+
+· Tstd 
+
+Trel 
+
+ 
+
+.(9) Thus, the achievable energy reduction depends on the foot-print ratio BKV /B total . We therefore evaluate SHIELD at both workload and token-lifecycle granularity. 
+
+C. Cross-Scenario Performance Analysis 
+
+We evaluate the efficiency gain, Pbase /P SHIELD , across three representative workloads: Summary (prefill-dominant), 
+
+Translation (balanced), and Storytelling (decode-dominant). Fig. 5(a) shows that Kelle exhibits workload-dependent effi-ciency, with gains ranging from 1.15 × to 1.32 × as the relative QO footprint changes. In contrast, SHIELD maintains a nearly constant gain of about 1.35 × across all three scenarios. The advantage is largest when transient QO dominates, but remains stable even as the KV cache becomes the main memory component. We next evaluate η over a representative generation trace (Prefill=128, Decode=256) to complement the workload-level results. Fig. 5(b) shows that SHIELD’s advantage over Kelle is largest during prefill and early decode, when transient QO occupies a larger fraction of the active workspace. As decoding proceeds, the KV cache grows and the efficiency gap narrows. Even so, SHIELD remains the most efficient design because it continues to eliminate refresh for the active QO mantissa banks. 
+
+D. Robustness Evaluation 
+
+We evaluate SHIELD’s robustness by injecting lifecycle-aware faults into mantissa segments during the forward pass of five state-of-the-art LLMs. Table II compares SHIELD against Kelle, which applies an overall 2 × 10 −3 BER policy to the KV cache. Across WikiText-2 [13], PIQA [14], and ARC-Easy [15], SHIELD maintains near-zero deviation from the error-free baseline ( ∆ ≈ 0). At the same time, it achieves higher energy savings than KV-only policies without the perplexity degrada-tion observed under more aggressive refresh relaxation. These results show that lifecycle-aware refresh gating provides a robust operating envelope across diverse LLM families. V. C ONCLUSION 
+
+This paper presented SHIELD, a lifecycle-aware eDRAM memory architecture with hierarchical refresh control for energy-efficient LLM inference on edge NPUs. By exploiting the short residency of QO activations and the lower numerical sensitivity of BF16 mantissas, SHIELD removes refresh from transient QO mantissa storage and assigns a relaxed refresh policy to persistent KV mantissa storage. Across diverse LLMs and inference scenarios, SHIELD achieves a 35% reduction in eDRAM refresh energy with negligible accuracy impact on WikiText-2, PIQA, and ARC-Easy. Future work will investi-gate support for additional data formats and tighter co-design between floating-point execution units and segmented memory hierarchies to further reduce bit-shuffling overhead and data movement. REFERENCES [1] Y. Zheng, Y. Chen, B. Qian, X. Shi, Y. Shu, and J. Chen, “A review on edge large language models: Design, execution, and applications,” ACM Computing Surveys , vol. 57, no. 8, pp. 1–35, 2025. [2] T. Xia and S. Q. Zhang, “Kelle: Co-design kv caching and edram for efficient llm serving in edge computing,” in Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture , 2025, pp. 18–33. [3] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in neural information processing systems , vol. 30, 2017. [4] A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv et al. , “Qwen3 technical report,” arXiv preprint arXiv:2505.09388 , 2025. [5] A. Rico, S. Pareek, J. Cabezas, D. Clarke, B. Ozgul, F. Barat, Y. Fu, S. M¨ unz, D. Stuart, P. Schlangen, P. Duarte, S. Date, I. Paul, J. Weng, S. Santan, V. Kathail, A. Sirasao, and J. Noguera, “Amd xdna npu in ryzen ai processors,” IEEE Micro , vol. 44, no. 6, pp. 73–82, 2024. [6] F. Tu, W. Wu, S. Yin, L. Liu, and S. Wei, “Rana: Towards efficient neural acceleration with refresh-optimized embedded dram,” in 2018 ACM/IEEE 45th Annual International Symposium on Computer Archi-tecture (ISCA) , 2018, pp. 340–352. [7] T. Dao, D. Fu, S. Ermon, A. Rudra, and C. R´ e, “Flashattention: Fast and memory-efficient exact attention with io-awareness,” Advances in neural information processing systems , vol. 35, pp. 16 344–16 359, 2022. [8] Y. Wang, Y. J. Chong, and X. Fong, “Leap: Llm inference on scalable pim-noc architecture with balanced dataflow and fine-grained paral-lelism,” in 2025 IEEE/ACM International Conference On Computer Aided Design (ICCAD) . IEEE, 2025, pp. 1–9. [9] A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot, D. de las Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier, L. R. Lavaud, M.-A. Lachaux, P. Stock, T. L. Scao, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed, “Mistral 7b,” 2023. [Online]. Available: https://arxiv.org/abs/2310.06825 [10] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten, A. Vaughan et al. , “The llama 3 herd of models,” arXiv preprint arXiv:2407.21783 , 2024. [11] W. Kong, P. C. Parries, G. Wang, and S. S. Iyer, “Analysis of retention time distribution of embedded dram - a new method to characterize across-chip threshold voltage variation,” in 2008 IEEE International Test Conference , 2008, pp. 1–7. [12] M. Poremba, S. Mittal, D. Li, J. S. Vetter, and Y. Xie, “Destiny: A tool for modeling emerging 3d nvm and edram caches,” in 2015 Design, Automation and Test in Europe Conference and Exhibition (DATE) ,2015, pp. 1543–1546. [13] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel mixture models,” arXiv preprint arXiv:1609.07843 , 2016. [14] Y. Bisk, R. Zellers, R. Le bras, J. Gao, and Y. Choi, “Piqa: Reasoning about physical commonsense in natural language,” 
+
+Proceedings of the AAAI Conference on Artificial Intelligence ,vol. 34, no. 05, pp. 7432–7439, Apr. 2020. [Online]. Available: https://ojs.aaai.org/index.php/AAAI/article/view/6239 [15] P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and O. Tafjord, “Think you have solved question answering? try arc, the ai2 reasoning challenge,” arXiv preprint arXiv:1803.05457 , 2018.

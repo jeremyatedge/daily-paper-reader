@@ -1,0 +1,524 @@
+Title: AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels
+
+URL Source: https://arxiv.org/pdf/2604.05066v1
+
+Published Time: Wed, 08 Apr 2026 00:04:46 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 
+
+YIFAN ZHU, University of Rochester, USA 
+
+YEKAI PAN, University of Rochester, USA 
+
+YANGHUI WU, University of Rochester, USA 
+
+CHEN DING, University of Rochester, USA Data movement is the main bottleneck in modern computing. For loop-based programs common in high-performance computing (HPC) and AI workloads—including matrix multiplication, tensor contraction, stencil computation, and einsum operations—the cost of moving data through the memory hierarchy often exceeds the cost of arithmetic. This paper presents AutoLALA , an open-source tool that takes a loop program written in a small domain-specific language (DSL), lowers it to polyhedral sets and maps, and produces closed-form symbolic formulas for reuse distance and data movement complexity. The tool implements the fully symbolic locality analysis of Zhu et al. and the data movement distance (DMD) framework of Smith et al., computing reuse distance as the image of the access space under the access map—without stack simulation or Denning’s recursive working-set formulation. We describe the DSL syntax, its formal semantics, the polyhedral lowering that constructs timestamp spaces and access maps via affine transformations, and the chain of Barvinok counting operations that yields symbolic reuse-interval and reuse-distance distributions. The system is implemented in Rust across three crates and integrates with the Barvinok library through safe bindings. We provide a command-line tool and a web playground with LaTeX rendering of the output formulas. The tool handles any affine loop nest, covering workloads such as tensor contractions, einsum expressions, stencil computations, and general polyhedral programs. 
+
+1 Introduction 
+
+The gap between processor speed and memory latency has grown for decades. Data movement—the traffic between a processor and its memory hierarchy—is now the main cost in both time and energy for many workloads [ 9 , 20 ]. This is true for dense linear algebra in HPC, for tensor operations in machine learning, and for stencil computations in scientific simulation. Time complexity counts operations while treating memory as free. It cannot distinguish algo-rithms with the same operation count but different data movement, e.g., naive vs. tiled matrix multiplication, both Θ(𝑁 3) [20]. 
+
+Data Movement Distance (DMD) [ 20 ] is a framework that assigns each memory access a cost proportional to the square root of its reuse distance—the number of distinct data elements accessed between two consecutive accesses to the same element. The DMD of a program is the sum of these per-access costs. This framework can distinguish algorithms with identical time complexity but different memory behavior. Zhu et al. [ 27 ] showed how to compute the reuse-distance distribution of an affine loop nest as a symbolic (quasi-)polynomial in the loop bounds. Their method uses the polyhedral model: loop iterations form an integer set, memory accesses form an affine map, and reuse distances are obtained by composing these maps and counting integer points with the Barvinok library [ 22 , 23 ]. The result is a set of closed-form formulas that hold for all input sizes and cache configurations, removing the need for simulation or profiling. This paper describes AutoLALA (Auto matic Loop Algebraic Locality Analysis), an open-source Rust implementation of this analysis pipeline. The contributions are:  
+
+> Authors’ Contact Information: Yifan Zhu, University of Rochester, Rochester, NY, USA, yifanzhu@rochester.edu; Yekai Pan, University of Rochester, Rochester, NY, USA, ypan34@u.rochester.edu; Yanghui Wu, University of Rochester, Rochester, NY, USA, ywu86@ur.rochester.edu; Chen Ding, University of Rochester, Rochester, New York, USA.
+> arXiv:2604.05066v1 [cs.PL] 6 Apr 2026 2Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding
+
+(1) A domain-specific language (DSL) for specifying affine loop programs with symbolic param-eters, affine bounds, conditional guards, and typed memory accesses (§3). (2) A polyhedral lowering that translates DSL programs into timestamp spaces (integer sets) and access maps (affine relations), handling loop steps, statement interleaving, and conditional branches (§4). (3) A symbolic locality analysis that computes reuse-interval and reuse-distance distributions, assembles DMD formulas, and filters non-scaling branches—with reuse distance computed as the image of the access space under the access map (§5). (4) A Rust implementation organized as three crates—a core library, a CLI, and a web playground— with safe Barvinok bindings (§6). The DSL accepts any affine loop nest. This covers a broad class of HPC and AI workloads: dense matrix operations, tensor contractions and einsum expressions [ 4 , 10 ], stencil computations, image-processing pipelines [ 19 ], and the PolyBench suite [ 18 ]. Any loop program whose bounds and subscripts are affine functions of the enclosing iterators and symbolic parameters can be analyzed. 
+
+2 Background 2.1 The Polyhedral Model 
+
+The polyhedral model represents loop nests as integer polyhedra [ 1 ]. A loop with affine bounds 
+
+ℓ ≤ 𝑖 < 𝑢 defines a set of integer points {𝑖 ∈ Z | ℓ ≤ 𝑖 < 𝑢 }. Nesting 𝑑 loops produces a 𝑑 -dimensional polyhedron. Memory accesses with affine subscripts (e.g., 𝐴 [𝑖 + 1, 2𝑗 ]) define affine maps from the iteration space to a data space. Tools such as ISL [ 21 ] manipulate these sets and maps symbolically: union, intersection, composition, inversion, lexicographic ordering, and counting. A quasi-polynomial is a polynomial whose coefficients may depend on the residues of the variables modulo fixed constants. The Barvinok library [ 22 , 23 ] computes the number of integer points in a parametric polytope as a quasi-polynomial in the parameters. This is the key operation that turns polyhedral relations into closed-form symbolic formulas. 
+
+2.2 Reuse Distance 
+
+Reuse distance (also called LRU stack distance) [ 14 , 26 ] is the number of distinct data elements accessed between two consecutive accesses to the same element. Given an access trace 𝑎 1, 𝑎 2, . . . , 𝑎 𝑛 ,the reuse distance of access 𝑎 𝑡 is the number of distinct elements in {𝑎 𝑡 ′+1, . . . , 𝑎 𝑡 −1 } where 𝑡 ′ < 𝑡 
+
+is the most recent prior access to the same element. If 𝑎 𝑡 is the first access to its element, the reuse distance is ∞ (a compulsory miss). The reuse distance fully characterizes LRU cache behavior: an access with reuse distance 𝑟 hits in a fully associative LRU cache of size 𝑐 if and only if 𝑟 < 𝑐 [14]. 
+
+2.3 Data Movement Distance 
+
+The DMD framework [ 20 ] assigns each access a cost based on its reuse distance. For a program with 𝑛 total accesses, of which 𝑛 𝑐 are compulsory (first access to each element) and the remaining 
+
+𝑛 − 𝑛 𝑐 have finite reuse distances, the DMD is: 
+
+DMD = 𝑛 𝑐 +∑︁  
+
+> 𝑡 :warm access
+
+√︁ 
+
+𝑟𝑑 (𝑡 ) (1) where 𝑟𝑑 (𝑡 ) is the reuse distance of access 𝑡 . The √· models the fact that data with smaller reuse distance is more likely to be cached, so its movement cost is lower. Empirical studies have observed that cache miss rates scale as a power of reuse distance [ 8 ], and the square root provides a robust approximation for modern hierarchies [20]. AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 3
+
+When the reuse-distance distribution is given as a symbolic function—a set of regions 𝐷 𝑖 with multiplicity 𝑚 𝑖 and reuse distance 𝑟 𝑖 —the DMD becomes: 
+
+DMD = 𝑛 𝑐 +∑︁ 
+
+> 𝑖
+
+𝑚 𝑖 · √𝑟 𝑖 (2) where each 𝑚 𝑖 and 𝑟 𝑖 are quasi-polynomials in the symbolic parameters. 
+
+3 The AutoLALA DSL 
+
+AutoLALA accepts programs in a small DSL designed for specifying affine loop nests. We describe its syntax formally and illustrate it with examples. 
+
+3.1 Formal Syntax 
+
+The grammar is given in BNF-like notation. Terminals are in typewriter font; nonterminals are in 
+
+⟨angle brackets ⟩.
+
+⟨program ⟩ ::= ⟨param-decl ⟩* ⟨array-decl ⟩* ⟨stmt ⟩*
+
+⟨param-decl ⟩ ::= ‘ params ’ ⟨id-list ⟩ ‘;’
+
+⟨array-decl ⟩ ::= ‘ array ’ ⟨id ⟩ ‘[’ ⟨expr-list ⟩ ‘]’ ‘ ;’
+
+⟨stmt ⟩ ::= ⟨for-stmt ⟩ | ⟨if-stmt ⟩ | ⟨access-stmt ⟩⟨for-stmt ⟩ ::= ‘ for ’ ⟨id ⟩ ‘in ’ ⟨expr ⟩ ‘.. ’ ⟨expr ⟩ ⟨ step-spec ⟩? ⟨block ⟩⟨step-spec ⟩ ::= ‘ step ’ ⟨integer ⟩⟨if-stmt ⟩ ::= ‘ if ’ ⟨cond-list ⟩ ⟨ block ⟩ (‘ else ’ ⟨block ⟩)? 
+
+⟨block ⟩ ::= ‘ {’ ⟨stmt ⟩* ‘ }’
+
+⟨access-stmt ⟩ ::= ⟨access-kind ⟩ ⟨ id ⟩ ‘[’ ⟨expr-list ⟩ ‘]’ ‘ ;’
+
+⟨access-kind ⟩ ::= ‘ read ’ | ‘ write ’ | ‘ update ’
+
+⟨cond-list ⟩ ::= ⟨comparison ⟩ (‘ && ’ ⟨comparison ⟩)* 
+
+⟨comparison ⟩ ::= ⟨expr ⟩ ⟨ cmp-op ⟩ ⟨ expr ⟩⟨cmp-op ⟩ ::= ‘ <’ | ‘ <= ’ | ‘ == ’ | ‘ >= ’ | ‘ >’
+
+⟨expr ⟩ ::= ⟨expr ⟩ (‘ +’ | ‘ -’) ⟨mul-expr ⟩ | ⟨mul-expr ⟩⟨mul-expr ⟩ ::= ⟨mul-expr ⟩ (‘ *’ | ‘ /’) ⟨unary ⟩ | ⟨unary ⟩⟨unary ⟩ ::= ‘ -’ ⟨unary ⟩ | ‘ (’ ⟨expr ⟩ ‘)’ | ⟨integer ⟩ | ⟨id ⟩
+
+A program consists of zero or more parameter declarations, zero or more array declarations, and a sequence of statements. Parameters are symbolic constants (e.g., matrix dimensions); arrays are declared with their extents as affine expressions of the parameters. 
+
+3.2 Affine Restriction 
+
+All expressions in bounds, subscripts, conditions, and array extents must be affine : degree at most 1 in any variable. Concretely: 
+
+• Multiplication requires at least one operand to be a compile-time constant. The product 𝑖 · 𝑗 
+
+where both 𝑖 and 𝑗 are loop variables is rejected. 4 Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding 
+
+• Division ( /) computes integer floor division and requires a constant divisor. 
+
+• Variables in an expression must be symbolic parameters or enclosing loop iterators. This restriction is necessary for the polyhedral model: the iteration domain must be an integer polyhedron and the access function must be an affine map. 
+
+3.3 Access Kinds 
+
+Each memory access is tagged as read , write , or update . For the purpose of locality analysis, all three are treated uniformly: they contribute equally to the timestamp sequence and the access map. The distinction is retained in the AST for potential future use in cost models that distinguish reads from writes. 
+
+3.4 Example: Matrix Multiplication  
+
+> 1
+
+params M , N , K;  
+
+> 2
+
+array A[M , K ];  
+
+> 3
+
+array B[K , N ];  
+
+> 4
+
+array C[M , N ];  
+
+> 56
+
+for i in 0 .. M { 
+
+> 7
+
+for j in 0 .. N { 
+
+> 8
+
+for k in 0 .. K { 
+
+> 9
+
+read C[i , j ];  
+
+> 10
+
+read A[i , k ];  
+
+> 11
+
+read B[k , j ];  
+
+> 12
+
+write C[i , j ];  
+
+> 13
+
+} 
+
+> 14
+
+} 
+
+> 15
+
+}
+
+Listing 1. Matrix multiplication in the AutoLALA DSL. 
+
+This program specifies a triply-nested loop with four memory accesses per iteration. The symbolic parameters 𝑀 , 𝑁 , 𝐾 are the matrix dimensions. The tool produces symbolic formulas for the reuse-distance distribution and the DMD as functions of 𝑀 , 𝑁 , and 𝐾 .
+
+3.5 Example: 1D Jacobi Stencil  
+
+> 1
+
+params N , T;  
+
+> 2
+
+array A[N ];  
+
+> 3
+
+array B[N ];  
+
+> 45
+
+for t in 0 .. T { 
+
+> 6
+
+for i in 1 .. N - 1 { 
+
+> 7
+
+read A[i - 1];  
+
+> 8
+
+read A[i ];  
+
+> 9
+
+read A[i + 1];  
+
+> 10
+
+write B[i ];  
+
+> 11
+
+} 
+
+> 12
+
+for i in 1 .. N - 1 { 
+
+> 13
+
+read B[i ];  
+
+> 14
+
+write A[i ];  
+
+> 15
+
+}AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 5 
+
+> 16 }
+> Listing 2. 1D Jacobi stencil.
+
+The stencil accesses A[i-1] , A[i] , and A[i+1] , all of which are affine. The tool computes the reuse distances between consecutive timesteps and across the 𝑖 -loop. 
+
+3.6 Example: Einsum / Tensor Contraction 
+
+Tensor contractions, frequently expressed as einsum operations in deep-learning frameworks, are naturally affine. A contraction 𝐶 𝑖 𝑗 = Í𝑘 𝐴 𝑖𝑘 𝐵 𝑘 𝑗 is exactly the matrix multiplication of Listing 1. Higher-order contractions such as 𝐷 𝑖 𝑗 = Í𝑘,𝑙 𝐴 𝑖𝑘𝑙 𝐵 𝑘𝑙 𝑗 add more loops but keep all subscripts affine. Similarly, batched operations like 𝐶 𝑏𝑖 𝑗 = Í𝑘 𝐴 𝑏𝑖𝑘 𝐵 𝑏𝑘 𝑗 simply add a batch loop. All of these fall within the scope of AutoLALA .
+
+4 Polyhedral Lowering 
+
+This section describes how the tool translates a DSL program into the polyhedral objects required for locality analysis: a timestamp space (an integer set) and an access map (an affine relation). 
+
+4.1 Timestamp Space 
+
+The timestamp space encodes the execution order of all memory accesses in the program. Each access is assigned a point in a multi-dimensional integer space whose lexicographic order matches the execution order. 
+
+Loop dimensions. A for loop with iterator 𝑖 , lower bound ℓ, upper bound 𝑢 , and step 𝑠 contributes one dimension. Rather than storing the iterator value directly, the tool stores the ordinal iteration count 𝑜 𝑖 ∈ { 0, 1, . . . , ⌈( 𝑢 − ℓ)/ 𝑠 ⌉ − 1}. The actual iterator value is recovered as 𝑖 = 𝑜 𝑖 · 𝑠 + ℓ. The ordinal representation has two advantages: the lower bound is always 0, and the step is always 1. Formally, for a single loop, the contribution to the timestamp space is: 
+
+Tfor = 𝑜 𝑖 ∈ Z 0 ≤ 𝑜 𝑖 ∧ 𝑜 𝑖 < ⌈( 𝑢 − ℓ)/ 𝑠 ⌉ (3) For nested loops, the timestamp space is the Cartesian product constrained by the conjunction of all loop bounds: 
+
+T = (𝑜 1, . . . , 𝑜 𝑑 ) ∈ Z𝑑 
+
+> 𝑑
+
+Û
+
+> 𝑘 =1
+
+0 ≤ 𝑜 𝑘 < ⌈( 𝑢 𝑘 − ℓ𝑘 )/ 𝑠 𝑘 ⌉ (4) where the bounds ℓ𝑘 and 𝑢 𝑘 may depend on enclosing loop ordinals and symbolic parameters. 
+
+Statement interleaving. When a block contains multiple statements, each statement 𝑗 (numbered from 0) gets a dedicated “selector” dimension set to the constant 𝑗 . For a block with 𝑚 statements 
+
+𝑆 0, . . . , 𝑆 𝑚 −1, the timestamp space is: 
+
+Tblock =
+
+> 𝑚 −1
+
+Ø
+
+> 𝑗 =0
+
+( 𝑗 ) × T 𝑆 𝑗 (5) where T𝑆 𝑗 is the timestamp space of statement 𝑆 𝑗 , padded with zero-constrained dimensions so that all branches have the same dimensionality. The selector dimension is placed at the depth of the enclosing block, and all sub-statements share the same parameter space. 6 Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding 
+
+Conditional branches. An if statement with condition 𝜙 is handled by intersecting the then-branch timestamp space with the condition set and the else-branch with its complement: 
+
+Tif = (T then ∩ ⟦ 𝜙 ⟧) ∪ (T else ∩ ⟦¬ 𝜙 ⟧) (6) The condition 𝜙 is a conjunction of affine comparisons, so ⟦𝜙 ⟧ is a polyhedron. 
+
+4.2 Access Map 
+
+The access map A : T → D sends each timestamp to the memory location it accesses. The data space D is a tuple: 
+
+D = (array_id , 𝑑 1, . . . , 𝑑 𝑟 , [𝑏, 𝑠 ]) (7) where array_id is an integer identifying the array, 𝑑 1, . . . , 𝑑 𝑟 are the array subscript values padded to a uniform rank 𝑟 = max arrays rank , and the optional components 𝑏 and 𝑠 handle cache blocking and set-associativity. 
+
+Affine subscript transformation. For an access read A [𝑓 1 (® 𝑖, ®𝑝 ), . . . , 𝑓 𝑘 (® 𝑖, ®𝑝 )] , each subscript 𝑓 𝑗 is an affine function of the enclosing loop iterators ®𝑖 and the symbolic parameters ®𝑝 . Since the iterators are stored in ordinal form, the tool converts back: if the 𝑞 -th loop has lower bound ℓ𝑞 and step 
+
+𝑠 𝑞 , and the ordinal dimension is 𝑜 𝑞 , then a reference to iterator 𝑖 𝑞 in the subscript is replaced by 
+
+𝑜 𝑞 · 𝑠 𝑞 + ℓ𝑞 . The resulting map component is: 
+
+𝑓 𝑗 (® 𝑖, ®𝑝 ) = 𝑓 𝑗 (𝑜 1 · 𝑠 1 + ℓ1, . . . , 𝑜 𝑑 · 𝑠 𝑑 + ℓ𝑑 , ®𝑝 ) (8) This is still affine in the ordinals 𝑜 𝑞 and parameters ®𝑝 , so the access map is an affine relation. 
+
+Cache blocking. When the tool is invoked with a block size 𝐵 > 1, the last subscript dimension is replaced by ⌊𝑑 𝑟 /𝐵 ⌋. This models the effect of cache-line granularity: two accesses to the same cache line map to the same data-space point. 
+
+Set-associative tagging. When the number of sets 𝑆 > 1, an extra dimension 𝑑 𝑟 mod 𝑆 is appended. This models set-associative caches where the set index determines which cache set an address maps to. 
+
+Construction. The access map for each statement is built by constructing an affine function list: 
+
+Astmt = ®𝑜 → ( id , 𝑓 1 (® 𝑜, ®𝑝 ), . . . , 𝑓 𝑟 (® 𝑜, ®𝑝 )) (9) Block-level maps are formed by unioning the maps of all sub-statements (after alignment, analogous to timestamp space construction). The final access map is intersected with the timestamp space to restrict it to reachable points: 
+
+A = Araw ∩ (T × D) (10) 
+
+5 Symbolic Locality Analysis 
+
+Given the timestamp space T and the access map A : T → D , the tool computes the reuse-interval (RI) distribution, the reuse-distance (RD) distribution, and the DMD formula. All intermediate objects are polyhedral relations manipulated symbolically. 
+
+5.1 Lexicographic Ordering 
+
+The execution order is the lexicographic order on T . The tool constructs two relations: 
+
+≺ = {(® 𝑡, ®𝑡 ′) ∈ T 2 | ® 𝑡 <lex ®𝑡 ′ } (11) 
+
+⪯ = {(® 𝑡, ®𝑡 ′) ∈ T 2 | ® 𝑡 ≤lex ®𝑡 ′ } (12) AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 7
+
+These are standard polyhedral operations provided by ISL [ 21 ] as lex_lt and lex_le , restricted to the timestamp space. 
+
+5.2 Same-Element Relation 
+
+Two timestamps access the same data element if they map to the same point in D:
+
+S = A ◦ A −1 = {(® 𝑡, ®𝑡 ′) | A (® 𝑡 ) = A (® 𝑡 ′)} (13) This is the composition of the access map with its inverse. Two timestamps (® 𝑡, ®𝑡 ′) are in S if and only if they access the same array element (or the same cache line, when blocking is enabled). 
+
+5.3 Immediate Predecessor 
+
+Among all same-element pairs where ®𝑡 ′ comes before ®𝑡 , the immediate predecessor of ®𝑡 is the latest such ®𝑡 ′:
+
+N = lexmin (S∩ ≺) (14) Here lexmin selects the lexicographically smallest image for each domain element, giving the 
+
+immediate next same-element access. Its inverse P = N −1 gives the immediate predecessor. 
+
+5.4 Reuse Interval 
+
+The reuse interval of a warm access ®𝑡 is the set of timestamps between its immediate predecessor and itself. The tool computes this as: 
+
+I = P◦ ≺ (15) This maps each warm-access timestamp ®𝑡 to all timestamps strictly after its predecessor and (by further intersection) up to and including ®𝑡 :
+
+RI = I∩ ⪰ (16) where ⪰ is ⪯−1. For a given ®𝑡 , the set RI (® 𝑡 ) = {® 𝑡 ′ | P (® 𝑡 ) ≺ ® 𝑡 ′ ⪯ ® 𝑡 } contains all timestamps in the reuse window. The reuse-interval value (the number of accesses in the window) is the cardinality: 
+
+𝑟𝑖 (® 𝑡 ) = |RI (® 𝑡 )| (17) Applying the Barvinok cardinality operation to the relation RI yields 𝑟𝑖 as a piecewise quasi-polynomial in the loop iterators and symbolic parameters. 
+
+5.5 Reuse Distance as Image under Access Map 
+
+The reuse distance counts the number of distinct data elements in the reuse window. Traditional approaches compute this via stack simulation or the inclusion-exclusion counting of Denning’s working-set recursion [ 6 ]. AutoLALA takes a different route, following the approach of Zhu et al. [ 27 ]: it computes the reuse distance as the cardinality of the image of the reuse-interval window under the access map. Concretely, the tool composes the reuse-interval relation with the access map: 
+
+RD = RI ◦ A (18) For a given warm-access timestamp ®𝑡 , the set RD (® 𝑡 ) = A (RI (® 𝑡 )) is the set of distinct data elements accessed in the reuse window. The reuse distance is: 
+
+𝑟𝑑 (® 𝑡 ) = |RD (® 𝑡 )| (19) Applying Barvinok’s cardinality operation to RD yields 𝑟𝑑 as a piecewise quasi-polynomial. This formulation avoids any recursive working-set computation. The reuse distance is obtained in a single composition followed by a cardinality count. The composition RI ◦ A is a standard 8 Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding 
+
+polyhedral operation: for each timestamp ®𝑡 , it collects all data elements A (® 𝑡 ′) for ®𝑡 ′ in the reuse window, then the cardinality counts the number of distinct such elements. 
+
+5.6 Distribution Processing 
+
+The piecewise quasi-polynomials for RI and RD are organized by value : pieces with the same quasi-polynomial expression for 𝑟𝑖 (® 𝑡 ) (or 𝑟𝑑 (® 𝑡 )) are grouped. Within each group, the domain (the set of timestamps with that reuse distance) is reported as a union of parametric polyhedra, and its cardinality gives the multiplicity —the number of accesses with that reuse distance. For each value group 𝑖 , the tool extracts: 
+
+• The reuse-distance value 𝑟 𝑖 : a quasi-polynomial in the parameters. 
+
+• A set of regions 𝐷 𝑖, 1, 𝐷 𝑖, 2, . . . , each a parametric polyhedron. 
+
+• The multiplicity 𝑚 𝑖,𝑗 = |𝐷 𝑖,𝑗 |: the number of timestamps in each region. 
+
+5.7 DMD Assembly 
+
+The tool computes three access counts: 
+
+𝑛 total = |T | (20) 
+
+𝑛 warm =∑︁ 
+
+> 𝑖,𝑗
+
+𝑚 𝑖,𝑗 (21) 
+
+𝑛 𝑐 = 𝑛 total − 𝑛 warm (22) where 𝑛 𝑐 is the number of compulsory (cold) accesses. The DMD formula is then: 
+
+DMD = 𝑛 𝑐 +∑︁ 
+
+> 𝑖,𝑗
+
+𝑚 𝑖,𝑗 · √𝑟 𝑖 (23) Each 𝑚 𝑖,𝑗 and 𝑟 𝑖 is a quasi-polynomial in the symbolic parameters, so the entire DMD formula is symbolic. 
+
+5.8 Region Scaling Filter 
+
+Not all regions in the reuse-distance distribution contribute to the asymptotic DMD. Some regions are “pinned”: they exist only for specific constant values of a parameter (e.g., 𝐾 = 2) or are bounded from above (e.g., 𝐾 ≤ 512 ). These do not scale with the problem size and are irrelevant for asymptotic analysis. The tool filters a region 𝐷 based on its constraints: 
+
+• If any named parameter dimension is fixed by an equality constraint (e.g., 𝑁 = 5), the region does not scale. 
+
+• If any named parameter dimension has an upper-bound constraint (e.g., 𝑁 ≤ 𝑐 ), the region does not scale. Only regions that pass this filter contribute to the DMD formula. The full RI and RD distributions are still reported for diagnostic purposes. 
+
+6 System Architecture 
+
+AutoLALA is implemented in Rust (edition 2024, minimum version 1.92) as a Cargo workspace with three crates. 
+
+6.1 Crate Organization 
+
+dmd-core . The core library implements the full analysis pipeline. It contains six modules: AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 9
+
+• lexer : tokenization using the logos crate. Tokens include keywords ( params , array , for ,
+
+in , step , if , else , read , write , update ), operators ( +, -, *, /, && , comparisons), delimiters, identifiers, and integer literals. 
+
+• grammar / parser : an LALRPOP grammar that produces an AST. LALRPOP generates an LR(1) parser from the grammar specification at build time. 
+
+• ast : type definitions for the abstract syntax tree (programs, loops, conditionals, accesses, affine expressions). 
+
+• semantics : validates the AST. Checks include: unique parameter names, correct array ranks, no loop-variable shadowing, affine expressions only (rejects variable ×variable products), and positive loop steps. 
+
+• polyhedral : the lowering and analysis engine. Constructs timestamp spaces and access maps, computes RI/RD distributions and DMD formulas. All Barvinok calls are serialized under a global mutex because the library’s context initialization is not thread-safe. 
+
+• formula : algebraic expression type with simplification (flattening, coefficient collection, constant folding, perfect-square extraction) and dual rendering to plain text and LaTeX. 
+
+dmd-cli . A command-line tool built with clap . It reads a DSL file (or stdin), invokes dmd-core ,and prints the analysis report as plain text or JSON. Options include --block-size , --num-sets ,
+
+--max-operations , and --approximation-method .
+
+dmd-playground . A web application using axum (async Rust web framework) and tokio . The frontend uses the Monaco editor for DSL editing with custom syntax highlighting and KaTeX for LaTeX formula rendering. Analysis jobs are submitted via POST /api/tasks and polled via GET /api/tasks/{id} . Concurrency is bounded by a tokio semaphore (default: 4), and each job has a timeout (default: 30 seconds). 
+
+6.2 Barvinok Integration 
+
+The tool uses barvinok-rs , a Rust binding to the Barvinok/ISL C libraries. The binding’s build script ( barvinok-sys ) bundles the C sources for Barvinok, ISL, and PolyLib and compiles them via autotools. Host dependencies are GMP, NTL, and libclang. Barvinok is invoked with the --approximation-method=scale flag, which uses the scale ap-proximation for counting quasi-polynomials. All Barvinok operations (context creation, set/map construction, cardinality computation) happen inside a scoped context that bounds the maximum number of operations to prevent runaway computations on programs with high-dimensional iteration spaces. 
+
+6.3 Formula Rendering 
+
+The FormulaExpr type represents symbolic expressions:                                  
+
+> pub enum FormulaExpr {Rational {numerator : i64 ,denominator : i64 }, Symbol ( String ) , Raw {plain : String ,latex : String }, Add ( Vec < FormulaExpr >) , Mul ( Vec < FormulaExpr >) , Div ( Box < FormulaExpr >, Box < FormulaExpr >) , Pow ( Box < FormulaExpr >, u32 ) , Sqrt ( Box < FormulaExpr >) , }
+> Listing 3. Core formula expression type. 10 Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding
+
+Each variant renders to both plain text (e.g., sqrt(N + M) * K ) and LaTeX (e.g., √𝑁 + 𝑀 · 𝐾 ). The 
+
+FormulaFormatter converts Barvinok quasi-polynomials term-by-term into FormulaExpr values, which are then simplified. 
+
+6.4 Pipeline Summary 
+
+The full pipeline is: DSL source → lexer (logos) → parser (LALRPOP) → AST → semantic validation 
+
+→ timestamp space T + access map A (ISL) → reuse analysis ( RI , RD ) → Barvinok counting →
+
+distribution processing → DMD assembly + region filter → formula rendering (plain text + LaTeX). 
+
+7 Walkthrough 
+
+We trace the analysis of a program to show how polyhedral objects are built. Consider:                              
+
+> 1params N , M;
+> 2array A[N , M ];
+> 3array B[M ];
+> 45for iin 0.. N{
+> 6for jin 0.. M{
+> 7read A[i , j ];
+> 8read B[j ];
+> 9}
+> 10 }
+> Listing 4. Nested loop with reuse.
+
+Array 𝐵 [ 𝑗 ] is reused across outer iterations: within a fixed 𝑖 , consecutive 𝑗 -iterations access distinct elements of 𝐵 , but across 𝑖 -iterations the same 𝐵 [ 𝑗 ] is reused. 
+
+Timestamp space. The loop nest has depth 2 ( 𝑖 , 𝑗 ) with two statements in the body, giving a selector 𝑡 0 ∈ { 0, 1}:
+
+T = {( 𝑖, 𝑗, 𝑡 0) | 0 ≤ 𝑖 < 𝑁 ∧ 0 ≤ 𝑗 < 𝑀 ∧ 0 ≤ 𝑡 0 ≤ 1}
+
+Access map. Let 𝐴 have ID 0, 𝐵 have ID 1. The maximum rank is 2, so 𝐵 ’s subscript is padded: 
+
+A𝐴 = {( 𝑖, 𝑗, 0) → ( 0, 𝑖, 𝑗 )} , A𝐵 = {( 𝑖, 𝑗, 1) → ( 1, 0, 𝑗 )} .
+
+Reuse analysis. The same-element relation pairs timestamps accessing the same element. For 𝐵 [ 𝑗 ]:every (𝑖, 𝑗, 1) for any 𝑖 accesses it. The immediate predecessor of (𝑖, 𝑗, 1) (when 𝑖 > 0) is (𝑖 −1, 𝑗, 1),with a reuse interval spanning ∼2𝑀 accesses. The reuse distance counts distinct elements in that window; since 𝐴 and 𝐵 have different IDs, the tool computes this symbolically as a quasi-polynomial in 𝑁 and 𝑀 .
+
+8 Scope of Applicability 
+
+The analysis applies to any loop nest where all bounds and subscripts are affine in the enclosing iterators and symbolic parameters. This covers several important classes of HPC and AI workloads: 
+
+Dense linear algebra. Matrix multiplication, LU, Cholesky, QR, and other routines are affine. The PolyBench/C suite [18] contains 30 such benchmarks. 
+
+Tensor contractions and einsum. A contraction 𝐶 𝑖 1 ...𝑖 𝑚 = Í𝑘 1 ...𝑘 𝑛 𝐴 𝑖 1 ...𝑖 𝑚 𝑘 1 ...𝑘 𝑛 𝐵 𝑘 1 ...𝑘 𝑛 𝑗 1 ...𝑗 𝑝 is a multi-loop nest with affine subscripts. Einsum expressions [ 4] in PyTorch, NumPy, and TensorFlow map directly to contractions. TACO [ 10 ] generates code of this form. Prior analytical cache models for tensor contractions [5, 12] targeted specific patterns; AutoLALA handles the general case. AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 11 
+
+Stencils and convolutions. Jacobi, Gauss-Seidel, and higher-dimensional stencils have affine access patterns, as do convolution layers expressed as nested loops. Image-processing pipelines [ 19 ] use stencils extensively. 
+
+Limitations. Data-dependent control flow, indirect access ( 𝐴 [𝐵 [𝑖 ]] ), and non-affine subscripts (𝐴 [𝑖 · 𝑗 ]) are outside the scope of the polyhedral model. 
+
+9 Related Work 
+
+Cache miss equations. Ghosh et al. [ 7] derived symbolic cache miss counts via Diophantine equations. Bao et al. [ 2] built a polyhedral analytical cache model. Pitchanathan and Grosser [ 17 ]presented Falcon, a scalable analytical model. These target specific cache configurations; AutoLALA 
+
+produces cache-independent reuse-distance distributions. 
+
+Reuse distance analysis. Mattson et al. [ 14 ] introduced stack-distance analysis. Zhong et al. [ 26 ]developed compiler-based reuse-distance analysis; Beyls and D’Hollander [ 3 ] applied it to cache hints. The relational theory of locality [ 25 ] unified reuse distance with higher-order theories [ 24 ]. 
+
+AutoLALA builds on Zhu et al. [27], computing reuse distance as parametric quasi-polynomials. 
+
+Data movement complexity. Hong and Kung [ 9 ] introduced I/O complexity. Olivry et al. [ 16 ]derived parametric lower bounds for affine programs. Smith et al. [ 20 ] proposed the DMD framework that AutoLALA implements. 
+
+Polyhedral tools. ISL [ 21 ] and Barvinok [ 22 , 23 ] provide the underlying operations. MLIR [ 11 ]and Polygeist [ 15 ] provide polyhedral compiler infrastructure. AutoLALA replaces an earlier MLIR-based path with a standalone DSL. 
+
+Parallel locality. Liu et al. [ 13 ] extended symbolic locality analysis to parallel programs with a symbolic thread count. Extending AutoLALA to parallel loops using their techniques is a natural direction for future work. 
+
+10 Usage 10.1 Command-Line Interface 
+
+The CLI reads a DSL file and prints the DMD formula, access counts, and RI/RD distributions: 
+
+$ cargo run -p dmd-cli -- --input matmul.dsl 
+
+Flags include --json for structured output, --block-size 𝐵 for cache-line modeling, and --num-sets 
+
+𝑆 for set-associative modeling. Input is read from a file ( --input ) or from stdin. 
+
+10.2 Web Playground 
+
+Running cargo run -p dmd-playground -- --port 3000 starts an interactive web interface with a Monaco-based DSL editor (with syntax highlighting), server-side analysis, and KaTeX-rendered output formulas. The backend limits concurrency and enforces per-job timeouts. 
+
+11 Conclusion 
+
+We presented AutoLALA , a tool for automatic symbolic locality analysis of affine loop programs. Given a program in a small DSL, the tool lowers it to polyhedral sets and maps, computes reuse-interval and reuse-distance distributions using Barvinok’s integer-point counting, and assembles a closed-form DMD formula. The reuse distance is computed as the image of the access space under the access map, avoiding stack simulation. The result is a set of symbolic quasi-polynomials that characterize the data movement behavior of the program for all input sizes. 12 Yifan Zhu, Yekai Pan, Yanghui Wu, and Chen Ding 
+
+The tool covers a broad range of HPC and AI workloads—matrix operations, tensor contractions, einsum expressions, stencil computations—and is implemented in Rust with a CLI and a web playground. Future directions include extending the analysis to parallel programs following Liu et al. [ 13 ], supporting tiling transformations, and integrating with compiler frameworks such as MLIR [11] to analyze programs extracted from production code. 
+
+References 
+
+[1] Alfred V. Aho, Monica S. Lam, Ravi Sethi, and Jeffrey D. Ullman. 2006. Compilers: Principles, Techniques, and Tools (2nd ed.). Addison-Wesley. [2] Wenlei Bao, Sriram Krishnamoorthy, Louis-Noël Pouchet, and P. Sadayappan. 2018. Analytical Modeling of Cache Behavior for Affine Programs. Proceedings of the ACM on Programming Languages 2, POPL (2018), 32:1–32:26. [3] Kristof Beyls and Erik H. D’Hollander. 2005. Generating Cache Hints for Improved Program Efficiency. Journal of Systems Architecture 51, 4 (2005), 223–250. [4] Mark Blacher, Christoph Staudt, Julien Klaus, Maurice Wenig, Niklas Merk, Alexander Breuer, Max Engel, Sören Laue, and Joachim Giesen. 2024. Einsum Benchmark: Enabling the Development of Next-Generation Tensor Execution Engines. In The Thirty-eighth Conference on Neural Information Processing Systems Datasets and Benchmarks Track .[5] D. Cociorva, G. Baumgartner, C. Lam, P. Sadayappan, J. Ramanujam, M. Nooijen, D. E. Bernholdt, and R. Harrison. 2002. Space-Time Trade-Off Optimization for a Class of Electronic Structure Calculations. In Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation . Berlin, Germany. [6] Peter J. Denning. 2021. Working Set Analytics. Comput. Surveys 53, 6 (2021), 113:1–113:36. doi:10.1145/3399709 [7] Somnath Ghosh, Margaret Martonosi, and Sharad Malik. 1999. Cache Miss Equations: A Compiler Framework for Analyzing and Tuning Memory Behavior. ACM Transactions on Programming Languages and Systems 21, 4 (1999). [8] Allan Hartstein, Vijayalakshmi Srinivasan, Thomas R. Puzak, and Philip G. Emma. 2008. On the Nature of Cache Miss Behavior: Is It √2? Journal of Instruction-Level Parallelism 10 (2008). [9] Jia-Wei Hong and H. T. Kung. 1981. I/O Complexity: The Red-Blue Pebble Game. In Proceedings of the ACM Symposium on Theory of Computing . Milwaukee, WI. [10] Fredrik Kjolstad, Shoaib Kamil, Stephen Chou, David Lugato, and Saman P. Amarasinghe. 2017. The Tensor Algebra Compiler. Proceedings of the ACM on Programming Languages 1, OOPSLA (2017), 77:1–77:29. [11] Chris Lattner, Mehdi Amini, Uday Bondhugula, Albert Cohen, Andy Davis, Jacques Pienaar, River Riddle, Tatiana Shpeisman, Nicolas Vasilache, and Oleksandr Zinenko. 2021. MLIR: Scaling Compiler Infrastructure for Domain Specific Computation. In Proceedings of the 2021 IEEE/ACM International Symposium on Code Generation and Optimization (CGO) . 2–14. doi:10.1109/CGO51591.2021.9370308 [12] Rui Li, Aravind Sukumaran-Rajam, Richard Veras, Tze Meng Low, Fabrice Rastello, Atanas Rountev, and P. Sadayappan. 2019. Analytical Cache Modeling and Tilesize Optimization for Tensor Contractions. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC) . 74:1–74:13. [13] Fangzhou Liu, Yifan Zhu, Shaotong Sun, Chen Ding, Wesley Smith, and Kaave Hosseini. 2024. Parallel Loop Locality Analysis for Symbolic Thread Counts. In Proceedings of the 2024 International Conference on Parallel Architectures and Compilation Techniques (PACT) . 219–232. doi:10.1145/3656019.3676948 [14] Richard L. Mattson, Jan Gecsei, Donald R. Slutz, and Irving L. Traiger. 1970. Evaluation Techniques for Storage Hierarchies. IBM Systems Journal 9, 2 (1970), 78–117. [15] William S. Moses, Lorenzo Chelini, Ruizhe Zhao, and Oleksandr Zinenko. 2021. Polygeist: Raising C to Polyhedral MLIR. In Proceedings of the ACM International Conference on Parallel Architectures and Compilation Techniques (PACT) .[16] Auguste Olivry, Julien Langou, Louis-Noël Pouchet, P. Sadayappan, and Fabrice Rastello. 2020. Automated Derivation of Parametric Data Movement Lower Bounds for Affine Programs. In Proceedings of the 41st ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI) . 808–822. doi:10.1145/3385412.3385989 [17] Arjun Pitchanathan, Kunwar Grover, and Tobias Grosser. 2024. Falcon: A Scalable Analytical Cache Model. Proceedings of the ACM on Programming Languages 8, PLDI (2024), 222:1–222:25. doi:10.1145/3656452 [18] Louis-Noël Pouchet. 2012. PolyBench/C 4.0. http://polybench.sourceforge.net [19] Jonathan Ragan-Kelley, Connelly Barnes, Andrew Adams, Sylvain Paris, Frédo Durand, and Saman P. Amarasinghe. 2013. Halide: A Language and Compiler for Optimizing Parallelism, Locality, and Recomputation in Image Processing Pipelines. In Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation .519–530. doi:10.1145/2491956.2462176 [20] Wesley Smith, Aidan Goldfarb, and Chen Ding. 2022. Beyond Time Complexity: Data Movement Complexity Analysis for Matrix Multiplication. arXiv:2203.02536 [cs.DS] https://arxiv.org/abs/2203.02536 [21] Sven Verdoolaege. 2010. isl: An Integer Set Library for the Polyhedral Model. In Mathematical Software – ICMS 2010 (Lecture Notes in Computer Science, Vol. 6327) , Komei Fukuda, Joris Hoeven, Michael Joswig, and Nobuki Takayama AutoLALA: Automatic Loop Algebraic Locality Analysis for AI and HPC Kernels 13 
+
+(Eds.). Springer, 299–302. [22] Sven Verdoolaege et al . 2024. Barvinok: A Library for Counting the Number of Integer Points in Parametric and Non-Parametric Polytopes. https://barvinok.sourceforge.io/ Version 0.41.8. [23] Sven Verdoolaege, Rachid Seghir, Kristof Beyls, Vincent Loechner, and Maurice Bruynooghe. 2007. Counting Integer Points in Parametric Polytopes Using Barvinok’s Rational Functions. Algorithmica 48, 1 (2007), 37–66. doi:10.1007/ s00453-006-1231-0 [24] Xiaoya Xiang, Chen Ding, Hao Luo, and Bin Bao. 2013. HOTL: A Higher Order Theory of Locality. (2013), 343–356. [25] Liang Yuan, Chen Ding, Wesley Smith, Peter J. Denning, and Yunquan Zhang. 2019. A Relational Theory of Locality. 
+
+ACM Transactions on Architecture and Code Optimization 16, 3 (2019), 33:1–33:26. [26] Yutao Zhong, Xipeng Shen, and Chen Ding. 2009. Program Locality Analysis Using Reuse Distance. ACM Transactions on Programming Languages and Systems 31, 6 (2009), 20:1–20:39. [27] Yifan Zhu, Yekai Pan, Chen Ding, and Yanghui Wu. 2026. Fully Symbolic Analysis of Loop Locality: Using Imaginary Reuse to Infer Real Performance. arXiv:2603.10196 [cs.PL] https://arxiv.org/abs/2603.10196
