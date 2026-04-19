@@ -1,0 +1,817 @@
+Title: Strix: Re-thinking NPU Reliability from a System Perspective
+
+URL Source: https://arxiv.org/pdf/2604.10484v1
+
+Published Time: Tue, 14 Apr 2026 01:03:24 GMT
+
+Number of Pages: 8
+
+Markdown Content:
+# Strix: Re-thinking NPU Reliability from a System Perspective 
+
+Jiapeng Guan †, Jie Zhang §, Hao Zhou †, Ran Wei ‡, Dean You §, Hui Wang §, Yingquan Wang †, Tinglue Wang §,Xudong Zhao †, Jing Li ¶ and Zhe Jiang §∗ 
+
+> †
+
+Dalian University of Technology, China. §Southeast University, China. ‡Lancaster University, UK. ¶ New Jersey Institute of Technology, US. 
+
+Abstract 
+
+DNNs and LLMs increasingly rely on hardware accelerators, includ-ing in safety-critical domains, while technology scaling and growing model complexity make hardware faults more frequent. Existing system-level mechanisms typically treat the NPU as a monolithic unit, using coarse-grained replication that incurs prohibitive perfor-mance and hardware overheads, leaving a gap between reliability requirements and deployable solutions. To bridge this gap, we present Strix, a full-stack NPU reliability framework on an open-source SoC, spanning micro-architecture, ISA, and programming methods. Strix re-partitions the NPU along the system inference pipeline, identifies dominant failure modes, and attaches targeted safeguards, achieving sub-micro-second fault localisation, error detection, and correction with only 1.04 × slowdown and minimal hardware overhead. 
+
+1 Introduction 
+
+DNNs and LLMs deliver SOTA accuracy but at steep computational cost [ 4]. Modern models move billions to trillions of parameters and perform orders-of-magnitude more Multiply-and-Accumulate (MAC) operations per inference [ 22 , 36 ], pushing SoCs to dedicate substantial area to accelerators (e.g., NPUs and GPUs) [ 11 , 37 ]. In safety-critical deployments (e.g., autonomous driving [ 14 , 39 ]) and with so much hardware in the loop, reliability must be re-examined [ 9, 43 ]. Intrinsic fault tolerance alone is insufficient [ 43 ]; for instance, [ 39 ] reports a case where a truck was misclassified as a bird due to faults in the NPU. Such failures are becoming more likely as ever-larger models widen the temporal/spatial exposure to bit-level faults [ 22 , 36 ], device scaling increases vulnerability to variation, radiation, and ageing [ 7], and intensive NPU data-reuse lets a single error contaminate many activations across layers [ 8, 16 ]. 
+
+Existing work. Research on NPU reliability can be organised across different architectural levels. At the algorithmic level, common ap-proaches include injecting faults during training to enhance neuron robustness [ 13 , 64 ], employing voting schemes to mitigate the impact of bit flips [ 20 ], or modifying activation functions to suppress error propagation [ 6, 25 ]. However, such methods do not provide direct error detection, and their cross-model scalability remains contested. At the instruction level, researchers rely on Instruction (or code) Redundancy (IR) to protect sensitive layers [ 28 , 29 , 50 , 60 ]; yet they typically demand layer-by-layer analysis and manual code modifica-tions, and incur substantial performance overhead owing to redundant execution. At the micro-architectural level, most studies focus on a single component, such as Processing Element (PE) [ 32 , 42 , 55 , 62 ], or a single fault model (e.g., transient faults [ 39 , 44 ]). This lo-calised perspective hinders a unified characterisation of system-level dataflow and timing coupling, overlooking interaction effects among local mechanisms in buffering and timing, and ultimately falling 
+
+> ∗Corresponding author: Zhe Jiang. Email: zhejiang.uk@gmail.com.
+> Conference’17, Washington, DC, USA
+> 2026. ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+> https://doi.org/10.1145/nnnnnnn.nnnnnnn
+
+short of end-to-end reliability guarantees. Moreover, the above ap-proaches fail to meet the system-wide error detection requirements mandated by safety standards (e.g., ISO-26262 [ 31 ]). Achieving system-level protection still relies on costly triple modular redun-dancy (TMR) [41, 51, 61]. Although it offers comprehensive cover-age, its coarse-grained, whole-system analysis and protection incurs prohibitive overhead, rendering it impractical for many deployments. 
+
+Research challenges. Therefore, to truly achieve a reliable NPU solution that meets the diagnostic requirements of safety standards and provides end-to-end verifiable reliability, we must adopt a system-level perspective, integrating the model, hardware, and runtime into a unified optimisation space. However, it is challenging due to cross-layer couplings and resource constraints. A practical, deployable solution must (i) accurately characterise potential failure modes within the system — avoiding both excessive granularity (e.g., analysing individual ALUs, leading to combinatorial explosion) and overly coarse granularity (e.g., treating the entire NPU as a monolithic unit, which degrades resource utilisation); and (ii) implement targeted mitigation strategies; this, in turn, requires a deep understanding of the neural network’s hierarchical structure and data sensitivities, as well as the NPU’s micro-architectural operation. In summary, only by adopting a system view that integrates model behaviour and hardware fault patterns into an analytical framework, and by applying tailored hardening with coordinated orchestration across key subsystems, can we achieve high-coverage, low-slowdown guarantees that meet safety standards within strict budgets. 
+
+Contributions. Guided by an “analyse-first, protect-exactly” philos-ophy, we present Strix , a full-stack reliability framework for NPUs. Strix addresses the heterogeneous failure modes of key components, including registers, local memory, systolic array, and non-linear operators, through co-designed SoC architecture, ISA extensions, and programming methods. It establishes hierarchical mechanisms for fault localisation, error detection, and correction, supported by a pipeline and configuration strategies to minimise system overhead. Experimental results show that Strix maintains a performance loss be-low 1.07 ×, outperforming TMR ( 1.83 × to 3.68 ×), IR ( 1.13 × to 1.95 ×), and ReaLM [ 62 ] (a SOTA scheme, 1.22 × to 1.59 ×). Under a typical fault rate (i.e., < 10 −6), Strix mitigating performance degradation in neural networks. In an industrial-scale configuration, Strix incurs only 8.7% area and 16.8% power overhead, offering a high-reliability and cost-effective solution for safety-critical applications. 
+
+2 Motivations 
+
+We begin by analysing the fault tolerance of NPU workloads to iden-tify task-level vulnerabilities and guide the placement of safeguards. To this end, we retrained several DNN models for classification tasks and selected several pretrained LLMs for language prediction. We then injected errors using the framework in [ 48 ]. Considering the widespread adoption of FP32 and INT8 in DNNs [ 10 , 34 ], and the compatibility of BF16 and INT8 within LLMs [ 3, 65 ], we evaluated all these representations. Finally, guided by an analysis of the NPU 
+
+> arXiv:2604.10484v1 [cs.AR] 12 Apr 2026
+
+Conference’17, July 2017, Washington, DC, USA Jiapeng Guan et al. 1×10 −10 1×10 −9 1×10 −8 1×10 −7 1×10 −6    
+
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Error Rate (Datatype: FP32)
+> Accuracy
+> EfficientNet-B0 ResNet-50
+> DenseNet-201 AlexNet
+> Inception-V3 BERT
+> MobileNet-V2
+
+(a) FP32 DNNs under different error rates. 1×10 −9 1×10 −8 1×10 −7 1×10 −6 1×10 −5     
+
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Error Rate (Datatype: INT8)
+> Accuracy
+> EfficientNet-B0 ResNet-50
+> DenseNet-201 AlexNet
+> Inception-V3 BERT
+> MobileNet-V2
+
+(b) INT8 DNNs under different error rates. 4 8 12 16 20 24 28 32     
+
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Bit Error Injection Range (Datatype: FP32, Error Rate: 5×10 -7 )
+> Accuracy
+> EfficientNet-B0 ResNet-50
+> DenseNet-201 AlexNet
+> Inception-V3 BERT
+> MobileNet-V2
+
+(c) FP32 DNNs under different error positions. Llama3-1B Llama3-3B Qwen2.5-3B Mistral-7B  
+
+> 10 2
+> 10 4
+> 10 6
+> 10 8
+> 10 0
+> Accuracy  Accuracy Perplexity
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 1´10 -10
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Perplexity
+
+(d) BF16 LLMs under different error rates. Llama3-1B Llama3-3B Qwen2.5-3B Mistral-7B   
+
+> 10 2
+> 10 4
+> 10 6
+> 10 8
+> 10 0
+> Accuracy  Accuracy Perplexity
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8
+> 5´10 -11
+> 1´10 -10
+> 5´10 -10
+> 1´10 -9
+> 5´10 -9
+> 1´10 -8
+> 5´10 -8 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Perplexity
+
+(e) INT8 LLMs under different error rates. Llama3-1B Llama3-3B Qwen2.5-3B Mistral-7B     
+
+> 10 2
+> 10 4
+> 10 6
+> 10 8
+> 10 0
+> Accuracy
+> Accuracy  Accuracy Perplexity Error Rate = 1
+> ´10 -7
+> Bit 1-4
+> Bit 1-16
+> Bit 1-6
+> Bit 1-8
+> Bit 1-10
+> Bit 1-12
+> Bit 1-14
+> Bit 1-4
+> Bit 1-16
+> Bit 1-6
+> Bit 1-8
+> Bit 1-10
+> Bit 1-12
+> Bit 1-14
+> Bit 1-4
+> Bit 1-16
+> Bit 1-6
+> Bit 1-8
+> Bit 1-10
+> Bit 1-12
+> Bit 1-14
+> Bit 1-4
+> Bit 1-16
+> Bit 1-6
+> Bit 1-8
+> Bit 1-10
+> Bit 1-12
+> Bit 1-14 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Perplexity
+
+(f) BF16 LLMs under different error positions. 
+
+Figure 1. Performance of different models [ 19 , 24 , 26 , 27 , 33 , 36 , 38 , 52 , 54 , 57 ] under varying error rates and bit positions. The BERT model was tested on the DBPedia-14 dataset [ 47 ], while other DNNs were tested on Tiny ImageNet dataset [ 63 ], and LLMs were evaluated on the LAMBADA dataset [ 45 ]. 
+
+pipeline, we partitioned the NPU into four key modules from a reliability perspective and explored the corresponding failure modes. 
+
+Impact of error rate. As shown in Figs. 1(a), 1(b), 1(d) and 1(e), we injected errors into different models, obtaining results consistent with prior observations [ 30 , 43 ]. The results validate that machine learning workloads exhibit a degree of fault tolerance. For instance, Figs. 1(a) and 1(d) show that, under low error rates (e.g., ≤ 1 × 10 −10 ), the performance remains virtually unchanged. However, when the error rate exceeds a certain threshold, model accuracy drops sharply and perplexity rises rapidly. Say, for Llama3 - 3B with BF16, the threshold is 5 × 10 −10 . In safety-critical systems, silent-error rates in compute-intensive devices exceeding 10 −7 make NPU workloads extremely vulnerable [ 17 ]. Thus, although NPU workloads exhibit a degree of fault tolerance, this does not enable them to operate accurately in the absence of reliability support. 
+
+Impact of error position. As shown in Figs. 1(c) and 1(f), we examined the impact of error injection at different positions. The results reveal that, even at high error rates, errors in the mantissa have virtually no effect on the model performance. In contrast, errors in the sign bit and exponent bits lead to a marked performance degradation: all LLMs are highly sensitive to the top four bits of BF16, and most DNNs likewise exhibit strong sensitivity to the top nine bits of FP32. 
+
+Thus, fault - tolerance in NPUs should prioritise the protection of those bits (e.g., sign and exponent bits) that exert greater impact on output, achieving more reliability benefit for a given cost. 
+
+Analysis of system failure modes. In NPUs, inference begins with instruction fetch–decode–issue, where registers carry scheduling and configuration; the input matrix is then loaded into local memory. Data stream into the systolic array to perform MAC, followed by non-linear operators, and the results are finally written back. Along this path, and informed by [ 30 , 43 ], we identify four critical classes: (i) registers, whose faults directly perturb instruction/control seman-tics, with decode or configuration corruption, leading to program crashes; (ii) local memory, where a single error can widely propa-gate across parallel computations and subsequent layers, yielding systemic output distortion and task failure; (iii) the systolic array, which executes the core matrix MAC kernels and accounts for over 70% of inference time [ 12 ], so faults here rapidly cascade through later layers and substantially degrade end-to-end accuracy; and (iv) non-linear operators, whose selective amplification/saturation effects shape the visibility of upstream errors and their impact on model outputs. By adopting a system view along the NPU pipeline, this failure modes analysis allows us to tailor differentiated reliability strategies to each module, according to its role in the dataflow and its fault characteristics, thereby enabling a comprehensive, full-stack re-liability framework that spans the micro-architecture while providing end-to-end protection with minimal overhead. 
+
+3 Strix: an Overview 
+
+To validate Strix, we use the Gemmini [ 16 ] NPU as a case study. We choose Gemmini for three main reasons: (i) representative, Gemmini features a representative design similar to other NPUs [ 5, 8, 46 , 53 ]; (ii) widely adopted, Gemmini has been widely integrated into SoCs [ 18 , 59 ] and has already undergone tape-out; (iii) realistic, unlike convolution-centric NPUs [ 40 ], Gemmini also supports trans-former and integrates non-linear units, making it more aligned with mainstream model acceleration. The overview is shown in Fig. 2. 
+
+System glance. Starting from the system pipeline, we identify the key modules and their roles in the dataflow and timing in Sec. 2. Based on this, we adopt a modular, fine-grained protection strategy rather than hardening the NPU as a whole. Exploiting the micro-architectural traits of each key module and the mathematical properties of its operators, we tailor safeguards per module and place lightweight reliability operators at their boundaries. Under this decomposition, all intermediate states and outputs pass through protected modules and boundary checks; once each module provides bounded reliability within its timing constraints, their cascade yields an end-to-end reliability guarantee at the system level. For critical registers on the instruction and control paths, such as issue/scheduling registers (e.g., Fig. 2. a and b ) and constants injected via software APIs (e.g., 𝑙𝑛 2 used by ReLU), the state size is small but the fan-out is large, making them sensitive to faults while also requiring low access latency. We therefore employ lightweight Single Error Correction and Double Error Detection (SEC-DED) ECC to provide protection with tightly bounded overhead. In contrast, local memory involves high-throughput, highly parallel data movement. Naively applying strong ECC would require wider check bits and more complex decoders, offering limited capability for multi-bit error detecting. We therefore design a checksum-based guard mechanism: the guardpad stores checksums (Fig. 2. g ) and the guardlinker binds data to checksums and logs fault locations (Fig. 2. e ). This decouples checking logic from the local memory and pipelines checksum generation and verification at block granularity along the high-bandwidth access path, better matching the local-memory dataflow and enabling efficient detection and correction of multi-bit errors. For the systolic array, its high compute density make it highly sensitive to execution rhythm; any in-array re-execution or serial checking can easily disrupt the pipeline. Leveraging the linearity of the matrix MAC operation, we Strix: Re-thinking NPU Reliability from a System Perspective Conference’17, July 2017, Washington, DC, USA Related  Instruction  Related Data  
+
+> Data Signal Control Signal
+
+L2 -Cache 
+
+L1 -D-Cache 
+
+> Re sp.
+
+Main Core 
+
+L1 -I-Cache      
+
+> Data
+> Interface
+> Inst.
+> Load
+> Instruction
+> Execute
+> Instruction
+> Store
+> Instruction
+> Instruction
+> Issue
+> Reservation Station Control Units
+> Load
+> Controller
+> Instruction
+> Issue
+> Instruction
+> Issue
+> Execute
+> Controller
+> Tile
+> Controller
+> Tile Tile
+> Tile
+> Tile
+> Tile
+> Tile
+> Tile
+> Tile Tile
+> Systolic Array
+> LayerNorm
+> ReLU
+> Softmax
+> No n-linear
+> Operator s
+> Local Memory Data
+
+DRAM  
+
+> Data Data
+
+Operating  System 
+
+CPU 
+
+NPU       
+
+> Config
+> Instruction
+> Waiting
+> queue Task -1Task -2Task -n
+> Data
+> Pooling
+> DMA Engine
+> Checksum
+> Adder
+> Data
+> Verifier
+> Guard
+> Operators
+> Data
+> Corrector
+> Accumulator
+> Bank -1
+> Bank -m
+> Scratchpad
+> Bank -1
+> Bank -n
+> Guard pad
+> PE PE
+> PE PE
+> Shield Group
+> Adder Tree
+> Shield
+> Shield
+> Shield
+> Shield
+> Store
+> Controller
+> M
+> M
+> M
+> M
+> M
+> Guardl inker
+> Reliability -related Component or Data
+
+OS   
+
+> MMultiplier Register
+
+a b c d
+
+f h i
+
+j
+
+k
+
+e
+
+g
+
+> Precompute
+> Issue
+
+Figure 2. The architectural overview of Strix. Strix applies module-specific hardware safeguards for NPUs. 
+
+introduce a hardware-redesigned, Algorithm-Based Fault Tolerance (ABFT)-inspired shield group (Fig. 2. k ). Through a fully decoupled design, offline configuration, and pipelined optimisation (Sec. 4.3), the shield group runs in parallel with the array, yielding negligible slowdown. For non-linear operators (Fig. 2. c ), which often have distinct properties and low overhead, we combine property-based checks when algebraic invariants are explicit and TMR when they are not. We also design some ISA extensions that bridge the hardware mechanisms with the software stack, enabling the runtime to observe protection status and perform targeted pipeline preprocessing. 
+
+Framework workflow. In NPUs, software APIs split the input into blocks and load them row -by - row into the scratchpad via multiple 
+
+mvin instructions (Fig. 2. f ). While the DMA streams each matrix, a checksum adder (Fig.2. d ) computes all row/column checksums in a single pass (detailed in Sec. 4.B), and stores them in the guardpad and guardlinker (Fig. 2. e and g ). When a compute instruction is dispatched to the NPU, it generates a precompute sub-instruction, which is issued alongside the compute instruction (Fig. 2. a ). The 
+
+precompute pre-schedules the verifier and corrector (Fig. 2. d ) to detect and correct the original data block. Given that the incoming matrix may only partially cover the original block, the checksum adder subsequently appends checksums to the incoming matrix after error correcting, enabling verification during subsequent computations. During the multiplication, we intercept the input stream to the systolic array and direct the column checksums of the weight matrix, the full input matrix, the row checksums of the input matrix, and the transposed weight matrix into the shield group (Fig. 2. k ) for verification. Verified results and their checksums are written back to the accumulator and guardpad, and the write - back phase repeats checksum verification and correction. Furthermore, based on the conclusions in Sec. 2, low-impact bit positions (e.g., mantissa) are ignored to reduce cost. In addition, to aid permanent fault localisation, the error block in the guardlinker (Fig.2. e ) records faulty locations (e.g., memory addresses and tiles). Upon tasks completion, Strix issues the instruction mvout_error_block to report the affected block. 
+
+4 The Micro-architecture of Strix 
+
+4.1 Reliability of Registers 
+
+Registers in NPUs are usually responsible for storing instructions, constants, and other information. The fixed bit-width and frequent access of registers make ECC a cost-effective strategy. Odd parity bit s                      
+
+> Register data
+> 0000
+> 15-bit (an example )
+> 1
+> 1815
+> 14Bit position
+> Partial parity bits
+> 100110000110011
+> Global parity bit
+
+Figure 3. SEC-DED ECC: each partial parity bit verifies data of the same colour, and the global parity bit verifies the partial parity bits. 
+
+Protection mechanism. Fig. 3 generates odd parity by first comput-ing a global parity bit and then deriving partial parity bits from data subsets indexed by bit positions. Each partial parity bit monitors the original data where specific binary indices are set to 1. For example, in Fig. 3, the red partial parity bit (binary 001) is generated from the subset of the original data where the last binary index is set to 1 (i.e., the red bit of the register, binary 0001 etc.). If both the red and blue partial parity and the global parity mismatch, the fault can be located at bit 0011. Conversely, if partial parities mismatch but the global parity is correct, a multi -bit error is inferred. The mechanism introducing a cost of (⌈log 2(𝛼 + 1) ⌉ + 1) bits ( 𝛼 : the register width). 
+
+4.2 Reliability of Local Memory 
+
+In Gemmini, local memory, including scratchpad and accumulator, stores data in rows, utilising double-buffering for performance op-timisation, with the amount of data per row aligned to the PEs in each row. Given the high-throughput characteristic of local memory, directly applying ECC is inadequate for multi-bit errors and would incur significant overhead. Thus, we adopt a dual-vector checksum scheme to enable error detection and correction while avoiding in-trusive modifications to the original design. We designed a guardpad for storing checksums, and a guardlinker including a linker block and an error block. The linker block ensures the mapping between data and checksums and logs faulty memory rows and tiles, tracking error times to assist developers in localising permanent faults. 
+
+Protection mechanism. Fig. 4 shows the micro-architecture working in coordination within the local memory. Specifically, when DMA is writing data, the linker block (Fig. 4. d ) and checksum adder (Fig. 4. a ) tap the stream. The checksum adder is paired with a set of adder trees to generate the row checksums, and a group of adder-register units to generate the column checksums, which are then written into the guardpad. During data reading, the data verifier (Fig. 4. b ) fetches checksums for verification. If a mismatch appears, the data corrector (Fig. 4. c ) uses the error information, including row and column positions and the discrepancy with the checksum, Conference’17, July 2017, Washington, DC, USA Jiapeng Guan et al. Linker block  
+
+> ………
+> Read_signal /
+> Write_signal
+
+Scratchpad cmd_id 
+
+> laddr
+> data
+> RD IFC
+> Error block
+> Times
+> 0x00
+> 0x03
+> 0x01
+> Id
+> 1
+> 2
+> 3
+> RD IFC
+
+Bank Bank Bank 
+
+Guardpad 
+
+> Write_gpad
+> gaddr
+> gaddr
+> type
+> check
+> sum
+> errorsum
+> checksum
+> er ._id
+> laddr
+> data
+> laddr
+> revised data & laddr
+> data
+> data -1
+> data -n
+> response
+> ee
+> dd
+> 1
+> 0
+> …
+> ……
+
+Bank Bank Bank      
+
+> data -1
+> data -n
+> Adder trees
+> WR IFC
+> Error
+> Pinpoint
+> WR IFC
+> Spad_
+> addr Gpad_
+> addr Type Trans.
+> 0x0012 -
+> 0x0022
+> 0x1012 -
+> 0x101F
+> 0x0001 -
+> 0x0002
+> 0x0003 -
+> 0x000A
+> elem_t
+> acc_t
+> Data Buffer
+> data
+> data & valid
+> Adder trees bbcc
+> aa
+
+Figure 4. Components related to local memory reliability. Blue lines: read path; black lines: write path; grey lines: common path. 
+
+to locate the fault, correct the data, and update the error block (Fig .4. e ). The corrected data is then forwarded from the buffer within the corrector. Less -critical bits (e.g., mantissas in our study) are optionally ignored to cut cost; more generally, the bit-selection policy is developer-tunable to accommodate other models. 
+
+Adder tree design. In local memory, checksums serve solely to verify the correctness of the original data and never participate in the matrix multiplication. Thus, the adder trees treat the data as binary streams and perform binary addition. For example, adding 1100 and 0011 always yields 1111, with no FP conversion required. Overflow is likewise benign. Importantly, this is limited to local memory. 
+
+Error detection and correction. If the recomputed and stored checksums diverge, we first locate the intersection of the mismatching row and column. With a single mismatch, the error is uniquely correctable by the checksum delta. However, when multiple row and column mismatches occur, ambiguity in fault localisation arises. Thus, we exploit the property that a single erroneous data induces consistent discrepancies between the computed sum and the checksum across both its row and column. It enables cross-localisation, allowing for error correction based on the observed discrepancies. Finally, if only one of the two orthogonal checksums is invalid while the other remains correct, we attribute the fault to the checksum itself (not to the data), thereby preventing false-positive corrections. 
+
+4.3 Reliability of the Systolic Array 
+
+In Gemmini, data fetching is controlled by configuration registers (e.g., stride). Thus, the fetched data may not always be the original block. The computation modes supported by Gemmini include Output-Stationary Mode (OS-M) and Weight-Stationary Mode (WS-M). Matrix operations follow 𝐶 = 𝐴 × 𝐵 + 𝐷 , where 𝐴 is the input matrix, 𝐵 is the weight matrix, and 𝐷 is the bias matrix. In WS-M, 
+
+𝐵 is preloaded, while 𝐴 is fed in. The partial sums are stored in the accumulator and later added to 𝐷 . In OS-M, 𝐷 is preloaded, while 𝐴 and 𝐵 are streamed. Moreover, API - defined sub - matrix sizes must match the PE -row width. Thus, integrating fault-tolerant algorithms directly would need changes to the hardware architecture, software APIs, and workloads. Hence, unlike interleaved, detection-only schemes [ 62 ], we deploy a shield group fully decoupled from the systolic array. This decoupling preserves the array’s execution rhythm and produces row/column checksums to enable error correction. The shield group achieves low-slowdown verification through: (i) a configuration strategy enabling parallel execution with the array, and (ii) a pipeline allowing concurrent operation with guard operators. 
+
+Principle. Fig. 5(a) shows the principle of the shield group. We first add column checksums to 𝐴 and row checksums to 𝐵 . Fixing 𝐵 ’s column checksums, we stream 𝐴 row by row. Each row is multiplied checksums 
+
+7
+
+3
+
+> Shield
+
+4
+
+6
+
+> Shield
+> Ma trix Definition
+> Our Method
+> Traditional ABFT
+
+(a) Mathematical principle and an example of the shield group. Systolic Array         
+
+> PE
+> Shield Group
+> Shield
+> ADD
+> Shield
+> Data Verifier
+> Data Corrector
+> Scratchpad Accumulator Guardpad
+> Checksum Adder
+> PE
+> PE PE
+> MM
+> MM
+> MM
+> MM
+> MM
+> MM
+> Output Checksums Error pinpoint
+> Input
+> Adder
+> Tree
+> Adder
+> Tree
+
+(b) Protection mechanism of the shield group. Checksum adder                        
+
+> Instruction #1 -1#1 -2
+> Add. Add.
+> #1 -3
+> Add. Add. Add.
+> ···
+> ···
+> #2-1#2-2#2-3#3-1
+> Instruction: Precompute #n -1Instruction: Preload #n -2Instruction: Compute #n -3
+> Instruction set (first) #1 -mInstruction set (second) #2 -mInstruction set (third) #3 -m
+> Ver.
+> Cycle
+> Data ver./cor.
+> Shield group
+> Systolic array
+> #1 -3
+> #1 -3
+> Cor. Ver. Cor.
+> #2 -3
+> #2 -3
+> Ver. Cor. ···
+> ···
+> ···#1 -2
+> Cor. Ver.
+> S #1 -1S #1 -1S #1 -2S #1 -2S #1 -3S #1 -3
+> S #2 -1S #2 -1S #1 -4S #1 -4
+> S #2 -2S #2 -2S #2 -3S #2 -3
+> S #3 -1S #3 -1
+> #n -1#n -2#n -3
+> #2 -2
+
+(c) Strix pipeline in computational processes. 
+
+Figure 5. The shield group. In (c), #𝑛 − 𝑚 denotes the m-th type of instruction in the n-th group, while 𝑆 #𝑛 − 𝑚 is different pipeline stages. 
+
+by its corresponding checksum and accumulated to compute the row checksum for 𝐴 × 𝐵 . Similarly, fixing the row checksums of 𝐴 and streaming in the transpose of 𝐵 (𝐵 𝑇 in Fig. 5(a)), we compute the final column checksums. Finally, the results are identical to ABFT. 
+
+Protection mechanism. Figs. 5(b) and 5(c) illustrate the shield group’s micro-architecture and its pipeline. Specifically, the shield employs a set of multipliers aligned with the number of PEs per row and several small adder trees. When a compute instruction is dispatched to the NPU, the system concurrently generates a precom-pute sub-instruction, which is issued alongside the corresponding 
+
+compute , establishing explicit dependencies with both preload and 
+
+compute . In WS-M, the precompute executes first, triggering the data verifier and corrector to ensure original data integrity. The checksum adder then computes checksums for 𝐴 (stage S #1-1 in Fig. 5(c)). While 𝐵 is preloaded, the transposer and checksum adder receive the data stream, performing transposition and checksum computation ( S #1-2 in Fig. 5(c)). At this stage, the shield group has acquired all necessary elements. Once the compute arrives, the shield group executes in parallel with the systolic array ( S #1-3 in Fig. 5(c)). Upon completion, the data verifier compares the results, while the data corrector performs fault localisation, error correction (S #1-4 in Fig. 5(c)). Finally, the result is added to 𝐷 , and similarly, in the guardpad, we yield the final checksums. In OS - M, the flow is identical, except checksums of 𝐷 are generated when its preload. 
+
+Pipeline design. Strix masks guard operator latency with a four - stage pipeline (see Fig. 5(c)). The latency introduced by Strix manifests in the stages 1 and 4. To conceal these delays, we leverage pre-execution of precompute , ensuring that the first stage overlaps with the third stage (computing) and the fourth stage overlaps with the second stage (data preloading). For instance, in Fig. 5(c), S #2-1 is overlapped by 
+
+S #1-3 , and S #1-4 is overlapped by S #2-2 . As a result, this design enables near-zero-latency data processing by guard operators. Strix: Re-thinking NPU Reliability from a System Perspective Conference’17, July 2017, Washington, DC, USA 100% 200% 300% 400% 105% Slowdown  R. on IR A. on IR M. on IR B. on IR R. on TMR A. on TMR M. on TMR B. on TMR R. on ReaLM A. on ReaLM M. on ReaLM B. on RealM R. on Strix A. on Strix M. on Strix B. on Strix INT8-D INT8-I FP32-D 
+
+Figure 6. Performance overhead (R.: ResNet-50; A.: AlexNet; M.: MobileNet-V2; B.: BERT). Strix achieves a geometric of 1.04 ×.95% 96% 97% 98% 99% 100% Detection Fault Rate  INT8-D FP32-D  INT8-I BF16-I 
+
+(a) Error detection coverage of Strix. 60% 70% 80% 90% 100% Correction Fault Rate  INT8-D FP32-D  INT8-I BF16-I 
+
+(b) Error correction coverage of Strix. 
+
+Figure 7. The error detection and correction coverage of Strix. 
+
+Shield configuration. To hide shield-induced latency (WS-M shown; other modes analogous), we size the shield group so that its total latency 𝜎 does not exceed the array’s matrix window 𝐿 𝑆𝐴 . Let 𝐼 be the tiles per row of the array, 𝐽 the PEs per row within a tile, and 𝐾 
+
+the number of shields. For an 𝐼 · 𝐽 × 𝐼 · 𝐽 matrix, 𝐿 𝑆𝐴 is the interval from the first input’s arrival to the last output’s departure: the final input arrives after 𝐼 · 𝐽 + 𝐼 − 1 cycles and needs a further 𝐼 cycles to traverse the array, hence 𝐿 𝑆𝐴 = 𝐼 · 𝐽 + 2 · 𝐼 − 1 cycles [ 58 ]. Each shield ingests one vector per cycle and uses multiplier rows aligned with array rows plus adder trees whose first level fan-in is at most 
+
+2𝐽 −1. The resulting shield latency is:              
+
+> 𝜎 = 2·𝐼 ·𝐽 𝐾 + 1 +
+> 
+> max
+> 
+> 0,
+> 1
+> 𝐽 ·log 2
+> 𝐼 ·𝐽
+> 2𝐽
+>  
+> + 1
+> 
+> ,(1)
+
+where 2·𝐼 ·𝐽 𝐾 accounts for processing the two matrices across 𝐾 shields, and the last two terms capture pipeline start-up/adder-tree depth. Enforcing 𝜎 ≤ 𝐿 𝑆𝐴 yields the minimum shield parallelism:                     
+
+> 𝐾 =
+> 
+> 2·𝐼 ·𝐽 𝐼 ·𝐽 + 2 ·𝐼 −3−max
+> n
+> 0,
+> j1
+> 𝐽 ·log 2
+> l𝐼 ·𝐽
+> 2𝐽
+> mk o 
+> .(2)
+
+By configuring 𝐾 shields, we can overlap shield latency with array execution, reducing the slowdown incurred by reliability deployment. 
+
+Adder tree design. Deep adder trees can affect circuit timing closure. To mitigate this problem, and considering that each PE within a tile consists of combinational logic and a MAC design, we cap their depth to the PEs - per -row of each tile — matching the NPU’s native critical path instead of extending it. We also prune the redundant adders in the edge adder trees to improve resource utilisation. 
+
+Data overflow. Computed values, unlike static data in local memory, can overflow and break verification. For original data, PEs incorporate overflow prevention mechanisms, employing bit expansion strategies during MAC. We also ensure that the checksum uses the same bit width as the output to provide sufficient margin against overflow. 
+
+Fault localisation. In WS -M, a tile fault corrupts its own column and often later ones [ 2]; consecutive checksum mismatches allow Strix to infer a faulty tile and localise it to the earliest column with discrepancies. In OS-M, the faulty tile can be accurately identified by locating the earliest row and column with mismatches [2]. 
+
+4.4 Reliability of Non-linear Operators 
+
+The overhead of non-linear operators in NPUs hinges on their imple-mentation. For instance, ASIC units are accurate but expensive [ 56 ], whereas approximate designs are lightweight [ 16 ]. We therefore 100%                  
+
+> 80%
+> 60%
+> 40%
+> 20%
+> 0%
+> Accuracy
+> ResNet -50 AlexNet MobileNet -V2 BERT
+> 5×10 -71×10 -65×10 -65×10 -71×10 -65×10 -65×10 -71×10 -65×10 -65×10 -81×10 -75×10 -7
+> Vanilla IR ReaLM Strix TMR
+
+(a) Impact of different strategies on DNN accuracy under INT8-D. 100%                  
+
+> 80%
+> 60%
+> 40%
+> 20%
+> 0%
+> Accuracy
+> ResNet -50 AlexNet MobileNet -V2 BERT
+> 5×10 -71×10 -65×10 -65×10 -71×10 -65×10 -65×10 -71×10 -65×10 -65×10 -81×10 -75×10 -7
+> Vanilla IR ReaLM Strix TMR
+
+(b) Impact of different strategies on DNN accuracy under INT8-I. 100%                 
+
+> 80%
+> 60%
+> 40%
+> 20%
+> 0%
+> Accuracy
+> ResNet -50 AlexNet MobileNet -V2
+> 1×10 -85×10 -81×10 -75×10 -71×10 -85×10 -81×10 -75×10 -71×10 -85×10 -81×10 -75×10 -7
+> Vanilla IR ReaLM Strix TMR
+
+(c) Impact of different strategies on DNN accuracy under FP32-D. 
+
+Figure 8. Impact of different strategies on DNN accuracy across various configurations and fault rates. Vanilla denotes the unprotected system. 
+
+verify the former via operator -specific mathematical invariants, and the latter with a mix of invariants and redundancy. In Gemmini, non-linear operators include LayerNorm, ReLU, Softmax, GELU, and Pooling, with each contributes less than 1% overhead [ 16 ]. Therefore, for operators that have clear algebraic properties, we verify based on these properties. Conversely, for operators lacking properties or whose rule is complex, we ensure reliability through redundancy. Specifically, for LayerNorm, we exploit the sum of the non-affine normalised activations should be 0 to enable a consistency check. For Softmax, we perform a quick verification based on its output sum should be 1. In contrast, ReLU, GELU, and Pooling also exhibit certain properties but require more complex verification. Thus, we adopt a redundant copy approach. As a result, we reduce the verification overhead while maintaining high coverage for functional correctness. 
+
+5 Experimental Evaluation 
+
+5.1 Experimental Setup Platform. We deploy Strix on a 20-node FPGA cluster (AMD Virtex UltraScale+ VU19P) with four setups: (i) INT8 default (INT8-D): based on the default open-source Gemmini, including a 256KB scratchpad, 64KB accumulator, and a 16 × 16 systolic array (one PE per tile); (ii) INT8 industrial (INT8-I): 2048KB scratchpad, 512KB accumulator, 128 × 128 systolic array ( 4 × 4 PEs per tile, same as TPU v3 [ 35 ]); (iii) FP32 default (FP32-D): 1024KB scratchpad, 64KB accumulator, 16 × 16 systolic array (one PE per tile); (iv) BF16 Industrial (BF16-I): 4096KB scratchpad, 1024KB accumulator, 
+
+128 × 128 systolic array ( 4 × 4 PEs per tile). Due to FPGA resource limits, BF16-I is simulated in PyTorch following the Spike-modelled behaviour [49] and used only for LLM performance analysis. 
+
+Models and datasets. To evaluate Strix, we benchmark both DNNs and LLMs. The DNN suite covers three mainstream families: CNNs (AlexNet [ 38 ], MobileNet-V2 [ 52 ]), residual networks (ResNet-50 [ 24 ]), and transformer-based models (BERT [ 36 ]). Owing to Gem-mini limitations, BERT is evaluated at INT8, whereas the remaining DNNs are tested at both FP32 and INT8. For LLMs, we choose three widely used models: Llama - 3.2 - 1B [ 19 ], Qwen - 2.5 - 3B [ 27 ], and Mistral - 7B [ 33 ]. For datasets, image classification models are evalu-ated on the Tiny ImageNet [ 63 ], BERT is evaluated on the DBPedia-14 [ 47 ], and the LLMs are evaluated on the LAMBADA [ 45 ]. For all cases, the first 1,000 samples are used for evaluation. Conference’17, July 2017, Washington, DC, USA Jiapeng Guan et al. 80%               
+
+> 60%
+> 40%
+> 20%
+> 0%
+> Accuracy
+> Llama -3-1B Qwen -2.5 -3B Mistral -7B Llama -3-1B
+> 1×10 -95×10 -91×10 -95×10 -91×10 -95×10 -95×10 -91×10 -8
+> Qwen -2.5 -3B Mistral -7B
+> 1×10 -85×10 -85×10 -81×10 -7
+
+BF16  INT8 IR  ReaLM TMR Vanilla  Strix               
+
+> (a) Impact of different strategies on LLM accuracy. INF
+> 10 6
+> 10 4
+> 10 2
+> 10 0
+> Perplexity
+> Llama -3-1B Qwen -2.5 -3B Mistral -7B Llama -3-1B
+> 1×10 -95×10 -91×10 -95×10 -91×10 -95×10 -95×10 -91×10 -8
+> Qwen -2.5 -3B Mistral -7B
+> 1×10 -85×10 -85×10 -81×10 -7
+
+BF16  INT8 IR  ReaLM TMR Vanilla  Strix 
+
+> (b) Impact of different strategies on LLM perplexity.
+
+Figure 9. Impact of different strategies on LLM perplexity and accuracy, with the left half corresponding to BF16-I and the right half to INT8-I. 
+
+Fault injection. We implement multiple types of fault injection within the hardware of Strix. The injection targets include original data, checksums, and hardware components. The injection rate is defined relative to the bit count of the original input. We inject both transient and permanent faults via custom ISA extensions. Transient faults are injected by randomly flipping bits at each pipeline stage during execution. Permanent faults are injected following the method proposed in [1], where additional hardware logic is incorporated to enable custom instructions that forcibly fix selected signals to 1 or 0. 
+
+Baseline setup. The default fault injection rate is 1 × 10 −7. We compare against three baselines representing common hardware/soft-ware schemes and a contemporary SOTA, all implemented under a hardware budget area-matched to Strix for a fair comparison: (i) Hardware (partial TMR). Registers and local memory are protected with ECC, while the systolic array employs TMR. (ii) Software (triple IR). Sensitivity-guided redundancy: early layers for CNNs (AlexNet first two convolutions; first convolution of each MobileNet-V2 block; first ResNet-50 residual block [ 21 , 30 ]); feed-forward layers for BERT [ 15 ]; and the first 20% / last 10% of layers for LLMs [ 23 ]. (iii) SOTA (ReaLM [ 62 ]). Online detection with selective rollback; to avoid unbounded latency under permanent faults, at most one rollback attempt is permitted. All metrics are averaged over 10 runs. 
+
+5.2 Observations and Results Analysis (1) Performance overhead. Fig. 6 presents the performance overhead across different schemes. Overall, TMR incurs the highest slowdown, typically exceeding 1.80 ×, and reaching 3.68 × for ResNet-50 under INT8-D. In contrast, IR shows greater variability ( 1.13 × to 1.95 ×), indicating strong dependence on model structure and compute density. ReaLM falls between 1.22 × to 1.59 ×; slowdowns grow with larger systolic arrays (e.g., INT8-D) because, at a fixed fault rate, per-matrix error incidence rises and each rollback carries higher cost. By contrast, Strix maintains the lowest performance overhead across all evaluated scenarios, with slowdowns ranging from 1.02 × to 1.07 ×
+
+and a geometric slowdown of 1.04 ×. This demonstrates that Strix achieves significantly better adaptability and scalability. 
+
+(2) Detection coverage. Fig. 7(a) reports the error detection coverage of Strix. Overall, Strix exhibits consistently high capability in INT8-D and INT8-I, with coverage exceeding 99%. In FP32-D and BF16-I, Strix achieves over 97% detection coverage under non-extreme fault rates (i.e., ≤ 10 −6). The slight degradation at higher fault rates is attributable to: (i) precision loss inherent to FP in hardware, and (ii) faults injected into checksum bits, which can impair detection. 
+
+(3) Correction coverage. Fig. 7(b) presents the correction coverage of Strix. Under typical fault rates (i.e., ≤ 10 −6), all configurations maintain a correction coverage exceeding 95%. However, as the 
+
+Table 1. The worst-case detection latency of Strix-added components. Register                               
+
+> 𝐿𝐿 atency
+> Local memory
+> 𝐿𝐿𝐿𝐿𝐿𝐿𝐿𝐿
+> Systolic array
+> 𝐿𝐿𝐿𝐿𝐿𝐿𝐿𝐿
+> Softmax
+> 𝐿𝐿𝐿𝐿𝐿𝐿𝐿𝐿
+> LayerNorm
+> 𝐿𝐿𝐿𝐿𝐿𝐿𝐿𝐿
+> INT8-D 0.01 μs 0.16 μs 0.19 μs 0.01 μs 0.02 μs
+> INT8-I 0.02 μs 0.53 μs 0.67 μs 0.02 μs 0.03 μs
+> FP32-D 0.01 μs 0.36 μs 0.41 μs 0.02 μs 0.02 μs
+> Configuration
+> Component
+
+Table 2. The max frequency of the Gemmini & Strix-added components. 1 × 1                   
+
+> 𝑀𝑀𝑀𝑀𝑀𝑀 𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓
+> 2 × 2
+> 𝑀𝑀𝑀𝑀𝑀𝑀 𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓
+> 4 × 4
+> 𝑀𝑀𝑀𝑀𝑀𝑀 𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓
+> 8 × 8
+> 𝑀𝑀𝑀𝑀𝑀𝑀 𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓𝑓
+> INT8 Gemmini 4.76 GHz 3.57 GHz 2.56 GHz 1.75 GHz
+> Strix-added 8.33 GHz 6.25 GHz 5.00 GHz 2.94 GHz
+> FP32 Gemmini 2.44 GHz 1.36 GHz 0.66 GHz 0.34 GHz
+> Strix-added 2.86 GHz 1.40 GHz 0.72 GHz 0.36 GHz
+> Configuration
+
+fault rate increases, a noticeable decline is observed. Among the four configurations, INT8-I and BF16-I are most affected. This trend primarily stems from the use of larger systolic arrays in these configurations. Under high fault rates, the increased number of involved processing elements raises the probability of multi-bit faults, which compromises the effectiveness of the correction mechanism. 
+
+(4) DNN performance. Fig. 8 shows the variation in DNN accuracy across different settings. Compared to Vanilla, all strategies improve inference accuracy, but their effectiveness diverges as fault rates increase. The IR offers moderate protection at low fault rates but de-grades rapidly. ReaLM’s rollback mechanism fails under permanent faults; consequently, under higher fault rates, especially with larger systolic arrays and critical faults, model quality collapses, a trend that persists even after averaging across trials. TMR behaves as expected, sustaining the highest accuracy across all rates. In contrast, Strix mitigates accuracy loss within practical fault regimes, outperforming IR and matching ReaLM/TMR at low fault rates; only at very high rates does Strix show mild degradation, yet it remains better than ReaLM. Across configurations, Strix yields larger gains in INT8-D and FP32-D. Although INT8-I poses greater challenges due to the larger array, Strix remains close to TMR at several fault settings. 
+
+(5) LLM performance. Fig. 9 shows the LLMs’ performance versus fault rate. The overall trend mirrors the DNN results. All protections confer benefits, but IR provides only limited improvement at low rates. ReaLM, again hindered by its inability to handle permanent faults, trails Strix, though the inherently lower fault tolerance of LLMs slightly narrows the gap. By contrast, Strix maintains accu-racy and perplexity nearly indistinguishable from TMR, alleviating performance degradation of LLMs in faulty environments. 
+
+(6) The worst-case detection latency. We measure the worst-case error detection latency of each component within Strix under a frequency of 500MHz. To ensure the latency is incurred by Strix, we define detection latency as the time interval between the execution of the instruction and the moment it is detected. As shown in Tab. 1, the detection latency of Strix remains within the sub-micro-second. The higher latency observed in the systolic array is due to Strix’s post-verification strategy, where verification is deferred until after the matrix computation and checksum generation are completed. 
+
+(7) Analysis of the critical path. We tested the maximum frequency of the Gemmini and components introduced by Strix with different PE configurations in each tile to determine the critical path. During RTL synthesis, we applied different clock constraints to specify the target frequency and performed multiple rounds of synthesis until the tool could not meet the frequency. As shown in Tab. 2, the components introduced by Strix exhibit a higher frequency than Gemmini across all configurations, whether INT8 or FP32, and regardless of the number of PEs in each tile. Say, the determining factor for the critical path remains the original NPU rather than Strix. Strix: Re-thinking NPU Reliability from a System Perspective Conference’17, July 2017, Washington, DC, USA 
+
+(8) Hardware overhead. The hardware evaluation uses Synopsys Design Compiler (v2019.12) with the industry-standard TSMC 28nm technology library. Across configurations, Strix adds 20.7% area and 23.2% power on INT8-D, 8.7%/16.8% on INT8-I, and 10.2%/21.3% on FP32-D. The higher overhead on INT8-D stems from its smaller baseline; INT8-I and FP32-D amortise the mechanisms more effectively. The added area is dominated by the guardpad (13.9%, 5.0%, 4.6% for INT8-D/INT8-I/FP32-D), followed by guard operators (3.4%/3.5%/5.3%) as they are instantiated at pipeline boundaries to preserve continuous execution. 
+
+6 Conclusion 
+
+In this paper, we present Strix, a full-stack framework for NPU reliability. Strix demonstrates that effective and efficient protection must be grounded in a deep understanding of the system. By re-partitioning the NPU from a reliability perspective, identifying key failure modes, and designing mitigation aligned with proposed insights, Strix has achieved near-complete fault coverage and near-zero detection latency, under minimal performance and area overhead. 
+
+7 Acknowledgement 
+
+This work is supported by the National Key Research and Devel-opment Program (Grant No.2024YFB4405600), the U.S. National Science Foundation (Grant No.CNS-2340171), the Basic Research Program of Jiangsu (Grants No. BK20243042), and the Fundamental Research Funds for the Central Universities (No. 2242025K20013). 
+
+References 
+
+[1] Udit Kumar Agarwal. 2023. Resilience assessment of machine learning applica-tions under hardware faults . Ph. D. Dissertation. University of British Columbia. [2] Udit Kumar Agarwal et al . 2023. Towards reliability assessment of systolic arrays against stuck-at faults. In DSN-S . IEEE, 230–236. [3] Hyunho Ahn et al . 2023. Performance characterization of using quantization for DNN inference on edge devices. In ICFEC . IEEE, 1–6. [4] Haya Al Kassir et al . 2022. A review of the state of the art and future challenges of deep learning-based beamforming. IEEE Access 10 (2022), 80869–80882. [5] Tanya Amert et al . 2017. GPU scheduling on the NVIDIA TX2: Hidden details revealed. In RTSS . IEEE, 104–115. [6] Jakub Breier et al . 2018. Practical fault attack on deep neural networks. In ACM CCS . 2204–2206. [7] Wei Cao et al. 2023. The future transistors. Nature 620, 7974 (2023), 501–515. [8] Yu-Hsin Chen et al . 2019. Eyeriss v2: A flexible accelerator for emerging deep neural networks on mobile devices. IEEE JESTCS 9, 2 (2019), 292–308. [9] Can Cui et al . 2024. A survey on multimodal large language models for autonomous driving. In WACV . IEEE, 958–979. [10] Tim Dettmers et al . 2022. Gpt3. int8 (): 8-bit matrix multiplication for transformers at scale. NeurIPS 35 (2022), 30318–30332. [11] Michael Ditty. 2022. Nvidia orin system-on-chip. In HCS . IEEE, 1–17. [12] Fernando Fernandes Dos Santos et al . 2023. Understanding and Improving GPUs’ Reliability Combining Beam Experiments with Fault Simulation. In ITC . IEEE, 176–185. [13] Joshua Fromm et al . 2018. Heterogeneous bitwidth binarization in convolutional neural networks. NeurIPS 31 (2018). [14] Daocheng Fu et al . 2024. Drive like a human: Rethinking autonomous driving with large language models. In WACVW . IEEE, 910–919. [15] Zhen Gao et al . 2025. On the dependability of bidirectional encoder representations from transformers to soft errors. IEEE TNANO (2025). [16] Hasan Genc et al . 2021. Gemmini: Enabling systematic deep-learning architecture evaluation via full-stack integration. In DAC . IEEE, 769–774. [17] Dimitris Gizopoulos. 2025. The Dark Side of Computing: Silent Data Corruptions. 
+
+Computer 58, 6 (2025), 101–106. [18] Dennis Agyemanh Nana Gookyi et al . 2023. Deep learning accelerators’ configura-tion space exploration effect on performance and resource utilization: A Gemmini case study. Sensors 23, 5 (2023), 2380. [19] Aaron Grattafiori et al . 2024. The llama 3 herd of models. arXiv e-prints (2024), arXiv–2407. [20] Wilfread Guillemé et al . 2024. HTAG-eNN: Hardening Technique with AND Gates for Embedded Neural Networks. In ACM/IEEE DAC . 1–6. [21] Baixin Guo et al . 2023. Neural network reliability analysis based on fault injection. In CNML . 366–370. [22] Daya Guo et al . 2024. DeepSeek-Coder: When the Large Language Model Meets Programming–The Rise of Code Intelligence. arXiv preprint arXiv:2401.14196 
+
+(2024). [23] Jiajun He et al . 2025. Fine-Grained Fault Sensitivity Analysis of Vision Trans-formers Under Soft Errors. Electronics 14, 12 (2025), 2418. [24] Kaiming He et al . 2016. Deep residual learning for image recognition. In IEEE CVPR . 770–778. [25] Le-Ha Hoang et al . 2020. Ft-clipact: Resilience analysis of deep neural networks and improving their fault tolerance using clipped activation. In DATE . IEEE, 1241–1246. [26] Gao Huang et al . 2017. Densely connected convolutional networks. In IEEE CVPR .4700–4708. [27] Binyuan Hui et al . 2024. Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 (2024). [28] Younis Ibrahim et al . 2020. Analyzing the reliability of convolutional neural networks on gpus: Googlenet as a case study. In ICCIT . IEEE, 1–6. [29] Younis Ibrahim et al . 2020. Soft error resilience of deep residual networks for object recognition. IEEE Access 8 (2020), 19490–19503. [30] Younis Ibrahim et al . 2020. Soft errors in DNN accelerators: A comprehensive review. Microelectronics Reliability 115 (2020), 113969. [31] ISO26262 ISO. 2018. 26262: Road vehicles-Functional safety. (2018). [32] Haojie Jian et al . 2024. PerFT-N: Low-overhead Permanent Fault-Tolerance Mechanism for Neural Processing Units. In GLSVLSI . 25–31. [33] Albert Q. Jiang et al . 2023. Mistral 7B. arXiv preprint arXiv:2310.06825 3 (2023). [34] Jeff Johnson. 2018. Rethinking floating point for deep learning. arXiv preprint arXiv:1811.01721 (2018). [35] Norman P Jouppi et al . 2020. A domain-specific supercomputer for training deep neural networks. Commun. ACM 63, 7 (2020), 67–78. [36] Jacob Devlin Kenton et al . 2019. Bert: Pre-training of deep bidirectional transform-ers for language understanding. In naacL-HLT , Vol. 1. Minneapolis, Minnesota, 2. [37] K Korosec. 2021. Tesla will open controversial FSD Beta software to owners with a good driving record. [38] Alex Krizhevsky et al . 2012. Imagenet classification with deep convolutional neural networks. NeurIPS 25 (2012). [39] Guanpeng Li et al . 2025. Understanding Error Propagation in Deep-Learning Neural Networks Accelerators and Applications. IEEE Des. Test (2025). [40] Xiaocong Lian et al . 2019. High-performance FPGA-based CNN accelerator with block-floating-point arithmetic. IEEE VLSI 27, 8 (2019), 1874–1885. [41] Fabiano Libano et al . 2018. Selective hardening for neural networks in FPGAs. 
+
+IEEE TNS 66, 1 (2018), 216–222. [42] Hsin-Chen Lu et al . 2024. Highly Fault-Tolerant Systolic-Array-Based Matrix Multiplication. Electronics 13, 9 (2024), 1780. [43] Sparsh Mittal. 2020. A survey on modeling and improving reliability of DNN algorithms and accelerators. JSA 104 (2020), 101689. [44] Pramesh Pandey et al . 2019. GreenTPU: Improving timing error resilience of a near-threshold tensor processing unit. In ACM/IEEE DAC . 1–6. [45] Denis Paperno et al . 2016. The LAMBADA dataset: Word prediction requiring a broad discourse context. arXiv preprint arXiv:1606.06031 (2016). [46] Eric Qin et al . 2020. Sigma: A sparse and irregular gemm accelerator with flexible interconnects for dnn training. In HPCA . IEEE, 58–70. [47] Harsh Rangwani et al . 2022. Cost-sensitive self-training for optimizing non-decomposable metrics. NeurIPS 35 (2022), 26994–27007. [48] Brandon Reagen et al . 2018. Ares: A framework for quantifying the resilience of deep neural networks. In ACM/IEEE DAC . 1–6. [49] RISC-V Software Source. 2024. riscv-isa-sim: RISC-V ISA Simulator (Spike). 
+
+https://github.com/riscv-software-src/riscv-isa-sim .[50] Yamato Saikawa and Yoichi Tomioka. 2024. Approximated Triple Modular Redundancy of Convolutional Neural Networks Based on Residual Quantization. In MCSoC . IEEE, 302–309. [51] Antonio J Sanchez-Clemente et al . 2016. Error mitigation using approximate logic circuits: A comparison of probabilistic and evolutionary approaches. IEEE TR 65, 4 (2016), 1871–1883. [52] Mark Sandler et al . 2018. Mobilenetv2: Inverted residuals and linear bottlenecks. In IEEE CVPR . 4510–4520. [53] Dongjoo Shin et al . 2018. DNPU: An energy-efficient deep-learning processor with heterogeneous multi-core architecture. IEEE Micro 38, 5 (2018), 85–93. [54] Christian Szegedy et al . 2016. Rethinking the inception architecture for computer vision. In IEEE CVPR . 2818–2826. [55] Mahdi Taheri et al . 2024. Exploration of activation fault reliability in quantized systolic array-based dnn accelerators. In ISQED . IEEE, 1–8. [56] Emil Talpes et al . 2022. Dojo: The microarchitecture of tesla’s exa-scale computer. In HCS . IEEE, 1–28. [57] Mingxing Tan and Quoc Le. 2019. Efficientnet: Rethinking model scaling for convolutional neural networks. In ICML . PMLR, 6105–6114. [58] UC Berkeley. [n. d.]. Gemmini — Systolic Array and Transposer. https://github. com/ucb-bar/gemmini#systolic-array-and-transposer .[59] João Vieira et al . 2023. Gem5-accel: A pre-RTL simulation toolchain for accelerator architecture validation. CAL (2023). Conference’17, July 2017, Washington, DC, USA Jiapeng Guan et al. 
+
+[60] Jinghe Wei et al . 2020. Analyzing the impact of soft errors in VGG networks implemented on GPUs. Microelectronics Reliability 110 (2020), 113648. [61] Wenda Wei et al . 2023. An approximate fault-tolerance design for a convolutional neural network accelerator. IT Professional 25, 4 (2023), 85–90. [62] Tong Xie et al . 2025. ReaLM: Reliable and Efficient Large Language Model Inference with Statistical Algorithm-Based Fault Tolerance. In ACM/IEEE DAC .1–6. [63] Leon Yao and John Miller. 2015. Tiny imagenet classification with convolutional neural networks. CS 231N 2, 5 (2015), 8. [64] Yiren Zhou et al . 2018. Adaptive quantization for deep neural network. In 
+
+Proceedings of AAAI , Vol. 32. [65] Zixuan Zhou et al . 2024. A survey on efficient inference for large language models. 
+
+arXiv preprint arXiv:2404.14294 (2024).

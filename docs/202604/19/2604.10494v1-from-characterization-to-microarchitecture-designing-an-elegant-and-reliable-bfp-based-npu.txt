@@ -1,0 +1,754 @@
+Title: From Characterization to Microarchitecture: Designing an Elegant and Reliable BFP-Based NPU
+
+URL Source: https://arxiv.org/pdf/2604.10494v1
+
+Published Time: Tue, 14 Apr 2026 01:33:08 GMT
+
+Number of Pages: 8
+
+Markdown Content:
+# From Characterization to Microarchitecture: Designing an Elegant and Reliable BFP-Based NPU 
+
+## Jie Zhang †1, Jiapeng Guan §1, Hao Zhou §, Xiaomeng Han †, Tinglue Wang †, Ran Wei ¶ and Zhe Jiang †∗ 
+
+> †
+
+Southeast University, China §Dalian University of Technology, China ¶ Lancaster University, UK 
+
+## Abstract 
+
+Block Floating-Point (BFP) is emerging as an attractive data format for edge Neural Processing Units (NPUs), combining wide dynamic range with high hardware efficiency. However, its behavior under hardware faults and suitability for safety-critical deployments remain underexplored. Here, we present the first in-depth empirical reliability study of BFP-based NPUs. Using RTL-level fault injection on NPUs, our bit- and path-level analysis reveals pronounced heterogeneous vulnerabilities and shows conventional end-to-end check becomes ineffective under nonlinear block scaling. Guided by these insights, we design a fault-tolerant BFP-based NPU microarchitecture that aligns the BFP computational semantics with reliability constraints. The design uses a row/column-wise blocking strategy to decouple the fixed-point mantissa computations from the scalar exponent path, and introduces ultra-lightweight protection mechanisms for each. Experimental results demonstrate our design achieves near–dual modular redundancy reliability with only 3.55% geometric mean performance overhead and less than 2% hardware cost. 
+
+## 1 Introduction 
+
+Block Floating-Point (BFP) [ 10 , 64 , 68 ] is an emerging format gaining traction in modern edge Neural Processing Units (NPUs) [ 11 ,23 , 24 ]. In BFP, a “block” of elements shares a single common exponent, while each element retains its own mantissa. By aligning the exponents within the block, arithmetic operations on the mantissa can be executed entirely using integer units, requiring only a single exponent adjustment per block. This simplifies the complexity of Multiply–and-Accumulate (MAC) datapaths and Floating-Point (FP) pipelines, enhancing computational throughput and energy efficiency compared to the IEEE-754 FP formats, hence has been widely adopted in many industrial products, e.g., NVIDIA’s Blackwell GPUs [ 44 ], AMD’s Strix Point NPUs [3], and Tenstorrent AI accelerators [8]. While performance improvement drives the widespread adoption of BFP, reliability is equally important for edge NPUs, especially for the ones deployed in safety-critical scenarios, e.g., autonomous driving [ 16 , 40 ], industrial control [ 55 , 59 ], etc. This means that the NPU must be resilient to hardware faults and able to detect errors within a narrow Fault Tolerant Time Interval (FTTI), often measured in milliseconds, before escalating into hazards. 
+
+Existing work. A variety of fault-tolerance techniques have been explored in prior works for edge NPUs using conventional data formats, e.g., INT8/16 [ 33 , 48 ], FP16 [ 15 , 42 ], BF16 [ 15 , 35 ]. These works typically start with an offline reliability analysis (e.g., fault injection or analytical modeling [ 15 , 47 , 48 ]) to identify the vulnerable bits, modules, or pipeline stages. Based on the analysis, targeted safety mechanisms are then developed and deployed [ 1, 6, 45 ].                    
+
+> 1Both authors contributed equally.
+> ∗Corresponding author: Zhe Jiang. Email: zhejiang.uk@gmail.com.
+> Conference’17, Washington, DC, USA
+> 2026. ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+> https://doi.org/10.1145/3770743.3804101 ResNet-50
+> 0
+> 10%
+> 20%
+> 30%
+> 40%
+> 50%
+> 60%
+> 70%
+> MobileNet-V2
+> Accuracy
+> Significant Effect
+> Slight Effect
+> Vanilla-BFP ABFT-BFP
+> Vanilla-Int8 ABFT-Int8
+> False Positive Rate
+> 0
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> 16×16 32×32 64×64 128×128
+> 0
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> 16×16 32×32 64×64 128×128
+> Int8 BFP
+> False Positive Rate
+> Significant Gap
+> (a) Different models. ResNet-50
+> 0
+> 10%
+> 20%
+> 30%
+> 40%
+> 50%
+> 60%
+> 70%
+> MobileNet-V2
+> Accuracy
+> Significant Effect
+> Slight Effect
+> Vanilla-BFP ABFT-BFP
+> Vanilla-Int8 ABFT-Int8
+> False Positive Rate
+> 0
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> 16×16 32×32 64×64 128×128
+> 0
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> 16×16 32×32 64×64 128×128
+> Int8 BFP
+> False Positive Rate
+> Significant Gap (b) Different configurations.
+
+Figure 1. Failure of conventional ABFT-style end-to-end protection on BFP workloads. (a) Protection effectiveness of ABFT under INT8 and BFP. (b) False positive rate of ABFT for INT8 and BFP under different systolic array sizes. At a fault rate of 5 × 10 −8, the characteristics of BFP introduce intrinsic perturbations in the data, causing the checker’s false positives to skyrocket and rendering the conventional ABFT ineffective. 
+
+For instance, protecting the systolic array using Algorithm-Based Fault Tolerance (ABFT) [ 2, 43 , 52 ], redundancy (e.g., hardware Dual-Module Redundancy (DMR) [ 5, 54 ], or software Instruction Redundancy (IR) [ 29 , 30 , 60 ]), and safeguarding registers or memory cells with ECC or parity [ 39 , 46 ]. Although these works investigate different data formats, the underlying NPU microarchitectures and computation flows remain similar. Hence, their protection schemes are easily adaptable across NPUs using different data formats. 
+
+Challenges. Unlike the conventional formats, BFP redefines both data representation and computation flow, bringing new reliability concerns that existing protection schemes fail to capture: 
+
+Where to protect : BFP’s shared-exponent couples elements, mean-ing a single exponent bit-flip distorts the entire block and propagates amplified correlated errors. Conversely, extracting the maximum shared-exponent in BFP block gives the mantissa greater signifi-cance compared to traditional FP formats, which may cause leading mantissa bit flips to dominate the block’s numerical contribution. Quantitatively characterizing these error dynamics across hierarchi-cal levels (bit, block, tensor, layer) is non-trivial: coarse models miss dominant failures, while fine-grained analyses explode in complexity. 
+
+How to protect : BFP decouples exponent and mantissa processing, demanding a rethinking of fault-tolerance deployment. As Fig. 1 shows, traditional matrix-level schemes (e.g., ABFT) assume linear error accumulation, which fails under BFP’s nonlinear block scaling and shared-exponent normalization. The challenge lies in designing BFP-aware protection that preserves its computational efficiency, selectively protects the most error-sensitive components, and operates within the NPU’s stringent area, latency, and energy budgets. Striking this balance between protection coverage and performance overhead represents a key open problem toward reliable BFP-based NPUs. 
+
+Contributions. We address these challenges via the first in-depth reliability study of BFP-based NPUs. Using RTL-level fault injec-tion, we characterize failure modes and tolerance thresholds across modules and fault intensities on representative models, revealing key bit-/path-level vulnerabilities: the shared-exponent amplifies correlated errors, and high-order mantissa bits are sensitive due to 
+
+> arXiv:2604.10494v1 [cs.AR] 12 Apr 2026
+
+Conference’17, July 2017, Washington, DC, USA Jie Zhang et al. 0% 20% 40% 60% 80% 100% Accuracy Fault Rate 1×1 0 - 8 1 ×1 0 - 7 1 ×1 0 - 6
+
+> BERT
+> AlexNet
+> ResNet-50
+> Inception-V3
+> MobileNet-V2
+> DenseNet-201
+> EfficientNet-B0
+
+(a) DNNs under different fault rates. 10 110 210 310 410 5Perplexity Fault Rate  OPT-125M  OPT-1.3B  OPT-2.7B  Llama-1B  Llama-3B  Llama-8B 1×1 0 - 9 1 ×1 0 - 85×1 0 - 9 5 ×1 0 - 8 (b) LLMs under different fault rates. Inception-V3         
+
+> OPT-2.7B
+> EfficientNet-B0
+> Llama-3B
+> ResNet-50
+> Llama-8B
+> 0246810 12 14
+> Accuracy
+> Bit Fault Injection Range
+> 1
+> 10
+> 10 2
+> Perplexity
+> 6×10 4
+> 2×10 5
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+
+(c) Bit flips at different positions(non-compute modules). 0%    
+
+> 50%
+> 40%
+> 30%
+> 20%
+> 10%
+> 1×10 -6 1
+> FP Single Exp Error
+> BFP Shared Exp Error
+> Nan/Inf
+> Proportion
+> Relative deviation
+> 1×10 -4 1×10 -2 1×10 2
+
+(d) BFP vs. FP in exponent impact(compute modules). Q1 Q2 Q 3 Q4   
+
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Accuracy
+> Bit Fault Injection Range
+> ResNet-50_FP ResNet-50_BFP
+> Inception-V3_BFP Inception-V3_FP
+> EfficientNet-B0_BFP EfficientNet-B0_FP
+
+(e) BFP vs. FP in mantissa impact (DNNs). 1      
+
+> 10
+> 10 2
+> 10 3
+> 10 4
+> Perplexity
+> Q1Q2Q3Q4
+> Bit Fault Injection Range
+> OPT-2.7B_FP OPT-2.7B_BFP
+> Llama-3B_BFP Llama-3B_FP
+> Llama-8B_BFP Llama-8B_FP
+
+(f) BFP vs. FP in mantissa impact (LLMs). 
+
+Figure 2. Model accuracy or perplexity under different conditions and comparison of exponent error effects between BFP and FP. DNNs [ 26 , 27 , 36 , 38 ,53, 57, 58] were assessed on DBPedia-14 [49] (BERT) and Tiny ImageNet [63] (others), and LLMs [12, 65] on WikiText-2 [41]. 
+
+leading-zero–driven normalization. Guided by these observations, we propose a BFP-semantic, pipeline-oriented reliability principle and a row/column-wise hardware mapping, decoupling computation into a fixed-point mantissa array and a short scalar exponent pipeline; we ex-ploit exponent-path time slack for low-cost recompute-and-compare, perform fixed-point local consistency checks, and harden compact format-conversion units. Evaluations show our design achieves near-DMR robustness with 3.55% average performance (vs. DMR 20% to 132%, IR 10% to 70%), 1.3% area and 2.81% power overheads, 
+
+≥98% detection coverage, and sub-microsecond latency. 
+
+## 2 Preliminary: the Mechanics of BFP 
+
+BFP is an efficient data format designed to balance the wide dynamic range with the hardware efficiency of fixed-point. For a block of 𝑁 
+
+numbers 𝑋 = {𝑥 0, 𝑥 1, . . . , 𝑥 𝑁 −1 }, each element is defined as:              
+
+> 𝑥 𝑖 = ( −1) 𝑠 𝑖 ·2𝑒 𝑖 ·𝑚 𝑖 (0 ≤𝑖 ≤𝑁 −1) (1)
+
+The BFP format represents this block by sharing a common exponent, 
+
+𝑒 𝑠ℎ . This shared-exponent is typically chosen as the maximum of all exponents within the block, i.e., 𝑒 𝑠ℎ = max 0≤𝑖 ≤𝑁 −1(𝑒 𝑖 ). After conversion, the data block can be expressed as:            
+
+> 𝑋 BFP = 2 𝑒 𝑠ℎ ·(−1) 𝑠 0𝑚 ′
+> 0,(−1) 𝑠 1𝑚 ′
+> 1, . . . , (−1) 𝑠 𝑁 −1𝑚 ′
+> 𝑁 −1(2)
+
+where 𝑚 ′ 
+
+> 𝑖
+
+is the aligned mantissa, obtained by right-shifting the original mantissa 𝑚 𝑖 by (𝑒 𝑠ℎ − 𝑒 𝑖 ) bits. The dot product of two 𝑁 -dimensional vectors in BFP format, ®𝐴 
+
+and ®𝐵 , with respective shared-exponents 𝑒 𝐴 and 𝑒 𝐵 , is calculated as:          
+
+> ®𝐴 · ® 𝐵 𝑇 = 2 𝑒 𝐴 +𝑒 𝐵 𝑁 −1∑︁
+> 𝑖 =0
+> 
+> (−1) 𝑠 𝐴,𝑖 ⊕𝑠 𝐵,𝑖 ·𝑚 ′
+> 𝐴,𝑖 ·𝑚 ′
+> 𝐵,𝑖
+> 
+> (3)
+
+As shown in Eq. (3) , BFP decomposes the dot product into a shared-exponent addition ( 𝑒 𝐴 + 𝑒 𝐵 ) and a fixed-point mantissa dot product. Unlike traditional FP, where this separation is confined to the operation-level, BFP elevates it to a macroscopic, block-level. 
+
+## 3 Observations: BFP Resilience Characterization 
+
+To precisely characterize the behavior of BFP-based machine learning workloads under NPU hardware faults, we conduct systematic fault-injection experiments on a representative set of DNNs [ 26 , 27 , 36 , 38 ,53 , 57 , 58 ] and LLMs [ 12 , 65 ]. By quantitatively analyzing failure modes and end-to-end performance degradation under injection configurations, we delineate the fault-tolerance boundaries of BFP and provide analytical insights into the key questions posed in Sec. 1. 
+
+Fault-injection setup. Unlike prior studies that perturb per-layer inputs or outputs at the software level [ 50 , 56 , 61 ], abstracting away fine-grained computation and data movement and yielding pertur-bation patterns misaligned with actual hardware faults, we inject faults at the RTL level to systematically analyze the vulnerability. We restrict fault sites to SRAM read/write latches and pipeline-boundary registers along the BFP datapath, rather than instrumenting every NPU gate. This follows common error models treating single-event upsets as bit flips in storage elements, disregarding unlatched combi-national transients [ 17 , 62 ]. We target these locations because they store architecturally visible BFP state and and determine software-observed results, keeping fault injection complexity tractable. We model two canonical fault types: permanent faults forcing a bit to stuck-at-0/1 per inference, and transient faults flipping it for one random cycle. Each candidate bit is wrapped by a 2:1-multiplexer “saboteur” [ 9 , 20 ] that normally forwards the original value, but outputs a forced 0/1 (permanent faults) or the original bit XORed with a one-hot mask (transient faults) during injection. Injection intensity is parameterized by a fault rate , defined as injected faults per inference divided by the total number of bits in the system, with locations and timing chosen pseudo-randomly. Because the FPGA prototype cannot host large LLMs, LLM fault-injection experiments use a hardware-semantic software simulator that mirrors RTL fault behavior under the same fault-rate configurations. 
+
+3.1 Analysis of BFP-Based Machine Learning Workloads 
+
+Using the aforementioned fault-injection, we evaluate representative DNNs and LLMs under NPU fault injection. As shown in Fig. 2(a) and 2(b), the models maintain baseline performance at sufficiently low fault rates (e.g., below 10 −9); however, as the fault rate increases, DNNs accuracy degrades progressively while LLMs perplexity rises sharply, and when the fault rate exceeds 10 −8 all tested LLMs fail completely. Although BFP can reduce hardware complexity, it does not provide inherent improvements in fault resilience — once the fault rate surpasses the model’s tolerance threshold, performance deteriorates rapidly. This observation is consistent with prior findings on conventional FP models [ 4, 7]. Given that silent-fault rates in modern compute-intensive devices routinely exceed 10 −7 [ 19 ], such intrinsic tolerance is clearly insufficient to ensure accurate operation. 
+
+Insight-1 : BFP-based NPUs require reliability provisioning, as BFP offers no intrinsic resilience and models can catastrophically From Characterization to Microarchitecture: Designing an Elegant and Reliable BFP-Based NPU Conference’17, July 2017, Washington, DC, USA M = M 1 × M2 = (10110011011) b × (10101000000) b                
+
+> =(0111010110110111000000) b
+> 1
+> SEM
+> 0110011011001101
+
+……  Exp max =(11101) b         
+
+> 00000101010
+
+……          
+
+> 00000010110
+
+……         
+
+> 11101
+> 01100
+> Mantissa Multiplication:
+> Alignment and Normalization:
+
+√ 
+
+> S = 0 E = 5 M = (11110101110) b
+
+×      
+
+> M = M 1×M2= (0000101100) b×(0001010100) b
+> =(0000000000111001110000) b
+> Mantissa Multiplication:
+> Alignment and Normalization:
+
+√  
+
+> S = 0 E = 14 M = (10000000010) b
+
+×   
+
+> Eshared SM
+> Same flip,
+
+500× deviation. 
+
+FP  BFP                 
+
+> S = 0 E = 4 M = (11101011011) bM = (11100111000) bS = 0 E = 4
+> 1
+> 0010010010100000
+
+……  Exp max =(01100) b
+
+> Leading Zeros
+
+Figure 3. BFP vs. FP: leading-zero distribution and error amplification. Due to the mantissa right-shift alignment in BFP, intermediate results contain more leading zeros than FP. A bit flip at the same bit position induces a larger deviation in the final normalized value under BFP. 
+
+degrade once fault rates exceed their tolerance thresholds, which are generally below the commonly cited 10 −7 level in industry. 
+
+3.2 Fault Vulnerability Analysis of BFP-Based NPUs Modules 
+
+We inject faults into distinct BFP-based NPU microarchitectural modules to analyze vulnerability. Compute and non-compute mod-ules play fundamentally different roles in the dataflow: compute groups (e.g., MAC/ALU pipelines) perform arithmetic, where tran-sient faults quickly amplify via accumulation, whereas non-compute groups (e.g., on-chip memories, buffers) store and transport data, so faults tend to persist and be repeatedly reused. These differences create distinct failure modes and naturally call for different protec-tion mechanisms. Thus, we separate the analysis into compute and non-compute groups and evaluate them independently, yielding a reliability-oriented abstraction that captures dominant vulnerabilities while avoiding a module-by-module dimensional explosion. 
+
+Non-compute modules. In non-compute modules at a high fault rate of 10 −7 (Fig. 2(c)), BFP mantissas rarely cause inference failure, whereas exponent bit upsets are the primary drivers of performance degradation, consistent with observations on conventional FP for-mats [ 13 , 40 ]. The rationale is that mantissa perturbations in non-compute units typically manifest as bounded magnitude shifts, while exponent errors rescale values by 2𝑛 , producing extreme values. 
+
+Compute modules. Fig. 2(d) shows BFP exponent faults cause much larger deviations than FP due to the shared-exponent design: a single perturbation uniformly rescales all elements in a block, coherently biasing all partial products so accumulation amplifies the error, producing abrupt result spikes, IEEE-754 exceptions (Inf/NaN), and inference failure. For mantissa faults, we analyze the sensitivity of the intermediate-result register along the mantissa path under a fault rate of 5 × 10 −7. This register is bit-width expanded to 22 bits for both FP and BFP, and we partition it into four contiguous significance segments: Q1 (the least significant 6 bits), Q2 (the next 6), Q3 (the next 5), and Q4 (the most significant 5). Fig. 2(e) and 2(f) show BFP mantissa faults degrade performance substantially more than FP, dominated by errors in the highest-significance segment Q4. The discrepancy between BFP and FP stems from their distinct computation pathways. BFP follows the computation model in Sec. 2, with a single post-block normalization subsequently restoring the final exponents and mantissas. Before the computation, BFP quantization right-shifts mantissas, creating a leading-zero bias. Normalization via a leading-zero counter (LZC) makes this pattern highly sensitive to high-order bit flips. As Fig. 3 shows, flipping the first of ten leading Free_stage 
+
+> Error Detection BFP Converter FP Converter
+
+... Error Detection 
+
+# BA Mantissa Exp Mantissa Exp  MAX 
+
+> SUB
+> Shifter MAX Shifter SUB
+> LZC Calculato rShifter LZC Calculator Shifter
+
+a
+
+b
+
+c d
+
+> Repeat
+
+Mantissa Calculation →Systolic Arrays 
+
+... 
+
+... 
+
+> ...
+> ...
+
+...
+
+> BFP Converter
+> FP Converter
+> ABFT Calculation
+> Traditional ABFT
+> Offloading to the hardware level
+> Tightly synchronised
+
+Cycle 
+
+Mantissa 
+
+Exponent 
+
+1st.  2nd. 
+
+Free_stage Free_stage 
+
+> Error Detection
+> BFP Converter
+> FP Converter
+
+...  Error Detection 
+
+a
+
+b
+
+c
+
+# BA
+
+d
+
+Mantissa  Exp 
+
+> Mantissa  Exp  MAX
+> SUB
+> Shifter
+> MAX
+> Shifter
+> SUB
+> LZC
+> Calculator
+> Shifter
+> LZC
+> Calculator
+> Shifter  Repeat
+
+Mantissa Calculation →Systolic Arrays 
+
+... 
+
+... 
+
+> .. .
+> .. .
+
+...
+
+> BFP Converter
+> FP Converter
+> ABFT Calculation
+> Traditional ABFT
+> Offloading to the hardware level
+> Tightly synchronised
+
+Cycle 
+
+Mantissa 
+
+Exponent 
+
+1st.  2nd. 
+
+Free_stage 
+
+Figure 4. To balance hardware practicality and reliability, BFP support uses blocking strategy a and the mantissa and exponent are mapped to the systolic array and adder respectively. In NPUs, this design modifies or introduces three primary modules: the mantissa compute module ( b ), the exponent compute module ( c ), and the data-format converters ( d ). Each module is provisioned with a dedicated protection mechanism. 
+
+zeros collapses the LZC from 10 to 0, increasing the exponent by 10, whereas FP implicit leading bit bounds leading zeros and keeps exponent drift over 500 × smaller. The pipeline ordering also differs: FP performs continuous mantissa alignment and normalization, while BFP first executes block-level mantissa computation and then applies a single, unified normalization. Consequently, in BFP, normalization allows mantissa errors to perturb output exponents, leading to the assumption that “protecting only the exponent path” is sufficient. Targeted hardening of the mantissa computation path is also required. 
+
+Insight-2 : The bit-level vulnerability of BFP across different modules warrants differentiated hardening priorities. In non-compute modules, exponent bits should be prioritized. In compute modules, priority should be given to the shared-exponent path and the high-significance segments of the widened mantissas within execution units. 
+
+3.3 Analysis of BFP Stream Processing in BFP-Based NPUs 
+
+In typical BFP-based NPU datapath [ 11 , 14 , 22 , 66 ], compute mod-ules are flanked by FP-BFP converters. This common industrial design confines BFP to inner MACs for efficiency, retaining FP at boundaries for high-accuracy nonlinearities (e.g., softmax) and com-patibility with existing FP software stacks. The pipeline is naturally segmented by these BFP-introduced stages, forming structural bound-aries that later serve as anchor points for reliability mechanisms. Examining BFP’s computation logic shows that, when exponents and mantissas are mapped onto decoupled hardware paths, their processing becomes highly asymmetric in structure and verification complexity. During vector computation, mantissas traverse the MAC pipeline for the dot product, while exponents require only a single scalar addition, leaving the exponent path short with substantial cycle slack. Meanwhile, mantissas stay in the fixed-point domain along the dot product datapath, enabling a lightweight fixed-point Conference’17, July 2017, Washington, DC, USA Jie Zhang et al. PE  PE                                  
+
+> PE
+> PE
+> PE
+> PE
+> PE
+> PE PE
+> PE PE
+> PE
+> PE
+> PE
+> PE
+> PE
+> PE PE
+> Checking Vector
+> 3
+> 2
+> 4
+> 4
+> 6
+> 78
+> 5×1
+> 6
+> 3
+> 2
+> 4
+> 40
+> 11
+> 1
+> OS-M
+> 15+0
+> 6
+> 78
+> 6
+> Checking Vector
+> Checking PE
+> WS-M (Cycle = 1)
+> OS-M (Cycle = 1)
+> Checking Vector
+> WS-M
+> Checksums
+> Matrix Definition Our Method
+> AB
+> 12
+> 34
+> 56
+> 78C01
+> 10Cc
+> 10
+> 10
+> 11
+> Ac
+> 12
+> 34
+> 46
+> AcBAcBCc
+> 19 22
+> 43 50
+> 62 72
+> 19 23
+> 44 50
+> 63 73
+
+Figure 5. Mathematical principles (top) and microarchitecture (bottom) for protecting mantissa. Blue regions: protection-driven additions under WS-M; red regions: protection-driven additions under OS-M. 
+
+check without reconstructing FP results. By contrast, an end-to-end unified check on reconstructed FP outputs must reconcile normal-ization, alignment, and rounding, increasing checker overhead and false positives that reduce effectiveness (see Fig. 1). These observa-tions suggest that aligning BFP hardware mapping with reliability constraints is key to elegant and reliable BFP-based NPUs. 
+
+Insight-3 : By aligning BFP computational semantics with reli-ability constraints through fine-grained hardware mapping and characteristic-aware protection, a cost-effective, reliable BFP-based NPU solution can be developed. 
+
+## 4 Microarchitecture 
+
+Based on the analysis in Sec. 3, we propose a BFP-based NPU that exploits BFP’s characteristics for low-overhead reliability. The design aligns the modified hardware directly with BFP computational semantics and enables highly efficient, minimal-overhead protection mechanisms. From a reliability perspective, immediate fault detection is essential to prevent system failures [ 31 , 32 ]. This priority is codified in ISO 26262 [ 32 ], which prescribes strict, level-specific requirements for fault detection. Accordingly, our work focuses on developing efficient fault detection mechanisms. Once a fault is detected, the system can transition to a safe state and perform corrective actions through well-established safety management frameworks. 
+
+BFP blocking strategy and hardware mapping. Leveraging BFP’s characteristics, we design its hardware operators via an appropriate blocking strategy. BFP’s shared-exponent property naturally aligns with vector dot products, making it compatible with systolic arrays. As shown in Fig. 4. a , we propose a highly compatible blocking strategy: the left matrix is blocked by rows, the right matrix is blocked by columns, and each vector is quantized into a BFP block with a shared-exponent. This equates result computation to the dot product of a BFP row and column vector. Since the final exponent equals the sum of the vectors’ shared-exponents, mantissa MACs are fully decoupled from the exponent path. This key decoupling brings several microarchitectural advantages: (i) the mantissa dot product task can be directly mapped to standard fixed-point systolic arrays and vector units, keeping compatibility with traditional NPU hardware without changing key structures; (ii) separating exponent and mantissa pipelines enables independent, differentiated protection schemes exploiting distinct sensitivity characteristics; (iii) mantissa protection reduces to fixed-point protection, avoiding false positives and detection failures from rounding errors in traditional FP paths. Furthermore, once decoupled from the mantissa, the exponent can be obtained via simple summation, requiring only a few adders. Exp_B               
+
+> Exp_A
+> Preload Exp_B
+> Exp_A
+> Exp Sum
+> Exp_A (from unit above)
+> Exp_B (from unit above)
+> Second
+> EU
+> EU
+> EU
+> . . .
+> Exp_A
+> Exp_B
+> Buffer Error Detection
+> First
+> Exp3_A Exp2_A Exp1_A Exp0_A
+> Exp0_B Exp1_B Exp2_B Exp3_B
+> Cycle
+> First
+> Exp0_B Exp1_B Exp2_B Exp3_B
+> Exp3_A Exp2_A Exp1_A Exp0_A
+> Second
+> ab
+> c
+
+Figure 6. Microarchitecture of the protection mechanism for the exponent computation module ( a ) and its timing principles ( b , c ). 
+
+Protection philosophy. The above mapping enables comprehensive reliability with minimal overhead. First, mantissa computation is cast to fixed-point and executed on the systolic array. Because its significant impact on end-to-end inference and ABFT is deviation-free for fixed-point computations, we deploy a lightweight ABFT checker in hardware to protect the mantissa path (Fig. 4. b ). In contrast, the exponent computation uses a few adders and is much faster than the mantissa. Exploiting the timing slack relative to the mantissa pipeline, each adder performs two evaluations within idle cycles and compares the results, providing time-redundant fault detection (Fig. 4. c ). For FP-to-BFP and BFP-to-FP converters, our measurements show that their area accounts for only 0.2% of the NPU. For such small-area, inseparable critical modules, DMR (Fig. 4. d ) becomes a rational and implementable solution. 
+
+4.1 Reliability of the Mantissa Compute Module 
+
+By mapping BFP mantissa computation onto the systolic array, protecting this path reduces to hardening the fixed-point systolic array. In NPUs, two common regimes are Weight-Stationary (WS-M) and Output-Stationary (OS-M): in WS-M, the weight matrix 𝐵 is preloaded into the systolic array, while the input matrix 𝐴 streams through; in OS-M, the bias matrix 𝐶 is preloaded, and both 𝐴 and 𝐵 
+
+stream in. For the fixed-point computation path, we employ ABFT for verification: by appending row/column checksums, a set of resultant checksums is generated along with the results (the upper part of Fig. 5). To keep checks “in-flight” without disturbing the dataflow, we append a checksum vector to the tail of 𝐴 and, under OS-M, activate additional check-PEs for synchronous in-pipeline verification. 
+
+Protection mechanism. The mechanism (Fig. 5) tightly integrates with the systolic array’s original dataflow. In WS-M, we place a column of adder–register units at the array ingress to integrate the streaming columns of the input matrix 𝐴 on the fly, producing a check-vector that is appended to 𝐴 and inserted in the same stream. Via systolic propagation, the checksum emerges at the array bottom, where an accumulator calculates the sum of the computed results, and a comparator checks the resultant checksums against this sum, providing in-situ result verification (Fig. 5: blue region). In OS-M, outputs accumulate inside the PEs. To support streaming verification, we add (i) a bottom row of check-PEs and (ii) a left-edge column-wise accumulation chain that cascades and integrates per-column inputs each cycle, generating the check components in place. By phase-aligning the chain depth with the array latency, these components arrive at the check-PE inputs exactly when the check-vector is inserted, the check-PEs then produce output-aligned resultant checksums and perform immediate comparison and error From Characterization to Microarchitecture: Designing an Elegant and Reliable BFP-Based NPU Conference’17, July 2017, Washington, DC, USA LZC        
+
+> LZC
+> LZC . . .
+> ...
+> Shifter
+> Shifter
+> Shifter
+> . . .
+> ...
+> . . .
+> ... ...
+> Mantissas
+> LZC
+> LZC
+> LZC . . .
+> ...
+> Shifter
+> Shifter
+> Shifter
+> . . .
+> ...
+> . . .
+> ... ...
+> Exponents
+> FP Mantissas FP Exponents
+> . . .
+> Magnitude Comparator
+> . . .
+> Shifter
+> Shifter
+> Shifter
+> . . .
+> ...
+> . . .
+> FP Exponents FP Mantissas
+> Shared Exponent
+> BFP Mantissas
+> . . .
+> Magnitude Comparator
+> . . .
+> Shifter
+> Shifter
+> Shifter
+> . . .
+> ...
+> . . .
+> ab
+
+Figure 7. Protection mechanism and microarchitecture of the FP-to-BFP ( a ) and BFP-to-FP ( b ) converters. 
+
+detection (Fig. 5: red region). The mechanism adds only two extra cycles — one to insert the check-vector and one to perform the final comparison. Additionally, informed by the Insight-2 in Sec. 3, the error correction mechanism deployed on our detection system could be designed to ignore bits that exert a negligible influence. 
+
+4.2 Reliability of the Exponent Compute Module 
+
+The exponent compute module for BFP matrix multiplication com-putes the exponent component of the resultant matrix 𝐶 . The module takes two shared-exponent vectors as input: 𝐸 𝑎 ∈ Z𝑁 ×1 for the rows of matrix 𝐴 , and 𝐸 𝑏 ∈ Z1×𝑁 for the columns of matrix 𝐵 . It outputs the resultant exponent matrix 𝐸 𝑐 ∈ Z𝑁 ×𝑁 , where 𝐸 𝑐 (𝑖, 𝑗 ) is the expo-nent for the corresponding result element 𝐶 (𝑖, 𝑗 ). The computation is performed using an outer-add operation, and it is defined by: 
+
+𝐸 𝑐 = 𝐸 𝑎 1𝑇 + 1𝐸 𝑏 . Here, 1 is a column vector of ones of size 𝑁 × 1.To enhance reliability and optimize resource utilization, a dedicated Exponent Unit (EU) is designed. Multiple EUs are cascaded into an EU array that exploits pipeline idle cycles from the timing mismatch between the systolic array and the adder. The array is capable of executing two aforementioned exponent computations within the time equivalent to a single computation cycle of the systolic array. 
+
+Protection mechanism. Fig. 6. a shows the EU microarchitecture and its interconnection topology. Each EU comprises an adder, two exponent registers and multiplexers. In WS-M, the systolic array is preloaded with Matrix 𝐵 ; in OS-M, Matrix 𝐴 is fetched and transposed beforehand. We next detail the WS-M flow; the OS-M case is analogous to 𝐴 /𝐵 swapped and the transpose step applied. The exponents of Matrix 𝐵 are extracted and loaded into a 𝐵 -matrix exponent register in each EU. As Matrix 𝐴 is fetched rowwise, its row exponents are streamed at one per cycle (Fig. 6. b ), broadcast to all EU adders, and latched by a serial 𝐴 -matrix exponent-register chain. To increase fault-detection coverage on the second computation and avoid masking permanent faults, the 𝐵 -matrix exponent registers are reconfigured into a ring for data circulation (Fig. 6. c ). This causes each adder to receive a different operand pairing across the two runs, reducing constant-input cases that could mask permanent faults. 
+
+4.3 Reliability of the Data Format Converter 
+
+The FP-to-BFP converter operates blockwise to compute a shared-exponent and to align mantissas accordingly. For each block, a magnitude comparator first determines the blockwise maximum exponent. Next, a subtractor derives the relative shift amount for each element. Finally, a shifter right-shifts the corresponding mantissa, and the aligned mantissas are combined with the shared-exponent to Accuracy  
+
+> 20%
+> 30%
+> 40%
+> 50%
+> 60%
+> 70%
+> 0
+> 15
+> 30
+> 45
+> 60
+> 75
+> Perplexity Row/Column-Wise Matrix-Wise Row/Column-Segment-Wise
+
+Figure 8. DNN and LLM performance under three blocking strategies. 
+
+form the BFP representation (Fig. 7. a ). In the reverse path, the BFP-to-FP converter restores BFP results to the standard FP format. An LZC produces the displacement required to normalize each mantissa. Guided by this displacement, a shifter applies the required adjustment to the mantissa, while an exponent update unit correspondingly updates the output exponent to complete normalization (Fig. 7. b ). 
+
+Protection mechanism. Since Sec. 3 reveals the mantissa’s lower criticality on the non-compute path, lightweight fuzzy protection can be applied to mantissa within the converter: in FP-to-BFP converter, FP implicit leading bit fidelity during shifting and the correctness of newly introduced leading zeros after BFP alignment are verified; in BFP-to-FP converter, correctness checks are restricted to a small window of bits immediately following the first significant “1” in the BFP mantissa, which map to the FP mantissa’s most significant bits after conversion. However, standard cell gate-level synthesis shows these converters occupy only 0.2% of the NPU area. Thus, even with these beneficial characteristics, the actual gain is minimal due to the already small pre-optimization overhead, which ironically leads to an unfavorable accuracy-reliability trade-off. Therefore, DMR with bitwise consistency check becomes a direct and rational choice. 
+
+4.4 Discussion on the Blocking Design Trade Off 
+
+We compare the BFP row/column-wise blocking strategy against two common alternatives: matrix-wise [ 22 , 37 ] (one shared-exponent for the entire matrix) and row/column-segment-wise [ 67 ] (each matrix row or column is partitioned into several segments, each with its own shared-exponent), to show why row/column-wise provides a suitable alignment between hardware mapping and reliability design. 
+
+Matrix-wise. While a matrix-wise shared-exponent maximizes reuse, it significantly degrades inference performance (Fig. 8). More impor-tantly, it brings negligible practical resource benefit. Relative to the row/column-wise, matrix-wise only reduces exponent computation hardware, and its pipeline latency is much shorter than the mantissa path. Thus, although our reliability mechanisms can easily port to this mapping, the cost–benefit profile offers no substantive advantage. 
+
+Row/column-segment-wise. Smaller blocks do yield a modest im-provement in model performance (see Fig. 8), but at the expense of two substantial costs. (i) Microarchitecturally, it is less friendly: row/column-segment breaks the row-wise scheduling assumption of mainstream systolic NPUs [ 18 , 34 ]. The need to align exponent results from different blocks forces a re-design of datapath and con-trol flow, tightly coupling the hardware to this fine-grained blocking. (ii) In terms of reliability, the hardware overhead from the fault detection logic grows rapidly. Since exponents and mantissas are repartitioned at the row/column-segment level, the vulnerability of shared units and intermediate registers also manifests at this granular-ity: if protection is still deployed at matrix granularity, the detection effect is compromised; if it is instead applied at row/column-segment granularity, then each row/column-segment must be equipped with detection logic, causing overhead to increase sharply as the block Conference’17, July 2017, Washington, DC, USA Jie Zhang et al. 0%        
+
+> 100%
+> 200%
+> 5%
+> 128×128 16×16 64×64
+> Slowdown  Ours
+> IR
+> DMR
+> Figure 9. Performance overhead induced by different strategies. 98.0%
+> 98.4%
+> 98.8%
+> 99.2%
+> 99.6%
+> 100.0%
+> 1×10 -8 1×10 -7 1×10 -6 1×10 -5 5×10 -8 5×10 -7 5×10 -6 5×10 -5
+> Fault Rate
+> Detection  16×16
+> 64×64
+> 128×128
+> Figure 10. Error detection rate of our method across different settings.
+
+size shrinks. In a 128 × 128 matrix, splitting each row/column of four elements raises the hardware overhead from ≈ 1128 at matrix granularity to ≈ 14 at row/column-segment granularity. Yet, these substantial costs yield only a marginal inference gain ( ≈2% in Fig. 8). In contrast, row/column-wise (i) aligns with the row-scheduled model of existing NPUs, allowing reliability mechanisms to be de-ployed at array granularity to reduce overhead without sacrificing detection accuracy, and (ii) maintains strong model-level perfor-mance. Thus, it provides a more reasonable convergence point between hardware mapping and reliability design. 
+
+## 5 Evaluation 
+
+5.1 Experimental Setup 
+
+We implement our design on Gemmini [ 18 ], an actively maintained open-source NPU whose systolic array-based core is representative of modern NPU architectures. RTL is deployed on an FPGA plat-form comprising 20 AMD Virtex UltraScale+ VU19P devices. To span a range of scales and resource budgets, we instantiate 16 × 16 ,
+
+64 × 64 , and 128 × 128 systolic arrays. Owing to hardware resource limits, LLM performance is assessed in PyTorch using a behav-ioral model patterned after Spike [ 51 ]. We evaluate mainstream DNNs, including ResNet-50, AlexNet, and MobileNet-V2, on Tiny ImageNet. For LLMs, we consider the widely used open-source families Llama3 (1B/3B/8B) and OPT (125M/1.3B/2.7B), assessing them on WikiText-2. Collectively, these choices span a spectrum of architectural styles and parameter scales and, by relying on standard vision and language benchmarks, offer strong cross-study compara-bility. For fault injection, we adopt the same method as in Sec. 3. Then we conduct a comparative analysis against two fault-tolerance baselines that cover representative hardware and software paths: (i) DMR: it is applied to the BFP compute module and the adjacent data format converter; replicas execute in lockstep and their outputs are compared. (ii) IR: a sensitivity-driven dual-execution policy is adopted. Redundancy is prioritized on robustness-critical operators and boundary layers. For DNNs, the protected regions are AlexNet’s first three conv layers, the first two convs in each MobileNet-V2 block, and the first two residual blocks of ResNet-50 [ 21 , 28 ]. For LLMs, the earliest 20% and the final 20% of layers are protected [ 25 ]. 
+
+5.2 Observations and Results Analysis (1) Performance overhead. Fig. 9 reports the performance over-head of different fault-detection schemes. For a fair comparison, all baselines are evaluated under an iso-area constraint, matched                                                       
+
+> Table 1. The worst case detection latency of various components.
+> Configuration Mantissa compute Exponent compute FP-to-BFP BFP-to-FP
+> 16 ×16 0.098 𝜇 s0.064 𝜇 s0.014 𝜇 s0.008 𝜇 s
+> 64 ×64 0.390 𝜇 s0.250 𝜇 s0.018 𝜇 s0.008 𝜇 s
+> 128 ×128 0.750 𝜇 s0.524 𝜇 s0.020 𝜇 s0.008 𝜇 s
+> Table 2. Hardware overhead under different configurations.
+> Configuration 16 ×16 64 ×64 128 ×128
+> WS OS WS OS WS OS
+> Overhead (Power) 22.36% 23.48% 4.80% 6.33% 2.81% 3.05%
+> Overhead (Area) 9.40% 17.00% 2.53% 3.82% 1.30% 1.80%
+
+to the proposed hardware implementation. Overall, DMR has the largest overhead (20% ∼132%) due to extensive hardware replication; moreover, as array size grows and systolic-array utilization drops, DMR’s relative overhead decreases accordingly. IR’s overhead is moderate (10% ∼70%) and correlates strongly with compute density. By contrast, the proposed method adds only minor overhead (geo-metric mean 3.55%). This indicates the proposed scheme results in substantially lower performance cost, outperforming DMR and IR. 
+
+(2) Detection coverage. Fig. 10 shows the error detection coverage of the proposed method. Under all configurations and fault rate con-ditions, the error detection coverage remains above 98%, with only a slight decrease under extreme fault rate scenarios. This is attributed to the design’s exploitation of the characteristics of BFP computation, which transforms FP-based checks into fixed-point checks. This ap-proach avoids inconsistencies in results across different computation paths due to rounding errors in FP computations. 
+
+(3) Model performance. Fig. 11 and 12 present the performance of DNN and LLM models under different configurations and fault rates with various protection schemes. Compared to the Vanilla baseline (no protection), IR provides moderate protection at low fault rates, but its effectiveness quickly decreases at higher fault rates. DMR, due to its comprehensive redundancy approach, consistently exhibits the best protection across different fault rates and configurations. In comparison, the proposed method achieves protection performance comparable to DMR at low fault rates, and second only to DMR at higher fault rates, demonstrating excellent fault tolerance. 
+
+(4) Detection latency. We evaluate the worst-case error-detection latency, the interval from instruction initiation to error detection. As shown in Tab. 1, the latency of the exponent and mantissa modules increases with matrix size. Because larger matrix sizes involve more data and complex computations, leading to an increase in latency. In contrast, the latency for FP-to-BFP and BFP-to-FP converters is shorter and nearly configuration-invariant, as their vector-level pipelines have a fixed number of stages. Despite the latency increases with the computation scale, all measured latencies remain sub-microsecond, demonstrating the efficiency of the protection scheme. 
+
+(5) Hardware overhead. We measure the hardware overhead using Synopsys Design Compiler (v2019.12) and the industry-standard TSMC 28nm library. As shown in Tab. 2, in the 128 × 128 configura-tion, which better aligns with industrial deployments, our scheme incurs only ≈3% power overhead (WS: 2.81%, OS: 3.05%) and 1% ∼2% area overhead (WS: 1.30%, OS: 1.80%). These results sug-gest that the scheme’s linear costs are effectively amortized on larger arrays, thereby yielding a minimal hardware budget for reliability. From Characterization to Microarchitecture: Designing an Elegant and Reliable BFP-Based NPU Conference’17, July 2017, Washington, DC, USA 128×128 
+
+# 64×64 
+
+5×10 -7  5×10 -7  5×10 -7  5×10 -7  5×10 -7  5×10 -7  5×10 -7  5×10 -7  5×10 -7 5×10 -6  5×10 -6  5×10 -6  5×10 -6  5×10 -6  5×10 -6  5×10 -6  5×10 -6  5×10 -6 
+
+# 16×16 
+
+0% 
+
+20% 
+
+40% 
+
+60% 
+
+80% 
+
+> Accuracy
+
+ResNet-50  ResNet-50  ResNet-50 AlexNet  AlexNet  AlexNet MobileNet-V2  MobileNet-V2  MobileNet-V2 
+
+Vanilla  Ours IR[21,28]  DMR[5,54] 
+
+Figure 11. DNN accuracy under different protection strategies across varying fault rates and hardware configurations. Perplexity 
+
+1
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+10 5
+
+2×10 -9  5×10 -8  2×10 -9  5×10 -8  2×10 -8  5×10 -8  5×10 -9  5×10 -8  3×10 -9  5×10 -8  5×10 -9  5×10 -8 
+
+OPT-2.7B  OPT-1.3B  OPT-125M  Llama-8B  Llama-3B  Llama-1B    
+
+> Vanilla IR[25] DMR[5,54] Ours
+
+Figure 12. LLM perplexity under different protection strategies across varying fault rates. 
+
+## 6 Conclusion 
+
+In this paper, we present a pathway toward reliable BFP-based NPUs. We show that effective protection cannot be obtained by directly porting FP/INT schemes but must be co-engineered with BFP’s numerical characteristics and hardware mapping. Grounded in a systematic RTL-level reliability study, we first answer where to protect by identifying dominant module- and bit-level vulnerabilities in different units. Leveraging these insights, and by further analyzing BFP’s block-wise scaling and stream processing, we trace the failure of conventional schemes under shared-exponent normalization and propose a reliability–hardware co-design that realigns blocking, mapping, and protection, thereby answering how to protect, ultimately delivering an elegant and reliable BFP-based NPU at minimal costs. 
+
+## 7 Acknowledgement 
+
+We’d like to thank the reviewers for the helpful feedback. This work is supported by the National Key Research and Development Program (Grant No.2024YFB4405600), the Basic Research Program of Jiangsu (Grants No. BK20243042), and the Fundamental Research Funds for the Central Universities (No. 2242025K20013). 
+
+## References 
+
+[1] Mohammad Hasan Ahmadilivani, Mahdi Taheri, et al . 2023. Enhancing fault resilience of qnns by selective neuron splitting. arXiv preprint arXiv:2306.09973 
+
+(2023). [2] Ensieh Aliagha, Mehdi Safarpour, et al . 2025. SCISSORS: System Level Error De-tection for Enabling Near-Threshold Operating Systolic Arrays. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems (2025). [3] AMD. 2025. The World’s First Block FP16 NPU Model for SD 3.0 on XDNA 2. AMD Blog. https://www.amd.com/en/blogs/2025/worlds-first-bf16-sd3-medium-npu-model.html 
+
+[4] Ali Azizimazreah and Li Chen. 2018. Tolerating soft errors in deep learning accelerators with ECC. In NAS .[5] Pete Bannon and Ganesh others Venkataramanan. 2019. Computer and redundancy solution for the full self-driving computer. In IEEE HCS . IEEE Computer Society, 1–22. [6] Timoteo García Bertoa, Giulio Gambardella, et al . 2022. Fault-tolerant neural network accelerators with selective TMR. IEEE Design & Test 40, 2 (2022), 67–74. [7] Cristiana Bolchini, Luca Cassano, et al . 2023. Resilience of Deep Learning applications: a systematic survey of analysis and hardening techniques. [8] Hiari Pizzini Cavagna, Daniele Cesarini, et al . 2025. Assessing Tenstorrent’s RISC-V MatMul Acceleration Capabilities. arXiv preprint arXiv:2505.06085 
+
+(2025). [9] Pierluigi Civera, Luca Macchiarulo, et al . 2002. An FPGA-based approach for speeding-up fault injection campaigns on safety-critical circuits. Journal of Electronic Testing 18, 3 (2002), 261–271. [10] Bita Darvish Rouhani, Daniel Lo, et al . 2020. Pushing the limits of narrow precision inferencing at cloud scale with microsoft floating point. NeurIPS 33 (2020), 10271–10281. [11] Mario Drumond, Tao Lin, et al . 2018. Training dnns with hybrid block floating point. NeurIPS 31 (2018). [12] Abhimanyu Dubey, Abhinav Jauhri, et al . 2024. The llama 3 herd of models. arXiv e-prints (2024), arXiv–2407. [13] James J Elliott, Frank Mueller, et al . 2013. Quantifying the impact of single bit flips on floating point arithmetic . Technical Report. ORNL, Oak Ridge, TN. [14] Hongxiang Fan, Gang Wang, et al . 2019. Static block floating-point quantization for convolutional neural networks on FPGA. In ICFPT . IEEE, 28–35. [15] Bo Fang, Xinyi Li, et al . 2023. Mpgemmfi: A fault injection technique for mixed precision gemm in ml applications. arXiv preprint arXiv:2311.05782 (2023). [16] Daocheng Fu, Xin Li, et al . 2024. Drive like a human: Rethinking autonomous driving with large language models. In IEEE/CVF WACVW . IEEE, 910–919. [17] Johannes Geier. 2020. Fast RTL-based Fault Injection Framework for RISC-V Cores. (2020). [18] Hasan Genc, Seah Kim, et al . 2021. Gemmini: Enabling systematic deep-learning architecture evaluation via full-stack integration. In ACM/IEEE DAC . IEEE, 769–774. [19] Dimitris Gizopoulos. 2025. The Dark Side of Computing: Silent Data Corruptions. 
+
+Computer 58, 6 (2025), 101–106. [20] Johannes Grinschgl, Armin Krieg, et al . 2011. Automatic saboteur placement for emulation-based multi-bit fault injection. In ReCoSoC . IEEE, 1–8. [21] Baixin Guo et al . 2023. Neural network reliability analysis based on fault injection. In CNML . 366–370. [22] Xiaomeng Han, Yuan Cheng, et al . 2025. Bbal: A bidirectional block floating point-based quantisation accelerator for large language models. In ACM/IEEE DAC . IEEE, 1–7. [23] Jude Haris and José Cano. 2025. F-BFQ: Flexible Block Floating-Point Quantiza-tion Accelerator for LLMs. arXiv preprint arXiv:2510.13401 (2025). [24] Jude Haris, Rappy Saha, et al . 2024. Designing efficient llm accelerators for edge devices. arXiv preprint arXiv:2408.00462 (2024). [25] Jiajun He et al . 2025. Fine-Grained Fault Sensitivity Analysis of Vision Trans-formers Under Soft Errors. Electronics 14, 12 (2025), 2418. [26] Kaiming He, Xiangyu Zhang, et al . 2016. Deep residual learning for image recognition. In IEEE CVPR . 770–778. [27] Gao Huang, Zhuang Liu, et al . 2017. Densely connected convolutional networks. In IEEE CVPR . 4700–4708. [28] Younis Ibrahim et al . 2020. Soft errors in DNN accelerators: A comprehensive review. Microelectronics Reliability 115 (2020), 113969. [29] Younis Ibrahim, Haibin Wang, et al . 2020. Analyzing the reliability of convolutional neural networks on gpus: Googlenet as a case study. In ICCIT-1441 . IEEE, 1–6. [30] Younis Ibrahim, Haibin Wang, et al . 2020. Soft error resilience of deep residual networks for object recognition. IEEE Access 8 (2020), 19490–19503. [31] Texas Instruments. 2023. Functional Safety Manual for TMS320F280013x Series. Texas Instruments, Application Report. https://www.ti.com/lit/ug/spruhl7/ spruhl7.pdf 
+
+[32] ISO26262 ISO. 2018. 26262: Road vehicles-Functional safety. (2018). [33] Benoit Jacob, Skirmantas Kligys, et al . 2018. Quantization and training of neural networks for efficient integer-arithmetic-only inference. In IEEE CVPR .2704–2713. [34] Norman P Jouppi, Cliff Young, et al . 2017. In-datacenter performance analysis of a tensor processing unit. In ISCA . 1–12. [35] Dhiraj Kalamkar, Dheevatsa Mudigere, et al . 2019. A study of BFLOAT16 for deep learning training. arXiv preprint arXiv:1905.12322 (2019). [36] Jacob Devlin Kenton et al . 2019. Bert: Pre-training of deep bidirectional transform-ers for language understanding. In naacL-HLT , Vol. 1. Minneapolis, Minnesota, 2. Conference’17, July 2017, Washington, DC, USA Jie Zhang et al. 
+
+[37] Urs Köster, Tristan Webb, et al . 2017. Flexpoint: An adaptive numerical format for efficient training of deep neural networks. NeurIPS 30 (2017). [38] Alex Krizhevsky, Ilya Sutskever, et al . 2012. Imagenet classification with deep convolutional neural networks. NeurIPS 25 (2012). [39] Seo-Seok Lee and Joon-Sung Yang. 2022. Value-aware parity insertion ECC for fault-tolerant deep neural network. In DATE . IEEE, 724–729. [40] Guanpeng Li et al . 2025. Understanding Error Propagation in Deep-Learning Neural Networks Accelerators and Applications. IEEE Des. Test (2025). [41] Stephen Merity, Caiming Xiong, et al . 2016. Pointer sentinel mixture models. 
+
+arXiv preprint arXiv:1609.07843 (2016). [42] Paulius Micikevicius, Sharan Narang, et al . 2017. Mixed precision training. arXiv preprint arXiv:1710.03740 (2017). [43] Chandra Sekhar Mummidi, Sandeep Bal, et al . 2022. A highly-efficient error detection technique for general matrix multiplication using tiled processing on SIMD architecture. In IEEE ICCD . IEEE, 529–536. [44] NVIDIA. 2025. Introducing NVFP4 (and MXFP) for Efficient Low-Precision Inference on Blackwell. Developer Blog. https://developer.nvidia.com/blog/ introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/ 
+
+[45] Jhon Ordoñez and Chengmo Yang. 2024. Enhancing DNN Accelerator Integrity via Selective and Permuted Recomputation. In IEEE/ACM ICCAD . 1–8. [46] Taewon Park, Saeid Gorgin, et al . 2025. PoP-ECC: Robust and Flexible Error Correction against Multi-Bit Upsets in DNN Accelerators. In ACM/IEEE DAC .IEEE, 1–7. [47] Liqi Ping, Jingweijia Tan, et al . 2020. SERN: Modeling and analyzing the soft error reliability of convolutional neural networks. In GLSVLSI . 445–450. [48] Antonio Porsia, Giacomo Perlo, et al . 2025. On the Resilience of INT8 Quantized Neural Networks on Low-Power RISC-V Devices. In IEEE/IFIP DSN-W . IEEE, 119–122. [49] Harsh Rangwani, Sho Takemori, et al . 2022. Cost-sensitive self-training for optimizing non-decomposable metrics. NeurIPS 35 (2022), 26994–27007. [50] Brandon Reagen, Udit Gupta, et al . 2018. Ares: A framework for quantifying the resilience of deep neural networks. In ACM/IEEE DAC . 1–6. [51] RISC-V Software Source. 2024. riscv-isa-sim: RISC-V ISA Simulator (Spike). 
+
+https://github.com/riscv-software-src/riscv-isa-sim .[52] Mehdi Safarpour, Reza Inanlou, et al . 2021. Algorithm level error detection in low voltage systolic array. IEEE TCAS-II 69, 2 (2021), 569–573. [53] Mark Sandler, Andrew Howard, et al . 2018. Mobilenetv2: Inverted residuals and linear bottlenecks. In IEEE CVPR . 4510–4520. [54] Ahmad T Sheikh and Aiman H El-Maleh. 2018. Double modular redundancy (dmr) based fault tolerance technique for combinational circuits. JCSC 27, 06 (2018), 1850097. [55] Eugen Solowjow, Ines Ugalde, et al . 2020. Industrial robot grasping with deep learning using a programmable logic controller (plc). In IEEE CASE . IEEE, 97–103. [56] Peng Su, Yuhang Li, et al . 2025. Applying Reinforcement Learning to Protect Deep Neural Networks from Soft Errors. Sensors 25, 13 (2025), 4196. [57] Christian Szegedy, Vincent Vanhoucke, et al . 2016. Rethinking the inception architecture for computer vision. In IEEE CVPR . 2818–2826. [58] Mingxing Tan and Quoc Le. 2019. Efficientnet: Rethinking model scaling for convolutional neural networks. In ICML . PMLR, 6105–6114. [59] Irina Topalova and Pavlinka Radoyska. 2023. A Model of an Intelligent Automation System for Monitoring of Sensor Signals with a Neural Network Implementation. 
+
+Annals of DAAAM & Proceedings 34 (2023). [60] Jinghe Wei, Younis Ibrahim, et al . 2020. Analyzing the impact of soft errors in VGG networks implemented on GPUs. Microelectronics Reliability 110 (2020), 113648. [61] Tong Xie, Jiawang Zhao, et al . 2025. ReaLM: Reliable and Efficient Large Language Model Inference with Statistical Algorithm-Based Fault Tolerance. 
+
+arXiv preprint arXiv:2503.24053 (2025). [62] Xianli Xie, Jiansheng Chen, et al . 2025. Multidimensional Fault Injection and Simulation Analysis for Random Number Generators. Electronics 14, 18 (2025), 3702. [63] Leon Yao and John Miller. 2015. Tiny imagenet classification with convolutional neural networks. CS 231N 2, 5 (2015), 8. [64] Thomas Yeh, Max Sterner, et al . 2022. Be like water: Adaptive floating point for machine learning. In ICML . PMLR, 25490–25500. [65] Susan Zhang, Stephen Roller, et al . 2022. OPT: Open Pre-trained Transformer Language Models. arXiv:2205.01068 [cs.CL] [66] Sai Qian Zhang, Bradley McDanel, et al . 2022. Fast: Dnn training under variable precision block floating point with stochastic rounding. In IEEE HPCA . IEEE, 846–860. [67] Wenjie Zhou, Haoyan Qi, et al . 2025. FPGA-based Block Minifloat Training Accel-erator for a Time Series Prediction Network. ACM Transactions on Reconfigurable Technology and Systems 18, 2 (2025), 1–23. [68] Lancheng Zou, Wenqian Zhao, et al . 2024. Bie: Bi-exponent block floating-point for large language models quantization. In ICML .
