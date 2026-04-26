@@ -1,0 +1,995 @@
+Title: FlexVector: A SpMM Vector Processor with Flexible VRF for GCNs on Varying-Sparsity Graphs
+
+URL Source: https://arxiv.org/pdf/2604.10113v1
+
+Published Time: Tue, 14 Apr 2026 00:34:02 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+> 1
+
+# FlexVector: A SpMM Vector Processor with Flexible VRF for GCNs on Varying-Sparsity Graphs 
+
+Bohan Li † Shengmin Li † Xinyu Shi Enyi Yao Francky Catthoor Simei Yang ∗
+
+Abstract —Graph Convolutional Networks (GCNs) are widely adopted for tasks involving relational or graph-structured data and can be formulated as two-stage sparse–dense matrix multipli-cation (SpMM) during inference. However, existing accelerators often struggle with the irregular workloads induced by power-law node degree distributions. In this work, we propose FlexVector ,a vector-processor-based architecture that efficiently accelerates SpMM for GCN inference. To address irregular computation patterns, FlexVector adopts a row-wise, product-based dataflow that regularizes SpMM execution and exposes vector parallelism through full-row access to vector registers, eliminating the need for multi-banked register file designs. Building on this dataflow, it introduces software-managed, flexible vector register files (VRFs) that adapt to irregular data access patterns, without sacrificing memory access efficiency. To further exploit these architectural capabilities, we develop a graph-aware preprocessing and node partitioning strategy that restructures irregular graph workloads to better match the row-wise dataflow and VRF capacity. This hardware–software co-design reduces memory traffic, leading to significant performance and energy efficiency gains on real-world GCN workloads. Experimental results on five real-world GCN datasets show that the VRF-centric FlexVector achieves a 3.78 ×
+
+speedup and 40.5% lower energy at comparable area cost relative to a state-of-the-art cache-centric baseline with buffers of the same size. 
+
+Index Terms —GCNs, Sparse-dense Matrix Multiplication, Vec-tor Processor, Row-wise product dataflow 
+
+I. I NTRODUCTION 
+
+Graph Convolutional Networks (GCNs) [1] have become a widely adopted approach for learning from irregular graph-structured data. By capturing node relationships and con-nectivity patterns, GCNs can achieve high performance in applications such as social network analysis, traffic prediction, and other graph-based tasks [2], [3]. The execution of a typical GCN layer is dominated by two primary phases: 
+
+aggregation and combination . The aggregation phase depends on the graph’s topology, resulting in sparse and irregular mem-ory access patterns, whereas the combination phase consists primarily of dense operations with regular memory access. Due to the contrasting computational characteristics of aggregation and combination, existing GCN accelerators have evolved along two primary architectural directions. The first adopts heterogeneous engines [4]–[6], which dedicate separate processing engines to the aggregation and combination phases. This enables phase-specific optimizations and streaming exe-cution, where aggregation results directly feed the combination engine for pipelining. However, workload mismatch between the phases can cause pipeline stalls, resource underutilization, 
+
+> †
+
+These authors contributed equally. 
+
+> ∗
+
+Corresponding author. 
+
+and inter-engine synchronization overhead due to rigid parti-tioning. The second employs unified engines [7]–[9], where a single processing engine executes both phases by sequentially map-ping them into sparse–dense matrix multiplication (SpMM) operations (Section II). Such unified designs improve resource utilization and eliminate inter-engine communication. How-ever, executing both phases on a single processing engine makes the architecture highly sensitive to workload irregularity and sparsity variation. Unified-engine GCN accelerators face challenges due to sparsity arising from three major sources. First, the aggrega-tion phase is much sparser than the combination phase, often by several orders of magnitude [9]. Second, nodes exhibit widely varying numbers of neighbors, resulting in highly irregular memory access patterns and computation. Both of these factors largely result from the power-law distribution of real-world graphs [10]–[12] (Section II), where a few “super-nodes” are densely connected while most nodes have very few connections, particularly affecting the aggregation phase. Third, the sparsity of node features can vary across graphs or over time in evolving datasets. These variations limit the effectiveness of static dataflow optimizations for computation and memory access. To address these challenges, GCNAX [7] focuses on dataflow optimization for a unified GCN engine, supporting configurable tiling, loop ordering, and loop fusion strategies. In contrast, GROW [9] adopts a hardware-software co-design approach, combining a row-wise product dataflow (Gustavson’s algorithm [13]) with a dedicated hardware cache (or a software-managed scratchpad) and graph preprocessing techniques to handle sparsity and irregular computation. In this work, we propose a novel unified GCN engine, 
+
+FlexVector , which exploits a vector-processor architecture for SpMM operations and leverages high parallelism and pro-grammability to adapt to varying sparsity. Unlike conven-tional vector processors, which rely on multi-banked VRFs to sustain access bandwidth, FlexVector employs software-managed flexible VRFs with both fixed and dynamic regions to support irregular memory access patterns at the register level. By integrating flexible VRFs with row-wise dataflow in a hardware–software co-designed manner, FlexVector enables full-row VRF access, eliminating the need for VRF banking and simplifying control. Prior work such as GROW [9] adopts a cache-centric design with a row-wise dataflow to handle ir-regular DRAM–cache data access. FlexVector directly applies row-wise dataflow to the buffer–VRF level. However, a single-level dataflow is insufficient for the DRAM–buffer interface in FlexVector’s memory hierarchy, where an additional dataflow 
+
+> arXiv:2604.10113v1 [cs.DC] 11 Apr 2026 2
+
+(e.g., inner-product) is needed to better align data move-ment with computation. This motivates FlexVector to adopt a hierarchical dataflow that coordinates row-wise execution at the buffer–VRF level with inner-product execution at the DRAM–buffer level. Building on this hardware–software co-design, FlexVector incorporates graph-aware preprocessing, similar to prior GCN accelerators [4]–[7], [9], [14]. Specifically, the preprocess-ing partitions input matrices into tiles to address two key challenges. First, the capacity mismatch between large-scale GCN graphs and limited on-chip buffers constrains the amount of data processed at a time. Second, workload imbalance arising from the power-law degree distribution leads to un-derutilization when buffers are provisioned for high-degree rows. By mitigating these challenges, the preprocessing stage enables efficient utilization of on-chip resources and exploits the benefits of the VRF-centric architecture. We summarize the main contributions as follows.  
+
+> •
+
+Hardware Design: We propose FlexVector , a vector-processor-based unified GCN engine featuring software-managed VRFs with fixed and dynamic regions to handle irregular access patterns. We develop a sparsity-aware algorithm to adapt the fixed–dynamic VRF boundary, and introduce a customized coarse-grained ISA to simplify SpMM control.  
+
+> •
+
+Graph Preprocessing: We introduce a hybrid graph preprocessing strategy that integrates edge-cut and vertex-cut partitioning to reshape irregular graph workloads under on-chip buffer and VRF capacity constraints. This strategy balances workloads across the sparsity variations of power-law graphs, improving VRF utilization and computation efficiency.  
+
+> •
+
+Dataflow Optimization: We introduce a hierarchical dataflow, where row-wise product execution at the buffer–VRF level enables full-row VRF access and high lane utilization, while inner-product execution at the DRAM–buffer level sustains efficient data movement across memory hierarchies. We implement FlexVector in RTL and an in-house sim-ulator. We perform a comprehensive PPA evaluation, and conduct ablation studies and sensitivity analyses of buffer and VRF sizing using five real-world graph datasets. Experimental results show that FlexVector achieves up to 3.78 × speedup and 40.5% energy reduction over a state-of-the-art cache-centric baseline at comparable area and buffer capacity. Moreover, the sparsity-aware algorithm that adapts the fixed–dynamic VRF partition achieves near-optimal performance, within 2% of the best static configuration. The paper is organized as follows. Section II reviews SpMM computation in GCNs and relevant related work, highlighting the innovations of our proposed FlexVector. Section III intro-duces the proposed FlexVector architecture. Sections IV and V illustrate the graph preprocessing strategy and hierarchical dataflow, respectively. Section VI presents experimental eval-uations and Section VII concludes the paper. Feature    
+
+> vector
+> Node
+> B
+> C
+> D
+> F
+> A
+> E
+> A
+> F
+> ...
+> Feature
+> vector A
+> F
+> ...
+> (a) Input Graph (b) Aggregation (c) Combination
+> Output feature
+> vector
+> Feature vector
+
+Fig. 1: The aggregation and combination stages of GCN. II. B ACKGROUND AND RELATED WORK 
+
+A. GCN and SpMM Computation 1) GCN Basics: Fig. 1 depicts the two main phases of a GCN layer, where aggregation propagates information along graph edges and combination transforms node features with a dense weight matrix. Equation 1 presents the corresponding forward propagation formulation. 
+
+X(l+1) = σ( ˆAX (l)W (l)) (1) where X(l) is the input feature matrix of layer l, W (l) is the trainable weight matrix, and ˆA denotes the normalized sparse adjacency matrix of the graph structure. σ(·) represents a non-linear activation function (e.g., ReLU). As reported in prior studies [7]–[9], matrix ˆA is typically large and highly sparse, matrix X has moderate size with workload-dependent sparsity, and matrix W is small and dense. We can compute a GCN layer using two possible execution orders: ( ˆA × X) × W and ˆA × (X × W ). The former order involves a sparse–sparse matrix multiplication followed by a dense–dense multiplication, whereas the latter performs two successive sparse–dense multiplications, resulting in sig-nificantly fewer multiply-accumulate (MAC) operations com-pared to the former [7]–[9]. Therefore, we adopt the latter execution order ˆA × (X × W ) to perform sparse-dense matrix multiplication (SpMM) for GCN inference. 0 500 1000 1500 2000 2500 
+
+> Node ID (sorted)
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125
+> 150
+> 175
+> Num of non-zeros per row
+
+Fig. 2: Power-law distribution of Cora dataset 
+
+2) Power-Law of GCN Graph: Fig. 2 illustrates the power-law distribution 
+
+of real-world graphs (e.g., social networks), where asmall fraction of “super-nodes” have extremely high connectivity, and the vast majority form a “long tail” with few neighbors [10]– [12]. In GCNs, this concen-trates non-zero elements in a few adjacency matrix columns, creating structural irregu-larity that limits memory efficiency in SpMM accelerators. GCN accelerators typically allocate fixed-size on-chip memory (e.g., scratchpad) to optimize data reuse [8], [9]. Consequently, super-nodes often overflow fixed memory, causing costly spill-and-fill DRAM traffic, while sparse nodes underutilize it. This motivates the use of flexible, cache-like memory combined with graph-aware preprocessing (e.g., GROW [9]) to better balance workload. In this work, we also adopt cache-like 3(d) Row -wise product (c) Column -wise product (a) Inner product (b) Outer product        
+
+> ====
+> ====
+> ====
+> +
+> +
+> +
+> +++
+> ++
+
+Fig. 3: Four typical dataflows for computing SpMM. memory and preprocessing, but our approach differs from GROW [9], as detailed in Table I (Section II-B). 
+
+3) SpMM Dataflows: Fig. 3 illustrates four typical dataflows for computing SpMM, as summarized in [15], [16]. Each dataflow differs in how it exploits data reuse and its on-chip memory requirements, as follows.  
+
+> •
+
+Inner-product performs a row-times-column computa-tion, producing one output element at a time (Fig. 3(a)). It achieves high reuse of output elements, minimizing the required on-chip accumulation buffer. However, SpMM performance is dominated by irregular memory accesses and index matching.  
+
+> •
+
+Outer-product performs a column-times-row computa-tion, generating partial sums for all output elements (Fig. 3(b)), with high input matrix reuse at the cost of a large accumulation buffer proportional to the output matrix size.  
+
+> •
+
+Column-wise product performs a column-times-column 
+
+computation, broadcasting a dense column to multiple sparse columns to produce an output column (Fig. 3(c)). It has high reuse of each dense column and requires an accumulation buffer for one output column. However, irregular sparse columns cause workload imbalance in output-column partial-sum computation, increasing con-trol overhead [8].  
+
+> •
+
+Row-wise product performs a row-times-row computa-tion, broadcasting a sparse row to multiple dense rows to produce an output row (Fig. 3(d)). It achieves high reuse of sparse row and requires an accumulation buffer for one output row. However, the column index of each nonzero in the sparse row determines which dense row to fetch, resulting in irregular and repeated dense-row accesses [9] (e.g., same dense rows are accessed multiple times when processing different output rows, highlighted in green.) In this work, we adopt a hierarchical dataflow that combines 
+
+row-wise product and inner-product to optimize data reuse and on-chip memory efficiency. At the buffer–VRF level, we employ the row-wise product to enable full dense-row access within the VRFs, aligning well with vector architectures. While other dataflows can be vectorized, the outer-product requires a larger accumulation buffer, and the column-wise product suffers from severe workload imbalance and control complexity. Although the row-wise product introduces irreg-ular dense-row accesses, it avoids workload imbalance across vector lanes when computing each output row. Additionally, at the DRAM–buffer level, we adopt the inner-product dataflow to maximize reuse of output elements in the buffer. TABLE I: Comparison of GROW [9] with FlexVector           
+
+> GROW [9] FlexVector (our work)
+> Architecture Unified SpMM engine Vector-based unified engine Irregular Handling Cache-centric (DRAM →Cache) VRF-centric (Buffer →Registers) Memory Hierarchy High-degree node Cache (Hundreds KB, e.g.,512KB) Multi-buffering (e.g., 2KB) + Flexible VRFs Preprocessing Edge-cut (Cache-oriented) Edge-cut (VRF-oriented) + Vertex-cut Dataflow Row-wise (Cache-oriented) Inner-product (Buffer-oriented) + Row-wise (VRF-oriented) Control Granularity Fine-grained (Nonzero × dense row) Coarse-grained (Sparse row × dense submatrix)
+
+B. Existing GCN Accelerators 1) Heterogeneous engines: Early designs (e.g., HyGCN [4], GraphACT [5], and SGCN [6]) adopt heterogeneous engines for sparse–sparse aggregation and dense–dense combination, following the execution order ( ˆA × X) × W . These archi-tectures typically pair a SIMD-based aggregation engine with a systolic-array-based combination engine, connected via on-chip buffer/cache to enable streaming execution across phases. However, because the two engines are statically partitioned and exhibit different throughput characteristics, workload im-balance can cause one engine to stall while waiting for the other, leading to pipeline bubbles, reduced resource utilization, and inter-engine synchronization overhead. Additionally, the engines transfer intermediate results via on-chip buffer/cache, and the limited capacity forces designers to partition the graph into smaller tiles (i.e., sub-matrices) that fit in memory. However, such graph partitioning [4]–[6] primarily addresses memory constraints and does not fully account for the mis-matched computation speeds of heterogeneous engines under irregular workloads. 
+
+2) Unified engine: Recent GCN accelerators [7]–[9] adopt unified-engine designs to perform successive sparse–dense multiplications, following the execution order ˆA × (X × W ).These works primarily differ in their choice of dataflow. GCNAX [7] adopts an outer-product dataflow as a basis and explores loop transformations (e.g., tiling, reordering, and fu-sion) by analyzing the impact on execution cycles and DRAM accesses. In particular, GCNAX performs an exhaustive search over tiling configurations across multiple datasets, evaluating each to find an efficient sub-matrix partitioning. Based on the selected loop transformations, the hardware configures buffer sizes to match the computation and optimize system performance and energy efficiency. Note that outer-product dataflows inherently require larger accumulation buffers than other dataflows (Section II-A3). In contrast, AWB-GCN [8] employs a column-wise dataflow with multiple processing elements (PEs) connected to a runtime task distributor and queue (TDQ). Instead of using static graph partitions as in prior GCN accelerators [4]–[7], the TDQ dynamically moni-tors the distribution of nonzero elements and redistributes tasks across PEs at runtime to handle workload imbalance caused by sparsity irregularity. However, this dynamic partitioning incurs additional hardware overhead, including increased routing complexity and control logic (as discussed in Section II-A3 in the context of column-wise dataflow). GROW [9] is the work most closely related to our proposed 4
+
+FlexVector architecture, as both employ a row-wise prod-uct–based dataflow in a unified engine. While this dataflow naturally balances workloads across PEs, it also results in irregular and repeated dense row accesses (see Section II-A3). Table I summarizes the key differences between GROW [9] and FlexVector. On the one hand, GROW is a unified SpMM engine which employs a cache-centric architecture to handle sparse irregularity. It uses a cache to store precomputed high-degree nodes (HDNs) and employs a run-ahead mechanism that leverages this information to execute available dense rows while waiting for others to load, thereby hiding DRAM-cache latency from irregular dense-row accesses. To optimize data locality, it partitions the graph into clusters using an edge-cut preprocessing strategy, processing them sequentially to extract HDN indices and maximize reuse. Nevertheless, GROW’s effi-ciency heavily depends on preprocessed information buffered in hardware and the availability of a large cache (typically hundreds of KB, e.g., 512KB) to achieve high performance. On the other hand, our proposed FlexVector leverages a vector-based unified engine to achieve high computational parallelism and programmability. Unlike GROW [9], which relies on a cache-/buffer-centric mechanism to handle irregular accesses, FlexVector adopts a VRF-centric approach, shifting potentially repeated accesses from the DRAM–cache/buffer level to the buffer–register interface using flexible, cache-like VRFs. FlexVector combines these VRFs with multi-buffering to hide DRAM access latency and improve overall memory efficiency. Although multi-buffering adds area and energy overhead, a typical FlexVector multi-buffer uses only 2KB (e.g., six-buffering, Section VI-A3), much smaller than GROW’s hundreds-of-KB caches (e.g., 512KB). In addition, FlexVector applies a hybrid edge- and vertex-cut preprocessing strategy. Edge-cut partitioning creates VRF-oriented graph tiles, where each tile is designed to fit within the VRF capacity rather than the cache/buffer capacity as in GROW. Vertex-cut partitioning then balances workloads within each tile by dis-tributing nonzeros more evenly across sparse rows, addressing imbalance caused by the power-law degree distribution (Sec-tion IV). Moreover, FlexVector adopts a hierarchical dataflow, performing row-wise computation at the buffer–VRF level to maximize lane utilization and inner-product computation at the DRAM–buffer level to reduce on-chip memory usage for partial sums (Section V). Finally, FlexVector employs a coarse-grained ISA that manages data access and computation at the granularity of a sparse row multiplying a dense submatrix (e.g., 16×16 elements), whereas GROW uses fine-grained control at the level of a nonzero sparse element multiplying a dense row. FlexVector’s coarse-grained ISA simplifies instruction scheduling by decoupling data movement from computation, trading some control flexibility for simpler scheduling and a reduced instruction count. 
+
+C. Vector Processor for SpMM Acceleration 
+
+Conventional vector processors implementing the vector-extension [17]–[19] offer high SIMD parallelism for matrix kernels, yet still face challenges when performing SpMM in GCN inference. The work of [19] adopts an inner/outer-product dataflow and relies on gather/scatter ISA and mask-ing to handle irregular accesses, resulting in reduced lane utilization. In contrast, by exploiting a row-wise product dataflow, our FlexVector accesses complete VRF rows across vector lanes, avoiding per-lane indexed accesses. This design eliminates the need for multi-banked VRFs and significantly reduces routing and control complexity. Similar to FlexVector, IndexMAC [20] also uses a row-wise product dataflow for SpMM computation. It targets structured sparsity, where each matrix block contains a fixed number of nonzero values, and extends the vector ISA with sparse-specific primitives, such as fused index-multiply-accumulate instructions, to improve computation efficiency. These instruction-level optimizations are complementary to FlexVector, with IndexMAC optimized for structured sparsity and FlexVector for fully unstructured sparsity. However, In-dexMAC cannot efficiently handle highly irregular patterns, such as power-law distributions. III. P ROPOSED FLEX VECTOR ARCHITECTURE 
+
+In this section, we detail the microarchitecture and instruc-tion design of FlexVector, a domain-specific vector processor designed as a unified engine for GCN inference. 
+
+A. Architecture Overview 
+
+Fig. 4 provides an overview of the FlexVector architecture. The controller, equipped with a Vector Instruction Decoder (VID), reads instructions from the Instruction Buffer and dispatches control signals (dashed lines) to the pipeline com-ponents. The Direct Memory Access (DMA) unit loads sparse and dense data from DRAM into the Sparse Buffer and Dense Buffer, respectively. The Vector Execution Unit (VEX) features a CSR (Compressed Sparse Row) decoder for sparse data decoding and configuration, along with multiple parallel computation lanes that access and process data from the vector register files (VRF). Each lane includes a dedicated functional unit to perform row-wise products (see Section II) for SpMM within the lane. This design allows FlexVector to exploit vector parallelism and programmability for efficient sparse-dense computation in GCN inference. 
+
+B. On-Chip Memory Hierarchy 1) On-chip Buffers: FlexVector employs two types of on-chip buffers. The Sparse Buffer supports sequential streaming access and stores the sparse matrix for SpMM in CSR format. The Dense Buffer stores the dense matrix for SpMM and is logically partitioned into three regions, as depicted in Fig. 4(b): (1) a Rows-to-Compute region , buffering input feature rows before they are loaded into the VRF for computation; (2) a 
+
+Result Matrix region , storing the output results of ongoing computations; and (3) a Temp Matrix region , customized for FlexVector’s hierarchical dataflow, stores intermediate data for partial sum accumulation during inner-product execution (Sec-tion V-B). In particular, FlexVector supports multi-buffering in the Rows-to-Compute region to hide DRAM–buffer access la-tency. A typical multi-buffer configuration (e.g., six-buffering) 5VRF  
+
+> Sparse
+> Buffer
+> D
+> R
+> A
+> M
+> Bus Interface
+> Instruction
+> Buffer
+> Dense Buffer
+> (d)
+> Controller
+> with VID
+> DMA
+> Unpacked
+> VEX
+> CSR
+> Decoder
+> Row Index
+> Buffer
+> to VID
+> Lane 0
+> n
+> VRF
+> (a) (b)
+> Lane n
+> Lane 2n
+> Lane 3n
+> Packed
+> Decode Data
+> Indices
+> Data
+> Row Index
+> Counter
+> CSR Data
+> Pointers
+> One -hot
+> Gen
+> Flag
+> Fixed
+> Dynamic
+> Temp Matrix
+> Result Matrix
+> Rows to
+> Compute
+> (c)
+> DEMUX
+> 1
+> Adder
+> MUX
+> Multiplier
+> MAC Vector Unit CSR
+> Data
+> VRF
+> Data
+> MUX
+> Accumulator
+> (e)
+
+Fig. 4: Overall architecture of FlexVector requires only 2 KB, significantly smaller than the hundreds-of-KB caches (e.g., 512 KB) used in GROW [9] (Section VI-A3). FlexVector allows adjusting the sizes of Dense Buffer’s regions via compiled instructions (Section III-D) to optimize buffer utilization for different workloads and scheduling strategies. 
+
+2) Flexible VRFs: The flexible VRF mechanism constitutes one of the key innovations of the hardware. Like conventional vector processors, FlexVector closely integrates VRFs with its vector computation lanes, enabling high-bandwidth data access. In particular, it introduces software-managed, cache-like Flexible VRFs to efficiently handle irregular and sparse data accesses between the VRFs and the lanes. Fig. 4(c) illustrates that the flexible VRFs are logically divided into a fixed region and a dynamic region. The fixed region stores high-reuse rows for SpMM computations in the lanes, while the dynamic region manages low-reuse rows fetched from the Dense Buffer upon VRF misses. The dynamic region operates in a double-VRF fashion (Section V-A), enabling data fetching to overlap with computation and thereby hiding irregular access latency. This design aligns with the coarse-grained ISA (Section III-D), helping to simplify scheduling. Instead of enlarging the VRFs, FlexVector partitions the data movement module to support double-VRF (e.g., VRF depth=16 is split into 8×2). FlexVector allows the boundary between fixed and dynamic regions to be configured via compiled instructions, enabling adaptation to different sparsity patterns. 
+
+C. Vector Execution Units 1) CSR Decoder: Fig. 4 (d) illustrates the logic design of the CSR decoder, which takes CSR metadata (pointers, in-dices, and values) from the Sparse Buffer as input. The internal data path produces two streams: (1) scalar values, which are broadcast to the vector lanes as the multiplicands for SpMM; and (2) row indices, which are converted into a one-hot bitmap and stored in the Row Index Buffer. This bitmap acts as a high-speed address-generation mechanism, enabling the vector lane modules (Section III-C2) to retrieve the corresponding dense rows efficiently. In addition, an internal counter within the CSR decoder tracks the traversal progress of the vector lanes and generates flags that notify them when the accumulation for the current node (i.e., output row) is complete. 
+
+2) Vector Processing Lanes: The VEX comprises multiple parallel lanes that interface with the VRF via configurable unpacked (read) and packed (write) networks (Fig.4 (a)), enabling adaptation of the fixed VRF width to the varying precision requirements. For instance, when the VRF width is 128 bits, each lane with a base width of 32 bits can operate at different precisions, such as 8-bit or 32-bit. The unpacking network can divide a VRF entry into four 32-bit elements or sixteen 8-bit elements and distribute them to the corresponding lanes for parallel processing. While this work currently supports 8-bit and 32-bit integer execution, the design could be extended in future work to support other precisions that are powers-of-two. During execution, the lanes receive the broadcast scalar from the CSR decoder and perform row-wise SpMM computation using the multiply-accumulate (MAC) vector unit shown in Fig. 4(e). Upon the CSR decoder signaling completion of the current row accumulation (Sec-tion III-C1), the packed network collects partial results from all lanes, reassembles them into VRF-width words. 
+
+D. Coarse-grained ISA 
+
+The coarse-grained Instruction Set Architecture (ISA) rep-resents another key innovation of the FlexVector architecture. It operates at the granularity of a sparse row (or sub-row) paired with a dense matrix (or sub-matrix) stored in the VRFs. In contrast, conventional vector processors [19] and the prior GCN accelerator GROW [9] operate at a finer granularity, processing a single nonzero element together with its corre-sponding dense row. Fig. 5(a) shows a 4-node graph where the first sparse row represents the connections of node0 and each dense matrix row represents the features of each node. Fig. 5(b) presents the coarse-grained ISA used to complete the SpMM computation for this example, and Table II summarizes 6
+
+TABLE II: Custom ISA of FlexVector                    
+
+> Type ISA Description Setup
+> Config Configure VRF fixed region LD S / LD D Load sparse/dense matrix from DRAM CAL IDX Calculate dense row indices of each sparse row MV Fixed Move high-reuse dense rows into the VRF fixed region
+> Process
+> MV Dyn Move dense rows into the VRF dynamic region CMP Compute output row and write to Dense Buffer ST D Store output matrix from Dense Buffer to DRAM CAL_IDX
+> Load_S
+> Load_D
+> Config
+> MV_Dyn
+> Compute
+> MV_Dyn
+> Compute
+> MV_Dyn
+> Compute
+> MV_Dyn
+> Compute
+> 2
+> 01
+> 3
+> Setup
+> for Output Row0
+> (a)
+> 0123
+> 0
+> 1
+> 2
+> 3
+> 0123
+> 0
+> 1
+> 2
+> 3
+> 0123
+> 0
+> 1
+> 2
+> 3
+> Sparse Matrix Input Graph
+> Output Matrix Dense Matrix
+> MV_Fixed
+> Store_D
+> (b)
+> for Output Row1
+> for Output Row2
+> for Output Row3
+
+Fig. 5: FlexVector’s coarse-grained ISA for the SpMM com-putation of a 4-node graph. the FlexVector ISA, which consists of two instruction types for row-wise SpMM computation: setup and process . 
+
+> •
+
+Setup: (1) Config sets up the fixed region of the VRFs according to the compiled strategy. (2) LD_S 
+
+and LD_D stream a sparse matrix (or sub-matrix) into the Sparse Buffer and a dense matrix into the Dense Buffer, respectively. (3) CAL_IDX decodes the CSR data of all sparse rows to compute dense row indices and determine the assignment of dense rows to the VRF fixed region, then generates a one-hot bitmap indicating their positions in the VRFs. This instruction allows run-time computation of indices, eliminating the need for offline precomputation and storage, as required in GROW [9]. (4) MV_Fixed moves high-reuse dense rows from the Dense Buffer into the VRF fixed region.  
+
+> •
+
+Process: (1) MV_Dyn uses precomputed row indices (obtained by CAL_IDX ) to move dense rows from the Dense Buffer into the VRF dynamic region. (2) CMP 
+
+performs SpMM on a sparse row (or sub-row) and a dense matrix (or sub-matrix) in the vector lanes, then writes the resulting row to the Dense Buffer. Since the example graph contains 4 nodes (i.e., 4 sparse rows in Fig. 5(a)), these two instructions are executed 4 times in total (Fig. 5(b)). For the partial-sum case, the CMP 
+
+instruction sets a flag to accumulate the resulting row with a partial-sum row (loaded by MV_Dyn ) before writing to the Dense Buffer. (3) ST_D stores the output matrix from the Dense Buffer to DRAM. Compared to the fine-grained control in GROW [9], FlexVector adopts a coarse-grained ISA that trades off instruction-level flexibility to simplify scheduling. This is achieved by decoupling data movement (MV_Dyn ) from SpMM computation ( CMP ) at the granularity of an output row (i.e., a sparse row × dense matrix). By contrast, fine-grained control must interleave data movement and computation for every nonzero in each sparse row. The coarse-grained ISA also reduces instruction count, as quantified in Section VI-F. However, this coarse-grained design can lead to workload imbalance across sparse rows due to variations in their number of nonzero elements. Specifically, the VRF must be sized for the worst-case row, i.e., the row with the most nonzero elements, which can lead to underutilization of VRF storage for other rows containing fewer nonzero elements, especially in power-law graph distributions. We mitigate this issue using hybrid preprocessing (Section IV) to balance nonzeros across sparse rows and improve VRF utilization. IV. H YBRID GRAPH PREPROCESSING 
+
+This section introduces a hybrid graph-preprocessing strat-egy that restructures SpMM computation to better exploit the FlexVector architecture. The hybrid strategy consists of two steps, inter-tile edge-cut and intra-tile vertex-cut , designed to address the power-law distribution of GCN graphs and improve memory access efficiency. 
+
+A. Inter-tile edge-cut 
+
+The inter-tile edge-cut strategy partitions the input graph matrix into tiles, with each tile sized to fit the VRFs of the FlexVector architecture. We employ METIS [21] to perform inter-tile edge-cut, which minimizes cross-tile edges and keeps highly connected vertices within the same tile to preserve data locality. In contrast to typical strategies that partition GCN graphs to fit on-chip buffer sizes [4]–[7], [9], our approach skips buffer-level partitioning and directly partitions graphs to fit the VRF capacity. This VRF-oriented partitioning strategy prioritizes data locality for row-wise products in the VRFs and aligns with the coarse-grained ISA execution in the vector lanes (Section III-D). We then group multiple tiles in the Dense Buffer to enable buffer-level data reuse (Section V). 
+
+B. Intra-tile vertex-cut 
+
+After the inter-tile edge-cut, we aim to further balance the workload across sparse rows within each tile to mitigate the imbalance caused by the power-law degree distribution of GCN graphs. In our evaluation on the Cora dataset, tiles (e.g., a 16 ×16 submatrix) generated by the inter-tile edge-cut exhibit highly imbalanced row densities. We use RN Z to denote the number of nonzero elements per sparse row. Only about 5% of rows are densely populated with RN Z ≥ 9, including extreme cases that occupy the full row width ( RN Z = 16 ), whereas the vast majority, approximately 95%, remain sparse with RN Z ≤ 4. As discussed in Section III-D, FlexVector adopts a coarse-grained ISA that executes SpMM with all required dense rows resident in the VRFs, requiring the VRF depth to be no less than the maximum per-row RN Z .To address this constraint, we apply an intra-tile vertex-cut that splits high-degree vertices and redistributes their associated nonzero elements across multiple sparse rows to balance the workload. Fig. 6 provides an intuitive comparison 73                    
+
+> 4
+> 0
+> 1
+> 2
+> 5
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 012345
+> 0a
+> 1
+> 2
+> 3
+> 4
+> 5
+> 0a 12345
+> 0b
+> 0b
+> Vec5
+> Vec4
+> Vec3
+> Vec2
+> Vec1
+> Depth = 5
+> Corresponding
+> VRF Depth
+> Adjacency Matrix
+> Vec4
+> Vec3
+> Vec2
+> Adjacency Matrix
+> (a) Graph and Corresponding VRF Size
+> (b) Graph with Vertex -Cut and Corresponding VRF Size
+> Initial Graph
+> Graph with vertex -cut Corresponding
+> VRF Depth
+> 3
+> 4
+> 1
+> 2
+> 5
+> 0a
+> 0b
+> Depth = 3
+
+Fig. 6: Comparison of VRF provisioning before and after vertex-cut preprocessing. (a) Before vertex-cut, a super-node row has RNZ = 5 . (b) After vertex-cut, the row is split and RNZ ≤ 3, reducing VRF depth. of the graph structure before and after this optimization. In Fig. 6(a), Node0 has the highest degree ( RN Z = 5 ), implying that the VRF depth for data input must be at least 5. In Fig. 6(b), after applying the vertex-cut, Node0 is split into nodes 0a and 0b, partitioning its nonzero elements across two sparse rows and reducing the maximum row density to 3, thereby improving workload balance across rows. Algorithm 1 illustrates our intra-tile vertex-cut strategy, which takes the original tile and a per-row RN Z bound τ
+
+as inputs, generating a new tile in which no row exceeds 
+
+τ nonzero elements. Note that τ defines a preprocessing constraint rather than the actual VRF depth, which can be provisioned higher (Section V-A). For rows with RN Z > τ 
+
+(e.g., 3 in Fig. 6(b)), the algorithm generates the M issList 
+
+and HitList by analyzing the sparse tile. It assumes an ideal VRF depth of τ and that the dense rows corresponding to the sparse indexes with the most nonzero elements (e.g., sparse indexes 0–2 in Fig. 6(a)) are already loaded. Under these assumptions, the M issList includes sparse index 3–5, cor-responding to dense rows 3–5. The algorithm then computes the required number of splits ( K = 2 , ⌈5/3⌉ for Node0 in Fig. 6(a)) and determines the number of misses and hits for each split. Subsequently, the algorithm distributes the misses and hits evenly across the splits, with each split represented by a sub-row. To this end, the algorithm pops nmiss (e.g.,2) and nhit (e.g.,1) elements from the M issList and HitList ,respectively, and combines them to form a new sub-row (line 11-15). For instance, combining sparse index3-4 from the 
+
+M issList and index2 from the HitList forms the sub-row of 0a in Fig. 6(b). Finally, after generating all sub-rows, the algorithm outputs a new tile with balanced workloads. Section VI-C4 demonstrates the effectiveness of Algorithm 1 through experimental results. 
+
+Algorithm 1: Intra-tile Vertex-Cut Strategy 
+
+Input : Original sparse tile T , per-row RN Z bound τ
+
+Output: New sparse tile Tnew after workload balance  
+
+> 1
+
+Tnew ← ∅  
+
+> 2
+
+for r ∈ T do  
+
+> 3
+
+if RN Z ≤ τ then  
+
+> 4
+
+Tnew ← Tnew ∪ r 
+
+> 5
+
+else 
+
+// Step 1: Separate Miss/Hit indices  
+
+> 6
+
+M issList, HitList ← Analyze (T ) 
+
+> 7
+
+K ← ⌈ RN Z/τ ⌉ // Total splits needed  
+
+> 8
+
+nmiss ← ⌈| M issList |/K ⌉; 
+
+> 9
+
+nhit ← τ − nmiss 
+
+// Step 2: Distribute into sub-rows  
+
+> 10
+
+for i ∈ [0 , K − 1] do  
+
+> 11
+
+rsub ← CreateSubRow () ; 
+
+> 12
+
+SubM iss ← P op (M issList, n miss ); 
+
+> 13
+
+SubHit ← P op (HitList, n hit ); 
+
+> 14
+
+rsub .Indices ← SubM iss ∪ SubHit ; 
+
+> 15
+
+Tnew ← Tnew ∪ rsub  
+
+> 16
+
+return Tnew 
+
+V. H IERARCHICAL DATAFLOW 
+
+This section presents a hierarchical dataflow in which the 
+
+row-wise product operates at the buffer-VRF level, while the 
+
+inner-product operates at the DRAM-buffer level. 
+
+A. Buffer-VRF level: Row-wise product dataflow 
+
+We apply a row-wise dataflow at buffer-VRF level for each tile (sparse matrix × dense matrix = output matrix) after vertex-cut. FlexVector includes cache-like, flexible VRFs consisting of a fixed region and a dynamic region , with the boundary between these regions adjustable for each tile according to sparsity variations using compiled configuration instructions ( Config ). Based on compile-time analysis of sparse tiles, we prioritize placing the top-k most frequently accessed dense rows in the fixed region of the VRFs. For tiles with high-reuse rows, k is set as large as possible to maximize reuse, whereas for tiles with low-reuse rows (e.g., used only once), k is reduced, potentially to zero, subject to VRF capacity constraints. The optimized k also depends on whether the VRFs support a double-VRF scheme (i.e., double dynamic regions), which allows overlapping data loading from the Dense Buffer and computation to hide access latency. Algorithm 2 presents the top-k selection strategy for the VRF fixed region. It takes a sparse tile, per-row RN Z 
+
+bound, a starting fraction to initialize k, VRF depth, and VRF mode (e.g., single-VRF, double-VRF) as inputs, and returns the optimized best k . First, we analyze the sparse tile to compute the number of nonzero elements per column (denoted by CN Z ) and sort the columns in descending order to form the Sorted CN Z list, prioritizing the highest-density columns for selection (line 1). We then set the initial top-
+
+k value as a fraction (e.g., pct = 0 .5) of the per-row RNZ bound and iteratively adjust it to ensure the VRF depth can accommodate the selected rows (line 2). In each iteration, we select the current top-k indices from Sorted CN Z as 8
+
+Algorithm 2: Top-k VRF Fixed Region Selection 
+
+Input : Sparse tile T , per-row RN Z bound τ , start fraction 
+
+pct , VRF depth D, VRF mode mode 
+
+Output: Selected top-k value best k  
+
+> 1
+
+Sorted CN Z ← SortDesc (Analyze (T )) ; 
+
+> 2
+
+k ← ⌈ τ × pct ⌉, best k ← k; 
+
+> 3
+
+while k > 0 and k ≤ D do  
+
+> 4
+
+T opkIDX ← Sorted CN Z [0 : k − 1] ; 
+
+> 5
+
+Sorted M iss ← SortDesc (Analyze (T, T opkIDX )) ; 
+
+> 6
+
+if mode = single buffer then  
+
+> 7
+
+f it ← k + Sorted M iss [0] ≤ D; 
+
+> 8
+
+else if mode = double buffer then  
+
+> 9
+
+f it ← k+Sorted M iss [0]+ Sorted M iss [1] ≤ D; 
+
+> 10
+
+if fit then  
+
+> 11
+
+best k ← k, k ← k + 1  
+
+> 12
+
+else  
+
+> 13
+
+k ← k − 1 
+
+> 14
+
+return best k ;
+
+candidate fixed-region rows. Based on this top-k selection, we compute the per-row miss counts for the sparse tile and sort them in descending order to form the Sorted M iss list, which indicates how many accesses would miss in the VRF if the selected dense rows were fixed (line 5). In single-VRF mode, we consider only the row with the largest miss count. In double-VRF mode, we consider the two rows with the highest miss counts to account for overlapping the computation of the current dense rows (corresponding to the current sparse row) with the loading of dense rows for the next sparse row (lines 6–9). If the VRF depth can accommodate these rows, we increment k and update best k , and otherwise, we decrement 
+
+k (line 10-13). The iteration continues until k cannot be further adjusted without exceeding the VRF capacity. Fig. 7 compares the single-VRF mode with the double-VRF mode. For the example in part (a), the column indexes 0a − 0b
+
+and 2 of the sparse tile are used to select dense rows in the VRF fixed region. Part (b) shows the execution trace for the single-VRF mode. Since FlexVector uses a coarse-grained ISA (Section III-D) to execute MV_Dyn and CMP for each sparse row, dense rows cannot be overwritten until the computation completes. In contrast, part (c) shows the double-VRF mode, which includes two dynamic regions and prefetches dense rows for the next sparse row, enabling pipelined execution of data movement and SpMM computation while improving pipeline and lane utilization. As previously discussed in Sec-tion III-B2, rather than increasing the VRF capacity to support double-VRF, we partition the data movement module to enable concurrent data transfer and computation. This design achieves higher system performance while having negligible impact on area and energy overhead, with its benefits quantified in Section VI-C3. 
+
+B. DRAM-buffer level: Inner-product dataflow 
+
+Fig. 8 illustrates the inner-product dataflow at DRAM-buffer level for each tile, where the size is determined in a VRF-capacity-aware manner. The inner product enables output-stationary computation for each output tile in the Dense Buffer MV_Fixed MV_Dyn                         
+
+> Compute
+> Data Load
+> (b) Single -VRF Mode
+> H
+> M
+> HH
+> HM
+> M
+> M
+> M
+> HH
+> HHM
+> M
+> M
+> 0a
+> 1
+> 2
+> 3
+> 4
+> 5
+> 0a 12345
+> 0b
+> 0b
+> (c) Double -VRF Mode
+> Row0
+> Row1
+> Row2
+> Row3
+> Row4
+> Row5
+> (a) Workload & Data Mapping
+> Sparse Tile Dense Tile
+> 0-23-4
+> 2-3-4
+> 1-5
+> 1-50-2
+> 1-3
+> 0-1-30-2
+> 5
+> 0-5
+> 4
+> 0-4
+> Compute
+> Data Load 0-23-4
+> 2-3-40-20-1-30-2
+> 1-5
+> 1-5
+> 1-35
+> 0-5
+> 4
+> 0-4
+> CMP
+> 1
+> 2
+> 3
+> 4
+> 5
+> 0
+> 123450
+> Fixed
+> Fixed
+> Dynamic
+> Dynamic
+> Dynamic
+> Status
+> 3
+> 4
+> 1
+> 2
+> 5
+> 0a
+> 0b
+> Input Graph
+> (with Vertex Cut)
+> Dynamic
+
+Fig. 7: Comparison of Execution Modes. (a) Graph topology maps to Fixed (green) or Dynamic (red) rows based on reuse. (b) Single-VRF Mode: MV_Dyn execution waits for CMP to complete. (c) Double-VRF Mode: Pipelining allows concur-rent MV_Dyn and CMP to hide data movement overhead. before the final result is produced (Fig. 8(a)). The Dense Buffer can hold m ≥ 2 tiles in the Result Matrix region 
+
+(Section III-B1), each with a footprint bounded by the VRF capacity. The m tiles can be distributed across multiple buffers (e.g., Buffer A, B, . . . ) to overlap data loading from DRAM with computation. For example, m = 2 corresponds to a conventional double buffer. The Sparse Buffer adopts a similar multi-buffer organization (Fig. 8(b)). FlexVector preloads the dense rows required by each sparse tile into the Dense Buffer before SpMM computation, avoiding repeated DRAM fetches. In contrast, GROW [9] performs irregular DRAM accesses whenever a row miss occurs. By shifting repeated irregu-lar accesses to the Dense Buffer–VRF interface, FlexVector reduces DRAM–Buffer misses and improves overall system performance, as demonstrated in Section VI-E. Exploration of alternative inter-tile dataflows, such as outer-product, is left for future work and is beyond the scope of this paper. Fig. 8(c) shows a tile-level execution trace. The trace begins with loading the sparse tile ( LD_S ), after which the sparse matrix is decoded via index calculation ( CAL_IDX ) executed in parallel with dense matrix loading ( LD_D ). The MV_Fixed 
+
+and MV_Dyn instructions then move dense rows from the Dense Buffer to the VRFs, followed by CMP to perform the SpMM computation. The MV_Dyn and CMP operations execute multiple times in a pipelined manner depending on the number of rows in the tile, as shown in Fig. 8(c) for simplicity. FlexVector then writes the resulting output tile to the Dense Buffer, either to the Temp Matrix region if it is an intermediate tile for the inner-product dataflow, where it is subsequently accumulated into the Result Matrix , or directly to the Result Matrix region if it is the final out-put tile (Section III-B1, Fig. 4). In addition, thanks to the multi-buffering scheme, FlexVector computes one set of tiles while loading the next, overlapping computation with DRAM 9Buffer -A Write  
+
+> Sparse Buffer
+> Read
+> Sparse matrix
+> DRAM
+> VRF
+> Lanes
+> Dense matrix Output matrix
+> in Buffer -A
+> in Buffer -B
+
+=       
+
+> (a)
+> (b)
+> Decoder
+> edges rows
+> DRAM -Buffer
+> Buffer -VRF
+> VEX
+> LD_S0
+> C.IDX0
+> M.F.0
+> Buffer -A
+> …
+> …
+> A sparse tile A dense tile An output tile
+> Buffer -B
+> Buffer -AWrite
+> Dense Buffer
+> Read Buffer -B
+> VID (Mode Control)
+> ...
+> Result Matrix
+> Temp Matrix
+> C.IDX1
+> …
+> Buffer -B
+> ...
+> M.D.0
+> CMP0
+> LD_S1 LD_D1 LD_D0 LD_S2 LD_D2
+> C.IDX2
+> M.D.1
+> CMP1
+> …
+> (c)
+> M.F.0
+
+Fig. 8: Inner-product dataflow at DRAM-buffer level for each tile. (b) Multi-buffer organization (depicted as dual-buffer A/B). (c) Execution trace showing DRAM transfers overlapping with SpMM computation to hide latency. M.F.: MV Fix; M.D.: MV Dyn; C.IDX: CAL IDX. accesses and hiding memory latency. As discussed in Sec-tion II-B2, although multi-buffering can introduce energy and area overhead, FlexVector uses a small buffer (2KB for six-buffering, Section VI-A4), which is significantly smaller than the hundreds-of-KB caches used in GROW [9]. This design preserves the benefits of multi-buffering without excessive resource cost, as quantified in Section VI-E. In summary, the hierarchical dataflow and flexible VRF data-access strategies, together with dedicated hardware designs (Section III) and graph preprocessing (Section IV), enable FlexVector to main-tain efficient memory access and high utilization across the diverse sparsity patterns. VI. E XPERIMENTS 
+
+A. Experiment setup 1) Methodology: We implement the FlexVector processor in SystemVerilog, and synthesize the RTL using Synopsys Design Compiler with a 28nm standard cell library at 1 GHz to obtain the area and power consumption of each hardware component. We model the area and energy of on-chip SRAM and VRFs using CACTI 7.0 [22]. For off-chip DRAM, we adopt HBM 1.0 with a bandwidth of 128 GB/s and an energy cost of 7 pJ/bit [23]. Based on RTL and synthesis results, we develop an in-house instruction-driven simulator in Python to evaluate PPA tradeoffs across different hardware–software de-sign parameters (e.g., SRAM sizes, preprocessing strategies). 
+
+2) Datasets: We conduct evaluations on five representative GCN datasets, covering a wide range of graph scales and spar-sity patterns, as summarized in Table III. Cora and CiteSeer are TABLE III: Dataset Specifications. 
+
+Dataset Nodes Edges Feature Dim 
+
+Cora 2,708 5,429 1,433 CiteSeer 3,327 4,732 3,703 Pubmed 19,717 44,338 500 Reddit 232,965 11,606,919 602 Yelp 716,847 13,954,819 300 28.0%  
+
+> 15.7%
+> 16.1%
+> 5.8%
+> 16.3%
+> 15.4%
+> Total
+> 39.43K m2
+> On-chip Memory
+> Dense Buffer
+> VRF
+> Sparse Buffer
+> MAC Lanes
+> Ctrl Logic
+> Remaining
+> CSR Decoder
+> DMA
+
+Fig. 9: Area breakdown of FlexVector (total: 39.43K μm 2). small citation graphs with high feature dimensionality, while Pubmed is a medium-scale biomedical citation graph. Reddit and Yelp are large-scale graphs with tens of millions of edges, representing social and business review networks, respectively. 
+
+3) FlexVector Default Configurations: We define the de-fault design configurations for FlexVector. The Dense Buffer is 2KB, the Sparse Buffer is 256B, and the multiple-buffer mechanism uses m = 6 to manage the rows-to-compute region (Section III-B1). The VRF has 128bit rows, each holding 16 8-bit elements, and a depth of 6×2 = 12 , corresponding to the double-VRF configuration with a vertex-cut threshold of 
+
+τ = 6 (Section IV-B). 
+
+4) Baselines: As discussed in Section II-B2, GROW [9] is the work most closely related to FlexVector. To compare, we construct a GROW-like system that preserves GROW’s key mechanisms [9] (Section II-B2): (1) a cache-centric memory hierarchy that preloads the top-N high-degree node (HDN) dense rows into a given-capacity buffer (e.g., software-controlled cache); (2) a run-ahead execution mechanism that skips stalled rows and continues executing subsequent rows in the buffer (up to a look-ahead depth of 16 [9]), while missed rows are queued for DRAM fetch; and (3) fine-grained ISA control, where each instruction operates on a single nonzero sparse element and its corresponding dense row. In contrast, FlexVector uses coarse-grained ISA to manage computation and data movement for an entire sparse row multiplied by a dense submatrix (e.g., tile size= 16 ×16 , Section III-D). We use two GROW-like variants as baselines: (1) GROW-like , with small memory configuration similar to the default FlexVector configuration (2KB Dense Buffer and 256B Sparse Buffer, with multi-buffering factor m = 6 ), and (2) GROW-like †, with the large memory configuration originally used in GROW [9] (512KB Dense Buffer and 12KB Sparse Buffer, with m = 2273 ). 
+
+B. Area Evaluation 
+
+Fig. 9 shows the area breakdown of FlexVector under the default configuration, with a total area of 39.43K μm 2. On-10 GROW-like 
+
+> FlexVector m=1
+> FlexVector m=6
+> +Double VRF
+> +Vertex cut
+> +Flexible k
+> GROW-like
+
+(a)            
+
+> 0
+> 2
+> 4
+> 6
+> Speedup
+> 1.00× 1.21×
+> 3.34× 3.51× 3.52× 3.78×
+> 5.84×
+> 4.5
+> 5.0 52.9
+> DRAM Ctrl SRAM VRF DMA MAC Area
+> GROW-like
+> FlexVector m=1
+> FlexVector m=6
+> +Double VRF
+> +Vertex cut
+> +Flexible k
+> GROW-like
+
+(b)    
+
+> 0.0
+> 0.5
+> 1.0
+> Energy
+> 0.8
+> 0.9
+> 1.0
+> 1.1
+> Area GROW-like
+> FlexVector m=1
+> FlexVector m=6
+> +Double VRF
+> +Vertex cut
+> +Flexible k
+> GROW-like
+
+(c)              
+
+> 0
+> 2
+> 4
+> Speedup
+> 1.00× 0.97×
+> 2.59×
+> 3.05× 3.02× 3.17×
+> 4.49×
+> 214.4
+> DRAM Ctrl SRAM VRF DMA MAC Area
+> GROW-like
+> FlexVector m=1
+> FlexVector m=6
+> +Double VRF
+> +Vertex cut
+> +Flexible k
+> GROW-like
+
+(d) 
+
+> 0.0
+> 0.5
+> 1.0
+> Energy
+> 0.6
+> 0.8
+> 1.0
+> 1.1
+> Area
+
+Fig. 10: Ablation study of FlexVector. (a–b) Speedup, energy, and area averaged across five datasets, normalized to a GROW-like baseline (tile size = 16 ×16). (c–d) Case-study on a representative dataset, Pubmed, evaluating scalability under larger tile configurations (tile size = 64 ×64), normalized to a GROW-like baseline with the same tile size. chip memory dominates at 59.9% (Dense Buffer 28.0%, VRF 15.7%, Sparse Buffer 16.1%), reflecting the memory-centric nature of GCN inference. MAC Lanes account for 5.8% of the total area. Control logic, comprising the VEX core control and top-level controller (VID), accounts for 16.3%. The remaining 18.0% is occupied by the CSR Decoder and DMA. 
+
+C. Ablation Study 
+
+Fig. 10 shows the evolution of speedup, energy, and area as optimizations are incrementally applied. Fig. 10(a–b) report the geometric mean across five datasets (tile size = 16×16), whereas (c–d) present a case-study on a representative dataset, Pubmed (medium-scale dataset), to evaluate scalability under larger tile configurations (tile size = 64×64). The larger tile configuration in the latter corresponds to increased VRF and buffer sizes (4 × in both memory width and depth relative to the default configuration). 
+
+1) Impact of Shifting Irregular Dense-row Access to the Buffer–VRF Interface: FlexVector ( m=1 ) refers to the design without multiple-buffering support for the Dense and Sparse Buffers. Compared to the GROW-like baseline, which has buffer capacities corresponding to m=6 (Section VI-A4), FlexVector ( m=1 ) achieves a 1.21 × speedup (Fig. 10(a)) by confining irregular dense-row accesses from the DRAM– buffer level in GROW-like to the buffer-VRF interface. This performance improvement comes with lower area cost (4.9% less) and comparable energy consumption (Fig. 10(b)). For the case-study on larger tile configuration (Fig. 10(c–d)), FlexVec-tor ( m=1 ) delivers 3% lower performance than GROW-like (m=6 ), but benefits from a reduced area cost of 46% due to its smaller buffer sizes. Note that the geometric mean in Fig. 10(a–b) represents an average across all datasets, whereas performance can vary for individual datasets with different sparsity levels or tile configurations. 
+
+2) Impact of Multi-buffering Support: FlexVector ( m=6 )increases the buffer capacity to match that of GROW-like, enabling a multiple-buffer design that hides DRAM access latency. For Fig. 10(a-b), this configuration achieves a 3.34 ×
+
+speedup with only a 4.9% area overhead (due to a more complex controller and the introduction of VRF) compared to GROW-like, while reducing total energy by 36%. The per-formance and energy gains come primarily from eliminating repeated irregular DRAM accesses and confining them to the buffer–VRF interface. The case-study in Fig. 10(c–d) shows similar PPA trends (2.59 × speedup, 9.6% area overhead, and 48.9% lower energy vs. GROW-like), confirming that these improvements generalize to larger tile configuration. 
+
+3) Impact of Double-VRF Support: FlexVector (+Double VRF) extends FlexVector ( m=6 ) by partitioning the VRF depth from 16 into 8×2 (Fig 10 (a-b)), allowing one half to serve the current computation while the other prefetches the next dense rows. This enables concurrent data movement and SpMM execution under the coarse-grained ISA (Sec-tion III-D). This configuration provides an additional 5.1% speedup to reach 3.51 ×, while reducing energy by 2.1% owing to the shorter execution time lowering control and leakage energy. Since the total VRF capacity remains unchanged (256 B), there is no additional area overhead. Under larger tile configurations in Fig. 10(c–d), FlexVector (+Double VRF) partitions the VRF depth from 64 into 32 ×2. Compared to FlexVector ( m=6 ), FlexVector (+Double VRF) achieves 15% performance improvement and 10.8% energy reduction. These gains are more pronounced in this setting because larger tiles 11 
+
+provide longer execution windows, enabling more effective overlap between VRF data access and SpMM computation (via MV Dyn and CMP coarse-grained ISA, Section III-D). 
+
+4) Impact of Vertex-cut (Algorithm 1): FlexVector (+Vertex cut) balances nonzeros across sparse rows and reduces VRF pressure (Section IV-B), lowering the VRF depth from 8×2 in FlexVector (+Double VRF) to 6×2 (Fig 10 (a-b)). This opti-mization achieves an additional 0.3% speedup ( 3.52 ×) while reducing energy by 2.0% due to smaller VRF capacity. The VRF shrinks from 256 B to 192 B, yielding a 3.1% reduction in VRF area (0.4% total chip area reduction). Notably, the primary benefit of +Vertex cut lies in reducing VRF area, which scales with tile size. Under larger tile configurations (Fig. 10(c–d)), the VRF depth is reduced from 32 ×2 to 8×2,achieving an additional 48.2% reduction in VRF area (5.7% total area), along with 2.2% energy reduction and a 1.5% latency overhead compared to FlexVector (+Double VRF). These results suggest that +Vertex cut can be more beneficial under larger tile configurations, where VRF pressure is higher. 
+
+5) Impact of Introducing a Fixed Region in the VRF: 
+
+FlexVector (+Flexible k) introduces a fixed region of k VRF rows (set via Algorithm 2), enabling both fixed and dynamic regions in the VRF (Section V-A), whereas FlexVector (+Ver-tex cut) uses a fully dynamic VRF. This fixed-dynamic VRF configuration keeps frequently accessed data in the fixed region, reducing buffer–VRF accesses, and delivers an ad-ditional 7.4% speedup ( 3.78 ×) and 3.1% energy reduction, with no area increase compared to FlexVector (+Vertex cut) (Fig. 10(a–b)). This observation is consistent in Fig. 10(c–d), where +Flexible k achieves an additional 4.7% speedup and 3.1% energy reduction. These results highlight the effective-ness of the flexible VRF design in improving VRF efficiency. 
+
+6) Overall PPA Comparison of FlexVector vs. Baselines: 
+
+Overall, the ablation studies evaluate different incremental optimizations, where the benefit of each depends on param-eters such as tile size and buffer/VRF configurations. As a summary, multiple-buffering achieves up to 3.34 × speedup, double-VRF adds up to 15% additional speedup, vertex-cut provides up to 5.7% additional total area reduction, and a flexible VRF region adds up to 7.4% additional speedup. Col-lectively, these incremental optimizations show that FlexVector (i.e., FlexVector (+Flexible k)) outperforms the GROW-like baseline in PPA under the same buffer capacity (2 KB Dense Buffer, m = 6), achieving 3.78 × speedup, 40.5% lower energy, and a comparable area cost (4.7% higher due to slightly more complex control). GROW-like †, with a large buffer configuration (512KB Dense Buffer and 12KB Sparse Buffer [9], m = 2273 ), achieves a higher 1.54 × speedup than FlexVector (+Flexible k), but its area increases by over 
+
+50 × and its energy is 7.2 × higher, dominated by the large SRAM buffers. These trends align with the case-study results shown in Fig. 10(c–d), highlighting the efficiency advantage of FlexVector under practical buffer constraints. 
+
+D. Evaluation of Flexible k Selection Strategy (Algorithm 2) 
+
+Fig. 11 evaluates Algorithm 2 on the CiteSeer dataset under Single-VRF and Double-VRF configurations, where D de-0 10 20 30 40 50                                   
+
+> (a)
+> 0
+> 5
+> 10
+> 15
+> 20
+> Dynamic  k
+> D= 12
+> D= 6 × 2
+> D= 16
+> D= 8 × 2
+> D= 32
+> D= 16 × 2
+> 0123457913 15
+> (b)
+> 0.90
+> 0.95
+> 1.00
+> Latency
+> D= 12
+> D= 16
+> D= 32
+> Dynamic k
+> Best fixed k
+> 0123457812 15
+> (c)
+> 0.90
+> 0.95
+> 1.00
+> Latency
+> D= 6 × 2
+> D= 8 × 2
+> D= 16 × 2
+> Dynamic k
+> Best fixed k
+
+Fig. 11: Effectiveness of Algorithm 2 on CiteSeer dataset un-der Single-VRF (VRF depth, D ∈ { 12 , 16 , 32 }) and Double-VRF ( D ∈ {6×2, 8×2, 16 ×2}): (a) dynamic k selection across tiles; (b) latency vs. fixed k selection (Single-VRF); (c) latency vs. fixed k selection (Double-VRF). Dashed lines indicate the latency achieved by Algorithm 2. notes the VRF depth (Single-VRF: D ∈ { 12 , 16 , 32 }; Double-VRF: D ∈ { 6×2, 8×2, 16 ×2}). Fig. 11(a) illustrates how the selected k, the depth of the VRF fixed region, varies across tiles during execution on FlexVector. Algorithm 2 adjusts k
+
+according to each tile’s sparsity, assigning larger k to tiles with high dense-row reuse to maximize fixed-region utilization and smaller k to tiles with dispersed accesses. Deeper VRFs consistently allow larger k values. Fig. 11(b–c) compares the system latency using a given 
+
+k (fixed across all tiles, bars) with the latency achieved by Algorithm 2 (varying k across tiles, dashed lines). Two key observations emerge. First, the empirically optimal k∗
+
+(marked by red ⋆) shifts across VRF depth configurations. For Single-VRF, k∗ grows from 3 at D=12 to 13 at D=32 , as deeper VRFs can hold more fixed rows. For Double-VRF, k∗
+
+increases from 4 at D=6 ×2 to 8 at D=16 ×2, indicating that a single fixed k does not generalize across hardware settings. Second, the dashed lines in Fig. 11 show that Algorithm 2 automatically identifies a near-optimal k, within 2% of the best fixed-k in all cases. Overall, these results highlight that adapting the fixed–dynamic VRF partition enables efficient SpMM execution under varying sparsity and VRF depth 12 Cora CiteSeer Pubmed Reddit Yelp         
+
+> 0.0
+> 0.5
+> 1.0
+> Latency
+> GL m=1
+> GL m=6
+> GL m=8
+> GL m=2273
+> FV m=1
+> FV m=6
+> FV m=8
+> FV m=2273
+
+(a) Cora CiteSeer Pubmed Reddit Yelp          
+
+> 0.0
+> 0.5
+> 1.0
+> DRAM Access
+> GL m=1
+> GL m=6
+> GL m=8
+> GL m=2273
+> FV m=1
+> FV m=6
+> FV m=8
+> FV m=2273
+
+(b) 1.75              
+
+> 2.00
+> GL m=1
+> GL m=6
+> GL m=8
+> GL m=2273
+> FV m=1
+> FV m=6
+> FV m=8
+> FV m=2273
+> FV k=0
+> Cora CiteSeer Pubmed Reddit Yelp
+> 0.0
+> 0.5
+> 1.0
+> Miss Count
+
+(c) 2.5              
+
+> 3.5
+> 4.5
+> GL m=1
+> GL m=6
+> GL m=8
+> GL m=2273
+> FV m=1
+> FV m=6
+> FV m=8
+> FV m=2273
+> DRAM
+> SRAM
+> Cora CiteSeer Pubmed Reddit Yelp
+> 0.0
+> 0.5
+> 1.0
+> Energy
+
+(d) 
+
+Fig. 12: Comparison of GROW-like (GL) and FlexVector (FV) across varying buffer sizes m on five datasets, all normalized to GL m=1 : (a) latency; (b) DRAM access count; (c) miss count, with red triangles indicating FV miss count without fixed VRF region ( k=0 ); (d) energy, where gray and green segments denote DRAM and SRAM energy. constraints. 
+
+E. Evaluation of the Impact of Various Buffer Sizes 
+
+Fig. 12 compares GROW-like and FlexVector across four metrics under varying buffer sizes (e.g., Dense and Sparse Buffers), parameterized by the multi-buffer factor m. Larger 
+
+m values correspond to increased buffer capacity. For example, 
+
+m=6 and m=2273 correspond to Dense Buffer sizes of 2 KB and 512 KB, respectively (Section VI-A4). 
+
+1) Latency: As shown in Fig. 12(a), FlexVector outper-forms GROW-like at m ∈ { 1, 6, 8} by up to 3.78 ×. FlexVector with m = 1 achieves 1.43 × lower latency than GROW-like with m = 8, indicating that FlexVector maintains higher performance even with significantly smaller buffer capacity. However, FlexVector ( m=2273 ) is 24.2% slower than GROW-like ( m=2273 ), since GROW-like’s buffer-centric (e.g., cache-centric [9]) design achieves its performance potential by progressively reducing DRAM-buffer misses as the buffer size grows, eventually reaching near-zero miss rates at m=2273 .In contrast, FlexVector’s latency is primarily bottlenecked by the buffer–VRF interface (e.g., VRF data access and lane computation), and it scales more significantly with vector width than with buffer size, as discussed in Section VI-F. 
+
+2) DRAM Access: Fig. 12(b) shows that FlexVector reduces DRAM access counts by 3.0×–8.6× compared to GROW-like at the same m. This improvement is achieved by shifting irregular, repeated dense-row accesses from the DRAM–buffer level in GROW-like to the buffer–VRF interface, thereby avoiding DRAM accesses caused by buffer (i.e., software cache) misses. As m increases, both designs reduce DRAM accesses further. GROW-like benefits from a lower dense-row miss rate due to its larger buffer capacity, whereas FlexVector reduces per-tile DRAM traffic by amortizing burst transfers across more tiles. At m = 2273 , the DRAM access counts of both GROW-like and FlexVector become negligible. 
+
+3) Dense Row Miss Count: Fig. 12(c) compares dense-row miss counts between GROW-like (buffer/cache misses) and FlexVector (VRF misses). The miss count in GROW-like decreases monotonically with m, as larger buffers can capture more frequently accessed dense rows. At m = 2273 ,the expanded buffer effectively accommodates most hot dense rows, resulting in negligible misses. In contrast, FlexVector’s VRF miss count is largely independent of the buffer size ( m), as it is governed by the VRF fixed-region size (parameterized by k, which is dynamically determined by Algorithm 2 for each tile) rather than the buffer capacity. We further highlight the case without a VRF fixed-region ( k = 0) using red triangles. Compared to the k > 0 case, k = 0 leads to 3.79 ×-27.53 × higher dense-row misses, demonstrating the benefit of the fixed-region in FlexVector. 
+
+4) Energy: Fig. 12(d) shows that FlexVector achieves 13.9-63.8% lower energy than GROW-like at the same buffer size across all datasets, for m ∈ { 1, 6, 8}. At these buffer configurations, energy is dominated by DRAM accesses (gray bars), and this observation aligns with Fig. 12(b), where FlexVector issues fewer DRAM accesses than GROW-like. At 
+
+m = 2273 with a large buffer configuration (Dense Buffer = 512KB, as in [9]), both designs are dominated by SRAM energy (green bars), causing total energy to rise sharply. In this case, GROW-like benefits from its buffer-centric (e.g.,cache-centric [9]) design, achieving near-zero dense-row misses, which shortens execution latency (aligned with Fig. 12(a)) and results in 3.7-33.7% lower overall energy than FlexVector. Overall, across different buffer configurations, GROW-like performance is highly sensitive to buffer size, with large buffers (e.g., 512KB Dense Buffer) achieving low execution latency but incurring much higher energy. In contrast, FlexVec-13 64 128 256 512 1024 2048 64 128 256 512 1024 2048 64 128 256 512 1024 2048 64 128 256 512 1024 2048                                               
+
+> (b)
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Energy
+> D= 6×2 D= 8×2 D= 16×2 D= 32×2
+> DRAM Ctrl SRAM VRF DMA MAC Area
+> 1
+> 2
+> 3
+> 4
+> Area
+> 7.0 11.9
+> 64 128 256 512 1024 2048 64 128 256 512 1024 2048 64 128 256 512 1024 2048 64 128 256 512 1024 2048
+> (a)
+> 1
+> 2
+> 4
+> 8
+> 16
+> 32
+> Speedup
+> 1/16
+> 1/8
+> 1/4
+> 1/2
+> 1
+> 2
+> ISA Count
+> D= 6×2 D= 8×2 D= 16×2 D= 32×2 ISA Coarse ISA Fine
+
+Fig. 13: Impact of VRF length (VLEN = 64–2048bit) and depth ( D ∈ 6×2, 8×2, 16 ×2, 32 ×2) on FlexVector PPA: (a) speedup and instruction counts, (b) energy breakdown and area, normalized to VLEN = 64bit, D = 6 × 2, with results reported as geometric means across all five datasets. ∗ Tile sizes are set to 32 × 32 for the first three VRF depths ( D ≤ 16 × 2) and 
+
+64 × 64 for the last. tor remains largely stable with small buffers (e.g., 2KB Dense Buffer), showing no negative impact on key metrics (e.g., DRAM accesses, VRF misses). This confirms that FlexVector can deliver substantial latency and energy efficiency benefits over GROW-like under the same buffer size configurations. 
+
+F. Evaluation of the Impact of VRF Length and Depth 
+
+Fig. 13 presents the PPA evolution of FlexVector across different VRF lengths (VLEN) and depths. We first present a within-group comparison, where VLEN is varied at a fixed depth, followed by a cross-group comparison, where VRF depth is varied at a given VLEN. All results are normalized to a baseline configuration (VLEN = 64 bits, VRF depth = 
+
+6 × 2). 
+
+1) VRF Length (Within-Group Comparison): With a fixed VRF depth (e.g., D = 6 × 2), increasing VLEN improves data access and computation parallelism across lanes, yielding up to a 9.44 × speedup and 97% reduction in coarse-grained instructions at VLEN = 2048 bits (Fig. 13(a)). However, per-formance gains diminish beyond VLEN = 512 bits, indicating a transition from compute-bound to memory-bound execution, with DRAM bandwidth limiting throughput despite additional MAC lanes. Fig. 13(a) also compares FlexVector’s coarse-(black line) and fine-grained instruction counts (red line). The coarse-grained ISA executes VRF-lane data access ( MV_Dyn )and lane computation ( CMP ) for computing a sparse row with a dense matrix, whereas the fine-grained ISA expands these into per-nonzero and per-dense-row operations. Using coarse-grained instructions reduces total instruction count by 3–20%, demonstrating the efficiency of our coarse-grained ISA (Section III-D). From Fig. 13(b), increasing VLEN in-creases area (by 1.76 × and 4.4 × at VLEN = 512 bits and 2048 bits, respectively) due to proportional scaling of MAC lanes and Dense Buffer width. System energy initially decreases to 56.2% at VLEN = 512 bits, as higher lane parallelism reduces control overhead, but rises slightly at larger VLENs due to higher SRAM cost in the wider Dense Buffer. Similar trends across VRF depths ( D ∈ 6×2, 8×2, 16 ×2, 32 ×2) indicate that VLEN = 512 bits provides a balanced PPA tradeoff. 
+
+2) VRF Depth (Cross-Group Comparison): The cross-group comparison in Fig. 13 shows that increasing the VRF depth to D = 32 × 2 improves system speedup to 15–135% over D = 6 ×2 at the same VLEN, as the deeper VRF reduces misses by accommodating bigger fixed regions. Instruction count is largely independent of VRF depth ( <1% change from D = 6 × 2 to D = 16 × 2) but decreases with larger tile sizes (due to coarser-grained ISA), showing a 28% reduction when increasing the tile configuration from 32 ×32 to 64 ×64 at D = 32 × 2. Regarding area, for moderate VRF depths ( D ≤ 16 × 2) and VLEN ( ≤ 512 bit), it remains below 2×. However, at larger depths (e.g., D = 32 × 2)and VLEN ( ≥ 1024 bit), area grows sharply, reaching up to approximately 12 ×, indicating that excessively wide or deep VRF configurations can incur prohibitively high area costs. Energy differences across VRF depths remain small with a given VLEN. Overall, considering both VRF length and depth, configurations with VLEN = 512 bit, specifically D = 8 × 2
+
+and D = 16 × 2 (highlighted by red anchors), achieve comparable PPA trade-offs, offering 6.77–7.26 × speedup, 1.77–1.81 × area, and 49.7–50.0% energy reduction relative to the normalized baseline (VLEN = 64 bit, D = 6 × 2). VII. C ONCLUSION 
+
+In this paper, we present FlexVector, a hardware–software codesign for a vector-processor-based unified engine for ac-celerating SpMM in GCN inference. At the hardware level, FlexVector introduces software-managed flexible VRFs with fixed and dynamic regions to handle irregular data accesses at the register level, eliminating the need for large on-chip buffers or caches for repeated DRAM accesses. It also employs 14 
+
+a coarse-grained ISA operating on sparse rows and dense submatrices to simplify SpMM control and reduce instruction count. At the software level, we propose a hybrid graph pre-processing strategy that combines inter-tile edge-cut and intra-tile vertex-cut to reshape power-law workloads under VRF capacity constraints. We further design a hierarchical dataflow that coordinates row-wise execution at the buffer–VRF level and inner-product execution at the DRAM–buffer level. Evaluation on five real-world GCN datasets shows that FlexVector outperforms a state-of-the-art cache-centric base-line, delivering 3.78 × higher performance and 40.5% lower energy at comparable area, while the sparsity-aware algorithm adapting the fixed–dynamic VRF partition achieves near-optimal performance within 2% of the best fixed boundary. As future work, we plan to scale FlexVector by integrating multiple homogeneous vector engines to enable scalable and efficient GCN acceleration. ACKNOWLEDGMENTS 
+
+This work is funded by XXX. The authors used GPT-4o for language editing and proofreading parts of the manuscript. REFERENCES [1] T. Kipf, “Semi-supervised classification with graph convolutional net-works,” arXiv preprint arXiv:1609.02907 , 2016. [2] J. Bruna, W. Zaremba, A. Szlam, and Y. LeCun, “Spectral networks and locally connected networks on graphs,” arXiv preprint arXiv:1312.6203 ,2013. [3] M. Gori, G. Monfardini, and F. Scarselli, “A new model for learning in graph domains,” in Proceedings of the 2005 IEEE International Joint Conference on Neural Networks , vol. 2. IEEE, 2005, pp. 729–734. [4] M. Yan, L. Deng, X. Hu, L. Liang, Y. Feng, X. Ye, Z. Zhang, D. Fan, and Y. Xie, “Hygcn: A gcn accelerator with hybrid architecture,” in 
+
+2020 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2020, pp. 15–29. [5] H. Zeng and V. Prasanna, “Graphact: Accelerating gcn training on cpu-fpga heterogeneous platforms,” in Proceedings of the 2020 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays , 2020, pp. 255–265. [6] M. Yoo, J. Song, J. Lee, N. Kim, Y. Kim, and J. Lee, “Sgcn: Exploiting compressed-sparse features in deep graph convolutional network accel-erators,” in 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 2023, pp. 1–14. [7] J. Li, A. Louri, A. Karanth, and R. Bunescu, “Gcnax: A flexible and energy-efficient accelerator for graph convolutional neural networks,” in 
+
+2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 2021, pp. 775–788. [8] T. Geng, A. Li, R. Shi, C. Wu, T. Wang, Y. Li, P. Haghi, A. Tumeo, S. Che, S. Reinhardt et al. , “Awb-gcn: A graph convolutional network accelerator with runtime workload rebalancing,” in 2020 53rd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) .IEEE, 2020, pp. 922–936. [9] R. Hwang, M. Kang, J. Lee, D. Kam, Y. Lee, and M. Rhu, “Grow: A row-stationary sparse-dense gemm accelerator for memory-efficient graph convolutional neural networks,” in 2023 IEEE International Sym-posium on High-Performance Computer Architecture (HPCA) . IEEE, 2023, pp. 42–55. [10] J. E. Gonzalez, Y. Low, H. Gu, D. Bickson, and C. Guestrin, “Pow-erGraph: Distributed Graph-Parallel computation on natural graphs,” in 
+
+10th USENIX symposium on operating systems design and implementa-tion (OSDI 12) , 2012, pp. 17–30. [11] A. Abou-Rjeili and G. Karypis, “Multilevel algorithms for partitioning power-law graphs,” in Proceedings 20th IEEE International Parallel & Distributed Processing Symposium . IEEE, 2006. [12] M. Latapy, “Main-memory triangle computations for very large (sparse (power-law)) graphs,” Theoretical computer science , vol. 407, no. 1-3, pp. 458–473, 2008. [13] F. G. Gustavson, “Two fast algorithms for sparse matrices: Multiplica-tion and permuted transposition,” ACM Transactions on Mathematical Software (TOMS) , vol. 4, no. 3, pp. 250–269, 1978. [14] Y. Gao, L. Gong, C. Wang, T. Wang, X. Li, and X. Zhou, “Algo-rithm/hardware co-optimization for sparsity-aware spmm acceleration of gnns,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 42, no. 12, pp. 4763–4776, 2023. [15] N. Srivastava, H. Jin, J. Liu, D. Albonesi, and Z. Zhang, “Matraptor: A sparse-sparse matrix multiplication accelerator based on row-wise product,” in 2020 53rd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 2020, pp. 766–780. [16] A. G. Ahsaei, L. Yin, S. Tian, F. Ye, F. Yao, and H. Zheng, “Rethinking tiling and dataflow for spmm acceleration: A graph transformation framework,” in Proceedings of the 58th IEEE/ACM International Sym-posium on Microarchitecture , 2025, pp. 1535–1548. [17] M. Cavalcante, F. Schuiki, F. Zaruba, M. Schaffner, and L. Benini, “Ara: A 1-ghz+ scalable and energy-efficient risc-v vector processor with mul-tiprecision floating-point support in 22-nm fd-soi,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 28, no. 2, pp. 530–543, 2019. [18] M. Platzer and P. Puschner, “Vicuna: A timing-predictable risc-v vec-tor coprocessor for scalable parallel computation,” in 33rd euromicro conference on real-time systems (ECRTS 2021) . Schloss Dagstuhl– Leibniz-Zentrum f¨ ur Informatik, 2021, pp. 1–1. [19] C. G´ omez, F. Mantovani, E. Focht, and M. Casas, “Efficiently running spmv on long vector architectures,” in Proceedings of the 26th ACM SIGPLAN Symposium on Principles and Practice of Parallel Program-ming , 2021, pp. 292–303. [20] V. Titopoulos, K. Alexandridis, C. Peltekis, C. Nicopoulos, and G. Dimi-trakopoulos, “Indexmac: A custom risc-v vector instruction to accelerate structured-sparse matrix multiplications,” in 2024 Design, Automation & Test in Europe Conference & Exhibition (DATE) . IEEE, 2024, pp. 1–6. [21] G. Karypis and V. Kumar, “A fast and high quality multilevel scheme for partitioning irregular graphs,” SIAM Journal on scientific Computing ,vol. 20, no. 1, pp. 359–392, 1998. [22] R. Balasubramonian, A. B. Kahng, N. Muralimanohar, A. Shafiee, and V. Srinivas, “Cacti 7: New tools for interconnect exploration in innovative off-chip memories,” ACM Transactions on Architecture and Code Optimization (TACO) , vol. 14, no. 2, pp. 1–25, 2017. [23] M. O’Connor, “Highlights of the high-bandwidth memory (HBM) standard,” in Memory Forum Workshop , 2014.

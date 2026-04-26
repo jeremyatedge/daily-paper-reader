@@ -1,0 +1,700 @@
+Title: Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML
+
+URL Source: https://arxiv.org/pdf/2604.17550v1
+
+Published Time: Tue, 21 Apr 2026 01:45:46 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML 
+
+## Jinsun Yoo 
+
+Georgia Institute of Technology Atlanta, Georgia, USA 
+
+jinsun@gatech.edu 
+
+## Meghan Cowan 
+
+NVIDIA Santa Clara, California, USA 
+
+mcowan@nvidia.com 
+
+## Zheng Du 
+
+Georgia Institute of Technology Atlanta, Georgia, USA 
+
+zdu@gatech.edu 
+
+## Changhai Man 
+
+Georgia Institute of Technology Atlanta, Georgia, USA 
+
+cman8@gatech.edu 
+
+## Srinivas Sridharan 
+
+NVIDIA Santa Clara, California, USA 
+
+srisridharan@nvidia.com 
+
+## Tushar Krishna 
+
+Georgia Institute of Technology Atlanta, Georgia, USA 
+
+tushar@ece.gatech.edu 
+
+## Abstract 
+
+Design space exploration for future distributed Machine Learning systems suffers from a lack of readily available workload representation that enables flexible exploration across the stack. We present Flint , a framework that bridges this gap by leveraging the Intermediate Representation of Machine Learning framework compilers. The compiler does the heavy weight lifting of understanding and preserving the behavior of the original model code. Flint can collect the workload representation of arbitrary cluster size because it interfaces with the compiler before hardware execution. We validate the workload graph against post-execution traces and show the flexibility of Flint through a design space exploration case study. 
+
+## 1 Introduction 
+
+Artificial Intelligence (AI) is pervasively influencing our ev-eryday lives through applications such as query engines, image and video generation, and code completion. Recent advancements of AI have been steered by Large Language Models (LLMs), such as Llama [ 1 ], GPT [ 21 ], or Deepseek [ 6]. These models are so large that executing them on a single Graphical Processing Unit (GPU) is infeasible. For example, the recently released LLama4 Behemoth model has 288 bil-lion active parameters, which is too large to fit on a single NVIDIA GPU. As a result, LLM workloads are usually dis-tributed across a large number of GPUs, with the largest clusters extending up to tens of thousands of GPUs. How do you find the optimal configuration to deploy Ma-chine Learning (ML) workloads on a future system? Design knobs span areas such as parallelization, scheduling, collec-tives and physical topology. These options form an explosive search space, where the best choice for a job may be subop-timal for another [26]. One approach is to simply run the whole software stack on real systems and rank the performance of different con-figurations. However, in-stack executions are constrained to the provided system configurations, limiting the design space. Users simply cannot deploy the software on future Workload 
+
+SW System 
+
+(NCCL, etc.) 
+
+GPU Cluster 
+
+Workload 
+
+Config. 
+
+Software 
+
+Config. 
+
+Hardware 
+
+Config. 
+
+Workload 
+
+Info 
+
+Simulator 
+
+(a) In-stack 
+
+Execution 
+
+(b) Flint: Best of 
+
+both worlds (c)Simulation 
+
+Software 
+
+Model 
+
+Hardware 
+
+Model 
+
+Flint 
+
+Figure 1. Different approaches to design space exploration. (a) In-stack execution on real cluster. Users cannot easily study alternate, novel cluster or software system configurations (colored in gray). (b) 
+
+Flint receives configurations across multiple layers and provides feedback, guiding the configuration search across all areas (purple dashed arrow). (c) Simulations have the best freedom in navigating new configurations but require users to feed workload information. 
+
+systems of unprecedented scale, new hardware, or a different connectivity. Even existing largescale systems are in high demand making it costly for researchers (in academia) or are prioritized by production teams (in industry). When ac-cess is granted, the limits of existing software stack restricts exploring alternate optimizations (§2.1). In the other extreme lies cost model (i.e. simulator or em-ulator) based frameworks. While this approach can search through several hypothetical configurations, deciding which workload information to model remains a challenge. Run-ning a workload on a real GPU cluster and obtaining post-execution requires the same number of GPUs as an in-stack execution, diminishing the benefit of cost models [ 25 , 29 ]. Synthetically generating a pre-execution representation from a symbolic workload description does not need GPU, but developers must manually extend the synthetic generator with each new workload optimization. Orthogonally, some frameworks build their own pipeline to generate workload in-formation [ 26 , 31 ]. However, these pipelines are constrained 
+
+> 1
+> arXiv:2604.17550v1 [cs.DC] 19 Apr 2026 Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna
+
+Table 1. Comparison of Flint against prior art.                                      
+
+> Workload Graph Design Space
+> Cluster-Free Source Code Scheduling Parallelization Custom Collective Topology Post-execution Traces + Simulation [29] ✗✗""✗✗
+> Synthetic Generation + Simulation [4, 10] "✗""✗"
+> Runtime Compilers [2] ✗""△✗✗
+> CUDA API Capture [14, 26] ""✗"✗"
+> Flint (Our work) """"""
+
+to their own cost model, hence not leveraging the full set of available cost models (§2). We propose Flint , a novel framework that aims to bridge the best of both worlds 1. The key approach of Flint is to leverage the compiler Intermediate Representation (IR) from the ML framework’s compiler (for example, FX Graph from PyTorch) and feed it to cost models [ 2 , 12 ]. The compiler IR preserves the behavior of the source code, including the true data dependencies between operators. Users do not have to configure external synthetic generators, but simply reuse already available model code. In addition to the benefit of easy workload graph generation, Flint feeds the workload graph to a variety of cost models to showcase a versatile set of usecases. To do this, it converts the captured IR into a Chakra graph [ 25 ]. Chakra is a standard ecosystem maintained by MLCommons and widely used across several companies [ 16 ,18 ]. The ecosystem is centered around the Chakra graph, which is used across multiple downstream tools such as simulators or replay tools. Examples include the ASTRA-sim simulator, Genie network emulator, and many proprietary cost models that leverage Chakra graphs [15, 16, 29]. There are two challenges to enabling Flint . First, Flint 
+
+has to extract the workload graph from the right level of IR. ML frameworks, such as PyTorch, perform several iterations of optimizations and lowering on the IR once it is obtained from the workload graph. There is a tradeoff between forcing a platform specific optimization and restricting the search space, and being too high level and generic. We provide a deep discussion and analysis of the available compiler tradeoffs, and argue for the right stage of FX graphs (§3). Second, Flint needs to provide the illusion to the ML framework that it is running on a real GPU cluster. A key design principle of Flint is for the developer to ‘run’ the model with the source code as-is, with minimal modifications. If this is not done correctly, the ML framework might attempt to allocate GPU memory or capture an unrealistic IR graph thinking it is running on a CPU only machine. (§4) This work provides the following contributions. 
+
+> 1The name is inspired by how in ancient times flint made it much easier to start fires, granting more time for usecases such as cooking, lighting, or keeping the house warm.
+
+• We present Flint , the first system to capture and lever-age workload information without GPU clusters from compiler IR. 
+
+• We provide an in-depth discussion on existing workload optimization and the right level of abstraction to capture workload graphs. 
+
+• We showcase how Flint addresses a number of usecases across the stack by leveraging the workload graph across a set of diverse downstream tools. The remainder of the paper is structured as follows: §2 discusses the relevant background to this work. §3 estab-lishes our design principle and explains the design choices we make. §4 describes how Flint is implemented and the considerations taken for it to work smoothly. §5 validates the graphs Flint generates, and §6 showcases several usecases that benefit from Flint . §7 discusses additional issues and outlines future work. 
+
+## 2 Background and Motivation 
+
+2.1 Design Space Exploration Overview 
+
+Fig. 2 shows the multiple layers of design choices involved in largescale AI/ML and possible options. In DSE, the goal is to find the best combination of these options that yields the best desired metrics and constraints, such as end to end duration, memory usage, or power consumption. This can be understood as a two step process, divided by the dashed blue line in the figure. First, the developer prepares a description of the workload, either by writing model code from scratch or using synthetic generators (§2.2). Then, the developer ‘observes’ how the workload performs on a given system, either by executing on a real system or running cost models such as simulators or emulators (§2.3). A good end-to-end DSE framework should enable users to easily explore all of the layers or focus on any specific layer, depending on the usecase. 
+
+2.2 Obtaining Workload Representation 
+
+The start of DSE is to understand what the workload looks like. Graph based representations, where each operations and their dependencies are recorded as vertices and edges, are commonly used in prior art. Example usage includes 
+
+> 2Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML Technology : Latency, Bandwidth, Energy
+> Topology : Scale-out, Scale-up, Connectivity, ..
+> Transport : Flow Control (PFC, DCQCN, ..), Routing (ECPMP, ..), ..
+> Collective Algorithm :
+> Ring, Switch, ..
+> Compute :
+> Tiling, Layout Mapping, ..
+> Framework Compiler Optimization :
+> Scheduling, Reordering, Fusion, ..
+> Parallelization Strategy : TP, PP, DP, FSDP, ..
+> Model Architecture : LLM (Dense, Sparse, ..)
+> Coll. Tuning : Chunking (1, 2, ..),
+> Protocol (Simple, LL), ..
+> Memory :
+> Remote Memory, CXL, ..
+
+Figure 2. The layers in distributed ML and their design choices. The boxes correspond to workload (green, top), software system (red, middle) and hardware system (yellow, bottom) related options. The blue dashed line separates workload related options and system related options. 
+
+describing a novel model structure, illustrating how a paral-lelization strategy introduces new compute and communica-tion patterns, or how operations can be reordered for better performance while respecting the workload dependency. Ex-amples include Chakra or GOAL [9, 25]. However, obtaining these graph representations is a dif-ficult task. A simple approach is to synthetically generate graphs from a symbolic description. A symbolic description lists factors such as the number of layers and size of the hidden dimension. This approach is based on the largely repetitive nature of the transformer model. However, such generic representation is limited in capturing the unique characteristics of different model architectures. For exam-ple, Deepseek has the same high-level transformer structure but replaces MHA with multi-latent attention and FFN with Mixture of Expert (MoE) layers. Using SwiGLU was a distin-guishing factor of early Llama models. Additionally, parallelization strategies make it difficult for synthetic graph generators to keep up with fast moving trends. New parallelization strategies introduce changes to the workload graph that are different from past strategies. Even within the same parallelization strategy different fla-vors, such as DDP Optimizer which buckets small AllReduces in Data Parallel into a smaller number of larger collectives, add additional burden. While it is possible to extend symbolic representations to represent the different modifications listed above, manual effort is needed to implement and validate each new model or parallelization optimization. Another approach is to execute the model code on real GPUs and trace which operations were executed. Chakra, for example, supports a workflow to deploy the workload on W1 
+
+> FFN
+> (X,W1)
+> AllReduce
+> O
+
+TP 
+
+> Rank 0
+> W1
+> O
+
+FSDP    
+
+> Rank 0
+> W
+> XX
+> FFN
+> (X,W1)
+> W2
+> FFN
+> (X,W2)
+> O
+> Rank 1
+> W2
+> O
+> Rank 1
+> W
+> XY
+> FFN
+> (X,W2)
+> AllGather
+> AG
+> C
+> AG
+> C
+> AG
+> C
+> AG
+> C
+> Data Dep. Sync. Dep.
+> (b) communication
+> reordering in FSDP
+> (a) workload change
+> from TP, FSDP
+
+Figure 3. Various changes in a workload graph. (a) Tensor Parallel and Fully Sharded Data Parallel in a transformer model. W1,W2: partial weights, W: full weight. FFN: Feed Forward Network. X, Y: different input. (b) Scheduling strategies on FSDP. (Top): Syn-chronization dependency to delay AllGather and save memory. (Bottom): Reordering to maximize compute and communication overlap. 
+
+GPU clusters and collect Chakra Execution Traces (Chakra ET). Here users can easily shift between model structures and parallelization strategies already implemented in the source code without having to reinvent the wheel in synthetic gen-erators. However, this restricts the user to whichever GPU cluster is available. Some works execute the source code as-is, but intercept calls at the CUDA API level and reconstruct the workload graph without actually executing on a real GPU cluster [ 14 ,26 ]. However, these approaches contain false dependencies, restricting them from exploring graph modifications such as scheduling optimizations. This is because these work only have access to the low level hardware API. These work infer the dependency from the order of API calls or synchroniza-tion events that are manually injected. Such inferred depen-dencies do not represent the true data dependency between operations. Take the example depicted in Fig. 3b, which describes the collective reordering introduced in SimpleFSDP [ 23 ]. While compute operations in FSDP are dependent on the AllGather collectives to gather the model weights (data dependency), the AllGather collectives themselves are not dependent on any prior operation. However, the original implementation of FSDP injected a synchronization dependency between the AllGather and compute operations of the previous layer, ex-posing the AllGather communication to delay the Gather and limit active memory. The reordering strategy explores the tradeoff between memory and latency by running later col-lectives upfront and overlapping them with earlier compute or waiting to run collectives until the weights are needed by the compute. Because the CUDA API based approaches 
+
+> 3Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna
+
+rely on synchronization information, they cannot tell if the communication can be issued earlier. The above discussion highlights a gap in the ability to capture comprehensive workload representations without needing large number of GPUs. While in theory any graph can be converted to use the Chakra schema, the key distinc-tion that sets Flint apart is where the graph originates from - the compiler IR. 
+
+2.3 Cost Models and Usecases 
+
+Cost models help users understand systems that they do not have full access to. Because there are multiple usecases, one-size-fits all does not apply. 
+
+Simulators Simulators help model hypothetical systems in both software and hardware. In software, simulators can model arbitrary collective implementations beyond the stan-dard Ring and Tree implementations. Simulators can also easily model hardware topologies, whether they involve a large number of ranks, complex interconnect connectivity, or novel technologies such as new transports, wafer scale sub-strates, optical interconnects. Examples include ASTRA-sim, ATLAHS, the simulator in SimAI, etc [24, 29, 31]. 
+
+Emulators Emulators model the system to some extent. For example, when studying the behavior of network fab-rics such as NICs or Switches, provisioning all GPUs is not necessary. Emulators that generate traffic based on the work-load pattern allows users to study real network behavior and features without relying on system implementations. Examples include Genie or Keysight AI Datacenter Builder (KAIDCB) [16]. The cost models report metrics such as job completion time, memory consumption, or network flow. These metrics guide the next choice on workload, software, or hardware configurations. This feedback loop is repeated until an opti-mal configuration is found. The level of abstraction of the workload representation dictate how much freedom the cost model has in exploring different configurations. Recall the graph reordering example discussed in §2.2. If the workload is able to capture the true data dependency, frameworks can search through different scheduling and fusing strategies by modifying the graph while respecting the intended dependency. The context where the cost model is running also deter-mines the flexibility. For runtime compilers that leverage pre-execution graphs, they can only search through graph modifications, but not all of the other spaces above, especially parallelization. This is because they are fixed as a runtime component, and all of the other factors are already discussed by the system and are out of their scope. Cost models are well studied in prior art. However, they were previously limited due to the shortcomings on how the workload graphs are generated (§2.2). Flint ’s approach of leveraging compiler IR greatly enhances the search space of these cost models. PyTorch Compiler 
+
+> Developer Code
+> (Megatron, Torchtitan, etc.)
+> PyTorch API
+> (torch.nn, torch.distributed, etc.)
+> PyTorch
+> Compiler
+> c10 Dispatcher
+> Core API (ATen, c10d)
+> Dynamo
+> Graph Tracer
+> AOT Autograd
+> Backend Compiler
+> (Inductor, Flint, etc..)
+> HW Kernels
+> (cuBlas, cuDNN, NCCL, etc.)
+> FX Graph (Torch API)
+> FX Graph (ATen, c10d)
+> Final FX Graph
+> (ATen, c10d)
+
+Figure 4. The PyTorch software stack and the PyTorch compiler. 
+
+Table 2. Example Graph Passes in the Compilation Process. 
+
+Compilation Stage Graph Passes 
+
+Pre AOTAutograd Fuse matmul & permute into transpose & matmul, etc. Post AOTAutograd Remove noop, redundant views, etc. 
+
+This is where Flint captures the FX Graph 
+
+Backend Compiler FSDP AllGather reordering, DP AllReduce bucketing, TP micro pipelining 
+
+2.4 Model Compilation and Execution in PyTorch 
+
+Fig. 4 depicts PyTorch’s software stack at a high level. Devel-opers define the model structure or apply parallelization by writing code with the PyTorch API or libraries such as Mega-tron or Torchtitan. These high level functions are broken down into aten or c10d functions for compute and commu-nication operations, respectively. PyTorch executes this code in two ways. In the first approach, eager , the c10 Dispatcher simply runs the code one function at a time. Because it does not have a view of the whole program, PyTorch cannot make global optimizations. The other option uses a Just in Time (JIT) compiler to capture the whole workload into an Intermediate Represen-tation (IR) called FX Graph. Fig. 6 shows a sample PyTorch code and the corresponding FX Graph. Each node represents an input tensor variable or a function that generates an in-termediate tensor. A node contains metadata of the tensor it represents such as the shape, and pointers to upstream nodes corresponding to the arguments of the function that produced this tensor. The right part of Fig. 4 details the compilation process. Dynamo, PyTorch’s frontend compiler, symbolically traces the PyTorch code by extending the Python runtime to record function calls instead of actually executing them. Ahead of Time Autograd (AOT Autograd) then lowers this into aten 
+
+or c10d level and also creates a graph for the backward pass. The FX Graph is passed to a backend compiler through a 
+
+> 4Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML
+
+Flint  
+
+> Workload
+> Configuration
+> Graph Converter
+> Chakra Graph
+> System
+> Configuration Cost Model
+> Simulators
+> Emulators
+> PyTorch Runtime/
+> Compiler
+> Reconfigure
+
+Figure 5. High level depiction of Flint architecture. Developers provide workload configuration (i.e. PyTorch code) and the system configuration. The workload code is captured by the PyTorch com-piler into an FX Graph, which Flint ’s Graph Converter converts into a Chakra Graph. The system configuration configures the cost model. The cost model generates metrics, which are used to select the next set of configurations (blue dashed arrows) 
+
+publicly supported API. The backend compiler generates the final FX graph, which is executed by the Dispatcher. Throughout this process, Dynamo, AOTAutograd, and the backend compiler makes graph passes that modify the cap-tured graph before passing to the next stage. Graph passes add, remove, change, or reorder graph nodes, effectively changing the final operation, while maintaining the proper behavior. Tab. 2 groups the graph passes by the stage where these passes occur. The passes in the first two stages are largely cosmetic passes, such as removing no-operation func-tions (multiply by 1, add 0, etc.) or rewriting the same opera-tion for better code generation. These passes are relatively straightforward and do not leave much room for changes. PyTorch does not expose options to enable or disable these passes. On the other hand, the graph passes in the backend compil-ers are more interesting. The collective reordering example depicted in Fig. 3(b) is implemented within the default In-ductor backend compiler. Here, the optimizations introduce a tradeoff or are not yet fully understood, leaving room for interesting research questions.PyTorch enables a wide range of flexibility by exposing knobs to enable or configure these passes, and even exposes an API that developers can imple-ment to write their own backend compilers with custom graph passes. Flint leverages this endpoint to capture the FX Graph already traced by PyTorch’s compiler (§3). 
+
+## 3 System Design 
+
+3.1 Design Principles 
+
+We first discuss the design principles behind Flint .
+
+P1: Generate a graph compatible with existing mul-tiple cost models: Flint should provide an easy way to obtain workload graphs that can be fed into cost models. We do not wish to tie Flint to a specific cost model. 
+
+P2: Capture the source code behavior: We want to correctly capture the unique behavior of model architec-tures, parallelization strategies, and their implementations (§2.2). Flint should simply take the source code and generate the graph, instead of having to manually write the logic to synthetically create graphs from symbolic descriptions. The operations should capture necessary information to recreate the operation, such as the shape of input and output tensors. 
+
+P3: Balance between relevant detail and freedom of exploration: 
+
+Capturing workload information closer to the hardware execution ensures the information closely represents existing hardware and software stack, but does not leave room for different configuration options or futuristic optimizations. On the other hand, abstracting away components with little ambiguity yields no significant benefit. For example, PyTorch internals such as the decomposition of Torch IR into 
+
+aten /c10d operations, is a framework implementation issue and is beyond the scope of works that P1 targets. 
+
+P4: Easily usable with little hardware demand: Flint 
+
+should be easy to use. Not requiring multiple GPUs is the cornerstone to achieving this goal. Specifically, users should not need to build physical clusters for every system configu-ration they want to model. 
+
+3.2 Design Choices Behind Flint 
+
+Flint uses a custom backend compiler to capture the FX-Graph after AOT Autograd , and generates pre-execution 
+
+graphs using the Chakra schema . It then feeds this graph to a set of cost models depending on the usecase. Fig. 5 depicts the workflow in Flint . The developer first registers Flint as a backend compiler to PyTorch. Then the user defines a set of model configurations such as the architecture or parallelization strategy, and writes PyTorch code. The compiler’s frontend components traces this code and generates an FX Graph, which is provided to Flint .
+
+Flint runs a set of graph modification passes that the user picks, and then converts the FX Graph to a Chakra graph [ 2 ]. This is then fed to the cost models, which are configured with system software or hardware configurations (collec-tive algorithm, hardware specifications, etc.). The resulting metrics are used as feedback to choose a new set of configu-rations. We now provide our rationale behind this design choice, and how it helps fulfil our design principles. We first discuss how our decision to capture from the com-piler IR helps us fulfill both P2 and P4. Extracting information from the source code allows us to capture the newest updates to the PyTorch runtime without reinventing the wheel of generating the graph from a symbolic representation. 
+
+> 5Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna
+
+We note that when Flint extracts a graph after a certain stage, it is equivalent to declaring that the developer is not interested in exploring the optimizations available in that stage. When there are design choices the user wants to study, 
+
+Flint should capture the graph before the optimization stage is fixed, so that the user can switch between alternate con-figurations. In that aspect, we do not capture lower level information such as the collective algorithm is being used (§2.1). Assume that NCCL would have chosen the Ring algorithm when run-ning a model on an existing cluster. Fixing this information in the workload representation restricts users from search-ing other algorithms such as Tree or custom non-standard synthesized algorithms. We also make the design choice of not capturing the FX graphs at the Torch IR level, but wait to capture after AOT au-tograd. The biggest reason behind this is the backward pass. AOT autograd, unlike Dynamo, can capture the backward pass which is also important in modeling different configu-rations. Additionally, we find Torch IR to be too high level. PyTorch’s internal runtime already breaks down the Torch IR into aten /c10d operations regardless of other configura-tions. Capturing at the higher Torch IR level leaves room for downstream tools to decompose the operations differently, which results in a workload behavior different from PyTorch code (P3). Finally, we find the graph passes in this stage to be trivial, evidenced by the lack of PyTorch exposed knobs to configure them. Therefore, there is little merit for Flint 
+
+to capture the graph before this stage. However, we do not capture the backend compiler op-timizations. This is an interesting search space and we do not want Flint to restrict the user’s search space by forc-ing a single option on the graph. Additionally, such opti-mizations, if captured, would be tied to the platform. For example, one possible graph transformation is to maximize compute-communication overlap. Because the compute and communication duration differs on the hardware, the reorder-ing result for one platform would not be valid on another platform. Finally, there is no definitive backend compiler to capture. While PyTorch uses Inductor by default, there are other backend compilers such as TensorRT. Capturing the result of different backend compilers would yield different results. The FX Graph that Flint captures right after AOTAuto-grad, therefore, could be different from what is executed if users run PyTorch (and thus Inductor) out of the box. Flint 
+
+can elect to apply these backend compiler graph passes (or a combination of) before feeding into the cost model. This provides a graph that would happen with default PyTorch execution. This is useful if the developer is not interested in workload optimizations and more interested in system optimizations. On the contrary, a developer interested in workload optimizations would elect to work on the unopti-mized FX graph that has only the true dependencies. Flint 
+
+exposes this option as a configuration knob, so that develop-ers can easily choose depending on their needs. Our choice of generating graphs with the Chakra schema allows seamless integration with existing tools that already use Chakra graphs (P1), most notably ASTRA-sim and later Chakra-based collective-simulation workflows [ 15 , 16 , 29 ,32]. Note how Flint uses the same schema as post-execution traces of real execution, but is pre-execution and does not rely on real clusters to run (P4). P1 also clarifies why simply using the FX Graph as-is is not enough. To the best of our knowledge, there is no cost model that takes in FX Graph. To use FX graphs with exist-ing tools, we would need to convert and extract attributes from FX graphs anyways. Furthermore, FX graphs are spe-cific to the PyTorch framework. On the contrary, Chakra is a framework-neutral schema that allows developers to capture workload information regardless of the framework 2
+
+Finally, sharing FX graphs between peer researchers is a challenge that makes using FX graphs as-is infeasible. While 
+
+torch.export saves the captured graph, it saves a serialized Python object. Additional conversion is required to feed this graph into cost models that are not written in Python. Finally, using a custom backend compiler makes it easy to develop, use, and maintain Flint . The API between Py-Torch and custom backend compilers, through which Py-Torch provides the captured FX graphs, is publicly exposed and relatively well established. This makes it less susceptible to internal or future changes. Flint simply implements this API, receives the FX Graph, creates Chakra graphs, and rus DSE passes. 
+
+## 4 Flint Runtime 
+
+4.1 Execution Model 
+
+In a traditional in-stack deployment, the developer launches 
+
+𝑁 instances of the same PyTorch program, where 𝑁 is the number of GPUs. Each process applies the parallelization strategy (separate from the code, likely provided through an external configuration) and decides implementation details such as which other ranks to communicate with or how to break down the compute. 
+
+Flint preserves the developer experience by deploying 𝑁 
+
+processes with the same model code. However, the processes are not assigned to a physical GPU. Instead, torch.compile 
+
+of rank 𝑟 captures the compiler IR of that rank before exe-cuting any code on a physical GPU, and passes it to Flint .The Flint converter within each process independently pro-cesses the FX Graph. Because the compiler captures the FX Graph after parallelization is applied to the model, each FX Graph is unique to the rank and preserves details such as what are the peer ranks in a collective.   
+
+> 2While Flint currently focuses on FX graphs, we envisioning expanding it to other frameworks such as JAX. 6Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML
+
+Note how in the traditional in-stack deployment the num-ber of processes per host machine is capped by the number of physical GPUs on the machine. On the other hand parsing the IR in Flint is purely a CPU operation. Users can decide to allocate all processes on a single host, or distribute across multiple hosts, depending on the number of processes and their ranks. 
+
+4.2 Illusion of a GPU Runtime 
+
+A key principle of Flint is to allow users to collect the work-load graphs using the model code and scripts ( torchrun, mpirun , etc.) to run these graphs. To seamless collect FX graphs of a model code in from the compiler, Flint needs to provide PyTorch the illusion that it is running on a GPU cluster. One important aspect is to prevent PyTorch from running operations that require real GPUs. Here, Flint re-quires users to initialize models on the ’Meta device’, instead of a GPU. ’Meta device’ a fake device that PyTorch supports, where each tensor is simply a data structure that contains only metadata such as the tensor shape, but does not allocate any data value in device memory. Operations on Fake Ten-sors produce another Fake Tensor with the resulting tensor shape recorded as metadata. This is to prevent PyTorch from attempting to allocate tens of GB of memory on GPU, which it does not have. This is the only modification to user code that Flint re-quires. Since Flint does not run actual training, it is accept-able to not allocate or compute any real value. However, us-ing Meta devices could become an issue in operator dispatch (§2.4). For example, Scaled Dot Product Attention (SDPA) can be translated into a single fused implementation or bro-ken down into simple primitives such as add or multiply .During the symbolic tracing, the PyTorch API function de-cides before reaching the dispatcher whether to break down SDPA. If the tensor was originally allocated to a GPU, a fused kernel is used, but if the tensor was originally allocated on another device (such as the CPU or the Meta device), the SDPA operation is broken into the primitive version. To pre-vent this, we modify the PyTorch API function of SDPA to treat tensors as if they were allocated on the GPU. While this approach requires direct modifications to the API code, we believe such modifications will be limited in the future, as the aten api does not change rapidly. Once the runtime obtains the FX Graph, it converts this to a format that can be used by multiple cost models. Flint 
+
+makes a specific choice to convert the FX Graph into Chakra graphs, but it could be converted into different graph formats based on the usecase. Detailed discussions on the conversion process are presented in §4.3. 
+
+4.3 Creating Chakra Graphs from FX Graphs 
+
+While PyTorch’s compiler uses and provides FX graphs as its IR, to our knowledge, no full-stack cost model uses FX graphs as a workload representation input. Instead, we leverage linear = nn.Linear (16, 8)            
+
+> y=linear (torch.randn (16 ))
+> gathered =[torch.empty_like (y)for _in
+> range (world_size )]
+> dist.all_gathered (gathered, y)
+> y_all =torch.cat (gathered )
+> primals_1
+> T
+> addmm
+> all_gather_into_tensor
+> wait_tensor
+> copy
+> output
+> primals_2 primals_3
+> zeros
+> aten::t
+> aten::addmm
+> GPU_COMP::addmm
+> aten::all_gather
+> COMM::all_gather
+> (a) Sample PyTorch code.
+> (b) Extracted FX Graph. (c) Converted Chakra Graph.
+
+Figure 6. A sample PyTorch code and the corresponding FX Graph and Chakra Graph. 
+
+Chakra. Chakra is similar to FX graphs in that it also uses a graph based representation, while it is more widely accepted as an input to downstream cost models [15, 25, 29]. 
+
+Flint converts the FX Graph it obtains from PyTorch into a Chakra graph. Fig. 6 depicts how a PyTorch snippet is cap-tured into an FX Graph and converted into a Chakra graph. Note how in Chakra a host side function ( aten::addmm ) and the launched GPU kernel ( GPU_COMP::addmm ) is separated. While FX Graph represents dependency after a collective kernel using wait_tensor , Chakra reprents it using depen-dencies to both the CPU and GPU operation. Also note that FX nodes that correspond to an input tensor, and not an operation, such as primals_1 , are ignored in Chakra. Both graphs hold information needed to recreate the operation, such as the tensor shape and data type. During the conversion Flint adds the duration of compute operations to the compute nodes. This information is sup-plied through an offline profiling. While a cluster scale GPU is difficult to obtain, we believe it is relatively reasonable to gain access to a single GPU to profile compute operations. The downstream cost model may choose to either use these profiled numbers or ignore them and leverage their own compute simulations or emulations. This is needed in cases such as modeling future hardware, or hardware that exists but the user simply does not have access to. 
+
+4.4 Cost Model 
+
+Once the Chakra graph is obtained, Flint can feed this into a set of cost models. Note that Flint is not necessarily re-stricted to a single cost model. Users can choose between publicly available or proprietary cost models depending on their use cases §2.3. Depending on the outcome of the cost  
+
+> 7Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna MM
+> Attn
+> Elem
+> Other
+> AR
+> AG
+> RS
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Normalized
+> Llama 8B (TP 8)
+> Post-exec
+> Flint
+> MM
+> Attn
+> Elem
+> Other
+> AR
+> AG
+> RS
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5Llama 8B (FSDP 8)
+
+Figure 7. Counts of operator in Flint generated graphs, normal-ized to post-execution Chakra traces per operator type. MM: GeMM, Attn: Attention, Elem: Elementwise, AR: AllReduce, AG: AllGather, RS: ReduceScatter. 
+
+model, the developer could elect to change the workload con-figuration, the system configuration, or both. When changing only the system configuration, the developer will reconfig-ure the cost model but use the same Chakra graph. On the contrary, when changing the workload configuration, the developer will recapture the Chakra graph with the net work-load configuration and feed it to the cost model. Leveraging cost models allow users to study systems that are not easily accessible with the simple in-stack execution method. 
+
+## 5 Validation 
+
+We demonstrate the faithfulness of Chakra graphs collected from Flint by comparing them against post-execution traces obtained from executing a model. 
+
+5.1 Environment Setup 
+
+We collect Chakra graphs using both Flint and post-execution traces. We collect post-execution traces on a physical cluster where each node has 8 NVIDIA H100 GPUs and the nodes are connected through a single 100Gbps InfiniBand HCA. Our model code is based on the Torchtitan framework as of October 19, 2025 [ 27 ]. We use an unmodified PyTorch nightly version 20251019+cu129 to gather post-execution Chakra traces, while we apply the minimal modifications discussed in §4 to run Flint 3. For the purpose of validation we apply the graph passes that Inductor applies out of the box to the FX graph. We further evaluate usecases that look at the tradeoffs of novel graph passes in §6.1. 
+
+5.2 Operation Count Validation 
+
+Fig. 7 compares how many times each type of operator occurs in the graphs. Operations that do not occur are marked with a lack of bar. Because the number of operations vary across different types, we normalize each count to the number of occurrences in the post-execution trace. We see that the number between the two sources largely match, especially for GeMM, Attention, and collectives, which are the more important operations.  
+
+> 3Upon acceptance of the paper we will opensource our code and traces as artifacts. 8B (TP=8) 8B (FSDP=8)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Per-Iteration Duration (s)  Ground Truth
+> Post-Exec + ASTRA-sim
+> Flint: Pre-Exec + ASTRA-sim
+
+Figure 8. End to end measurement of per-iteration duration 
+
+We note some differences in miscellaneous operations. This is largely due to differences in how aten operations are decomposed into CUDA kernels. For example, one aten::mm 
+
+operation is decomposed into a cuBLAS kernel and a reduc-tion kernel. These low level decisions are hardware specific and are out of scope of workload graph capture. 
+
+5.3 End to End Validation 
+
+We compare the end to end workload duration of the config-urations observed in §5.2. Both configurations are issued on a single node and communication occurs over the scale-up network. We measure the end to end duration with three methods. Ground Truth is the duration when running PyTorch on real GPU clusters. Post-Exec + ASTRA-sim takes the post-execution trace obtained from the Ground Truth run, and feeds it to the ASTRA-sim simulator. Finally, Flint uses the pre-execution graph obtained from PyTorch’s FX Graph, and feeds it into ASTRA-sim. A gap between Flint and Post-Exec + ASTRA-sim indicates differences in the captured workload graph. A gap between Post-Exec + ASTRA-sim indicates limitations in the cost model itself. This is a factor that can be overcome with higher fidelity, proprietary cost models. Fig. 8 shows the comparison result across the two configu-rations. We observe that the modeled per-iteration duration aligns well across the three configurations. 
+
+## 6 Evaluation: Case Studies 
+
+We showcase how Flint can guide Design Space Exploration across multiple layers that span from workload optimizations to network hardware. 
+
+6.1 Case study: Operation Reordering in FSDP across Model and Hardware Configuration 
+
+We evaluate the scheduling choice of communication reorder-ing in FSDP discussed in §2.2. Instead of limiting ourselves to simply comparing the scheduling decision while fixing 
+
+other aspects, we also explore how this scheduling interacts with the model characteristics or the physical topology. 
+
+> 8
+
+Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML Llama 8B 
+
+> (FSDP 8)
+> Llama 8B
+> (FSDP 64)
+> Llama 70B
+> (FSDP 8)
+> Llama 70B
+> (FSDP 64)
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> Duration (milliseconds)
+> Default FSDP (latency)
+> Reordered AG (latency)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Peak Memory (GB)
+> Default FSDP (memory)
+> Reordered AG (memory)
+
+Figure 9. Per-iteration duration and memory tradeoff of commu-nication reordering in FSDP across scale and model size. 12.5GB/s 25GB/s 50GB/s 500GB/s 
+
+> Physical Bandwidth (GB/s)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> Normalized Duration
+> Default FSDP (latency)
+> Reordered AG (latency)
+
+Figure 10. Per-iteration duration comparison of Reordered All-Gather across different interconnect bandwidth. Here Llama 70B model is used. 
+
+Fig. 9 shows the memory and duration tradeoff of the reordering scheme across different model sizes and paral-lelization degrees. For each configuration, as outlined in the X axis, we generate two sets of Chakra graphs using Flint .One graph is generated after running a graph modification pass on the FX Graph to reorder the collective nodes. When running the Llama 8B model across 64 ranks, we get the largest duration benefit of 50% reduction at a cost of 6.7% or 0.22GB increase of memory consumption. Even with the larger Llama 70B model, the reordering reduces the duration by 7% at a marginal memory cost of 2.32%, or 0.87GB at 8 ranks. We now explore how the scheduling decision affects the workload behavior across different hardware configurations, specifically the bandwidth of the interconnect network. Here, we take the Chakra graph for the Llama 70B model across 8 GPUs, but run it through interconnects of varying bandwidth. Fig. 10 shows the normalized duration comparison across the bandwidth setting. We normalize the value because the per iteration duration increases exponentially as we reduce the available bandwidth. Also note that because the workload and GPU device is the same across configurations, the peak memory stays the same and hence is not depicted here. While reordering reduces the duration by 7% in a high bandwidth scenario, there is marginal difference at lower bandwidth scenarios. This is because at lower bandwidths Baseline +  
+
+> Ring
+> Wafer +
+> Ring
+> Wafer +
+> TACOS
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> Total Communication Time (s)
+> 9.66 s
+> 0.15 s 0.00 s
+
+(a) Total Communication Time Baseline +   
+
+> Ring
+> Wafer +
+> Ring
+> Wafer +
+> TACOS
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> 2.00
+> Normalized Duration
+> 1.87 ×
+> 1.01 × 1.00 ×
+> Compute
+> Exposed Comm.
+
+(b) Normalized Runtime 
+
+Figure 11. Simulation results of running Llama3 70B model on a wafer-scale package v. traditional switch topology. 
+
+the communication duration far outweighs the computation duration. For the reordering scheme to work there must be both exposed communication and computation that can be hidden by reordering compute and communication to over-lap with each other. However, because the communication is disproportionately large in low bandwidth configurations there is little room for performance improvement. Note how this case study showcases the power of Flint .We are able to study what-if scenarios on clusters beyond the number of GPUs readily available to us. Leveraging the compiler IR preserves the data dependency between opera-tions, allowing us to explore scheduling decisions without fear of breaking the model behavior. 
+
+6.2 Custom Collectives in Wafer Scale Compute 
+
+Novel hardware technologies, such as wafer-scale compute or optical network, strive to alleviate the communication bot-tleneck. In wafer-scale compute, multiple GPUs are placed on the same package in a 2D layout. While the new tech-nology will improve the communication speed, one could ask if traditional Ring based collective algorithms are suffi-cient. Synthesized collective algorithms, specifically tuned to the 2D Mesh like topology of wafer-scale packages, could potentially further improve performance[3, 22]. This is a usecase where Flint can help in multiple as-pects. As the key focus of this usecase is on a hard-to-access network, obtaining post-execution traces becomes less im-portant. While it is difficult to implement arbitrary collective algorithms in a simulator, or even in NCCL, prior art ex-tended ASTRA-sim to simulate custom collective algorithms represented in a separate Chakra graph consisting of point-to-point messages, and displayed how this could be used to study the effect of custom algorithms on end to end work-load. Flint can leverage this work easily because it already uses Chakra graphs to represent workload information. We compare the traditional Ring algorithm with TACOS, a topology aware collective synthesis tool [ 28 ]. We simulate the TACOS-generated algorithms by representing them in 
+
+9Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna 0 10 20 30 40 50 60 70 80 
+
+> NIC Degradation (Gbps)
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> Per-Iteration Duration(s)  Compute
+> Exposed Comm.
+
+Figure 12. Per-iteration duration across different NIC degradation. 70Gbps is blank because perftest does not support that rate limit 
+
+separate Chakra graphs consisting of point-to-point mes-sages and feeding them into the simulator. We use Llama3 70B model with FSDP=16 as the workload. Fig. 11b shows the sum of all communication for the three configurations. The communication decreases by 62 × from Baseline to Wafer + Ring, due to a change in technology. Between Wafer + Ring and Wafer + TACOS, the topology aware collective reduces communication by 51 × by avoiding congestion on the 2D mesh topology. However, the end to end performance improvement shown in Fig. 11b is rather limited. This is because beyond a certain point, the commu-nication is no longer the dominant bottleneck, and hence there is a diminishing return of performance improvement. We anticipate that the impact of collective algorithm on the workload performance could change for different model and hardware configurations. 
+
+6.3 Physical Network Testing with Network Emulator 
+
+In alleviating the communication bottleneck, it is important to understand, configure, verify, and diagnose the underlying network fabric. While network simulators can model the fabric to an extent, some jobs need to be done directly with the physical NIC, such as hardware quality control, tuning features not in simulation, etc [8, 35]. Genie proposes a testing tool for scale-out network that generates real RDMA traffic but only with CPU nodes [ 15 ]. That is, users do not need GPU just for the sake of network testing. It uses Chakra graphs to track the operation and their dependencies (i.e. launch a communication only when the upstream operations finish). A bottleneck in the vision of Genie is that it is difficult to obtain Chakra graphs. This is yet another usecase where 
+
+Flint can come to the rescue. With Flint , developers can generate high fidelity workload graphs without needing GPUs and feed it to a cost model - Genie - to test real network fabric. One usecase of Genie is to identify faulty hardware (flap-ping NIC, etc.) before attaching and wasting precious GPU time. Since we cannot physically damage the NICs, we emu-late NIC degradation by generating background traffic using 
+
+ib_write_bw at different rate limits. Our workload is Llama3 70B with DP=32. Since each node has only one 100Gbps In-finiBand scale-out network, and our topic of interest is the scale-out network, we run the workload across 32 nodes. Fig. 12 shows how the per-iteration duration worsens as we introduce more degradation (i.e. more background traffic). We can see that Flint is able to capture delays in network and show it as an increase in communication time. Before attaching GPUs, developers can simply run Genie with the workload graph from Flint to ensure that the network fabric is performing correctly. Note that while we struggled to gain access to a single node with 8 GPUs, getting 32 CPU nodes was almost instantaneous. 
+
+## 7 Discussion and Future Work 
+
+While Flint focuses on leveraging FX Graph and PyTorch, we envision that our findings can be extended to other frame-works such as JAX. Similar to how ‘torch.compile‘ traces FX graphs from model code, JAX programs can be traced to gen-erate Jaxprs (JAX expressions). Develoeprs can write ‘custom interpreters’ that can take and modify Jaxprs and. Capturing Jaxprs and creating Chakra graphs with the intend of feeding into downstream tools is a promising approach to extend 
+
+Flint beyond PyTorch. Blindly iterating through the whole search space for a bet-ter configuration takes a prohibitively long time to converge, as each iteration of the cost model takes time to return re-sults. There are several works that try to speed this process, either by using Reinforcement Learning or user provided hints to prune the search space. Integrating these methods into Flint ’s feedback loop enables will further enhance the benefit that Flint provides. One possible future work is to leverage Flint to recon-figure the runtime setting, especially in multi tenant envi-ronment. Previously, two jobs sharing a cluster only search through the subsection of resources that they start with. However, Flint allows jobs to search for optimal settings beyond the deployed cluster. For example, Flint ’s lack of being constrained to the resource can allow it to be used to adjust the resource split between the two jobs. 
+
+Flint can leverage torch.compile to trace code written in the standard aten or c10d APIs. However, torch.compile 
+
+does not work well with data dependent control flow or custom functions resulting in graph breaks and gaps in the generated workload graph. However, the coverage of 
+
+torch.compile is continuously increasing, and frameworks such as Torchtitan continuously add more models that can be traced natively with torch.compile .Because it leverages model code as-is, Flint requires rela-tively less burden in maintaining the codebase and following the rapid advancements in the field. While it does make 
+
+> 10 Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML
+
+changes to the PyTorch API, we anticipate that the PyTorch API will shift less frequently compared to changes in the high level model code itself. 
+
+## 8 Related Work 
+
+8.1 Workload graph generation 
+
+There are several work that generate workload graphs at different stage of the model execution. With some effort these graphs could be converted to each other to some ex-tent. Therefore, we focus on how these graphs are generated, rather than what the schema is. 
+
+Post-execution Trace: Chakra ET combines metrics from Kineto traces and dependency information from PyTorch Execution Observer to generate a DAG that encodes both op-erator information and dependency [ 19 , 25 ]. ATLAHS traces NCCL kernel launches for communication and designates the time gap between NCCL operations as a block of com-pute [ 24 ]. Because it simply merges multiple operations into one timed blob, this trace format does not encode any opera-tor information. While this helps in studying communication, it cannot be used to study different compute operations or different hardware settings. Both approaches need a physical cluster, which is easily prohibitive. 
+
+Pre-execution Trace from Symbolic Representation: 
+
+STAGE takes the symbolic representation of a model and its parallelization, and synthetically generates graphs using the Chakra schema [ 4 ]. Unity proposes its own graph schema, which also encodes both compute and communication oper-ators in a DAG [ 5]. Similarly, Calculon takes a description of the workload and directly models the performance using its internal analytical tool [ 10 ]. SimAI also uses a text based representation to generate graphs [ 31 ]. Both SimAI and AT-LAHS expands the collective operations to point-to-point send and receive messages. However, this expansion is hard-coded and limited to popular algorithms such as Ring or Tree. Other similar approaches lack the ability to model arbitrary model code and optimizations, or work across multiple cost models [7, 13, 20, 34]. 
+
+Compiler Internal Representations: Deep Learning frameworks leverage pre-execution graph IR for compila-tion. PyTorch generates FX graphs, while JAX generates Jaxpr, which is later lowered into HLO that the XLA com-piler undestands [ 11 , 12 ]. These runtime compilers need to be deployed on real systems to be able to collect and optimize these graphs. 
+
+8.2 Consuming Workload Graphs Cost Models and Design Space Exploration: Several work such as runtime compilers leverage the DL frameworks’ IR as pre-execution graph to search for optimizations [ 30 , 33 ]. Inductor is the default compiler backend for PyTorch and per-forms both graph optimization such as scheduling and fusion, and code generation through OpenAI Triton [ 2 ]. Unity uses the PCG graph to optimize workload parallelization and op-erator fusion, while Alpa takes Jaxpr and HLO and searches for an optimal parallelization strategy [ 5, 17 ]. None of the above works leverage the pre-execution graph to search be-yond compiler optimization, such as model architectures or collective optimization. By collecting IR in a GPU-less envi-ronment, Flint lifts the restriction that compiler IR must be collected and studied within a runtime deployment. 
+
+Several Use Cases of Chakra Graph: Chakra ET has several downstream tools, which collectively help improve our understanding of distributed ML. The ASTRA-sim simu-lator has a modular design, where users model each Chakra node with varying fidelity based on their problem [ 29 ]. The PARAM benchmark tool allows for replay of Chakra ET on a real cluster [ 19 ]. Genie generates real network traffic from a CPU-only cluster following the workload behavior captured in Chakra graphs [ 15 ]. This allows users to study the behav-ior of the real network without needing any GPU. While this work focuses on the ASTRA-sim simulator, users can feed the graph that Flint generates into these works. 
+
+## 9 Conclusion 
+
+We present Flint , a tool for obtaining accurate workload representation for GPU-less design space exploration. Flint 
+
+leverages compiler IR to capture the workload behavior with minimal source code modification. Flint works under the philosophy of granting the most freedom in exploring the design space, while capturing details that are beyond the scope of design space exploration, such as the internals of the PyTorch framework. We build and showcase an end-to-end workflow, identifying and applying the necessary changes to execute Flint on a GPU-less environment. 
+
+## References  
+
+> [1] Aaron Grattafiori and Abhimanyu Dubey and Abhinav Jauhri and Ab-hinav Pandey and Abhishek Kadian and Ahmad Al-Dahle and Aiesha Letman and Akhil Mathur and Alan Schelten and Alex Vaughan and Amy Yang and Angela Fan and Anirudh Goyal and Anthony Hartshorn and Aobo Yang and Archi Mitra and Archie Sravankumar and Artem Korenev and Arthur Hinsvark and Arun Rao and Aston Zhang and Aurelien Rodriguez and Austen Gregerson and Ava Spataru and Bap-tiste Roziere and Bethany Biron and Binh Tang and Bobbie Chern and Charlotte Caucheteux and Chaya Nayak and Chloe Bi and Chris Marra and Chris McConnell and Christian Keller and Christophe Touret and Chunyang Wu and Corinne Wong and Cristian Canton Ferrer and Cyrus Nikolaidis and Damien Allonsius and Daniel Song and Danielle Pintz and Danny Livshits and Danny Wyatt and David Esiobu and Dhruv Choudhary and Dhruv Mahajan and Diego Garcia-Olano and Diego Perino and Dieuwke Hupkes and Egor Lakomkin and Ehab AlBadawy and Elina Lobanova and Emily Dinan and Eric Michael Smith and Filip Radenovic and Francisco Guzmán and Frank Zhang and Gabriel Synnaeve and Gabrielle Lee and Georgia Lewis Ander-son and Govind Thattai and Graeme Nail and Gregoire Mialon and Guan Pang and Guillem Cucurell and Hailey Nguyen and Hannah Korevaar and Hu Xu and Hugo Touvron and Iliyan Zarov and Imanol Arrieta Ibarra and Isabel Kloumann and Ishan Misra and Ivan Evti-mov and Jack Zhang and Jade Copet and Jaewon Lee and Jan Geffert 11
+
+Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna 
+
+and Jana Vranes and Jason Park and Jay Mahadeokar and Jeet Shah and Jelmer van der Linde and Jennifer Billock and Jenny Hong and Jenya Lee and Jeremy Fu and Jianfeng Chi and Jianyu Huang and Jiawen Liu and Jie Wang and Jiecao Yu and Joanna Bitton and Joe Spisak and Jongsoo Park and Joseph Rocca and Joshua Johnstun and Joshua Saxe and Junteng Jia and Kalyan Vasuden Alwala and Karthik Prasad and Kartikeya Upasani and Kate Plawiak and Ke Li and Ken-neth Heafield and Kevin Stone and Khalid El-Arini and Krithika Iyer and Kshitiz Malik and Kuenley Chiu and Kunal Bhalla and Kushal Lakhotia and Lauren Rantala-Yeary and Laurens van der Maaten and Lawrence Chen and Liang Tan and Liz Jenkins and Louis Martin and Lovish Madaan and Lubo Malo and Lukas Blecher and Lukas Landzaat and Luke de Oliveira and Madeline Muzzi and Mahesh Pasupuleti and Mannat Singh and Manohar Paluri and Marcin Kardas and Maria Tsim-poukelli and Mathew Oldham and Mathieu Rita and Maya Pavlova and Melanie Kambadur and Mike Lewis and Min Si and Mitesh Kumar Singh and Mona Hassan and Naman Goyal and Narjes Torabi and Nikolay Bashlykov and Nikolay Bogoychev and Niladri Chatterji and Ning Zhang and Olivier Duchenne and Onur Çelebi and Patrick Al-rassy and Pengchuan Zhang and Pengwei Li and Petar Vasic and Peter Weng and Prajjwal Bhargava and Pratik Dubal and Praveen Krishnan and Punit Singh Koura and Puxin Xu and Qing He and Qingxiao Dong and Ragavan Srinivasan and Raj Ganapathy and Ramon Calderer and Ricardo Silveira Cabral and Robert Stojnic and Roberta Raileanu and Rohan Maheswari and Rohit Girdhar and Rohit Patel and Romain Sauvestre and Ronnie Polidoro and Roshan Sumbaly and Ross Taylor and Ruan Silva and Rui Hou and Rui Wang and Saghar Hosseini and Sahana Chennabasappa and Sanjay Singh and Sean Bell and Seohyun Sonia Kim and Sergey Edunov and Shaoliang Nie and Sharan Narang and Sharath Raparthy and Sheng Shen and Shengye Wan and Shruti Bhosale and Shun Zhang and Simon Vandenhende and Soumya Ba-tra and Spencer Whitman and Sten Sootla and Stephane Collot and Suchin Gururangan and Sydney Borodinsky and Tamar Herman and Tara Fowler and Tarek Sheasha and Thomas Georgiou and Thomas Scialom and Tobias Speckbacher and Todor Mihaylov and Tong Xiao and Ujjwal Karn and Vedanuj Goswami and Vibhor Gupta and Vignesh Ramanathan and Viktor Kerkez and Vincent Gonguet and Virginie Do and Vish Vogeti and Vítor Albiero and Vladan Petrovic and Wei-wei Chu and Wenhan Xiong and Wenyin Fu and Whitney Meers and Xavier Martinet and Xiaodong Wang and Xiaofang Wang and Xiao-qing Ellen Tan and Xide Xia and Xinfeng Xie and Xuchao Jia and Xuewei Wang and Yaelle Goldschlag and Yashesh Gaur and Yasmine Babaei and Yi Wen and Yiwen Song and Yuchen Zhang and Yue Li and Yuning Mao and Zacharie Delpierre Coudert and Zheng Yan and Zhengxing Chen and Zoe Papakipos and Aaditya Singh and Aayushi Srivastava and Abha Jain and Adam Kelsey and Adam Shajnfeld and Adithya Gangidi and Adolfo Victoria and Ahuva Goldstand and Ajay Menon and Ajay Sharma and Alex Boesenberg and Alexei Baevski and Allie Feinstein and Amanda Kallet and Amit Sangani and Amos Teo and Anam Yunus and Andrei Lupu and Andres Alvarado and Andrew Caples and Andrew Gu and Andrew Ho and Andrew Poul-ton and Andrew Ryan and Ankit Ramchandani and Annie Dong and Annie Franco and Anuj Goyal and Aparajita Saraf and Arkabandhu Chowdhury and Ashley Gabriel and Ashwin Bharambe and Assaf Eisenman and Azadeh Yazdan and Beau James and Ben Maurer and Benjamin Leonhardi and Bernie Huang and Beth Loyd and Beto De Paola and Bhargavi Paranjape and Bing Liu and Bo Wu and Boyu Ni and Braden Hancock and Bram Wasti and Brandon Spence and Brani Stojkovic and Brian Gamido and Britt Montalvo and Carl Parker and Carly Burton and Catalina Mejia and Ce Liu and Changhan Wang and Changkyu Kim and Chao Zhou and Chester Hu and Ching-Hsiang Chu and Chris Cai and Chris Tindal and Christoph Feichtenhofer and Cynthia Gao and Damon Civin and Dana Beaty and Daniel Kreymer and Daniel Li and David Adkins and David Xu and Davide Testuggine and Delia David and Devi Parikh and Diana Liskovich and Didem Foss and Dingkang Wang and Duc Le and Dustin Holland and Edward Dowling and Eissa Jamil and Elaine Montgomery and Eleonora Presani and Emily Hahn and Emily Wood and Eric-Tuan Le and Erik Brinkman and Esteban Arcaute and Evan Dunbar and Evan Smothers and Fei Sun and Felix Kreuk and Feng Tian and Filippos Kokkinos and Firat Oz-genel and Francesco Caggioni and Frank Kanayet and Frank Seide and Gabriela Medina Florez and Gabriella Schwarz and Gada Badeer and Georgia Swee and Gil Halpern and Grant Herman and Grigory Sizov and Guangyi and Zhang and Guna Lakshminarayanan and Hakan Inan and Hamid Shojanazeri and Han Zou and Hannah Wang and Hanwen Zha and Haroun Habeeb and Harrison Rudolph and Helen Suk and Henry Aspegren and Hunter Goldman and Hongyuan Zhan and Ibrahim Damlaj and Igor Molybog and Igor Tufanov and Ilias Leontiadis and Irina-Elena Veliche and Itai Gat and Jake Weissman and James Geboski and James Kohli and Janice Lam and Japhet Asher and Jean-Baptiste Gaya and Jeff Marcus and Jeff Tang and Jennifer Chan and Jenny Zhen and Jeremy Reizenstein and Jeremy Teboul and Jessica Zhong and Jian Jin and Jingyi Yang and Joe Cummings and Jon Carvill and Jon Shepard and Jonathan McPhie and Jonathan Torres and Josh Ginsburg and Junjie Wang and Kai Wu and Kam Hou U and Karan Saxena and Kartikay Khandelwal and Katayoun Zand and Kathy Matosich and Kaushik Veeraraghavan and Kelly Michelena and Keqian Li and Kiran Jagadeesh and Kun Huang and Kunal Chawla and Kyle Huang and Lailin Chen and Lakshya Garg and Lavender A and Leandro Silva and Lee Bell and Lei Zhang and Liangpeng Guo and Licheng Yu and Liron Moshkovich and Luca Wehrstedt and Madian Khabsa and Manav Avalani and Manish Bhatt and Martynas Mankus and Matan Hasson and Matthew Lennie and Matthias Reso and Maxim Groshev and Maxim Naumov and Maya Lathi and Meghan Keneally and Miao Liu and Michael L. Seltzer and Michal Valko and Michelle Restrepo and Mihir Patel and Mik Vyatskov and Mikayel Samvelyan and Mike Clark and Mike Macey and Mike Wang and Miquel Jubert Hermoso and Mo Metanat and Mohammad Rastegari and Munish Bansal and Nandhini Santhanam and Natascha Parks and Natasha White and Navyata Bawa and Nayan Singhal and Nick Egebo and Nicolas Usunier and Nikhil Mehta and Nikolay Pavlovich Laptev and Ning Dong and Norman Cheng and Oleg Chernoguz and Olivia Hart and Omkar Salpekar and Ozlem Kalinli and Parkin Kent and Parth Parekh and Paul Saab and Pavan Balaji and Pedro Rittner and Philip Bontrager and Pierre Roux and Piotr Dollar and Polina Zvyagina and Prashant Ratanchandani and Pritish Yuvraj and Qian Liang and Rachad Alao and Rachel Rodriguez and Rafi Ayub and Raghotham Murthy and Raghu Nayani and Rahul Mitra and Rangaprabhu Parthasarathy and Raymond Li and Rebekkah Hogan and Robin Battey and Rocky Wang and Russ Howes and Ruty Rinott and Sachin Mehta and Sachin Siby and Sai Jayesh Bondu and Samyak Datta and Sara Chugh and Sara Hunt and Sargun Dhillon and Sasha Sidorov and Satadru Pan and Saurabh Mahajan and Saurabh Verma and Seiji Yamamoto and Sharadh Ramaswamy and Shaun Lindsay and Shaun Lindsay and Sheng Feng and Shenghao Lin and Shengxin Cindy Zha and Shishir Patil and Shiva Shankar and Shuqiang Zhang and Shuqiang Zhang and Sinong Wang and Sneha Agarwal and Soji Sajuyigbe and Soumith Chintala and Stephanie Max and Stephen Chen and Steve Kehoe and Steve Satterfield and Sudarshan Govindaprasad and Sumit Gupta and Summer Deng and Sungmin Cho and Sunny Virk and Suraj Subra-manian and Sy Choudhury and Sydney Goldman and Tal Remez and Tamar Glaser and Tamara Best and Thilo Koehler and Thomas Robin-son and Tianhe Li and Tianjun Zhang and Tim Matthews and Timothy Chou and Tzook Shaked and Varun Vontimitta and Victoria Ajayi and Victoria Montanez and Vijai Mohan and Vinay Satish Kumar and Vishal Mangla and Vlad Ionescu and Vlad Poenaru and Vlad Tiberiu Mihailescu and Vladimir Ivanov and Wei Li and Wenchen Wang and Wenwen Jiang and Wes Bouaziz and Will Constable and Xiaocheng 12 Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML 
+
+Tang and Xiaojian Wu and Xiaolan Wang and Xilun Wu and Xinbo Gao and Yaniv Kleinman and Yanjun Chen and Ye Hu and Ye Jia and Ye Qi and Yenda Li and Yilin Zhang and Ying Zhang and Yossi Adi and Youngjin Nam and Yu and Wang and Yu Zhao and Yuchen Hao and Yundi Qian and Yunlu Li and Yuzi He and Zach Rait and Zachary DeVito and Zef Rosnbrick and Zhaoduo Wen and Zhenyu Yang and Zhiwei Zhao and Zhiyu Ma. 2024. The Llama 3 Herd of Models. arXiv:2407.21783 [cs.AI] https://arxiv.org/abs/2407.21783 
+
+[2] Ansel, Jason and Yang, Edward and He, Horace and Gimelshein, Na-talia and Jain, Animesh and Voznesensky, Michael and Bao, Bin and Bell, Peter and Berard, David and Burovski, Evgeni and Chauhan, Geeta and Chourdia, Anjali and Constable, Will and Desmaison, Al-ban and DeVito, Zachary and Ellison, Elias and Feng, Will and Gong, Jiong and Gschwind, Michael and Hirsh, Brian and Huang, Sherlock and Kalambarkar, Kshiteej and Kirsch, Laurent and Lazos, Michael and Lezcano, Mario and Liang, Yanbo and Liang, Jason and Lu, Yinghai and Luk, C. K. and Maher, Bert and Pan, Yunjie and Puhrsch, Christian and Reso, Matthias and Saroufim, Mark and Siraichi, Marcos Yukio and Suk, Helen and Zhang, Shunting and Suo, Michael and Tillet, Phil and Zhao, Xu and Wang, Eikan and Zhou, Keren and Zou, Richard and Wang, Xiaodong and Mathews, Ajit and Wen, William and Chanan, Gregory and Wu, Peng and Chintala, Soumith. 2024. PyTorch 2: Faster Ma-chine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (ASPLOS ’24) . Association for Computing Machinery, New York, NY, USA. doi: 10.1145/3620665.3640366 
+
+[3] Cerebras Systems. 2021. Cerebras Systems: Achieving Industry Best AI Performance Through A Systems Approach. https://f.hubspotu sercontent30.net/hubfs/8968533/Cerebras-CS-2-Whitepaper.pdf .Accessed: 2026-04-16. [4] Changhai Man and Hanjiang Wu and Srinivas Sridharan and Tushar Krishna. 2025. https://github.com/astra-sim/symbolic%5Ftensor%5F graph 
+
+[5] Colin Unger and Zhihao Jia and Wei Wu and Sina Lin and Mandeep Baines and Carlos Efrain Quintero Narvaez and Vinay Ramakrishnaiah and Nirmal Prajapati and Pat McCormick and Jamaludin Mohd-Yusof and Xi Luo and Dheevatsa Mudigere and Jongsoo Park and Misha Smelyanskiy and Alex Aiken. 2022. Unity: Accelerating DNN Training Through Joint Optimization of Algebraic Transformations and Par-allelization. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) . USENIX Association, Carlsbad, CA. 
+
+https://www.usenix.org/conference/osdi22/presentation/unger 
+
+[6] DeepSeek-AI and Daya Guo and Dejian Yang and Haowei Zhang and Junxiao Song and Ruoyu Zhang and Runxin Xu and Qihao Zhu and Shirong Ma and Peiyi Wang and Xiao Bi and Xiaokang Zhang and Xingkai Yu and Yu Wu and Z. F. Wu and Zhibin Gou and Zhihong Shao and Zhuoshu Li and Ziyi Gao and Aixin Liu and Bing Xue and Bingxuan Wang and Bochao Wu and Bei Feng and Chengda Lu and Chenggang Zhao and Chengqi Deng and Chenyu Zhang and Chong Ruan and Damai Dai and Deli Chen and Dongjie Ji and Erhang Li and Fangyun Lin and Fucong Dai and Fuli Luo and Guangbo Hao and Guanting Chen and Guowei Li and H. Zhang and Han Bao and Hanwei Xu and Haocheng Wang and Honghui Ding and Huajian Xin and Huazuo Gao and Hui Qu and Hui Li and Jianzhong Guo and Jiashi Li and Jiawei Wang and Jingchang Chen and Jingyang Yuan and Junjie Qiu and Junlong Li and J. L. Cai and Jiaqi Ni and Jian Liang and Jin Chen and Kai Dong and Kai Hu and Kaige Gao and Kang Guan and Kexin Huang and Kuai Yu and Lean Wang and Lecong Zhang and Liang Zhao and Litong Wang and Liyue Zhang and Lei Xu and Leyi Xia and Mingchuan Zhang and Minghua Zhang and Minghui Tang and Meng Li and Miaojun Wang and Mingming Li and Ning Tian and Panpan Huang and Peng Zhang and Qiancheng Wang and Qinyu Chen and Qiushi Du and Ruiqi Ge and Ruisong Zhang and Ruizhe Pan and Runji Wang and R. J. Chen and R. L. Jin and Ruyi Chen and Shanghao Lu and Shangyan Zhou and Shanhuang Chen and Shengfeng Ye and Shiyu Wang and Shuiping Yu and Shunfeng Zhou and Shuting Pan and S. S. Li and Shuang Zhou and Shaoqing Wu and Shengfeng Ye and Tao Yun and Tian Pei and Tianyu Sun and T. Wang and Wangding Zeng and Wanjia Zhao and Wen Liu and Wenfeng Liang and Wenjun Gao and Wenqin Yu and Wentao Zhang and W. L. Xiao and Wei An and Xiaodong Liu and Xiaohan Wang and Xiaokang Chen and Xiaotao Nie and Xin Cheng and Xin Liu and Xin Xie and Xingchao Liu and Xinyu Yang and Xinyuan Li and Xuecheng Su and Xuheng Lin and X. Q. Li and Xiangyue Jin and Xiaojin Shen and Xiaosha Chen and Xiaowen Sun and Xiaoxiang Wang and Xinnan Song and Xinyi Zhou and Xianzu Wang and Xinxia Shan and Y. K. Li and Y. Q. Wang and Y. X. Wei and Yang Zhang and Yanhong Xu and Yao Li and Yao Zhao and Yaofeng Sun and Yaohui Wang and Yi Yu and Yichao Zhang and Yifan Shi and Yiliang Xiong and Ying He and Yishi Piao and Yisong Wang and Yixuan Tan and Yiyang Ma and Yiyuan Liu and Yongqiang Guo and Yuan Ou and Yuduan Wang and Yue Gong and Yuheng Zou and Yujia He and Yunfan Xiong and Yuxiang Luo and Yuxiang You and Yuxuan Liu and Yuyang Zhou and Y. X. Zhu and Yanhong Xu and Yanping Huang and Yaohui Li and Yi Zheng and Yuchen Zhu and Yunxian Ma and Ying Tang and Yukun Zha and Yuting Yan and Z. Z. Ren and Zehui Ren and Zhangli Sha and Zhe Fu and Zhean Xu and Zhenda Xie and Zhengyan Zhang and Zhewen Hao and Zhicheng Ma and Zhigang Yan and Zhiyu Wu and Zihui Gu and Zijia Zhu and Zijun Liu and Zilin Li and Ziwei Xie and Ziyang Song and Zizheng Pan and Zhen Huang and Zhipeng Xu and Zhongyu Zhang and Zhen Zhang. 2025. DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning. arXiv:2501.12948 [cs.CL] [7] Fan, Shiqing and Rong, Yi and Meng, Chen and Cao, Zongyan and Wang, Siyu and Zheng, Zhen and Wu, Chuan and Long, Guoping and Yang, Jun and Xia, Lixue and Diao, Lansong and Liu, Xiaoyong and Lin, Wei. 2021. DAPPLE: a pipelined data parallel approach for training large models. In Proceedings of the 26th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (PPoPP ’21) . Association for Computing Machinery, New York, NY, USA. doi: 10.1145/3437801. 3441593 
+
+[8] Gangidi, Adithya and Miao, Rui and Zheng, Shengbao and Bondu, Sai Jayesh and Goes, Guilherme and Morsy, Hany and Puri, Rohit and Riftadi, Mohammad and Shetty, Ashmitha Jeevaraj and Yang, Jingyi and Zhang, Shuqiang and Fernandez, Mikel Jimenez and Gandham, Shashidhar and Zeng, Hongyi. 2024. RDMA over Ethernet for Dis-tributed Training at Meta Scale. In Proceedings of the ACM SIGCOMM 2024 Conference .[9] Hoefler, Torsten and Siebert, Christian and Lumsdaine, Andrew. 2009. Group operation assembly language-a flexible way to express col-lective communication. In 2009 International Conference on Parallel Processing . IEEE. [10] Isaev, Mikhail and McDonald, Nic and Dennison, Larry and Vuduc, Richard. 2023. Calculon: a methodology and tool for high-level co-design of systems and large language models. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis .[11] James Bradbury and Roy Frostig and Peter Hawkins and Matthew James Johnson and Chris Leary and Dougal Maclaurin and George Necula and Adam Paszke and Jake VanderPlas and Skye Wanderman-Milne and Qiao Zhang. 2018. JAX: composable transformations of Python+NumPy programs. http://github.com/jax-ml/jax 
+
+[12] James K. Reed and Zachary DeVito and Horace He and Ansley Ussery and Jason Ansel. 2022. Torch.fx: Practical Program Capture and Trans-formation for Deep Learning in Python. arXiv:2112.08429 [cs.LG] 
+
+https://arxiv.org/abs/2112.08429 
+
+[13] Jang, Insu and Yang, Zhenning and Zhang, Zhen and Jin, Xin and Chowdhury, Mosharaf. 2023. Oobleck: Resilient Distributed Training 13 Jinsun Yoo, Meghan Cowan, Zheng Du, Changhai Man, Srinivas Sridharan, and Tushar Krishna 
+
+of Large Models Using Pipeline Templates. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP ’23) . Association for Computing Machinery, New York, NY, USA. doi: 10.1145/3600006. 3613152 
+
+[14] Jianxing Qin and Jingrong Chen and Xinhao Kong and Yongji Wu and Tianjun Yuan and Liang Luo and Zhaodong Wang and Ying Zhang and Tingjun Chen and Alvin R. Lebeck and Danyang Zhuo. 2025. Phantora: Maximizing Code Reuse in Simulation-based Machine Learning System Performance Estimation. arXiv:2505.01616 [cs.DC] 
+
+https://arxiv.org/abs/2505.01616 
+
+[15] Jinsun Yoo and ChonLam Lao and Lianjie Cao and Bob Lantz and Minlan Yu and Tushar Krishna and Puneet Sharma. 2025. Towards Easy and Realistic Network Infrastructure Testing for Large-scale Machine Learning. arXiv:2504.20854 [cs.NI] https://arxiv.org/abs/2504.20854 
+
+[16] Keysight Technologies. 2026. Keysight AI (KAI) Data Center Builder. 
+
+https://www.keysight.com/us/en/products/ethernet-traffic-emul ation/protocol-and-load-test-l2-3-emulation-software/kai-data-center-builder.html . Accessed: 2026-04-16. [17] Lianmin Zheng and Zhuohan Li and Hao Zhang and Yonghao Zhuang and Zhifeng Chen and Yanping Huang and Yida Wang and Yuanzhong Xu and Danyang Zhuo and Eric P. Xing and Joseph E. Gonzalez and Ion Stoica. 2022. Alpa: Automating Inter- and Intra-Operator Par-allelism for Distributed Deep Learning. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) . USENIX Association, Carlsbad, CA. https://www.usenix.org/conference/osdi 22/presentation/zheng-lianmin 
+
+[18] Louis Feng and Shengbao Zheng and Zhaodong Wang and Wenyin Fu and James Hongyi Zeng. 2023. Using Chakra execution traces for benchmarking and network performance optimization. https: //engineering.fb.com/2023/09/07/networking-traffic/chakra-exec ution-traces-benchmarking-network-performance-optimization/ .Engineering at Meta blog, accessed April 7, 2026. [19] Mingyu Liang and Wenyin Fu and Louis Feng and Zhongyi Lin and Pavani Panakanti and Shengbao Zheng and Srinivas Sridharan and Christina Delimitrou. 2023. Mystique: Enabling Accurate and Scalable Generation of Production AI Benchmarks. In Proceedings of the 50th Annual International Symposium on Computer Architecture (ISCA) .[20] Narayanan, Deepak and Harlap, Aaron and Phanishayee, Amar and Seshadri, Vivek and Devanur, Nikhil R. and Ganger, Gregory R. and Gibbons, Phillip B. and Zaharia, Matei. 2019. PipeDream: generalized pipeline parallelism for DNN training. In Proceedings of the 27th ACM Symposium on Operating Systems Principles (SOSP ’19) . Association for Computing Machinery, New York, NY, USA. doi: 10.1145/3341301. 3359646 
+
+[21] OpenAI. 2024. GPT-4 Technical Report. arXiv:2303.08774 [cs.CL] 
+
+https://arxiv.org/abs/2303.08774 
+
+[22] Saeed Rashidi, William Won, Sudarshan Srinivasan, Puneet Gupta, and Tushar Krishna. 2025. FRED: A Wafer-scale Fabric for 3D Parallel DNN Training. In Proceedings of the 52nd Annual International Sympo-sium on Computer Architecture (ISCA ’25) . Association for Computing Machinery, New York, NY, USA, 34–48. doi: 10.1145/3695053.3731055 
+
+[23] Ruisi Zhang and Tianyu Liu and Will Feng and Andrew Gu and Sanket Purandare and Wanchao Liang and Francisco Massa. 2024. SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile. arXiv:2411.00284 [cs.DC] https://arxiv.org/abs/2411.00284 
+
+[24] Siyuan Shen and Tommaso Bonato and Zhiyi Hu and Pasquale Jor-dan and Tiancheng Chen and Torsten Hoefler. 2025. ATLAHS: An Application-centric Network Simulator Toolchain for AI, HPC, and Distributed Storage. arXiv:2505.08936 [cs.DC] https://arxiv.org/abs/ 2505.08936 
+
+[25] Sridharan, Srinivas and Heo, Taekyung and Feng, Louis and Wang, Zhaodong and Bergeron, Matt and Fu, Wenyin and Zheng, Shengbao and Coutinho, Brian and Rashidi, Saeed and Man, Changhai and others. 2023. Chakra: Advancing performance benchmarking and co-design using standardized execution traces. arXiv preprint arXiv:2305.14516 
+
+(2023). [26] Srihas Yarlagadda and Amey Agrawal and Elton Pinto and Hakesh Darapaneni and Mitali Meratwal and Shivam Mittal and Pranavi Ba-jjuri and Srinivas Sridharan and Alexey Tumanov. 2025. Maya: Opti-mizing Deep Learning Training Workloads using Emulated Virtual Ac-celerators. arXiv:2503.20191 [cs.LG] https://arxiv.org/abs/2503.20191 
+
+[27] Wanchao Liang and Tianyu Liu and Less Wright and Will Consta-ble and Andrew Gu and Chien-Chin Huang and Iris Zhang and Wei Feng and Howard Huang and Junjie Wang and Sanket Purandare and Gokul Nadathur and Stratos Idreos. 2025. TorchTitan: One-stop PyTorch native solution for production ready LLM pre-training. arXiv:2410.06511 [cs.CL] https://arxiv.org/abs/2410.06511 
+
+[28] Won, William and Elavazhagan, Midhilesh and Srinivasan, Sudarshan and Gupta, Swati and Krishna, Tushar. 2024. TACOS: Topology-Aware Collective Algorithm Synthesizer for Distributed Machine Learning. In 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO) . doi: 10.1109/MICRO61859.2024.00068 
+
+[29] Won, William and Heo, Taekyung and Rashidi, Saeed and Sridha-ran, Srinivas and Srinivasan, Sudarshan and Krishna, Tushar. 2023. ASTRA-sim2.0: Modeling Hierarchical Networks and Disaggregated Systems for Large-model Training at Scale. In 2023 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) .doi: 10.1109/ISPASS57527.2023.00035 
+
+[30] Xianyan Jia and Le Jiang and Ang Wang and Wencong Xiao and Ziji Shi and Jie Zhang and Xinyuan Li and Langshi Chen and Yong Li and Zhen Zheng and Xiaoyong Liu and Wei Lin. 2022. Whale: Efficient Giant Model Training over Heterogeneous GPUs. In 2022 USENIX Annual Technical Conference (USENIX ATC 22) . USENIX Association, Carlsbad, CA. https://www.usenix.org/conference/atc22/presentation/jia-xianyan 
+
+[31] Xizheng Wang and Qingxu Li and Yichi Xu and Gang Lu and Dan Li and Li Chen and Heyang Zhou and Linkang Zheng and Sen Zhang and Yikai Zhu and Yang Liu and Pengcheng Zhang and Kun Qian and Kun-ling He and Jiaqi Gao and Ennan Zhai and Dennis Cai and Binzhang Fu. 2025. SimAI: Unifying Architecture Design and Performance Tuning for Large-Scale Large Language Model Training with Scalability and Precision. In 22nd USENIX Symposium on Networked Systems Design and Implementation (NSDI 25) . USENIX Association, Philadelphia, PA. 
+
+https://www.usenix.org/conference/nsdi25/presentation/wang-xizheng-simai 
+
+[32] Yoo, Jinsun and Won, William and Cowan, Meghan and Jiang, Nan and Klenk, Benjamin and Sridharan, Srinivas and Krishna, Tushar. 2024. Towards a Standardized Representation for Deep Learning Collective Algorithms. In 2024 IEEE Symposium on High-Performance Interconnects (HOTI) . doi: 10.1109/HOTI63208.2024.00017 
+
+[33] Yuanzhong Xu and HyoukJoong Lee and Dehao Chen and Blake Hecht-man and Yanping Huang and Rahul Joshi and Maxim Krikun and Dmitry Lepikhin and Andy Ly and Marcello Maggioni and Ruom-ing Pang and Noam Shazeer and Shibo Wang and Tao Wang and Yonghui Wu and Zhifeng Chen. 2021. GSPMD: General and Scalable Parallelization for ML Computation Graphs. arXiv:2105.04663 [cs.DC] 
+
+https://arxiv.org/abs/2105.04663 
+
+[34] Zhu, Zhanda and Giannoula, Christina and Andoorveedu, Muralidhar and Su, Qidong and Mangalam, Karttikeya and Zheng, Bojian and Pekhimenko, Gennady. 2025. Mist: Efficient Distributed Training of Large Language Models via Memory-Parallelism Co-Optimization. In 
+
+Proceedings of the Twentieth European Conference on Computer Systems (EuroSys ’25) . Association for Computing Machinery, New York, NY, USA. doi: 10.1145/3689031.3717461 
+
+[35] Ziheng Jiang and Haibin Lin and Yinmin Zhong and Qi Huang and Yangrui Chen and Zhi Zhang and Yanghua Peng and Xiang Li and Cong Xie and Shibiao Nong and Yulu Jia and Sun He and Hongmin Chen and Zhihao Bai and Qi Hou and Shipeng Yan and Ding Zhou 14 Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML 
+
+and Yiyao Sheng and Zhuo Jiang and Haohan Xu and Haoran Wei and Zhang Zhang and Pengfei Nie and Leqi Zou and Sida Zhao and Liang Xiang and Zherui Liu and Zhe Li and Xiaoying Jia and Jianxi Ye and Xin Jin and Xin Liu. 2024. MegaScale: Scaling Large Language Model Training to More Than 10,000 GPUs. In 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI 24) .15

@@ -1,0 +1,475 @@
+Title: Enabling Mixed criticality applications for the Versal AI-Engines
+
+URL Source: https://arxiv.org/pdf/2604.21124v1
+
+Published Time: Fri, 24 Apr 2026 00:20:06 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Enabling Mixed criticality applications for the Versal AI-Engines 
+
+Vincent Sprave ∗, Martin Wilhelm ∗,Daniele Passaretti ∗, Alberto Garcia-Ortiz † Thilo Pionteck ∗
+
+, 
+
+> ∗
+
+Otto-von-Guericke University Magdeburg, 39106 Magdeburg, Germany  
+
+> †
+
+University of Bremen, 28359 Bremen, Germany 
+
+Abstract —Due to their high performance and energy efficiency, Adaptive Systems-on-Chips (SoCs) are increasingly being used in mixed criticality systems (MCSs), such as in autonomous driving, aviation and medical systems. In this context, AMD has proposed the Versal SoC, which has a heterogeneous architecture including, among other components, an Artificial Intelligence Engine (AIE), which is a 2D array of processors and memory tiles designed for AI and signal processing workloads. While this AIE offers significant potential for accelerating real-time data processing tasks, this has not yet been explored in the context of MCSs since individual tasks with different criticality levels cannot be dynamically assigned to tiles due to the static mapping of dataflow graphs and tasks. In this work, we propose a dynamic task dispatching infrastructure that enables task switching on the AIE at runtime. Based on this infrastructure, we present an MCS design that dynamically assigns tasks of different criticality to a pool of AIE tiles, depending on the criticality mode of the system. Our approach overcomes the limitations of static dataflow graph mappings and, for the first time, exploits the parallel processing capabilities of the AIE for MCSs. We also present a comprehensive timing analysis of the overhead introduced by the task dispatcher infrastructure, focusing on control logic, context switching and data copy operations. This shows that these operations have low variance and are negligible compared to the overall execution time, demonstrating that our infrastructure is suitable for MCSs. Finally, we evaluate the proposed infrastructure using an autonomous driving workload with tasks that have variable execution times and different criticality levels. In this case study, we maximized AIE utilization, reducing idle time by 65.5%, while measuring an execution time overhead of less than 0.002%, and doubling the throughput of low-criticality tasks. 
+
+Index Terms —Heterogeneous architecture, Worst-Case Exe-cution Time, Mixed Criticality Architecture, AI Engine, Field Programmable Gate Array 
+
+I. I NTRODUCTION 
+
+In recent years, the increasing demand for high computing performance and energy-efficient hardware in safety-critical applications, such as autonomous cars, drones, and medical devices, has driven the trend of integrating distributed comput-ing platforms into a single heterogeneous architecture, thereby improving Worst-Case Execution Time (WCET) predictability, strengthening real-time performance [1]. This integration raises major scheduling, memory-isolation, and security challenges, as applications with different timing, assurance, and resource requirements must share the same het-erogeneous platform while preserving isolation and protecting safety-critical tasks from interference [2]. Mixed Criticality Systems (MCSs) address these challenges by assigning dif-ferent criticalities to tasks, enabling specialized scheduling and analysis techniques and guaranteeing that the deadline is met for high-criticality tasks and, consequently, correct system functionality. MCSs typically use different WCET estimates for each criticality mode. In low-criticality mode, an optimistic WCET estimate leaves spare processing time that can be used for low-criticality tasks. If a high-criticality task exceeds this estimate, the system switches to high-criticality mode, where a pessimistic WCET estimate is used. Thus, low-criticality tasks may be suspended or dropped to ensure that high-criticality tasks meet their deadlines [3]. A powerful hardware platform for implementing computa-tionally intensive real-time systems is the Versal SoC platform from AMD/Xilinx. Versal is a heterogeneous architecture com-prising a Processing System (PS), Programmable Logic (PL), Network-on-Chip (NoC), and Artificial Intelligent Engines (AIE), whereas the latter consists of a two-dimensional array of processing tiles. Despite its high computational power, the AIE remains largely unexplored for mixed-criticality appli-cations due to architectural and software constraints. First, the processing cores within the array lack the ability to interrupt tasks, which prevents low-criticality to be superseded by high-criticality tasks. Second, applications are expressed as dataflow graphs that are statically mapped onto tiles. This impedes task switching, i.e. switching between low- and high-criticality tasks. In theory, the limitation of the static mapping could be addressed by applying dynamic partial reconfiguration (DPR) of the AIE, as it is supported beginning with Vivado 2024.2. However, reconfiguration is controlled by the PS and the reconfiguration data is sent via the NoC. As these are both shared resources, providing timing guarantees is very challenging. Another approach would be to provide dedicated hardware accelerators for each task on the AIE. This approach is followed in most of the existing solutions for utilizing heterogeneous platforms for MCSs. They mainly base on hypervisor-driven architectures that treat accelerators as peripherals for task offloading [4, 5, 6, 7]. However, this contradicts the MCS approach of reusing hardware resources for low-criticality tasks if high-criticality tasks remain in their optimistic WCET estimates. To overcome these limitations and to explore the processing power of the AIE in mixed-criticality systems, we propose a dynamic task dispatching infrastructure and a criticality-aware 
+
+> arXiv:2604.21124v1 [cs.AR] 22 Apr 2026
+
+resource allocation strategy for the AIE. System management and task execution is exclusively done on the AIE, avoiding timing inferences with other system components. The pro-cessing tiles of the AIE are viewed as a pool of workers to which the dispatcher assigns tasks at runtime, thus avoiding the need to provide fixed hardware accelerators for specific tasks. Our task dispatching strategy provides criticality-aware resource allocation, ensuring that higher-criticality tasks are prioritized. We demonstrate the feasibility of this approach for MCSs by quantifying the overhead introduced by the system design and showing that it is negligible relative to task execution times. A case study based on an autonomous driving workload further confirms these results. Compared with an MCS using dedicated hardware accelerators, our approach reduces hardware idle time and allows more low-criticality tasks to be executed on the same resources. The rest of the paper is structured as follows: Section II introduces the fundamental concepts of MCS and the AIE microarchitecture, and related works. Section III presents the proposed dynamic task dispatching infrastructure, focusing on its design and utilization for MCS. Section IV discusses the measurements for timing overheads. Section V presents a case study, demonstrating functionalities and capabilities for MCS. II. B ACKGROUND 
+
+This section introduces the background of MCSs, the AIE architecture within the Versal SoC and related works. 
+
+A. Mixed criticality systems 
+
+An MCS is an embedded computing platform in which application functions that share computation and/or commu-nication resources, have a different criticality, such as safety-critical (i.e., high-criticality) and non-safety critical (i.e., low-criticality), or a different assurance level [8]. Current MCS models describe the system as a set of periodic tasks executed sequentially, each characterized by a period P . Each task must complete its execution before a deadline D, where D ≤ P is typically assumed. The period and deadline are application-specific; for example, they may be derived from the required reaction time of a component to an external signal occurring at a given frequency. The execution time of a task, denoted by 
+
+T , depends on the allocated hardware resources and overall system utilization. To guarantee that tasks meet their deadlines, a WCET must be determined. If the WCET cannot be precisely established, a pessimistic estimate is used. Based on the impact of a potential task failure, each task is assigned a priority level 
+
+p, where higher-criticality tasks are typically associated with more pessimistic WCET estimates. However, this pessimistic approach can lead to over-provisioning of resources or even render the system non-schedulable. To address this issue, multiple criticality modes (or assurance levels), denoted by 
+
+L, are introduced [3]. Each criticality mode is associated with a different WCET estimate, where lower criticality levels correspond to optimistic estimates. If the execution time of a task exceeds the WCET estimate of a lower criticality mode, the system transitions to a higher criticality mode, adopting a pessimistic WCET estimate. This ensures that deadlines of high-criticality tasks are met, potentially at the expense of lower-criticality tasks. In this work, we consider two criticality modes—low and high—and therefore two execution time estimates. To clearly distinguish between them, we refer to the WCET of the lower criticality mode as the EET, denoted by TEET , and to the estimate of the higher criticality mode as the WCET, denoted by TW CET . Furthermore, we assume implicit deadlines, i.e., 
+
+P = D.
+
+B. Versal AI Engines 
+
+The Versal AIE, shown in Figure 1, is organized as a two-dimensional array of AIE tiles. Each tile contains aSIMD VLIW processor with 16 KB of program memory, an interconnect module, a dedicated Direct Memory Access (DMA) controller, and a memory module comprising eight memory banks, providing a total of 32 KB of data memory. Each tile can communicate with all other tiles via two input and two output streams. It can also access its own memory and that of adjacent tiles via the memory interface, achieving direct memory access of up to 128 KB. The tile interconnect module handles AXI4-Stream and memory mapped AXI4 input/output traffic. In addition, neighboring tiles in the same row are con-nected by a 384-bit cascade stream, whose direction alternates from row to row, starting from left to right in the first row; the last tile in each row connects to the tile above it. In addition to AIE Tile, the array has PL interface tiles and NoC interface tiles to interface with the PL and the programmable NoC, respectively. Depending on the target device, the array may contain from a few dozen to several hundred tiles. AI Engine Array (5x3 AI Engine Tile and corresponding Interface Tiles) Versal SoC Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Interconnect AI Engine Memory AI Engine Tile Configuration Interface Tile PL Interface Tile NoC Interface Tile NoC Interface Tile PL Interface Tile 
+
+Fig. 1: AIE array microarchitecture [9]. Applications for the AIE are expressed as dataflow graphs, where nodes, called ’kernels’ within AMD environment, are mapped onto individual tiles. The graph topology must be fixed at compile time, with the Versal PS managing execution at runtime. While the PS can manage the data flow into the AIE, it cannot alter the graph structure itself — tiles are statically assigned to specific kernels for the lifetime of the application. This static mapping limits the AIE to functioning as an accelerator with a fixed set of static kernels and prevents kernels of different criticality levels from being dynamically reassigned to tiles at runtime, which is a fundamental require-ment for MCS deployments. Kernels communicate through stream or buffer-based connections. Stream connections sup-port up to two inputs and two outputs per kernel, plus a cascade stream for direct forwarding between neighboring tiles. Buffer-based communication maps data to tile-local memory, with DMA transfers handling movement between distant tiles. Ev-ery buffer access is handled by memory locks, which enforce strict access ordering between producers and consumers and prevent concurrent access. This lock-based synchronization mechanism is central to how the AIE manages data consistency across tiles. Finally, Kernel mapping onto AIE tiles can be left to the tools alone or restricted by constraint files. If a single kernel does not require the computing power of an entire AIE tile, multiple kernels can be mapped onto the same AIE tile. These kernels will be executed sequentially since the processor does not allow kernel preemption. These constraints introduce challenges for MCS, as dynamic execution is required to guarantee deadlines at different criticality modes. 
+
+C. Related works 
+
+Exploiting heterogeneous architectures for MCS is an open problem that prior literature has already identified, focusing on theoretical modelling, interference, data sharing, and security aspects [2, 4]. Virtualization-based approaches have become the de-facto solution for running critical tasks either on multi-ple CPUs or on in-silicon (i.e., GPU, AIE) and PL accelerators that are treated as peripherals for task offloading [5, 6, 7]. Cinque et al. survey industrial virtualization practice for MCS, analyzing trade-offs in isolation, certification, and de-pendability [5]. Martins and Pinto empirically compare static partitioning hypervisors for ARM-based MCS, revealing per-formance and safety trade-offs across Jailhouse, Xen, Bao, and seL4 [6]. Ottaviano et al. extend hypervisor management to FPGA soft-cores and microcontroller-level CPUs in the Omnivisor, noting that conventional hypervisors treat such co-processors merely as I/O peripherals [7]. For FPGA-specific MCS, Xia et al. and Wulf and G¨ ohringer exploit DPR [10] to share reconfigurable resources across criticality levels: Ker-ONE exposes FPGA accelerators as virtual peripherals under a preemptive hypervisor [11], while L4ReC improves utilization over spatial partitioning by combining bitstream prefetching and reservation [12]. Gracioli et al. demonstrate on a Zynq UltraScale+ that hardware/software co-design is required to isolate criticality domains [4]. All of these approaches rely on the ability to reconfigure or remap hardware resources at runtime via DPR from the PS. Although the structure of the dataflow graph on the AIE can be updated at runtime via DPR starting with Vivado 2024.2, to the best of our knowledge, no existing solutions have applied DPR on the AIE for MCS applications. Furthermore, a DPR-based solution would introduce communication overhead with the PS, and timing uncertainties make it unviable for MCS. III. D YNAMIC TASK DISPATCHING INFRASTRUCTURE FOR MCS In order to overcome the limitations of static task mapping, we propose a dynamic task dispatching infrastructure that allows resources to be reallocated to tasks at runtime. This is achieved by mapping multiple tasks to the same AIE tile and controlling their execution via a dedicated dispatcher unit. We also propose a criticality-aware resource allocation strategy that allows MCS to be used on the AIE array despite its lack of preemptive capabilities. The infrastructure is described in Subsection III-A, while the criticality-aware resource alloca-tion strategy is presented in Subsection III-B. 
+
+A. Dynamic task dispatching infrastructure 
+
+The core component of the proposed infrastructure is a dedicated dispatcher unit that manages task execution across the AIE array. Rather than binding each task statically to a fixed compute tile, the dispatcher decides at runtime which available compute tile a newly arriving task should be executed on. This is possible because, through static mapping, a tile can execute multiple different tasks, allowing the dispatcher to select a tile from a pool for a specific task at runtime. Dispatcher Compute Tile 1 Noti fi cation channel high priority Noti fi cation channel low priority task queue low priority task queue high priority memory bu ff er Stream switch Compute Tile 2 Stream switch Compute Tile 3 Stream switch Packet stream connection Memory mapped connection 
+
+Fig. 2: Infrastructure for dynamic task dispatching. The task dispatcher is entirely implemented on a single tile within the array and is the central block of the infrastructure, as shown in Figure 2. This control unit is responsible for managing task execution, including data transfers and task activation. The data for a task is transferred directly from an external task source into the array. Task metadata, such as deadlines, task IDs, and TW CET , is stored in a task queue, and the payload is stored in memory buffers (see Figure 2). When data for a new task is written in the task queue, the dispatcher is informed and the dispatcher pulls a task from one of the task queues shown on the left in Figure 2 and starts the task on a free compute tile. To enable the dispatcher to assign tasks based on the system state, mechanisms are needed for exchanging status data between the dispatcher, compute tiles and task source. Three types of notification channels (shown as dotted lines in Figure 2) are required, which allow for low-latency communication from the task source to the dispatcher and between the dispatcher and the compute tiles. The first channel-type (red lines) is used for high-priority messages and the second (green lines) for low-priority messages. The blue lines indicate the notification channels, that the dispatcher uses to send control messages to the compute tiles. The notification channels are implemented using packet streams, which allow several logical stream connections to share a single physical channel. This is indicated by the trian-gles in Figure 2, which shows how multiple packet streams of one notification channel are merged into a single input stream for the dispatcher. Since the dispatcher is implemented on a single AIE tile with only two physical stream inputs, merging streams via the stream switches provides a scalable solution that reduces pressure on physical resources. Furthermore, this arrangement allows one input per priority level, ensuring isolation between the notification channels of different prior-ities. Unlike memory-mapped connections, stream interfaces support non-blocking read access, which prevents stall time in the event of channel starvation. The control notification channel (shown as blue dotted lines in Figure 2) uses one dispatcher output and distributes to each compute tile. The messages transmitted over the notification channel consist of two packets: the header packet, followed by a second packet containing the task’s unique ID. Each packet is 32 bits wide, corresponding to the size of a single stream transaction. The header packet contains routing information for the stream switches and a 3-bit type designator. The end of a message is indicated by the tlast bit of the AXI stream interface. Decoupling the communication channel is also necessary to transfer task metadata and workload data with minimal stall time. This is due to the synchronization mechanisms between AIE tile memories, which are implemented as hardware locks that restrict buffer access to a single entity — either a pro-cessor or a DMA controller — at a time. Without decoupling, unpredictable stall times could occur when a data source holds a lock on a buffer that the dispatcher needs to access. Since task notifications are only sent after task data has been copied, it is guaranteed that the target buffer is free upon access. DMA controller FIFO FIFO FIFO Bu ff er Dispatcher Task Source 1 Task Source 2 
+
+Fig. 3: Task queue implementation. The task queue implementation is shown in Figure 3. From the dispatcher perspective, the queue is a buffer which always contains the first element. From the task source perspective, however, the queue is a stream connection. The streams from each task source are combined via stream mergers (shown as triangles in Figure 3), and the data is sent to the dispatcher queue buffer via an independent DMA controller. This ap-proach is scalable, as each new notifications channel be can connect directly to the stream merger. Additionally, the stream First-In First-Output (FIFO) buffers store individual queue elements. These buffers can be resized, automatically adjusting the size of the queue. The task notification mechanism ensures that task metadata is present in the buffer, enabling the dispatcher to acquire it with minimal stall time. Buffer connections are also used to copy task workload data to the task’s memory region. This is shown by the black connections with cubic arrowheads in Figure 2. A single task can have one or more buffer connections, which usually include new data, such as sensor data. However, as task jobs are dispatched dynamically, it cannot be guaranteed that a task will have access to the same status data in the next job. If a task requires status data to be updated with each job, the updated data must be sent back to the dispatcher to be distributed with the new data for the next job. The buffer mapping plays an important role in minimizing stall time. As previously mentioned, a buffer can only be held by one entity. In hardware, however, this mechanism locks the entire memory bank, not just the memory region of the buffer. This means that buffers for tasks requiring parallel execution must be mapped to separate memory banks, whereas buffers for tasks sharing a compute tile can share memory banks. 
+
+B. Criticality-aware resource allocation strategy 
+
+This subsection presents the criticality-aware resource allocation strategy for MCSs, built upon the dynamic task dispatching infrastructure. Without this strategy, the dispatcher allocates resources on a best-effort basis, considering only tile availability. However, this approach is insufficient for MCS, where task deadlines must be guaranteed. For that reason, the strategy bases its task-scheduling decisions on the current system-wide criticality mode. To support this, the task pool is adapted according to the active priority mode. As shown in Figure 2, the task pool consists of three compute tiles with different capabilities: Tile 1executes only high-criticality tasks, Tile 2 supports both high- and low-criticality tasks, and Tile 3 executes only low-criticality tasks. In low-criticality mode, high-criticality tasks are restricted to Tile 1, while the remaining tiles are used for low-criticality tasks. In high-criticality mode, the execution of low-criticality tasks on shared resources (e.g., Tile 2) is prohibited to ensure that sufficient resources are reserved for high-criticality tasks. This mechanism is shown in Figure 4. In low-criticality mode, it is assumed that all tasks execute according to their 
+
+TEET . However, if the first high criticality task (red) exceeds this time, the deadline of the subsequent high-criticality task (red) can no longer be guaranteed if both are scheduled sequentially on the same tile. In this case, the dispatcher Deadline              
+
+> priority mode switch Dispatcher Waits for free signal Tile 1 T[high]
+> TEET
+> Tile 2 T[low] T[high]
+> TWCET 010 20 30 40 50 60 70 80 90 100
+
+Fig. 4: Timing diagram to illustrate the context switch. detects the scenario and performs a context switch, blocking the execution of low-criticality tasks (green) on Tile 2. The strategy is visualized in Figure 5. The algorithm con-sists of four steps, which are repeated in an endless loop. First, the dispatcher checks whether a context switch is required, either to high-criticality mode or back to low-criticality mode. This decision is based on a timing calculation — explained in detail later — which determines the latest point in time at which the current high criticality task must be started. If this deadline is reached, the dispatcher switches to high-criticality mode. To switch back to low-criticality mode, the parameter n
+
+is introduced, representing the assumed number of consecutive jobs that exceed the TEET of a task. If n = 1 , it is assumed that this occurs only once, whereas n > 1 indicates that a consecutive range of tasks is expected to exceed this time. The remaining three steps of the algorithm are executed for each priority level. As shown in Figure 3, the first element of the task queue is loaded into a buffer. To minimize access latency, the dispatcher maintains a local copy of this element. Thus, it processes one task per priority level at a time. If the buffered task is invalid (e.g., it has already been dispatched), the dispatcher retrieves a new element from the queue (Part 2 in Figure 5). If the task is valid, the dispatcher attempts to assign it to a suitable compute tile (Part 3 in Figure 5). This is achieved by iterating over the available tiles to identify one that is both idle and capable of executing the task within the current task pool (i.e., tile .p == task .p ). Since the task pool changes, based on the current priority mode, this check is particularly important during context switches. Finally, the algorithm checks whether a new notification is present in the corresponding priority-level notification channel, implemented as a FIFO stream. In order to change the priority mode, the dispatcher mon-itors task execution time and detects if a context switch is required to ensure execution before the deadline. The deci-sion for a context switch is based on a timing calculation. When a high-priority task arrives, the dispatcher calculates 1 yes 2 3queue element valid ? queuesize > 0 ? no new noti fi cation ? get new element from queue queue size += 1 compute tile = free no task fi nished new task start task queue element = invalid Tile == free & tile.p == task.p ?yes for each tile no for each priority no time >= switch time change priority mode to high high priority mode & task executed > n change priority mode to low start 
+
+> fi nish yes
+
+4
+
+Fig. 5: Criticality-aware resource allocation strategy flowchart. the execution time margin by subtracting the deadline from the execution time. 
+
+laxity = D − TW CET [τhigh ] (1) By adding this margin to the arrival time of the task, we can determine Tswitch which is the latest time when a high criticality task needs to be started. If this time is reached before the previous task finished its execution, the dispatcher performs a context switch, thus reallocating tiles used for low criticality tasks to high criticality tasks. 
+
+Tn,switch = Tn,arr + laxity − Oswitch (2) However, a delay exists between the context switch, the reallocation, and the actual moment at which the task begins executing on the new tile. To account for this, the switch point must be moved earlier by this duration, which is referred to as the switching overhead, Oswitch . How this overhead time is determined, will be explained in the following section. The proposed infrastructure guarantees high-criticality dead-lines by combining low-latency packet-stream notifications with a laxity-based context switch mechanism that dynami-cally reallocates compute tiles between criticality levels. IV. M EASUREMENTS 
+
+To guarantee that task deadlines are met, the switching overhead must be accurately determined. This section de-scribes the methodology used to obtain timing and overhead measurements. Each AIE tile provides dedicated profiling and tracing logic that enables runtime analysis. This event logic includes a processor-independent 64-bit cycle counter, which can be accessed by the processor to timestamp relevant dispatcher events, such as task notifications. Trace data is streamed via dedicated channels to external DDR memory for further analysis. Given the fixed AIE operating frequency of 1.25 GHz, execution times can be directly derived from the recorded cycle counts. actual switch time ideal switch time Dispatcher loop T WCET loop cpy              
+
+> Oswitch
+> Tile 1 T[high] Tile 2 T[low] str start T[high]
+> 42 44 45 46 47 48 49 50 51
+> Send stream
+
+Fig. 6: Timing diagram to illustrate the overhead time. Figure 4 describes the mechanism behind the context switch. However, the figure shows an ideal context switch that happens instantly. For a real system, the context switch time has to be moved earlier to account for the switching overhead Oswitch .Figure 6 expands the scenario from Figure 4 to illustrate the timing behaviour; the timings are exaggerated for clarity. Since the dispatcher executes sequentially and does not support interrupts to alter program flow, a delay occurs between the scheduled switch time and when the dispatcher detects it. In the worst case, this delay is one scheduling-loop iteration, denoted by Tloop .After the priority mode switch, the dispatcher can schedule the high-criticality task on Tile 2. However, because tasks cannot be interrupted, it must be assumed that a low-criticality task is still executing on that tile, with a worst-case execution time of TW CET [τlow ]. Once this task completes, an additional delay occurs before the dispatcher detects that the tile is free, which in the worst case again corresponds to one loop iteration, Tloop . Subsequently, the task workload data must be transferred to the tile local memory, incurring a delay of Tcpy .Finally, a notification is sent via the stream interface to start execution, introducing further delays Tstr , while the tile itself requires an additional reaction time Tstart . To conclude, the switching overhead can be determined by: 
+
+Oswitch = 2 ∗ Tloop + Tcpy + Tstr + Tstart + TW CET [τlow ]
+
+In the following, we explain how the individual elements are determined. The term Tloop represents the execution time of a single loop iteration and can vary significantly based on the algorithm steps that are executed. It is determined using a measurement approach by reading the previously described cycle counter at the beginning and end of each iteration, as illustrated in Figure 5. However, not every iteration performs actual work; such iterations are referred to as empty iterations. In order to detect which paths of the algorithm contribute to the longest execution time, binary flags are used to indicate whether specific steps of the algorithm have been executed. If all flags are zero, the corresponding timing measurement is discarded. 
+
+0 0.5 1 1.5 2 2.5 3
+
+·10 −2
+
+10 0
+
+10 1
+
+10 2
+
+10 3
+
+Runtime [ms] Number Fig. 7: Measured runtime of the criticality-aware resource allocation strategy algorithm. Figure 7 shows the measured execution times of the algo-rithm. The worst-case timing for that algorithm is measured to be 30 .3 × 10 −4 ms, assuming a task buffer size of 16 KB, as explained in the following. The largest part of the loop time is attributed to the copy time. As described earlier, dispatcher events are recorded together with their corresponding task IDs when the cycle counter is sampled, enabling precise tracking of events. This allows the exact start and end points of each copy operation to be identified and its duration to be accurately determined. Determining the copy time is one of the most important aspect of the timing calculation, this is due to the fact that memory synchronization and buffer access can lead to significant overheads. 
+
+29 210 211 212 213 214 
+
+0
+
+1
+
+2
+
+3
+
+·10 −2
+
+Buffer size [byte] Time [ms] Fig. 8: Time measurements of copy time from input buffer to output buffer. Figure 8 presents the measured copy times for different buffer sizes, from an input buffer on one memory bank to an output buffer on another bank. To simplify buffer placement and memory alignment, the toolchain rounds buffer sizes up to the nearest power of two. For this reason, it is recommended to define buffer sizes as powers of two in order to optimise memory usage. The measurement results show that copy time increases non-linearly with buffer size. This behaviour can be attributed to the fact that, for small buffers, synchroniza-tion overhead dominates the total latency, whereas for larger buffers, the actual data transfer time becomes the dominant factor. These measurements allow us to give an estimate of the copy time. For our proposed allocation strategy we assume a maximum buffer size of 16 KB, resulting in a fixed worst case copy time of 30 .28 × 10 −4.The control message latency Tstr depends on the stream routing solution and can be extracted from the specification. The latency between the destination and source of two neigh-boring tiles is 8 clock cycles. As a control message consists of two packets transferred in two consecutive stream transfers, the total message latency is 9 cycles, or 7.2 × 10 −6 ms. The reaction time Tstart accounts for the time required by the compute kernel to read the control message (two stream reads) and compute the appropriate action before starting the task function. This time can be estimated from the loop measurements shown in Figure 7, as the algorithm performs the same action when reading a notification stream. For this reason, the measurements were filtered for the appropriate flags which indicate that only step four shown in Figure 5 is executed. The measured worst case is 2.66 × 10 −4 ms. Table I summarizes the elements of the switching overhead. TABLE I: Elements of the switch overhead in ms.               
+
+> Tloop Tcpy Tstr Tstart
+> 30 .3×10 −430 .28 ×10 −47.2×10 −62.66 ×10 −4
+
+Using the previously described equation, we can calculate the switch overhead to be 9.36 × 10 −3 ms which is rounded to 10 × 10 −3 ms. In the case study, presented in the following section, we set this switch overhead to 20 × 10 −3 ms, con-firming that it has a negligible impact on the overall execution time, even in a very pessimistic estimate. V. C ASE STUDY 
+
+To demonstrate the applicability of our approach, we con-ducted a case study on two autonomous driving workloads. A key aspect of vehicle navigation is state estimation, for which particle filters are commonly used. Particle filters estimate the pose of an object based on sensor data, with the number of particles directly influencing the robustness of the estimate. A higher particle count yields a more accurate solution at the cost of greater computational effort and runtime. Modern particle filters vary the number of particles to balance this trade-off, resulting in varying execution times. For this reason, the particle filter was selected as the high-criticality task. As a representative low-criticality workload, an FFT was chosen, reflecting the importance of real-time signal processing in autonomous systems. The task periods are based on typical sensor data rates in these application domains. We assume the particle filter is part of a LiDAR preprocessing pipeline that provides new data at 22 Hz, or every 45 ms. For the FFT task, we assume a radar pipeline operating at 3.4 MHz. After filtering, the FFT reduces the data size by processing batches of 512 samples every 0.15 ms. In our scenario, two independent particle filter tasks must be executed, while the remaining resources can be allocated to multiple FFT tasks. We also impose a resource restriction of three AIE tiles for computation. The particle filter takes two input buffers and one output buffer. The first input buffer holds the sensor data, comprising lateral and angular velocity along with up to 12 observation points (e.g., GPS or LiDAR measurements), resulting in a buffer size of 96 bytes. The second input buffer stores the particles from the previous iteration, and the output buffer contains the updated particles, which are fed back as input for the next iteration. The number of particles per iteration is adapted based on an externally computed quality metric, with the filter dynamically selecting between 600 and 1024 particles. The particle count was capped at 1024 — rounded up from 1000 to comply with AIE-API recommendations for power-of-two buffer sizes — resulting in input and output buffer sizes of 16 KB. Each FFT job processes 512 complex float input samples and produces 512 complex float output samples, yielding buffer sizes of 2 KB. The TW CET and TEET were determined using the same measurement approach as described in Section IV. The cycle counter was read at the beginning and end of each job, and both values were transmitted to the DDR via a dedicated stream. The tiles were placed in a test environment that continuously produced random input data. Figure 9 shows the measured runtime of a single job across individual tiles; in total, 1000 jobs were measured. For the high-criticality task, we measured the time for 600 particles (left bar in Figure 9) and for 1024 particles (right bar in Figure 9). From these measurements, the TW CET and TEET of both task were estimated. Table II summarizes the overall parameters of the tasks. TABLE II: Summary of tasks parameters.               
+
+> Task Priority TW CET TEET D=P
+> Particle Filter High 25 ms 15 ms 45 ms FFT Low 0.1 ms 0.1 ms 0.15 ms
+
+For further analysis, we assume that the high-criticality task exceeds its TEET with a probability of 20%. This distribution of execution times cannot be efficiently resolved with static mapping approaches, as they require the TW CET to be as-sumed at all times and cannot adapt to varying execution times. Consequently, both high-criticality tasks cannot be assigned to the same tile, which leads to underutilisation of the system dur-ing low-criticality mode. The proposed infrastructure resolves this by allocating resources based on the criticality level. The demonstrator was implemented on the XCVC1902 Versal SoC and is shown in Figure 10. The small blue rectan-14 15 16 17 18 19 20 21 22 23 24 25 
+
+0
+
+100 
+
+200 
+
+300 
+
+Runtime [ms] 
+
+> Number
+
+PF-task runtime 
+
+0 5 · 10 −2 0.1 0.15 0.2
+
+0
+
+100 
+
+200 
+
+300 
+
+Runtime [ms] 
+
+> Number
+
+FFT-task runtime 
+
+Fig. 9: Particle filter and FFT execution time measurements. 0x0 
+
+buf16    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf16       
+
+> 0x1FFF (0x3FF F)0x1FA0 buf7r 0x1FFF 0x0 buf4r 0x5F
+
+gen_kernel[3] data_out to_dispatcher to_task_queue             
+
+> 0x0
+> sysmem38
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem38
+> 0x817 (0x2817 )
+> 0x0
+> sysmem32
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem32
+> 0x81F (0x281F )
+
+wrapper_ kernel[0] control_data_0 particle_cloud_in_0 control_data_1 particle_cloud_in_1 start_task particle_cloud_out_0 particle_cloud_out_1 finished 
+
+> 0x0
+
+buf5    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf5    
+
+> 0x1FFF (0x3FFF )
+> 0x0
+
+buf8    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf8    
+
+> 0x1FFF (0x3FFF )
+
+gen_kernel[0] data_out to_dispatcher to_task_queue 
+
+> 0x0
+
+buf27    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf27    
+
+> 0x1FFF (0x3FF F)
+> 0x1000
+
+buf3       
+
+> 0x1FFF
+> 0x0
+> sysmem35
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem35
+> 0x817 (0x2817 )
+
+rec_ kernel[0] in        
+
+> 0x0
+> sysmem39
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem39
+> 0x817 (0x2817 )
+> 0x0 buf2 0x5F
+
+gen_ kernel[2] data_out to_dispatcher to_task_queue 
+
+> 0x0
+
+buf29    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf29    
+
+> 0x1FFF (0x3F FF )
+> 0x0
+
+buf20    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf20    
+
+> 0x1FFF (0x3F FF )
+
+dispatcher_kernel high_prio_channel low_prio_channel taskQueueBufferHigh taskQueueBufferLow control_data_in_0 particle_cloud_in_0 control_data_in_1 particle_cloud_in_1 fft_in_0 fft_in_1 to_task trace_data control_data_out_0 particle_cloud_out_0 control_data_out_1 particle_cloud_out_1 control_data_out_10 particle_cloud_out_10 fft_out_0 fft_out_10 fft_out_1 
+
+> 0x0
+
+buf11    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf11     
+
+> 0x1FFF (0x3FF F)
+> 0xC0 buf10 0x11F
+> 0x1000
+
+buf13   
+
+> 0x1FFF
+> 0x0 buf4 0x5F
+> 0x60 buf7 0xBF
+
+wrapper_kernel[2] fft_in_0 fft_in_1 start_task fft_out_0 fft_out_1 finished         
+
+> 0x0
+> sysmem31
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem31
+> 0x86B (0x286B )
+> 0x880 buf0 0x8DF 0x1FA0 buf2r 0x1FFF
+> 0x0
+
+buf1 
+
+> 0xFFF
+> 0x1000
+
+buf3r 
+
+> 0x1FFF
+> 0x0
+
+buf14 
+
+> 0xFFF
+> 0x1000
+
+buf15 
+
+> 0x1FFF
+
+gen_kernel[1] data_out to_dispatcher to_task_queue             
+
+> 0x0
+> sysmem34
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem34
+> 0x81F (0x281F )
+> 0x0
+> sysmem36
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem36
+> 0x817 (0x2817 )
+
+rec_ kernel[1] in             
+
+> 0x0
+> sysmem40
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem40
+> 0x817 (0x2817 )
+> 0x0
+> sysmem37
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem37
+> 0x817 (0x2817 )
+> 0x0
+
+buf24 
+
+> 0xFFF
+
+wrapper_ kernel[1] control_data particle_cloud_in fft_in start_task particle_cloud_out fft_out finished_pf finished_fft       
+
+> 0x0
+> sysmem33
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem33
+> 0x823 (0x2823 )
+> 0x0
+
+buf18    
+
+> 0x1FFF
+> 0x0 (0x2000 )
+
+buf18    
+
+> 0x1FFF (0x3F FF )
+> 0x1000
+
+buf25 
+
+> 0x1FFF
+> 0x0
+
+buf26 
+
+> 0xFFF
+
+rec_ kernel[2] in                                                                                                 
+
+> 0x0
+> sysmem41
+> 0x1FFF
+> 0x0 (0x2000 )
+> sysmem41
+> 0x817 (0x2817 )
+> 0x0
+> dmafifo_28_0_0_0
+> 0x1FFF 0x0 (0x2000 )
+> dmafifo_28_0_0_0
+> 0x1FFF (0x3FFF )0x0 (0x4000 )
+> dmafifo_28_0_0_0
+> 0x1FFF (0x5FFF )0x0 (0x6000 )
+> dmafifo_28_0_0_0
+> 0x1FEF (0x7FEF )0x0
+> dmafifo_28_1_0_0
+> 0x1FFF 0x0 (0x2000 )
+> dmafifo_28_1_0_0
+> 0x1FFF (0x3FFF )0x0 (0x4000 )
+> dmafifo_28_1_0_0
+> 0x1FFF (0x5FFF )0x0 (0x6000 )
+> dmafifo_28_1_0_0
+> 0x1FEF (0x7FEF )0x0
+> dmafifo_29_0_0_0
+> 0x1FFF 0x0 (0x2000 )
+> dmafifo_29_0_0_0
+> 0x1FFF (0x3FFF )0x0 (0x4000 )
+> dmafifo_29_0_0_0
+> 0x1FFF (0x5FFF )0x0 (0x6000 )
+> dmafifo_29_0_0_0
+> 0x1FEF (0x7FEF )0x0
+> dmafifo_29_1_0_0
+> 0x1FFF 0x0 (0x2000 )
+> dmafifo_29_1_0_0
+> 0x1FFF (0x3FFF )0x0 (0x4000 )
+> dmafifo_29_1_0_0
+> 0x1FFF (0x5FFF )0x0 (0x6000 )
+> dmafifo_29_1_0_0
+> 0x1FEF (0x7FEF )0x0
+> dmafifo_30_1_0_0
+> 0x1FFF 0x0 (0x2000 )
+> dmafifo_30_1_0_0
+> 0x1FFF (0x3FFF )0x0 (0x4000 )
+> dmafifo_30_1_0_0
+> 0x1FFF (0x5FFF )0x0 (0x6000 )
+> dmafifo_30_1_0_0
+> 0x1FEF (0x7FEF )
+
+output_trace 1101000 1100110010011110000010110 00 00 010 00 0000 00 00010100000000 01100000 024,0 24,1 24,2 24,3 24,4 24,5 25,0 25,1 25,2 25,3 25,4 25,5 26,0 26,1 26,2 26,3 26,4 26,5 27,0 27,1 27,2 27,3 27,4 27,5 28,0 28,1 28,2 28,3 28,4 28,5 29,0 29,1 29,2 29,3 29,4 29,5 30,0 30,1 30,2 30,3 30,4 30,5 24 25 26 27 28 29 30 24 25 26 27 28 29 30 
+
+## DT1 2TT3
+
+Fig. 10: Dynamic dispatching infrastructure with particle filter and FFT tasks implemented on the AIE-array. gles represent the task sources and destinations included for evaluation purposes, while the large blue rectangles represent the dispatcher and the compute tiles. The dispatcher (D) is located in the third row from the bottom and third column 1 2 3
+
+0
+
+5,000 
+
+Tiles Exec Time [ms] Static Mapping 1 2 3
+
+0
+
+5,000 
+
+Tiles Exec Time [ms] Our Architecture High1 High2 Low1 Low2 Idle Fig. 11: Execution time distribution of static mapping and the proposed architecture. from the left, while the neighboring left (T1), upper (T3) and right (T2) tiles contain the compute tiles. The red rectangles represent system memory, the purple rectangles represent data memory in the form of buffers, and the yellow rectangles represent memory banks used as FIFOs for trace data. For the criticality-aware resource allocation, the tile usage is defined as follows. In low-criticality mode, high-criticality tasks are dispatched exclusively to T1, while the remaining tiles are reserved for low-criticality tasks. In high-criticality mode, high-criticality tasks may be dispatched to both T1 and T2, while tile T3 is reserved for low-criticality tasks. As shown in Figure 11, which presents the execution-time distribution of the proposed architecture compared to a static mapping approach over a duration of 9 seconds, the dynamic dispatching infrastructure makes better use of the available compute resources. If both particle filters stay in their TEET ,Tile 2 can be used for additional low-criticality tasks, doubling the number of low-criticality tasks executed compared to static mapping. This confirms the advantages of the proposed infrastructure and the proposed strategy for MCS, reducing the overall idle time by 65.5% compared to a static mapping. Furthermore, the infrastructure introduces only an overhead of 0.02 ms, which corresponds to less than 0.002% of the TEET 
+
+of the low-criticality task. VI. C ONCLUSION 
+
+We presented a dynamic task dispatching infrastructure and a criticality-aware resource allocation strategy that, for the first time, enable MCSs on the Versal AIE array. By mapping multiple tasks to shared compute tiles and leveraging packet-stream-based notification channels with a laxity-driven context switch mechanism, our approach overcomes the fundamental limitations of the AIE’s static dataflow graph model without relying on task preemption or DPR. Timing analysis confirms that the dispatcher overhead remains below 0.002% of the overall execution time, demonstrating its suitability for real-time operation. A case study on an autonomous driving workload comprising particle filter and FFT tasks validates the approach, showing a 65.5% reduction in tile idle time and doubling the low-criticality task throughput compared to static mapping, while all high-criticality deadlines are met. REFERENCES 
+
+[1] An Zou et al. “A Survey of Real-time Scheduling on Accelerator-based Heterogeneous Architecture for Time Critical Applications”. In: CoRR abs/2505.11970 (2025). eprint: 2505.11970. [2] Mohamed Hassan. “Heterogeneous MPSoCs for Mixed-Criticality Systems: Challenges and Opportunities”. In: 
+
+IEEE Design and Test 35.4 (2018), pp. 47–55. DOI :10.1109/MDAT.2017.2771447. [3] Steve Vestal. “Preemptive Scheduling of Multi-criticality Systems with Varying Degrees of Execution Time Assurance”. In: 28th IEEE International Real-Time Systems Symposium (RTSS 2007) . 2007, pp. 239– 243. DOI : 10.1109/RTSS.2007.47. [4] Giovani Gracioli et al. “Designing mixed criticality ap-plications on modern heterogeneous mpsoc platforms”. In: 31st Euromicro Conference on Real-Time Systems (ECRTS 2019) . 2019, pp. 27–1. [5] Marcello Cinque et al. “Virtualizing Mixed-Criticality Systems: A Survey on Industrial Trends and Issues”. In: Future Generation Computer Systems 129 (2022), pp. 315–330. DOI : 10.1016/j.future.2021.12.002. [6] Jos´ e Martins and Sandro Pinto. “Shedding Light on Static Partitioning Hypervisors for Arm-based Mixed-Criticality Systems”. In: Proceedings of the 29th IEEE Real-Time and Embedded Technology and Applications Symposium (RTAS) . San Antonio, Texas: IEEE, 2023, pp. 40–53. DOI : 10.1109/RTAS58335.2023.00011. [7] Daniele Ottaviano et al. “The Omnivisor: A Real-Time Static Partitioning Hypervisor Extension for Hetero-geneous Core Virtualization over MPSoCs”. In: 36th Euromicro Conference on Real-Time Systems (ECRTS 2024) . DOI : 10.4230/LIPIcs.ECRTS.2024.7. [8] Rolf Ernst and Marco Di Natale. “Mixed criticality sys-tems—a history of misconceptions?” In: IEEE Design & Test 33.5 (2016), pp. 65–74. [9] Versal Adaptive SoC AI Engine Architecture Manual (AM009) . URL : https://docs.amd.com/r/en-US/am009-versal - ai - engine / AI - Engine - Array - Reconfiguration (visited on 03/31/2026). [10] Duc Viet Vu et al. “Enabling Partial Reconfiguration for Coprocessors in Mixed Criticality Multicore Systems Using PCI Express Single-Root I/O Virtualization”. In: 2014 International Conference on ReConFigurable Computing and FPGAs (ReConFig14) . IEEE, 2014. 
+
+> DOI
+
+: 10.1109/ReConFig.2014.7032516. [11] Tian Xia et al. “Ker-ONE: A New Hypervisor Managing FPGA Reconfigurable Accelerators”. In: Journal of Systems Architecture 98 (2019), pp. 453–467. DOI : 10. 1016/j.sysarc.2019.05.003. [12] Cornelia Wulf and Diana G¨ ohringer. “Virtualization of Reconfigurable Mixed-Criticality Systems”. In: Pro-ceedings of the 32nd International Conference on Field-Programmable Logic and Applications (FPL 2022) .IEEE, 2022. DOI : 10.1109/FPL57452.2022.00035.

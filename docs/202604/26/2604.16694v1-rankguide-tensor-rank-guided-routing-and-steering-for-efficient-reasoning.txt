@@ -1,0 +1,562 @@
+Title: RankGuide: Tensor-Rank-Guided Routing and Steering for Efficient Reasoning
+
+URL Source: https://arxiv.org/pdf/2604.16694v1
+
+Published Time: Tue, 21 Apr 2026 00:18:56 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+Preprint. Under review. 
+
+# RankGuide: Tensor-Rank-Guided Routing and Steering for Efficient Reasoning 
+
+Jiayi Tian 1, Yupeng Su 1, Ryan Solgi 1, Souvik Kundu 2, Zheng Zhang 11University of California, Santa Barbara 
+
+> 2
+
+Intel Labs 
+
+{jiayi tian, yupengsu, Solgi }@ucsb.edu, zhengzhang@ece.ucsb.edu, souvikk.kundu@intel.com 
+
+## Abstract 
+
+Large reasoning models (LRMs) enhance problem-solving capabilities by generating explicit multi-step chains of thought (CoT) reasoning; how-ever, they incur substantial inference latency and computational overhead. To mitigate this issue, recent works have explored model collaboration paradigms, where small reasoning models (SRMs) generate intermediate reasoning steps to achieve a better accuracy–latency trade-off. Despite recent progress, effectively and efficiently detecting and mitigating SRM failures in collaborative systems remains a key challenge. To address this is-sue, we analyze SRM inference in both the generated text and hidden-state spaces, and identify three types of failure modes: overconfidence , uncertainty ,and heavy revalidation . Building on these insights, we propose RankGuide ,a framework that improves the efficiency and effectiveness of SRM–LRM collaboration through tensor-rank-guided routing and steering. Specifically, RankGuide leverages a routing signal that incorporates tensor-rank signals 
+
+derived from consecutive hidden states to detect when SRMs are likely to fail and selectively invoke LRMs. In addition, we introduce a tensor-rank-filtered steering vector extraction method to modulate the reasoning trajectory of SRMs, thereby improving their generation quality. By im-proving both routing and steering through tensor-rank signals, RankGuide enables SRM–LRM collaborative systems to achieve more efficient reason-ing with fewer steps and improved accuracy. Experiments on multiple reasoning benchmarks demonstrate the efficacy of RankGuide in reducing latency by up to 1.75 × compared to LRM, while maintaining competitive accuracy relative to prior methods. 
+
+## 1 Introduction 
+
+Large reasoning models (LRMs) (Guo et al., 2025; Yang et al., 2025) have recently demon-strated strong performance on complex problem-solving tasks by explicitly generating multi-step chains of thought (CoT) reasoning (Wei et al., 2022). By decomposing problems into intermediate steps, these models achieve significant gains in domains such as math-ematical reasoning (Hendrycks et al.; Zhang & Math-AI, 2024) and code generation (Jain et al., 2025). However, this improved capability comes at the cost of substantially increased inference latency and computational overhead, limiting their practicality in real-world deployment scenarios. To mitigate this issue, recent works (Shi et al., 2025; Pan et al., 2025; Fu et al., 2025; Zeng et al., 2026) have explored model collaboration paradigms, where small reasoning models (SRMs) generate intermediate reasoning steps while larger models are invoked selectively. These approaches offer a promising accuracy–latency trade-off by offloading simpler reasoning steps to lightweight models while preserving the capabilities of LRMs for more complex cases. Despite these advances, effectively and efficiently detecting and mitigating SRM failures 
+
+remains a key challenge in collaborative systems. For instance, SpecReason (Pan et al., 2025) relies on LLM verifier feedback to decide whether to let larger models regenerate the 1
+
+> arXiv:2604.16694v1 [cs.AI] 17 Apr 2026
+
+Preprint. Under review. reasoning step, which introduces additional computational and latency overhead. Recently, GlimpRouter (Zeng et al., 2026) triggers routing prior to each step based on entropy-derived uncertainty signals, thereby avoiding the need for LLM verifiers or rollback mechanisms. However, we observe that such approaches can fail when SRMs produce overconfident yet incorrect reasoning steps, resulting in missed routing opportunities and confident errors. Consequently, inaccurate failure detection allows errors to propagate through the reasoning chain, degrading final performance and diminishing efficiency gains. To better understand and address these limitations, we conduct a systematic analysis of SRM inference from the perspective of the generated text as well as the hidden-states. Our analysis reveals three characteristic failure modes: (a) overconfidence , where the model produces confident but incorrect reasoning; (b) uncertainty , where the model struggles to make progress; and (c) heavy revalidation , where the model repeatedly revisits prior steps without advancing the solution. These findings highlight the need for more reliable signals to detect diverse SRM failure modes and guide appropriate interventions during inference. Building on these insights, we propose RankGuide , a training-free serving framework that improves the efficiency and effectiveness of SRM–LRM collaboration. Our method leverages tensor-rank signals derived from consecutive hidden states to guide both routing and steering during LLM inference. These signals are used to detect likely SRM failures, enable selective LRM invocation, and filter the calibration set for high-quality steering vector extraction, ultimately leading to more efficient and reliable reasoning. Our contributions are summarized as follows: • We identify SRM failures as the primary bottleneck in collaborative reasoning systems, and provide a systematic analysis of SRM inference from both generated-text and hidden-state perspectives, revealing three key failure modes: overconfidence ,
+
+uncertainty , and heavy revalidation .• We propose tensor-rank-guided routing, which employs a routing policy driven by a composite signal integrating token-level entropy and tensor-rank features derived from hidden states to identify potential SRM failures and selectively invoke LRMs, addressing both uncertainty and overconfident errors. • We introduce a tensor-rank-filtered steering vector extraction method that modu-lates the hidden-state trajectory of SRMs during inference using a steering vector computed from a tensor-rank-filtered calibration set, thereby reducing heavy revali-dation in SRM generation. Experimental results demonstrate that RankGuide can reduce latency and computational cost while maintaining competitive accuracy compared to prior methods. In specific, RankGuide can yield up to 1.75 × and 1.36 × latency benefit compared to LRM and SoTA collaborative inference framework, while maintaining or improving the accuracy. 
+
+## 2 Related Works 
+
+2.1 Tensor Decomposition and Low-Rank Structure 
+
+Low-rank structures have been widely studied in deep learning for model compression and efficient representation learning, including singular value decomposition (SVD) (Wall et al., 2003; Kang et al., 2024) for matrices and tensor-train (TT) decomposition (Oseledets, 2011) for high-dimensional tensors, among other techniques. Prior works primarily leverage tensor decompositions to approximate weight matrices or adapters (Tian et al., 2025; Li et al., 2026; Yang et al., 2024), thereby reducing memory and computational cost. In contrast, our work does not use tensor decomposition as a compression tool. In contrast, we utilize tensor-rank as a diagnostic signal for reasoning complexity, enabling representation-driven routing and improved steering in LRM inference. 2Preprint. Under review. Correct Incorrect    
+
+> 2
+> 4
+> 6
+> 8
+> 10
+> Min TT-rank (1st core)
+> 9.0
+> 5.0
+> R1-Qwen-1.5B on MATH-Train Correct Incorrect
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Min TT-rank (2nd core)
+> 79.0
+> 59.0
+> R1-Qwen-1.5B on MATH-Train High-rank Low-rank
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Logits Entropy
+> 0.983
+> 0.388
+> R1-Qwen-1.5B on MATH-Train R1-Qwen-1.5B R1-Qwen-32B
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Validation Step Ratio
+> 0.29
+> 0.15 0.16
+> 0.13
+> 0.36
+> 0.22
+> SRM vs LRM on MATH-Train
+> Overall
+> Correct
+> Incorrect
+> Hatched: SRM
+
+Figure 1: Case study of SRM reasoning dynamics. Left: minimum TT rank along the reasoning-step dimension. Middle-left: minimum TT rank along hidden feature dimensions. Middle-right: first-token entropy of reasoning steps. Right: validation step ratio comparison between SRMs and LRMs. 
+
+2.2 Model Collaboration 
+
+Model collaboration (Wang et al., 2024; Zheng et al., 2025) can improve inference efficiency by combining models of different capacities, where small reasoning models (SRMs) handle simple cases and large reasoning models (LRMs) are invoked for more complex reasoning. Recent works extend this paradigm to LLM reasoning by allowing SRMs to generate intermediate steps with selective verification or refinement. A central challenge is effective routing between SRMs and LRMs. Existing methods often rely on LLM verifier (Pan et al., 2025; Shi et al., 2025; Fu et al., 2025), which is costly and may lead to suboptimal decisions. To address this, GlimpRouter (Zeng et al., 2026) proposes an entropy-based confidence score that routes uncertain steps based on the SRM’s output distribution, achieving improved efficiency. However, relying solely on the SRM’s output confidence as the routing signal can be biased, as SRMs may be both highly confident and incorrect. To address this limitation, we propose RankGuide, which leverages tensor-rank signals from hidden states to provide a more reliable indicator of SRM reasoning quality for routing. 
+
+2.3 Efficient Reasoning via Steering 
+
+Beyond model collaboration, a prominent direction is latent-space steering of LRMs. In steering, hidden representations are modified to guide generation toward desired behaviors. Steering methods (Chen et al., 2025; Azizi et al., 2025; Xu et al., 2025) show that intervening in intermediate activations can improve reasoning quality or enforce concise generation patterns without retraining. While these approaches improve efficiency by enhancing reasoning through latent-space calibration, their performance gains are often limited, and they typically fall short of enabling SRMs to match the accuracy of LRMs. 
+
+## 3 Motivational Case Study 
+
+To better understand the limitations of current SRMs in reasoning and routing, we conduct a series of empirical studies. To diagnose failure modes and redundancy in SRM generation, we use the delimiter “ \n\n” to segment model responses into individual reasoning steps, and study both per-step properties and inter-step correlations. 
+
+3.1 Diagnosing SRM Failure through Latent Low-Rank Structure 
+
+To analyze correlations across reasoning steps, we extract middle-layer hidden states at delimiter positions, i.e., where the generated output matches “ \n\n”. These representations summarize each reasoning step and influence the subsequent generation, making them a strong signal to analyze conceptual dynamics across steps. At generation timestep t, we denote the hidden states from the most recent window W of reasoning steps as Ht−W:t ∈
+
+RW×dhid . We concatenate these representations in temporal order and reshape them into a higher-order tensor: 
+
+Ht−W:t ∈ RW×d1×···× dN , where 
+
+N
+
+# ∏
+
+i=1
+
+di = dhid . (1) 3Preprint. Under review. Here, di denotes the size of the i-th mode of the tensor. We then apply tensor-train (TT) decomposition to capture potential low-rank structures across both the reasoning-step dimension and the hidden feature dimensions. Formally, the tensor is decomposed as 
+
+Ht−W:t ≈ G 0 × G 1 × · · · × G N , (2) where the TT-cores satisfy 
+
+G0 ∈ RW×r1 , Gk ∈ Rrk−1×dk ×rk , (1 ≤ k ≤ N), (3) with {rk}Nk=1 denoting the TT ranks. We determine the TT ranks by enforcing a reconstruc-tion error constraint ϵ = 0.1, i.e., ∥H t−W:t − ˆHt−W:t∥F /∥H t−W:t∥F ≤ ϵ, where ˆHt−W:t is the TT-reconstructed tensor. Specifically, we apply error-bounded TT-SVD that allocates a per-step error budget and selects the smallest ranks satisfying the constraint (see Algo-rithm 1 in the Appendix). The resulting ranks characterize the intrinsic dimensionality of the reasoning dynamics: r1 captures the effective rank along the reasoning-step dimension, while the subsequent ranks {rk}k≥2 reflect the complexity of the hidden feature dimensions. In practice, we use a representative hidden-feature rank (e.g., r2) for simplicity. At each timestep t (t ≥ W), the sliding-window hidden representations are reshaped into a 4D tensor Ht−W:t ∈ RW×d1×d2×d3 , where we set W = 10, d1 = 16, d2 = 16, and d3 = dhid  
+
+> d1×d2
+
+.We compute TT ranks at each timestep, and report the minimum rank across timesteps for each sample, as shown in Fig. 1. Here, we collect generation responses for 500 correct and 500 incorrect samples from the MATH-T RAIN dataset (Hendrycks et al.) using D EEP SEEK -R1-D ISTILL -Q WEN -1.5B for case study. As illustrated, incorrect responses consistently exhibit significantly lower minimum ranks than correct ones, both along the reasoning-step dimension (Fig. 1, left) and the hidden feature dimensions (Fig. 1, middle-left). This suggests that erroneous reasoning trajectories tend to collapse into a low-rank latent subspace, indicating a form of generation collapse in SRMs .
+
+3.2 Understanding SRM Overconfidence under Latent Low-Rank Collapse 
+
+Next, we analyze the quality of individual reasoning steps. Prior work, such as GlimpRouter 
+
+Zeng et al. (2026), suggests that reasoning steps with high-entropy logits indicate model 
+
+uncertainty and should be routed to stronger models for verification or refinement. However, our empirical findings reveal that low-entropy predictions are not necessarily reliable. Fig. 1 (middle-right) presents the entropy distribution of logits for reasoning steps grouped by their latent-rank structure. We define rank thresholds Tr1 = 8 and Tr2 = 60, and identify low-rank steps as those satisfying r1(Ht−W:t) < Tr1 ∨ r2(Ht−W:t) < Tr2 . Interestingly, we observe that low-rank steps exhibit substantially lower entropy (0.388 on average) than high-rank steps (0.983 on average), indicating higher confidence. These results indicate that collapsed reasoning trajectories often yield overconfident yet incorrect predictions, revealing that low entropy does not necessarily imply correctness. Consequently, routing strategies that rely solely on entropy may fail to identify such errors. Our findings therefore indicate that both high-entropy (uncertain) steps and low-entropy, low-rank (overconfident) steps should be considered as routing candidates in model collaboration systems .
+
+3.3 SRM Generation with Heavy Re-Validation 
+
+We further investigate the generation behavior of SRMs and observe a distinct inefficiency: 
+
+SRMs tend to perform excessive re-validation steps during reasoning . To quantify this behavior, we measure the validation step ratio , defined as the proportion of reasoning steps devoted to checking or verifying intermediate results. Fig. 1 (right) reports this ratio for both SRMs and LRMs on the MATH-T RAIN dataset. As shown, SRMs exhibit significantly higher validation ratios than LRMs. For example, R1-Q WEN -1.5B allocates 29% of its reasoning steps to validation on average, exceeding R1-Q WEN -32B by approximately 2 ×.Furthermore, we observe that incorrect responses exhibit substantially higher validation ratios than correct ones for both SRMs and LRMs . Specifically, the validation step ratios for incorrect responses are 2.25 × and 1.69 × higher than those for correct responses in SRMs 4Preprint. Under review. Execution Steps    
+
+> Validation Steps
+> SRM Generation
+> Generation Text Hidden States
+> High-Rank Steps
+> Low-Rank Steps
+> Steering Vector Injection
+> Extract Steering Vector TT-rank Filter
+> (Select high-rank
+> samples )
+> Input Query
+> NO LRM Generation
+> SRM Prefill (Compute
+> Rank & Entropy Signals)
+> Offline Calibration:
+> Rank-guided Steering Vector Extraction
+> Online Inference:
+> Rank-guided Routing
+> Calibration data
+> NO
+> YES
+> Early Stop and
+> Generate Answer
+> SRM Generation
+> YES
+
+Figure 2: Overview of the RankGuide framework. In the offline calibration phase (left), the method extracts a rank-guided steering vector by contrasting high-rank execution and validation hidden states. During online inference (right), the steering vector is injected into SRM generation, where rank and entropy signals are computed to enable adaptive routing. and LRMs, respectively. This suggests that models tend to repeatedly verify intermediate results without making meaningful progress when the reasoning trajectory is already flawed. Such excessive re-validation not only increases generation length but also fails to improve correctness, highlighting an inefficient and ineffective reasoning pattern in SRMs. In contrast, LRMs exhibit more efficient reasoning trajectories, with fewer redundant validation steps and more direct progression toward correct solutions. These observations suggest that SRMs lack effective mechanisms for self-correction: once the reasoning process deviates, the model tends to rely on repeated verification rather than actively revising its internal reasoning trajectory. This motivates the need for steering mecha-nisms that can intervene in the hidden-state dynamics of SRMs to guide them back toward more informative and stable reasoning paths, reducing redundant steps and improving overall efficiency. 
+
+## 4 RankGuide: Methodology 
+
+In this section, we propose RankGuide , which leverages tensor-rank signals to address the SRM failure modes identified above. We first introduce rank-guided routing (§ 4.1), which adaptively switches between SRM and LRM generation based on rank and entropy signals, followed by rank-guided steering (§ 4.2), which modulates SRM hidden-state trajectories to suppress redundant validation. An overview of the framework is illustrated in Fig. 2. 
+
+4.1 Rank-guided Routing Routing Signals. Before generating the next step, given the input prompt and previously generated outputs, the SRM performs a prefill pass to extract hidden states {Ht}Tt=1 from an intermediate layer, corresponding to reasoning-step boundaries, and collects the top-k out-put logits for next-token prediction. At each decoding step t, we compute two signals: (i) a tensor-rank measure R(Ht−W:t) (for t ≥ W), where Ht−W:t denotes the reshaped tensor con-structed from a sliding window of W consecutive reasoning steps, capturing dependencies across both the reasoning-step and hidden feature dimensions. Here, R(·) summarizes its TT ranks by incorporating both the reasoning-step rank ( r1) and a representative hidden-feature rank ( r2), as illustrated in § 3.1; (ii) the next-token prediction entropy H(pt) derived from the output distribution pt, corresponding to § 3.2. We introduce separate rank thresholds Tr1
+
+and Tr2 , applied to the reasoning-step rank r1 and hidden-feature rank r2, respectively, along with an entropy threshold Te. As discussed in the motivation section, low-rank states indicate 5Preprint. Under review. representational collapse, while high entropy reflects model uncertainty. Accordingly, both high-entropy (uncertain) steps and low-entropy, low-rank (overconfident) steps are treated as routing candidates in our framework. 
+
+Routing Policy. Based on the computed signals, we design a two-stage routing policy to determine whether to continue SRM generation or switch to the LRM. During calibration, we observe that when the SRM remains in a persistently low-rank regime across multiple steps, it often produces overconfident yet invalid reasoning and continues generating until reaching the maximum generation length without producing a valid answer. Motivated by this observation, we examine whether the low-rank feature persists over a sliding window of W reasoning steps. Specifically, if the tensor-rank measure satisfies 
+
+R(Ht−i−W:t−i) < Tr, ∀i ∈ { 0, . . . , W − 1}, (4) we consider the reasoning trajectory to have fully collapsed and terminate SRM generation to produce the final answer. Otherwise, we further evaluate both rank and entropy signals at the current step. If 
+
+R(Ht−W:t) < Tr ∨ H(pt) ≥ Te, (5) we route to the LRM for more reliable generation; otherwise, the SRM continues generation. This design enables the system to exploit confident and reliable SRM trajectories for ef-ficiency, while selectively invoking the LRM when overconfident or uncertainty failure patterns are detected. 
+
+4.2 Rank-guided Steering Steering Vector Extraction. To reduce redundant revalidation in SRM generation, we extract a rank-guided steering vector at an offline calibration stage, as shown in Fig. 2 (left). Given a calibration dataset D, we categorize reasoning steps along two complementary dimensions. First, inspired by SEAL (Chen et al., 2025), we classify steps in the generated text space into execution and validation types, where execution steps correspond to solving the problem and validation steps correspond to verifying intermediate or final results. Specifically, we identify validation steps using heuristic keywords (e.g., “Alternatively”, “Wait”, “verify”, etc.). Second, we use the tensor-rank signal defined in § 3.1 to classify each reasoning step into high-rank and low-rank groups based on the TT ranks of its associated hidden representa-tions. This captures the intrinsic dimensionality of the reasoning process and serves as an indicator of representational richness versus collapse. Formally, given the calibration set D,we define the sets of execution and validation steps as 
+
+SD 
+
+> exe
+
+= { j | j ∈ exe, x(j) ∈ D } , SD 
+
+> val
+
+= { j | j ∈ val, x(j) ∈ D } , (6) where j indexes reasoning steps and x(j) denotes the sample to which step j belongs. Based on our observation that low-rank calibration samples can degrade the steering vector by introducing collapsed representations, we apply a tensor-rank filter to the calibration dataset 
+
+D and retain only high-rank samples Dh ⊆ D that do not contain low-rank steps. We then compute the category-wise averages over the filtered sets and extract the enhanced steering vector as, 
+
+vh 
+
+> steer
+
+= ¯Hh 
+
+> exe
+
+− ¯Hh
+
+> val
+
+, where ¯ Hh 
+
+> exe
+
+= 1
+
+|S Dh
+
+> exe
+
+| ∑
+
+> j∈S Dhexe
+
+Hj, ¯Hh 
+
+> val
+
+= 1
+
+|S Dh 
+
+> val
+
+| ∑
+
+> j∈S Dhval
+
+Hj. (7) This formulation further biases the steering direction toward informative high-rank execu-tion patterns while suppressing collapsed low-rank features. 6Preprint. Under review. 40 60 80 100              
+
+> Total Latency (min)
+> 30
+> 40
+> 50
+> Accuracy (%)
+> DeepSeek-R1 on AIME24
+> 40 60 80 100 120 140
+> Total Latency (min)
+> 20
+> 30
+> 40
+> 50
+> Accuracy (%)
+> DeepSeek-R1 on AIME25
+> 200 300 400 500
+> Total Latency (min)
+> 20
+> 25
+> 30
+> 35
+> 40
+> Accuracy (%)
+> DeepSeek-R1 on LCB_v6
+> SRM only LRM only SpecReason GlimpRouter RankGuide (ours) 40 60
+> Total Latency (min)
+> 40
+> 50
+> 60
+> Accuracy (%)
+
+Qwen3 on AIME24   
+
+> 40 60 80
+> Total Latency (min)
+> 30
+> 40
+> 50
+> Accuracy (%)
+
+Qwen3 on AIME25  
+
+> 200 300
+> Total Latency (min)
+> 35
+> 40
+> 45
+> 50
+> Accuracy (%)
+
+Qwen3 on LCB_v6 
+
+Figure 3: Accuracy vs. reasoning latency on AIME-24, AIME-25, LCB-v6 using DeepSeek-R1 (Qwen-1.5B / 32B, top) and Qwen3 (4B / 32B, bottom). We report two operating points for our method (best-accuracy and best-latency), which may overlap in some cases. 
+
+Steering Vector Injection. During inference, we inject the rank-guided steering vector into the SRM to modulate its hidden-state trajectory. To preserve token-level fluency while influencing high-level reasoning, this intervention is applied selectively at reasoning step boundaries. Concretely, at the end of each generation step, we perform an additive intervention on the intermediate hidden representation: 
+
+Ht ← Ht + α · vh
+
+> steer
+
+, if yt ∈ T seg . (8) Here, α is a scaling coefficient controlling the strength of the intervention, yt denotes the token generated at decoding step t, and Tseg denotes the set of segment delimiter tokens marking reasoning step boundaries, which is instantiated as “ \n\n” for implementation simplicity. This operation biases the model’s representations toward informative high-rank execution patterns, promoting more efficient and effective reasoning dynamics. As a result, the SRM produces fewer redundant validation or collapsed reasoning steps, thereby improving the effectiveness of the downstream routing mechanism. 
+
+## 5 Experiments 
+
+5.1 Experimental Setup Models. We evaluate our approach on models from the Qwen3 (Yang et al., 2025) and DeepSeek-R1 (Guo et al., 2025) families. Specifically, we consider two SRM–LRM pairs: Qwen3-4B / 32B, and DeepSeek-R1-Distill-Qwen-1.5B / 32B. These pairs span different model scales and architectures, enabling a comprehensive evaluation across diverse settings. 
+
+Datasets. We evaluate our method on challenging reasoning benchmarks. For mathematical reasoning, we use AIME24 (Zhang & Math-AI, 2024) and AIME25 (Zhang & Math-AI, 2025), which consist of high-difficulty competition problems. For code generation, we use LiveCodeBench v6 (Jain et al., 2025), a benchmark designed to evaluate performance on competitive programming tasks. 
+
+Baselines. We compare our method against multiple representative baselines. SRM-only 
+
+uses the small reasoning model without routing, offering low latency but limited accuracy, while LRM-only relies entirely on the large model, providing an upper bound on accuracy 7Preprint. Under review. Table 1: Performance comparison on AIME24 and LiveCodeBench v6 with DeepSeek-R1 models. We report accuracy (pass@1), latency, total number of steps, and validation step ratio. Accuracy and latency are reported relative to LRM, while the number of steps is reported relative to SRM.                                             
+
+> Method Accuracy (%) Latency Avg. Steps Validation Step Ratio (%) DeepSeek-R1 (1.5B/32B) on AIME24
+> SRM 26.7 31 295 24.70 LRM 56.7 97 268 (-10.1%) 19.50 (-5.2%) SpecReason (Pan et al., 2025) 43.3 (-13.4) 114 (0.85 ×)261 (-13.1%) 17.21 (-7.5%) GlimpRouter (Zeng et al., 2026) 53.3 (-3.3) 86 (1.13 ×)325 (+9.1%) 19.93 (-4.8%)
+> RankGuide (ours) 56.7 (+0.0) 69 (1.41 ×)247 (-19.3%) 15.68 (-9.0%) DeepSeek-R1 (1.5B/32B) on LiveCodeBench v6
+> SRM 18.29 141 222 36.50 LRM 37.14 409 234 (+5.4%) 23.20 (-36.4%) SpecReason (Pan et al., 2025) 36.00 (-1.14) 536 (0.76 ×)239 (+7.2%) 23.17 (-36.5%) GlimpRouter (Zeng et al., 2026) 33.14 (-4.00) 342 (1.20 ×)236 (+6.3%) 26.30 (-28.0%)
+> RankGuide (ours) 35.43 (-1.71) 347 (1.18 ×)196 (-16.2%) 21.02 (-42.4%)
+
+at substantially higher cost. We also include two recent routing-based methods: SpecRea-son (Pan et al., 2025), which performs speculative reasoning with LLM-based verification and rollback, and GlimpRouter (Zeng et al., 2026), which adopts an entropy-based rout-ing strategy for adaptive model selection without rollback. Implementation details and hyperparameter settings are provided in Appendix A.2. 
+
+5.2 Main Results RankGuide consistently achieves the highest accuracy with improved latency trade-offs. 
+
+Figure 3 illustrates the accuracy–latency trade-offs of different methods under various threshold settings. RankGuide consistently outperforms existing routing approaches in terms of accuracy while maintaining lower latency than LRM. For example, on AIME-24 with DeepSeek-R1, RankGuide improves accuracy by 3.3% while reducing latency by 1.25 ×
+
+compared to GlimpRouter, and achieves comparable accuracy to LRM with 1.41 × lower latency. Similarly, on AIME-25 with Qwen3, RankGuide improves accuracy by 3.3% while reducing latency by 1.13 × compared to GlimpRouter, and attains comparable accuracy to LRM with 1.59 × lower latency. In contrast, SpecReason incurs substantial latency overhead due to repeated verification and rollback, often resulting in higher latency than LRM while still achieving lower accuracy. GlimpRouter improves efficiency in some cases but lacks the ability to correct certain reasoning failures, leading to suboptimal accuracy. 
+
+RankGuide reduces reasoning steps and re-validation redundancy in SRMs. Table 1 shows that these improvements are driven by more efficient reasoning behavior. RankGuide reduces the total number of steps by 19.3% on AIME24 and 16.2% on LiveCodeBench v6, while lowering the validation step ratio by up to 42.4% compared to SRM and up to 14.4% compared to previous routing methods. In contrast, GlimpRouter, which relies solely on uncertainty-based routing, fails to eliminate over-confident yet incorrect reasoning steps and thus maintains higher validation ratios and unnecessary reasoning steps. By explicitly suppressing redundant and over-confident reasoning steps, RankGuide produces shorter reasoning trajectories avoiding redundant validations, highlighting the importance of controlling both reasoning length and validation frequency for efficient inference. 
+
+5.3 Ablation Studies 
+
+5.3.1 Ablation Study on RankGuide Components 
+
+From Table 2, we observe that progressively integrating rank-guided steering and routing yields consistent improvements in both reasoning efficiency and accuracy on the AIME24 benchmark across different model families. Introducing rank-guided steering primarily 8Preprint. Under review. Table 2: Ablation of RankGuide on AIME24 using DeepSeek-R1 and Qwen3 model pairs. Progressive incorporation of rank-guided steering and routing improves accuracy while reducing reasoning steps and latency compared to entropy-based routing baselines.                                                                           
+
+> Method Thresholds Acc (%) Latency (min) Avg. steps DeepSeek-R1 (1.5B / 32B) on AIME24
+> GlimpRouter (Zeng et al. (2026)) H=0.9 46.7 81 305 + Rank-guided Steering H=0.9 50.0 (+3.3) 74 (1.09 ×)278 (-8.9%) + Rank-guided Routing H=0.9, R1=7, R2=60 56.7 (+10.0) 69 (1.17 ×)246 (-19.3%)
+> H=0.9, R1=8, R2=60 53.3 (+6.6) 67 (1.21 ×)236 (-22.6%) Qwen3 (4B / 32B) on AIME24
+> GlimpRouter (Zeng et al. (2026) H=1.1 50.0 53 207 + Rank-guided Steering H=1.1 50.0 (+0.0) 45 (1.18 ×)171 (-17.4%) + Rank-guided Routing H=1.1, R1=7, R2=50 53.3 (+3.3) 44 (1.20 ×)194 (-6.3%)
+> H=1.1, R1=7, R2=60 50.0 (+0.0) 42 (1.26 ×)180 (-13.0%)
+
+Table 3: Ablation of rank-guided steering on AIME 24 and AIME 25 using DeepSeek-R1-Qwen-1.5B. We report accuracy, total token length, and the number of calibration samples used to generate the steering vector.                          
+
+> Method AIME 24 AIME 25
+> Acc (%) #Tokens #Samples Acc (%) #Tokens #Samples SRM only 26.7 (0.0) 14368 (0.0%) /16.7 (0.0) 16475 (0.0%) /+ SEAL Steering 33.3 (+6.6) 14636 (+1.9%) 1000 13.3 (-3.4) 15336 (-6.9%) 1000 + RankGuide Steering 33.3 (+6.6) 13973 (-2.7%) 738 16.7 (0.0) 15082 (-8.5%) 632
+
+reduces the average number of reasoning steps, while maintaining or slightly improving accuracy. Building upon this, incorporating rank-guided routing further improves accuracy by explicitly identifying over-confident reasoning steps and routing them to stronger LRMs, while still reducing overall reasoning length and improving latency. For example, on DeepSeek-R1, RankGuide improves accuracy by up to +10.0% while reducing average reasoning steps by 22.6% and achieving 1.17 × faster inference compared to the GlimpRouter baseline. These results demonstrate that the progressive combination of steering and routing enables more effective control over the reasoning process, producing shorter and more efficient reasoning trajectories while preserving or improving solution quality. 
+
+5.3.2 Ablation Study on Tensor-Rank-Guided Steering 
+
+We evaluate the effectiveness of tensor-rank-guided steering by comparing it with the SRM-only baseline and the prior SEAL steering method on AIME 24 and AIME 25 using DeepSeek-R1-Qwen-1.5B. As shown in Tab. 3, RankGuide consistently reduces generation token length while maintaining or improving accuracy. In contrast, SEAL exhibits unstable behavior, leading to either decreased accuracy or increased token length. For SEAL, we construct the steering vector using 1000 samples from the MATH-Train dataset, following the original setup. For RankGuide, we apply the TT-rank-based calibration sample filtering described in § 4.2 to obtain a higher-quality subset for steering vector construction. We report the number of remaining calibration samples after filtering in the table, where less informative or harmful samples are removed. With this design, RankGuide consistently maintains the same or higher accuracy as the baseline while further reducing token length, demonstrating improved robustness across datasets. Overall, these results show that tensor-rank-guided steering provides a more reliable and efficient alternative to prior steering methods, improving both reasoning quality and generation efficiency. 
+
+## 6 Conclusion 
+
+In this paper, we analyze failure modes of small reasoning models (SRMs) in collaborative systems, showing that uncertainty, overconfidence, and heavy revalidation lead to inefficient 9Preprint. Under review. and erroneous reasoning. We find that tensor-rank signals capture the intrinsic structure of reasoning and reveal failure patterns not reflected by entropy alone. Based on this insight, we propose RankGuide , a training-free framework that leverages tensor-rank signals to guide both routing and steering in SRM–LRM collaboration. By leveraging tensor-rank signals from consecutive hidden states, RankGuide adaptively routes unreliable reasoning steps to stronger models and steers SRM generation toward more efficient trajectories with fewer redundant steps. Experiments on multiple reasoning benchmarks demonstrate that RankGuide consistently achieves competitive accuracy with significant latency reductions compared to both LRM-only inference and prior routing methods. 
+
+## References 
+
+Seyedarmin Azizi, Erfan Baghaei Potraghloo, Souvik Kundu, and Massoud Pedram. Acti-vation steering for chain-of-thought compression. In NeurIPS 2025 Workshop on Efficient Reasoning , 2025. Runjin Chen, Zhenyu Zhang, Junyuan Hong, Souvik Kundu, and Zhangyang Wang. SEAL: Steerable reasoning calibration of large language models for free. In Second Conference on Language Modeling , 2025. Yichao Fu, Rui Ge, Zelei Shao, Zhijie Deng, and Hao Zhang. Scaling speculative decoding with lookahead reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) .Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and contamination free evaluation of large language models for code. In The Thirteenth International Conference on Learning Representations , 2025. Hao Kang, Qingru Zhang, Souvik Kundu, Geonhwa Jeong, Zaoxing Liu, Tushar Krishna, and Tuo Zhao. Gear: An efficient kv cache compression recipe for near-lossless generative inference of llm. NeurIPS Workshop , 2024. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th symposium on operating systems principles , pp. 611–626, 2023. Yi Li, Zhichun Guo, Miao Yin, and Bingzhe Li. Lestd: Llm compression via learning-based sparse tensor decomposition. In The Fourteenth International Conference on Learning Representations , 2026. Ivan V Oseledets. Tensor-train decomposition. SIAM Journal on Scientific Computing , 33(5): 2295–2317, 2011. Rui Pan, Yinwei Dai, Zhihao Zhang, Gabriele Oliaro, Zhihao Jia, and Ravi Netravali. Specrea-son: Fast and accurate inference-time compute via speculative reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Junhan Shi, Yijia Zhu, Zhenning Shi, Dan Zhao, Qing Li, and Yong Jiang. SpecCoT: Accel-erating chain-of-thought reasoning through speculative exploration. In Findings of the Association for Computational Linguistics: EMNLP 2025 , Suzhou, China, November 2025. Association for Computational Linguistics. 10 Preprint. Under review. Jiayi Tian, Ryan Solgi, Jinming Lu, Yifan Yang, Hai Li, and Zheng Zhang. Flat-llm: Fine-grained low-rank activation space transformation for large language model compression. 
+
+arXiv preprint arXiv:2505.23966 , 2025. Michael E Wall, Andreas Rechtsteiner, and Luis M Rocha. Singular value decomposition and principal component analysis. In A practical approach to microarray data analysis , pp. 91–109. Springer, 2003. Hongyi Wang, Felipe Maia Polo, Yuekai Sun, Souvik Kundu, Eric Xing, and Mikhail Yurochkin. Fusing models with complementary expertise. International Conference on Learning Representation , 2024. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. Haolei Xu, Xinyu Mei, Yuchen Yan, Rui Zhou, Wenqi Zhang, Weiming Lu, Yueting Zhuang, and Yongliang Shen. Easysteer: A unified framework for high-performance and extensible llm steering. arXiv preprint arXiv:2509.25175 , 2025. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Yifan Yang, Jiajun Zhou, Ngai Wong, and Zheng Zhang. Loretta: Low-rank economic tensor-train adaptation for ultra-low-parameter fine-tuning of large language models. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pp. 3161– 3176, 2024. Wenhao Zeng, Xuteng Zhang, Yuling Shi, Chao Hu, Yuting Chen, Beijun Shen, and Xiaodong Gu. Glimprouter: Efficient collaborative inference by glimpsing one token of thoughts. 
+
+arXiv preprint arXiv:2601.05110 , 2026. Yifan Zhang and Team Math-AI. American invitational mathematics examination (aime) 2024, 2024. Yifan Zhang and Team Math-AI. American invitational mathematics examination (aime) 2025, 2025. Wenhao Zheng, Yixiao Chen, Weitong Zhang, Souvik Kundu, Yun Li, Zhengzhong Liu, Eric P Xing, Hongyi Wang, and Huaxiu Yao. Citer: Collaborative inference for efficient large language model decoding with token-level routing. Conference on Language Modeling ,2025. 11 Preprint. Under review. 
+
+Algorithm 1 Error-bounded TT-SVD Rank Selection 
+
+Require: Hidden states tensor Ht−W:t ∈ RW×d1×···× dN , target error ϵ
+
+Ensure: TT ranks {rk}Nk=1, TT cores {G k}Nk=0 
+
+> 1:
+
+Compute tensor Frobenius norm ∥H t−W:t∥2 
+
+> F
+> 2:
+
+Set per-step error budget: 
+
+δ2 ← ϵ2∥H t−W:t∥2
+
+> F
+
+N 
+
+> 3:
+
+Initialize r0 = 1, unfolding tensor H′ 
+
+> t−W:t
+
+← H t−W:t 
+
+> 4:
+
+for k = 1 to N do  
+
+> 5:
+
+Reshape unfolding: 
+
+H′ ← reshape (H′
+
+> t−W:t
+
+, (rk−1dk, −1))  
+
+> 6:
+
+Compute SVD: 
+
+H′ = UΣV⊤ 
+
+> 7:
+
+Select smallest rk such that: 
+
+# ∑
+
+> i>rk
+
+σ2 
+
+> i
+
+≤ δ2 
+
+> 8:
+
+Truncate U, Σ, V to rank rk 
+
+> 9:
+
+Update k-th tensor core and unfolding: 
+
+Gk−1 ← Ur, H′ ← Σr V⊤ 
+
+> r
+> 10:
+
+end for  
+
+> 11:
+
+Update last tensor core: GN ← H′ 
+
+> 12:
+
+return {rk}Nk=1, {G k}Nk=0
+
+## A Appendix 
+
+A.1 Error-bounded TT Rank Selection Algorithm. Explanation. Algorithm 1 applies TT-SVD (Oseledets, 2011) with error-bounded rank selection to determine TT ranks for the hidden-state tensor Ht−W:t. The procedure allocates the total error budget uniformly across the N decomposition steps and selects, at each step, the smallest rank whose discarded singular-value energy is within the per-step threshold. The resulting ranks {rk}Nk=1 characterize the intrinsic low-rank structure of the tensor: r1
+
+reflects the effective rank along the reasoning-step dimension, while {rk}k≥2 characterize dependencies in the hidden feature dimensions. We next formalize the TT reconstruction used in the error analysis and show that the proposed algorithm satisfies the desired error bound. 
+
+Definition A.1 (TT Reconstruction) . Given TT cores {G k}Nk=0 obtained from Ht−W:t, where 
+
+G0 ∈ RW×r1 , Gk ∈ Rrk−1×dk ×rk (1 ≤ k ≤ N),
+
+the reconstructed tensor ˆHt−W:t is obtained via sequential contractions: 
+
+ˆHt−W:t = G0 ×13 G1 ×13 · · · × 13 GN , (9) 
+
+where ×13 denotes contraction between the third mode of Gk−1 and the first mode of Gk, corresponding to the shared rank dimension r k.
+
+Theorem 1. Let ˆHt−W:t be the TT approximation constructed as in Eq. (9) , with TT cores obtained from Algorithm 1. Then the reconstruction error satisfies 
+
+∥H t−W:t − ˆHt−W:t∥F
+
+∥H t−W:t∥F
+
+≤ ϵ.12 Preprint. Under review. 40 60 80 100             
+
+> Total Latency (min)
+> 30
+> 40
+> 50
+> Accuracy (%)
+> DeepSeek-R1 on AIME24
+> 40 60 80 100 120 140
+> Total Latency (min)
+> 20
+> 30
+> 40
+> 50
+> Accuracy (%)
+> DeepSeek-R1 on AIME25
+> 200 300 400 500
+> Total Latency (min)
+> 20
+> 25
+> 30
+> 35
+> 40
+> Accuracy (%)
+> DeepSeek-R1 on LCB_v6
+> SRM only LRM only SpecReason GlimpRouter RankGuide (ours)
+
+Figure 4: Accuracy vs. reasoning latency on AIME-24, AIME-25, LCB-v6 using DeepSeek-R1 (Qwen-1.5B / 32B). 
+
+Proof. At step k, let Ek denote the truncation error induced by discarding singular values beyond rank rk. By construction of Algorithm 1, the selected rank satisfies 
+
+∥E k∥2 
+
+> F
+
+= ∑
+
+> i>rk
+
+σ2 
+
+> i
+
+≤ δ2,where 
+
+δ2 = ϵ2∥H t−W:t∥2
+
+> F
+
+N .TT-SVD is a sequence of orthogonal projections, so the truncation errors from different steps are orthogonal. Therefore, the total squared reconstruction error is bounded by the sum of the per-step squared errors: 
+
+∥H t−W:t − ˆHt−W:t∥2 
+
+> F
+
+≤
+
+> N
+
+# ∑
+
+> k=1
+
+∥E k∥2 
+
+> F
+
+≤ Nδ2 = ϵ2∥H t−W:t∥2
+
+> F
+
+.Taking square roots on both sides gives 
+
+∥H t−W:t − ˆHt−W:t∥F
+
+∥H t−W:t∥F
+
+≤ ϵ.
+
+A.2 Additional Experimental Setups Implementation Details. We implement all methods within a unified vLLM (Kwon et al., 2023) inference framework with consistent decoding configurations, and integrate our steering mechanism into vLLM. For DeepSeek-R1 models, we use greedy decoding, while for Qwen3 models we use temperature 0.6 and top-p 0.95. The maximum generation length is set to 16,384 tokens for AIME and 8,192 tokens for LiveCodeBench. We evaluate accuracy using pass@1, i.e., whether the first generated solution is correct, and measure latency as the total wall-clock time required to produce the final answer, including all intermediate routing and verification steps. For both rank-guided routing and steering, we adopt a step-wise reasoning protocol, where routing decisions are made and steering vectors are applied at reasoning step boundaries identified by delimiter tokens (e.g., “ \n\n”). Our method computes routing signals based on a sliding window of recent hidden states with window size W = 10, while entropy-based baselines rely on token-level output distributions. The routing thresholds are selected from Te ∈ { 0.7, 0.9, 1.0, 1.1 }, Tr0 ∈ { 5, 6, 7, 8 }, and 
+
+Tr1 ∈ { 50, 60, 70 }. For fair comparison, we evaluate our method and GlimpRouter under the same entropy threshold settings. For SpecReason, the acceptance score is selected from 
+
+Ta ∈ { 7, 8, 9 }. The steering factor α is set to 1.0 for all experiments. We evaluate DeepSeek models on 4 × A100 40GB GPUs, and Qwen3 models on 2 × H100 GPUs. 13 Preprint. Under review. 
+
+A.3 Additional Experimental Results Ablation Study on Routing Thresholds. As shown in Fig. 4, we study the effect of different routing thresholds on the accuracy–latency trade-off for the DeepSeek-R1 model pair across AIME-24, AIME-25, and LCBv6. We report results across a range of hyperparameter settings. Specifically, the routing thresholds are selected from Te ∈ { 0.7, 0.9, 1.0, 1.1 }, Tr0 ∈ { 7, 8 }, and 
+
+Tr1 ∈ { 60, 70 }. For fair comparison, we evaluate both our method and GlimpRouter under the same entropy threshold settings. For SpecReason, the acceptance score is selected from 
+
+Ta ∈ { 7, 8, 9 }. While GlimpRouter performs better than SpecReason, its purely entropy-based routing leads to sub-optimal behavior. In contrast, RankGuide improves upon it by routing both uncertain and over-confident steps, reducing redundant re-validation, and achieving a better accuracy–latency trade-off. Across all three benchmarks, RankGuide consistently forms the Pareto frontier, achieving higher accuracy at comparable or lower latency than all baselines. In contrast, SpecReason incurs substantially higher latency while yielding only modest accuracy improvements, and can even be slower than the LRM baseline. While GlimpRouter performs better than SpecReason, its purely entropy-based routing leads to sub-optimal behavior. In contrast, RankGuide improves upon it by routing both uncertain and over-confident steps, reducing redundant re-validation, and achieving a better accuracy–latency trade-off. 14

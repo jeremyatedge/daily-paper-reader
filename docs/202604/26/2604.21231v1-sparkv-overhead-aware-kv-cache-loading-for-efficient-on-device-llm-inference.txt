@@ -1,0 +1,829 @@
+Title: SparKV: Overhead-Aware KV Cache Loading for Efficient On-Device LLM Inference
+
+URL Source: https://arxiv.org/pdf/2604.21231v1
+
+Published Time: Fri, 24 Apr 2026 00:23:50 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+> IEEE INTERNET OF THINGS JOURNAL 1
+
+# SparKV: Overhead-Aware KV Cache Loading for Efficient On-Device LLM Inference 
+
+Hongyao Liu, Student Member, IEEE, Liuqun Zhai, Junyi Wang, and Zhengru Fang 
+
+Abstract —Efficient inference for on-device Large Language Models (LLMs) remains challenging due to limited hardware resources and the high cost of the prefill stage, which processes the full input context to construct Key-Value (KV) caches. We present SparKV, an adaptive KV loading framework that combines cloud-based KV streaming with on-device computation. SparKV models the cost of individual KV chunks and decides whether each chunk should be streamed or computed locally, while overlapping the two execution paths to reduce latency. To handle fluctuations in wireless connectivity and edge resource availability, SparKV further refines offline-generated schedules at runtime to rebalance communication and computation costs. Experiments across diverse datasets, LLMs, and edge devices show that SparKV reduces Time-to-First-Token by 1.3 ×-5.1 ×
+
+with negligible impact on response quality, while lowering per-request energy consumption by 1.5 × to 3.3 ×, demonstrating its robustness and practicality for real-world on-device deployment. 
+
+Index Terms —On-device LLM, KV cache loading, overhead-aware, time-to-first-token 
+
+I. I NTRODUCTION 
+
+Large Language Models (LLMs) have achieved strong suc-cess in a wide range of commercial applications [1]–[3]. At the same time, open-source models such as Qwen [4] and Mistral [5] are making LLM inference increasingly practical on edge platforms. This trend is particularly important for context-intensive tasks that rely on private user data, motivat-ing local inference on mobile and edge devices [6]–[12]. While the Internet of Things (IoT) spans a wide spectrum of hard-ware, this work focuses on edge AI computing platforms rather than ultra-low-power microcontrollers. Representative deploy-ment targets include edge AI gateways, in-vehicle computing systems, and smartphones, which can run quantized on-device LLMs but remain resource-constrained when performing LLM inference with intensive context reuse. Appending reused context to user prompts enhances re-sponse accuracy [13], making it a critical strategy for ap-plications where key information is repeatedly referenced. Examples include private document analysis, multi-turn con-versations, UI navigation histories, and personal cloud media. However, efficiently supporting such context reuse remains a major bottleneck during the on-device LLM prefill stage, where the model processes the entire input context to construct the key-value (KV) cache used for subsequent decoding. On edge devices, the prefill stage imposes heavy demands on computation and memory bandwidth and is widely recognized       
+
+> H. Liu, L. Zhai, J. Wang and Z. Fang are with the Department of Computer Science, City University of Hong Kong, Hong Kong SAR. Corresponding author: Hongyao Liu (e-mail: hongyaliu4-c@my.cityu.edu.hk). Cloud
+> server Encoded KV cache
+> Wireless link
+> KV decode &
+> load to GPU
+> Decode tokens
+> Sparse Attention Computing
+> KV loaded
+> Decode tokens
+> Cloud
+> server
+> Encoded
+> KV cache
+> Sparse Attention
+> Computing
+> KV loaded
+> Decode tokens
+> (a) KV streaming
+> (b) KV Computing
+> (c) SparKV
+> TTFT
+> TTFT
+> TTFT
+
+Fig. 1: KV cache loading strategies for TTFT reduction: (a) stream-ing only; (b) computation only; (c) overhead-aware hybrid loading. 
+
+as the dominant contributor to Time-to-First-Token (TTFT). We therefore use TTFT [13]–[15] as the primary metric. For example, a mobile AI agent driven by openClaw [16] may need to retrieve and analyze a high-definition video from a user’s cloud gallery while preserving data privacy through local pro-cessing. The resulting multimodal context can easily exceed 15K tokens and may reach 40K tokens [4]. On our Redmi K80 Pro with 16 GB memory, sequential prefill for such workloads takes over 15 s, which severely degrades interactivity. More broadly, as intelligent agents become increasingly integrated into mobile and IoT ecosystems, many applications involve large amounts of private contextual data that must be processed locally under zero-trust privacy requirements. Then, reducing this latency is essential for practical deployment. Existing efforts to reduce TTFT mainly follow two di-rections: streaming compressed KV cache and accelerating local prefill computation. Fig. 1 summarizes three represen-tative workflows. As shown in Fig. 1(a), streaming-based approaches target the I/O bottleneck through KV cache com-pression. KIVI [17] quantizes keys and values differently, while H2O [18] and LLMLingua [19] remove redundant tokens from prompts and KV caches. However, the memory footprint remains substantial: even after compression, a 100K-token KV cache for Qwen3-8B [4] still requires 2.5–4 GB. To mitigate this storage overhead, recent systems store KV caches in the cloud and stream them to edge devices on demand. InfiniGen [20] and IMPRESS [21] prioritize KV segments on a per-layer basis, while CacheGen [13] adapts compres-sion using layer-wise quantization sensitivity. As shown in Fig. 1(b), a second line of work targets the computation bottleneck of prefill stage. These approaches accelerate local processing through sparse attention [22], [23], hardware-aware kernels [15], and compact attention designs such as Grouped-Query Attention (GQA) [24]. Nevertheless, even with sparse  
+
+> arXiv:2604.21231v1 [cs.NI] 23 Apr 2026 2IEEE INTERNET OF THINGS JOURNAL
+
+attention [22], our Jetson Orin still requires more than 5 s to process a 15K-token context. Together, these observations suggest that minimizing TTFT requires jointly exploiting both streaming and computation opportunities. A recent study [25] reduces prefill latency through a “bidi-rectional convergence” strategy that computes early context chunks while loading later ones in parallel. However, this approach has three fundamental limitations. First, rigid com-putation dependencies : Transformer computation follows strict layer-wise and causal dependencies over historical tokens, and coarse KV partitioning fails to expose fine-grained opportuni-ties for interleaving computation and streaming. Second, work-load agnosticism : KV chunks can incur substantially different streaming and computation overheads, yet existing schemes ignore this heterogeneity, leading to suboptimal schedules for context reuse. Third, sensitivity to edge volatility : methods designed for stable server interconnects such as PCIe do not adapt well to the high variability of wireless I/O and fluctuating edge compute capacity, making synchronization between the two paths fragile. Our key insight is that context chunks should not be overlapped blindly; instead, they should be routed according to their processing overheads and dependency structure. As illustrated in Fig. 1(c), chunks that are cheaper to stream are assigned to the cloud path, while those that are cheaper to compute are processed locally, with the two paths overlapped whenever dependencies permit. Realizing this design requires addressing two challenges: respecting strict token-wise and layer-wise dependencies, and adapting to volatile wireless throughput and dynamic edge resource availability. In this paper, we present SparKV , an overhead-adaptive KV cache loading scheme that combines cloud streaming with on-device computation to reduce TTFT for LLM inference on edge platforms. SparKV consists of three components:  
+
+> •
+
+KV Chunk Scheduler. The cloud partitions KV caches into indexed chunks along token, attention head, and Transformer layer dimension. The scheduler then makes a dependency-aware loading decision for each chunk, namely whether to stream a precomputed KV block or compute it locally, to minimize end-to-end TTFT.  
+
+> •
+
+Overhead Model. A lightweight multilayer perceptron (MLP) predictor estimates per-chunk computation latency from attention sparsity features.  
+
+> •
+
+Runtime Controller. An adaptive controller monitors wire-less throughput and edge compute headroom within sliding windows dynamically migrates chunks between streaming and computation paths as conditions change. Extensive experiments across multiple LLMs, datasets, and edge devices show that SparKV reduces TTFT by 1.3× to 
+
+5.1× compared with prior efficient KV loading schemes while maintaining response quality. Additionally, SparKV reduces per-request energy consumption by 1.5 ×-3.3 ×. SparKV also remains robust under varying compute availability and real wireless conditions, demonstrating its practicality for real-world deployment. II. B ACKGROUND 
+
+A. On-device LLM Inference with Context Reuse 
+
+Deploying on-device LLMs, typically with 0.5–7B param-eters and 4-bit quantization [26], enables privacy-preserving and low-latency inference without relying on cloud connectiv-ity [27]. Recent advances in quantization, pruning, and distilla-tion have made billion-parameter models increasingly practical on edge platforms such as mobile GPUs and neural pro-cessing units (NPUs). However, on-device inference remains fundamentally constrained by limited memory bandwidth and compute throughput. A common practice in edge LLM serving is context reuse ,where reusable context is appended to the current prompt to improve response quality and consistency. This pattern fre-quently arises in applications such as multi-turn conversation histories in chat assistants, private or enterprise documents for question answering, UI interaction traces for agentic tasks, and retrieved passages or media content in RAG-style appli-cations [13]. In such workloads, the dominant latency often comes from constructing the corresponding KV cache before decoding can begin. This step can be performed either by recomputing the context locally during prefill phase or by loading a precomputed KV cache from external storage. In the Transformer architecture [28], each input token is projected into Query ( Q), Key ( K), and Value ( V ) vectors. Self-attention then uses the interaction between Q and K to compute relevance scores, which weight V to produce contex-tualized representations. Inference consists of two phases:  
+
+> •
+
+Prefill Phase. The model processes the full input context and computes the K and V vectors for every token across all layers, which together form the KV cache. For a model with hidden dimension dmodel and context length L, each layer stores 2 × L × dmodel elements. The quadratic attention cost, O(L2 · dmodel ), makes prefill the dominant contributor to TTFT when reusable contexts are large.  
+
+> •
+
+Decoding Phase. The model generates tokens autoregres-sively. Each new token is projected into a query that attends to the cached K and V vectors from all prior positions, requiring only a single row of the attention matrix and reducing the per-step cost to O(L · dmodel ).
+
+B. KV Cache Loading 
+
+For context-reuse workloads, on-device LLM serving is often bottlenecked by TTFT because edge devices have lim-ited compute capacity for local prefill and limited memory for storing large reusable KV caches. Two complementary mechanisms can reduce this overhead. 
+
+KV Streaming. Compression techniques such as quantization and low-rank approximation [13], [17] allow precomputed KV caches to be stored remotely and streamed to the edge device, thereby bypassing local prefill. This approach is attractive for edge deployment because network transfer is often substan-tially more energy-efficient than on-device GPU execution; for example, driving a network interface typically consumes only 2–3 W, compared with 20–30 W for GPU computation on platforms such as the NVIDIA Jetson Orin NX. Moreover, modern wireless links with CDN support can deliver KV LIU et al. SPARKV: OVERHEAD-AWARE KV CACHE LOADING FOR EFFICIENT ON-DEVICE LLM INFERENCE 3
+
+Context KV streaming KV computing Device GPU/NPU NIC Model length TTFT (s) Energy (J) TTFT (s) Energy (J) Redmi K80 Pro Hexagon Wi-Fi 7 NIC Qwen3-4B 8K 2.1 4.8 13.6 38.7 HP laptop RTX 5080 Intel BE200 Qwen3-4B 12K 2.6 5.7 3.4 379.8 Jetson Orin Ampere 16GB Intel AX200 Qwen3-VL-8B 16K 3.5 11.6 10.9 354.7 Jetson AGX Ampere 64GB Intel AX200 Llama-3.1-8B 24K 6.1 20.8 13.3 583.6 
+
+TABLE I: TTFT and energy comparison between wireless KV streaming and on-device prefill across representative edge platforms. 
+
+chunks at high rates. However, streaming alone cannot reliably meet latency targets under the variability of mobile network conditions. 
+
+Sparse Computing. Instead of loading precomputed KV states, sparse attention methods reduce local prefill overhead by partitioning attention computation into blocks, estimating the importance of each block, and skipping redundant op-erations [22], [29], [30]. This can substantially lower TTFT while keeping data and computation entirely on-device. How-ever, unlike streaming, local computation must meet strict Transformer dependencies: a chunk can be computed only after its token-level predecessor has provided the required historical KV states and its layer-level predecessor has been fully computed. III. M OTIVATION 
+
+This section presents a measurement study that motivates the design of SparKV. We examine three aspects of context-reuse inference on edge devices: the relative benefits of wireless KV streaming and local prefill, the heterogeneity of chunk-level overhead, and the effectiveness of naively overlapping streaming and computation. The results lead to three observations that directly guide the design of SparKV. 
+
+Experimental setup. We evaluate context loading by fetching precomputed KV caches from Aliyun [31] over a wireless last-hop connection. The access point is connected to the public Internet through Gigabit Ethernet, so the dominant perfor-mance variability comes from the wireless edge link rather than the wired backhaul. Under this setting, the average cloud-to-device throughput is 850 Mbps, with a standard deviation of 264 Mbps. We evaluate Qwen3-4B [4], Llama-3.1-8B [32], and Qwen3-VL-8B [4] on GPU and NPU platforms. All models are quantized to 4-bit. On GPU platforms, we run them with Hugging Face Transformers [33]; on the mobile NPU platform, we use llama.cpp [34]. We benchmark TTFT on TriviaQA [35], HotpotQA [36], and VideoMME [37] by comparing wireless KV streaming with local prefill accelerated by SpargeAttention [22]. To quantify the energy of the NIC, we utilize a Xiaomi smart plug, reporting the average power across ten trials. For the smartphone, we estimate the average NPU power by isolating the active power: we measure the total device power during NPU-exclusive inference and subtract the baseline idle power. 
+
+A. Streaming Versus On-device Prefill 
+
+Observation 1: wireless KV streaming and local prefill are both viable, but they offer different tradeoffs. Table I compares TTFT and energy consumption between wireless KV streaming and on-device prefill across multiple edge platforms. 0 1000 2000 3000 4000 5000                                
+
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Seq index
+> 01000 2000 3000 4000 5000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Seq index
+> 01000 2000 3000 4000 5000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Seq index
+> 01000 2000 3000 4000 5000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Seq index
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 01000 2000 3000 4000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> Seq index
+> 01000 2000 3000 4000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> Seq index
+> 01000 2000 3000 4000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> Seq index
+> 01000 2000 3000 4000
+> Seq index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> Seq index
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Fig. 2: Visualization of attention sparsity across four representative heads from Qwen3-4B (upper row) and Qwen3-VL-8B (lower row). 0        
+
+> 1
+> 2
+> Time (ms)
+> 0-2047 tokens 2048-4095 tokens 4096-6143 tokens 6144-8191 tokens
+> 0
+> 1
+> 2
+> Time (ms)
+> 0200 400 600 800 1000
+> Segment index
+> 0
+> 1
+> 2
+> Time (ms)
+
+Fig. 3: Chunk-level computation latency of sparse attention for three samples from TriviaQA. 
+
+Overall, wireless KV streaming consistently achieves lower TTFT and substantially lower energy consumption than pure local prefill, and its relative advantage generally becomes more pronounced as the reusable context grows. For example, wireless streaming reduces TTFT and energy by 2.2 × and 28 × when processing 24K-context in Jetson AGX. This trend arises because the overhead of local prefill increases super-linearly with context length, whereas KV transfer scales more gracefully with the amount of reusable cache data. Streaming, however, is not universally preferable. Its ef-fectiveness depends on wireless link quality, introduces cloud storage and serving overheads, and may expose privacy-sensitive context data. In contrast, local prefill preserves pri-vacy, avoids reliance on the cloud, and can directly benefit from sparse-attention acceleration techniques [22], [23], [29]. These complementary properties indicate that neither pure streaming nor pure local prefill is optimal across all deploy-ments. Instead, an effective edge system should integrate both paths and dynamically balance latency, energy, and privacy. 
+
+B. Chunk-level Overhead Heterogeneity 
+
+Observation 2: chunk-level overheads are highly hetero-geneous. To determine whether hybrid KV loading requires fine-grained scheduling, we measure chunk-level overheads on both the computation and streaming paths. 
+
+Computation overhead. We first examine the sparsity patterns of attention maps for both text QA in TriviaQA [35] and 4 IEEE INTERNET OF THINGS JOURNAL 0 1 2 3 4   
+
+> Entropy
+> 0.0
+> 0.5
+> 1.0
+> CDF
+> TriviaQA
+> VideoMME
+> 1234
+> Code size (Mb)
+
+Fig. 4: Distribution of entropy and code size of KV cache chunks in Qwen3-4B on TriviaQA and VideoMME. 1 2 3 4 5 6 7 8 9 10          
+
+> Chunk id (1024 tokens per chunk)
+> 0
+> 100
+> 200
+> Stream time (ms)
+> 12345678910
+> Chunk id (1024 tokens per chunk)
+> 0
+> 250
+> 500
+> 750
+> 1000
+> Prefill time (ms)
+> RTX 5080 Mobile
+> Jetson AGX 64 GB
+> Jetson Orin 16 GB
+
+Fig. 5: Chunk-level streaming and local computation overhead on edge devices. 
+
+video understanding in VideoMME [37]. As shown in Fig. 2, different attention heads exhibit substantially different sparsity structures, including diagonal and block-like patterns, consis-tent with prior observations [23]. Because sparse-attention la-tency depends strongly on these patterns, KV chunks can incur highly heterogeneous local prefill overheads. Using SpargeAt-tention [22], we partition the KV cache into 1024-token chunks across heads and layers and profile the corresponding sparse-attention latency. Fig. 3 shows that the compute time ranges from 0.13 ms to 2.3 ms, corresponding to a 17 .7× variation across chunks. 
+
+Streaming overhead. We next examine the communication path. We partition the KV cache into 1024-token chunks across heads and layers, apply uniform 5-bit quantization to keys and values, and further compress them with Huffman coding [38]. As shown in Fig. 4, the entropy varies from 0 to 4 bits per value, which leads to substantial variation in compressed KV size. Some heads compress to below 3.5 Mb, whereas others remain much larger. Consequently, the streaming overhead also varies considerably across chunks. 
+
+C. Why Naive Overlap Is Not Enough 
+
+Observation 3: naively overlapping streaming and compu-tation is insufficient in wireless edge settings. To evaluate whether simple overlap already captures most of the available benefit, we implement a strong hybrid baseline based on [25], augmented with Huffman compression for streaming and SpargeAttention-based local prefill computation. This pipeline streams KV chunks from Aliyun to a Jetson Orin (16 GB) while performing local prefill in parallel. We compare it against three single-path baselines that rely exclusively on either compressed KV streaming (CacheGen [13], KIVI [17]) or sparse local computation (SpargeAttention [22]), all under comparable response quality (F1 score ≥ 0.9) on TriviaQA. The hybrid baseline outperforms the single-path baselines by 1.4× to 1.8×, confirming that overlapping communication and computation is fundamentally beneficial. However, this improvement still falls short of the 2.2× speedup reported in wired server environments [25]. We identify two main reasons. 
+
+(1) Wireless instability. In edge settings, throughput fluctuates over time, which disrupts the intended overlap between stream-ing and computation and can lead to TTFT spikes. Because the two paths progress at different and time-varying rates, a static assignment of KV chunks cannot consistently maintain high overlap. 
+
+(2) Chunk heterogeneity and sparsity unawareness. Exist-ing hybrid schemes typically overlap earlier computation with later streaming in a fixed positional order, without accounting for the heterogeneous overhead of individual chunks. However, Fig. 5 shows that chunk-level streaming overhead varies sig-nificantly over wireless links, and section III-B further shows that sparse-attention compute time can differ by 3× to 5× even for chunks at similar positions. Positional order is therefore a poor proxy for chunk overhead; the dominant factor is the heterogeneity induced by compression behavior and attention sparsity. These findings directly motivate SparKV. To fully exploit the complementary strengths of wireless KV streaming and on-device prefill, an edge system must be both dependency-aware and overhead-aware : it should schedule chunks based on their individual streaming and computation overheads, while dynamically adapting to runtime fluctuations in network throughput and edge compute availability. IV. D ESIGN OF SPAR KV 
+
+A. Overview 
+
+Fig. 6 illustrates the architecture of SparKV. The server profiles streaming overhead and trains a lightweight MLP to predict the local computation latency of each chunk. SparKV precomputes two sequences for KV streaming and local computation through the scheduler. During inference, the cloud identifies the chunks assigned to the streaming sequence and delivers them to the edge device, while the edge computes the remaining chunks locally. To accommodate runtime fluctuations in wireless throughput and edge compute availability, SparKV further employs an online controller that dynamically rebalances streaming and computation. 
+
+B. KV Chunk Scheduler 
+
+The challenge of designing the scheduler arises from the dependency structure of Transformer computation. Fig. 7 illus-trates these dependencies through three cases that determine when a chunk becomes eligible for local computation. For an interior layer 1 < l < L, the KV cache of token chunk t, denoted by (Ktl , V tl ), can be computed only after chunk t has computed layer l − 1, since it is projected from the hidden state Y tl−1. Moreover, computing layer l requires causal attention over all preceding token chunks at the same layer, namely (K<t l , V <t l ). Therefore, an interior-layer chunk becomes eligible for computation only when both vertical dependencies across layers and horizontal dependencies across token chunks are satisfied. The boundary cases are simpler: at 
+
+l = 1 , only horizontal dependencies remain because there is no lower layer; at l = L, only vertical dependencies remain because computing (KtL, V tL) requires only Y tL−1, and does not depend on the historical KV chunks of layer L.
+
+Problem formulation. We formulate dependency-aware chunk scheduling as a mixed-integer linear program (MILP). The KV cache is partitioned into 1024-token context chunks, which serve as the basic scheduling units. Each chunk is LIU et al. SPARKV: OVERHEAD-AWARE KV CACHE LOADING FOR EFFICIENT ON-DEVICE LLM INFERENCE 5Streaming 
+
+> Model
+> Computation
+> predictor
+> Runtime
+> adaptor
+> Streaming sequence
+> Computation sequence
+> KV chunk
+> scheduler
+> Parallel KV loading
+> Based on the video you provided…
+> Stream
+
+Fig. 6: High-level architecture of SparKV. 𝑙𝑙  …     
+
+> Chunk 1
+> Chunk
+> 𝑡𝑡 − 1
+> Chunk
+> 𝑡𝑡
+> 𝑙𝑙 − 1Req 1 : historical KV chunks Req 2 :
+> 𝑌𝑌 𝑙𝑙−1 𝑡𝑡
+> Chunk 1
+> Chunk
+> 𝑡𝑡 − 1
+> Chunk
+> 𝑡𝑡
+
+# …L1   
+
+> Req : historical KV chunks
+> Chunk
+> 𝑡𝑡
+> Req :
+> 𝑌𝑌 𝑙𝑙−1 𝑡𝑡
+> 𝐿𝐿
+> 𝐿𝐿 − 1
+> (a) (b) (c)
+> 𝑌𝑌 𝑙𝑙 𝑡𝑡 𝑌𝑌 1𝑡𝑡
+
+Fig. 7: Computation dependencies in (a) the first layer, (b) interior layers, and (c) the final layer. 
+
+indexed as c = (t, l, h ) ∈ C, where t ∈ [1 , ⌈T / 1024 ⌉]
+
+denotes the token-chunk index, l ∈ [1 , L ] the layer index, and 
+
+h ∈ [1 , H ] the attention-head index. The schedule proceeds over K decision stages. At stage k, chunk c can either be streamed, computed locally, or left pending, represented by binary variables xtrans  
+
+> c
+
+(k) and xcomp  
+
+> c
+
+(k). We further introduce a binary readiness variable zc(k), where zc(k) = 1 indicates that chunk c is eligible for local computation at stage k.Initially, only the first token chunk in the first layer is compute-ready, that is, z1,1,h (1) = 1 , while all other chunks are not ready at the first stage. 
+
+Objective function. Because KV streaming and local compu-tation can overlap within a stage, the duration of stage k is determined by the slower of the two paths. The objective is therefore to minimize the total makespan: 
+
+min 
+
+> K
+
+X
+
+> k=1
+
+max 
+
+n X 
+
+> c∈C
+
+tstream (c) xtrans  
+
+> c
+
+(k),
+
+X
+
+> c∈C
+
+tcomp (c) xcomp  
+
+> c
+
+(k)
+
+o
+
+.
+
+(1) Here, tstream (c) denotes the estimated streaming latency of chunk c, computed as tstream (c) = bc/bw + tproc , where bc
+
+is the compressed chunk size, bw is the average download throughput profiled from ten offline trials, and tproc is the post-reception decryption and decoding overhead. tcomp (c)
+
+denotes the local computation latency predicted by the model in section IV-C. 
+
+Constraints. Each chunk must be processed exactly once, and local computation is allowed only when the chunk is compute-ready: 
+
+> K
+
+X
+
+> k=1
+
+
+
+xtrans  
+
+> c
+
+(k) + xcomp  
+
+> c
+
+(k)
+
+
+
+= 1 , ∀c ∈ C , (2) 
+
+xcomp  
+
+> c
+
+(k) ≤ zc(k), ∀c ∈ C , ∀k. (3) To capture the computation dependencies illustrated in Fig. 7, we define two cumulative indicators. Token dependency is satisfied once the preceding token chunk has been streamed or computed, whereas layer dependency is satisfied only after the corresponding chunk in the previous layer has been computed locally:                         
+
+> Dataset Len. Greedy Gurobi Runtime (s) TTFT (s) Runtime (s) TTFT (s)
+> LongChat 10K 10.7 1.12 122.5 1.08 20K 22.3 2.31 673.4 2.25 VideoMME 10K 12.3 1.47 114.1 1.41 20K 25.4 2.39 705.3 2.33
+
+TABLE II: Comparison between the proposed greedy heuristic and exact MILP solving with Gurobi.                  
+
+> rtok
+> t,l,h (k) =
+> (1,t= 1 or l=L,
+> Pkk′=1
+> 
+> xtrans
+> t−1,l,h (k′) + xcomp
+> t−1,l,h (k′)
+> 
+> ,t > 1and l < L,
+> (4)
+> rlay
+> t,l,h (k) =
+> (1,l= 1 ,
+> Pkk′=1 xcomp
+> t,l −1,h (k′),l > 1.(5)
+
+A chunk becomes compute-ready only when both required dependencies are satisfied. 
+
+Potential-aware greedy heuristic. Although the MILP pro-vides an oracle formulation, solving it exactly is too ex-pensive for practical deployment because the search space grows rapidly with the number of chunks and decision stages. Moreover, a naive latency-only greedy policy is insufficient: the benefit of scheduling a chunk depends not only on its own overhead, but also on the future computation opportunities it unlocks. SparKV therefore adopts a potential-aware greedy heuristic that approximates the MILP using lightweight prior-ity scores. For each chunk c, SparKV assigns a streaming priority 
+
+ws(c) and a computation priority wc(c), where a larger value indicates higher priority. Both scores combine the immediate overhead of the current chunk with the potential benefit of newly enabled computation: 
+
+ws(c) = 1
+
+tstream (c) + X
+
+> c′∈A s(c)
+
+1
+
+tcomp (c′) ,wc(c) = 1
+
+tcomp (c) + X
+
+> c′∈A c(c)
+
+1
+
+tcomp (c′) .
+
+Here, As(c) and Ac(c) denote the sets of chunks that become newly compute-ready after streaming or locally computing chunk c, respectively. Intuitively, ws favors chunks that are inexpensive to stream and can unlock additional low-overhead local computation, whereas wc favors chunks that are inex-pensive to compute and can further advance the computation frontier. By default, SparKV assigns equal weights to these terms, although the relative weights can be adjusted at de-ployment time to trade off privacy, energy consumption, and TTFT. At each stage k, SparKV maintains two queues: a computa-tion sequence Qc containing compute-ready chunks awaiting local execution and a streaming sequence Qs containing chunks not yet loaded. The scheduler first sorts Qc and Qs in descending order of wc and ws, respectively. It then greedily schedules local computation under a time budget ∆t: the highest-priority chunk is removed from Qc, scheduled for execution, and charged a overhead of tcomp (c). Once a chunk is selected for local computation, it is removed from Qs,because it no longer needs to be streamed. Because local computation may unlock additional chunks, Qc is updated 6 IEEE INTERNET OF THINGS JOURNAL 
+
+and re-sorted after each selection. After the computation phase ends, SparKV resets the budget to ∆t and greedily schedules streaming from Qs in descending order of ws. The queues are then updated for stage k + 1 according to the chunks newly activated by the selected operations. 
+
+Comparison with exact MILP solving. We compare the proposed heuristic with Gurobi [39], which solves the MILP formulation as a standard exact baseline. As shown in Ta-ble II, the heuristic incurs much lower scheduling overhead while achieving similar TTFT on LongChat. For a 10K-token context, the heuristic reduces scheduling runtime by 11 .4×,and the advantage increases to 30 .2× at 20K tokens. This widening gap reflects the poor scalability of exact MILP solving, whereas the proposed heuristic requires only stage-local sorting and queue updates, making it well suited for latency-sensitive edge inference. 
+
+C. Computation Latency Predictor 
+
+Accurate estimation of local chunk latency, denoted by 
+
+tcomp (t, l, h ), is critical for scheduling. We first decompose computation latency across layers. The final layer is a bound-ary case: for a chunk at layer L, generating the KV cache requires only projecting the hidden states from the previous layer, so the latency reduces to a lightweight projection overhead, tcomp (t, L, h ) = tproj . For all non-final layers 
+
+1 ≤ l < L , computing the KV cache requires executing the full Transformer layer so that the dependency chain can continue upward. We therefore decompose the chunk latency as 
+
+tcomp (t, l, h ) = tattn (t, l, h ) + tdense ,
+
+where tattn (t, l, h ) is the sparse-attention overhead and 
+
+tdense = tqkv + to + tres + tnorm + tffn aggregates the remaining dense operators, including QKV projection, output projection, residual addition, layer normalization, and feed-forward computation. Empirically, sparse attention dominates the variation in chunk latency, whereas the dense component behaves largely as a small and nearly constant offset because the chunk shape is fixed across layers and heads. To reduce the quadratic overhead of standard attention on edge devices, SparKV adopts block-sparse attention [22]. Specifically, the query sequence is partitioned into groups of 128 tokens, while the key and value sequences are divided into 64-token sub-blocks. Under this design, the latency of a non-final-layer chunk depends not only on sequence length but also strongly on the sparsity pattern of the attention mask. This motivates a lightweight predictor to estimate the sparse-attention latency efficiently at runtime. 
+
+Why analytical models fall short. Traditional analytical models such as Roofline [40] estimate computation time as 
+
+troofline = max 
+
+ WPpeak , QBpeak 
+
+
+
+, where W and Q denote the com-putational workload and memory traffic, and Ppeak and Bpeak 
+
+denote peak compute throughput and memory bandwidth. Al-though lightweight, such models assume regular computation and near-ideal hardware utilization. These assumptions do not hold for block-sparse attention, whose irregular sparsity leads to non-contiguous memory accesses and poor GPU utilization that are difficult to capture analytically. As a result, static Jetson Laptop     
+
+> 0
+> 1
+> 2
+> 3
+> Latency (ms)  Predictor Roofline
+> 0.0 0.2 0.4 0.6
+> Prediction Error
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF  Pred. (TQA)
+> Pred. (HQA)
+> Roofline (TQA)
+> Roofline (HQA)
+
+Fig. 8: Overhead and prediction error of the proposed predictor and the Roofline baseline for chunk computation latency estimation. 
+
+analytical models can deviate substantially from measured latency on edge GPUs. We find that the latency variation in tattn (t, l, h ) is primarily determined by three factors: sequence length, attention spar-sity, and instantaneous device load. We therefore represent each non-final-layer chunk using a compact feature vector 
+
+xcomp = ⟨t, s, U edge ⟩, where t is the token-block index, corresponding to a query length of 1024 ×t, s is the number of active blocks in the attention mask, and Uedge is the real-time GPU utilization measured by nvidia-smi . Active blocks are defined as the most significant blocks that together account for 98% of the total attention mass. These features capture the dominant factors affecting sparse-attention latency and enable a lightweight MLP predictor to estimate chunk-level compute time at runtime. Compared with heuristic rules or offline lookup tables, the predictor adapts to runtime variations in sparsity and GPU load with negligible overhead. 
+
+Lightweight predictor. We use a hybrid estimator: 
+
+ˆtcomp (t, l, h ) = 
+
+(
+
+tproj , l = L, fθ (xcomp ) + tdense , 1 ≤ l < L, 
+
+where fθ is a MLP [41] that predicts the dominant sparse-attention latency of non-final layers. This design captures the dominant source of latency variation while treating the remaining dense operators as a small offset. The MLP has two hidden layers with 48 and 24 neurons, respectively, which provides a good balance between prediction accuracy and runtime overhead. We train it offline on 6,000 samples using an 80/20 train-test split, stochastic gradient descent, and mean squared error loss. This one-time training process takes only 17.6 s on a Jetson Orin 16GB. 
+
+Overhead and accuracy. We compare the proposed predictor with a Roofline baseline on TriviaQA and HotpotQA using an NVIDIA Jetson Orin. For non-final-layer chunks, the predictor incurs only 2.6 ms per-chunk inference overhead, close to the 2.0 ms required by the Roofline baseline merely to compute W
+
+and Q. The final-layer case is handled by direct profile lookup and introduces negligible additional overhead. Despite similar runtime overhead, the proposed predictor reduces latency estimation error by 4.8× to 5.6×, demonstrating that learning the attention-dominated component captures the nonlinear behavior of block-sparse attention much more accurately than static analytical models. 
+
+D. Runtime Adaptation Mechanism 
+
+The schedule used by SparKV is derived from predicted streaming and computation overheads, whereas the actual execution environment is inherently dynamic. Both cloud-side KV streaming latency and local prefill latency can vary LIU et al. SPARKV: OVERHEAD-AWARE KV CACHE LOADING FOR EFFICIENT ON-DEVICE LLM INFERENCE 7
+
+substantially because of wireless fluctuations and transient GPU contention. As a result, a schedule that is near-optimal offline may become suboptimal at runtime, reducing the overlap between communication and computation. SparKV therefore includes a runtime adaptation mechanism that adjusts the execution plan online in response to transient resource im-balance. To avoid oscillation, the controller limits the number of migrations within each stage. 
+
+Edge compute contention. When the edge GPU becomes slower than expected, local prefill falls behind KV streaming and computation becomes the transient bottleneck. If SparKV strictly follows the offline schedule, the network can become under-utilized while the GPU remains saturated. To avoid this imbalance, the runtime controller first speculatively prefetches chunks from the next scheduling stage whenever dependencies allow. If the current streaming queue is still insufficient to keep the link busy, SparKV further migrates a portion of the workload originally assigned to local computation to the streaming path. To minimize interference with chunks already close to execution, these migrated chunks are selected from the tail of the computation order rather than the head. 
+
+Wireless bandwidth volatility. When wireless throughput drops below the profiled level, KV streaming becomes the transient bottleneck and fewer chunks can be delivered within a stage than originally planned. The GPU may finish its assigned local prefill work early and become under-utilized. To preserve overlap, SparKV shifts work in the opposite direction: it identifies compute-ready chunks whose depen-dencies have already been satisfied but that were originally assigned to streaming, and executes them locally instead. If no such candidates remain in the current stage, the controller speculatively advances to compute-ready chunks in the next stage. In this way, SparKV converts otherwise idle GPU cycles into useful progress and mitigates the performance loss caused by temporary bandwidth degradation. V. I MPLEMENTATION 
+
+SparKV works as a standalone layer to accelerate context loading and integrates with SpargeAttention and HuggingFace framework [33]. 
+
+Integration with Sparse Attention. SPAR KV inter-cepts the execution of each decoder layer and re-placed the standard attention operator with the opti-mized block_sparse_sage2_attn_cuda kernel from SPARGE ATTENTION [22]. After generating the Q, K, and 
+
+V tensors through linear projections, the system dynamically derives attention masks from intermediate self-attention scores and measures the per-layer decoding latency. 
+
+Integration with Decoding Framework. We integrate SPAR KV directly into the generation pipeline of the Hug-ging Face transformers library. Specifically, S PAR KV intercepts the inference initialization to reconstruct the con-text KV cache using its parallel streaming and com-puting mechanism. The assembled cache is then in-jected into the model.generate() interface as the 
+
+past_key_values argument. To TTFT measurement, we set max_new_tokens=1 , ensuring only the first response                                         
+
+> Dataset Task Metric Mean Len. Samples RepoBench-P [43] Code Edit Sim. 10K 100 HotpotQA [36] Multi QA F1 11K 100 TriviaQA [35] Few-shot QA F1 11K 100 LongChat [44] Topic Accuracy 12K 100 GovReport [45] Summarization Rouge-L 13K 100 NarrativeQA [46] Single QA F1 18K 200 Academic [47] Multi QA Accuracy 28K 50 Financial [48] Single QA Accuracy 49K 22 VideoMME [37] Video QA Accuracy 23K 50
+
+TABLE III: Summary of the evaluation datasets. 
+
+token is generated. For response quality assessment, decoding process until an end-of-sequence (EOS) token is produced or a maximum token budget is reached. 
+
+KV Cache Compression and Dataflow. SPAR KV minimizes transmission overhead by compressing the KV cache into a bitstream using layer-wise non-uniform quantization and Huffman coding. After fetching the cloud-hosted artifacts into the edge device’s system RAM, the decoding dataflow adapts to the underlying hardware. On Jetson platforms, the Unified Memory Architecture (UMA) allows the GPU to access system RAM directly without redundant copies. While on x86 platforms, the KV cache must be transferred explicitly from system RAM to the discrete VRAM via PCIe. VI. E VALUATION 
+
+A. Experimental Setup 
+
+Models and platforms. We evaluate SPAR KV on five state-of-the-art Transformer models spanning both text-only and multimodal workloads: three LLMs, Qwen3-4B [4], 
+
+Llama-3.1-8B [1], and Qwen3-14B [4], and two VLMs, 
+
+Qwen2.5-VL-7B [4] and InternVL2-8B [42]. We deploy these models with Hugging Face Transformers [33] on an RTX 5080 laptop GPU and a Jetson AGX. All models are quantized to 4-bit to match the memory constraints of edge deployment. 
+
+Datasets and tasks. We evaluate SparKV on nine public datasets drawn from LongBench [47], [48] and VideoMME [37], covering code completion, topic classifica-tion, single- and multi-document question answering, summa-rization, and video understanding. 
+
+Network environment. We build a Wi-Fi 6 [49] testbed in a production campus network to expose the system to realistic wireless interference. The local wireless link achieves 1.1–2.0 Gbps throughput, with a standard deviation of 0.24– 0.35 Gbps. For KV loading, we store precomputed KV caches on Aliyun [31], yielding an average end-to-end cloud-to-edge throughput of 0.64 Gbps. 
+
+Evaluation metrics. We report three metrics: 1) TTFT: end-to-end latency from request submission to the generation of the first output token. 2) Response quality: task-specific metrics, including F1, Rouge-L, and accuracy, following the official LongBench and VideoMME evaluation protocols. 3) Energy per request: end-to-end energy consumed on the edge device from request submission until the completion of response generation. 
+
+Baselines. We compare SparKV against three baselines. 8 IEEE INTERNET OF THINGS JOURNAL 0 1 2 3 4
+
+TTFT (s) 
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> CDF
+
+TriviaQA     
+
+> 01234
+
+TTFT (s) 
+
+GovReport     
+
+> 12345
+
+TTFT (s) 
+
+NarrativeQA      
+
+> 123456
+
+TTFT (s) 
+
+HotpotQA     
+
+> SparKV
+> Strong Hybrid
+> Cachegen
+> Local prefill 0.00 0.25 0.50 0.75 1.00
+
+F1 score     
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> CDF
+> 0.00 0.25 0.50 0.75 1.00
+
+Rouge-L 0.00 0.25 0.50 0.75 1.00 
+
+F1 score 0.00 0.25 0.50 0.75 1.00 
+
+F1 score 
+
+> SparKV
+> Cachegen
+> Strong Hybrid
+> Local prefill
+
+Fig. 9: Overall TTFT and response quality across datasets on an RTX 5080 laptop GPU with Llama-3.1-8B.  
+
+> •
+
+CacheGen [13] pre-encodes the KV cache into five bitrate levels using layer-wise quantization and arithmetic coding, and dynamically selects the bitrate according to the available bandwidth. We set its service-level objective to 2 s, follow-ing prior interactive-application settings [50], [51].  
+
+> •
+
+Strong Hybrid [25] overlaps local computation of earlier KV chunks with streaming of later KV chunks using a fixed hybrid pipeline. To ensure a fair comparison, we strengthen this baseline with the same implementation primitives used in SparKV: the streamed portion uses the same KV quanti-zation and Huffman coding pipeline, the locally recomputed portion uses the same SpargeAttention [22] kernel, and both methods use the same chunk partitioning strategy.  
+
+> •
+
+Local Prefill computes the full KV cache locally on the edge GPU using the same SpargeAttention [22] implementation as SparKV, without any KV streaming. 
+
+B. Overall Performance 
+
+Performance across datasets. We first compare SparKV with all baselines across representative datasets on two edge platforms: an RTX 5080 laptop GPU and a Jetson AGX. 
+
+Laptop results. Fig. 9 shows that SparKV consistently achieves the lowest TTFT across all evaluated datasets on the RTX 5080 laptop. Compared with Local Prefill , SparKV reduces TTFT by 2.9× to 5.1× while preserving task quality. Com-pared with CacheGen , SparKV achieves 1.8× to 2.2× lower TTFT and improves the median task metric by 0.07–0.10. This advantage is expected because streaming-only methods remain constrained by wireless throughput and often rely on more aggressive compression. The Strong Hybrid baseline narrows the gap by overlapping computation and streaming, but it remains about 1.3× slower than SparKV. This result shows that overlap alone is insufficient; chunk-level scheduling that accounts for heterogeneous streaming and computation overheads is also necessary. 
+
+Jetson results. Fig. 10 shows that SparKV also performs consistently well on the Jetson platform. Across the repre-sentative datasets, SparKV achieves TTFTs of 1.2–1.4 s while maintaining response quality close to that of full local prefill. It outperforms Strong Hybrid , CacheGen , and Local Prefill 
+
+by up to 1.3×, 1.9×, and 3.8×, respectively. These results confirm that the benefit of dependency-aware, overhead-aware scheduling carries over to lower-power edge hardware with more limited compute resources. 0 1 2 3 4 5 6 7            
+
+> TTFT (s)
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> CDF
+> Longchat
+> 0123456789
+> TTFT (s)
+> Academic
+> SparKV Strong Hybrid Cachegen Prefill SparKV
+> Hybrid
+> CacheGen
+> Prefill 0.0
+> 0.5
+> 1.0
+> Acc
+> SparKV
+> Hybrid
+> CacheGen
+> Prefill 0.0
+> 0.1
+> 0.2
+
+Fig. 10: TTFT and response quality of SparKV and baselines on a Jetson AGX 64GB with Llama-3.1-8B. 
+
+Performance across model families. We next evaluate SparKV across multiple LLMs and VLMs to test its robustness across model scales and modalities. 
+
+LLMs. Fig. 11 reports the results for Qwen3-4B and Qwen3-14B. In both cases, SparKV improves TTFT by about 1.3×
+
+over Strong Hybrid while maintaining comparable F1 scores. This result indicates that the benefit of chunk-level scheduling is not limited to a specific model family or parameter scale. 
+
+VLMs. Fig. 12 shows the results for Qwen2.5-VL-7B and InternVL2-8B on VideoMME. In this setting, SparKV de-livers even larger gains, reducing TTFT by 1.3× to 1.4×
+
+relative to Strong Hybrid and by 1.8× to 2.0× relative to 
+
+CacheGen . This larger margin is consistent with the stronger chunk-level variance in multimodal workloads, where visual tokens induce greater heterogeneity in both transmission size and attention overhead. Overall, SparKV outperforms prior schemes for two reasons. First, it avoids the single-resource bottlenecks of streaming-only and compute-only methods by overlapping the two paths. Second, it improves over prior hybrid designs through overhead-aware and dependency-aware chunk scheduling that better matches heterogeneous runtime overheads. 
+
+C. Sensitivity and Robustness 
+
+Robustness to wireless interference. To evaluate robust-ness under volatile network conditions, we introduce con-trolled access-point congestion using competing devices dur-ing LongChat and TriviaQA evaluations. This interference reduces median throughput from 850 to 660 Mbps under five competing devices, while increasing the standard devi-ation from 0.25 Gbps to 0.47 Gbps. As shown in Fig. 13, LIU et al. SPARKV: OVERHEAD-AWARE KV CACHE LOADING FOR EFFICIENT ON-DEVICE LLM INFERENCE 90 1 2 3 4 5 6            
+
+> TTFT (s)
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> CDF
+> Qwen3-4B
+> 0123456
+> TTFT (s)
+> Qwen3-14B
+> SparKV Strong Hybrid Cachegen Prefill 0.0 0.2 0.4 0.6
+> F1 score
+> 0.0
+> 0.5
+> 1.0
+> CDF
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> F1 score
+
+Fig. 11: TTFT and response quality of SparKV and baselines on HotpotQA using a laptop GPU with Qwen3-4B and Qwen3-14B. 0 1 2 3 4 5 6           
+
+> TTFT (s)
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> CDF
+> Qwen2.5-VL-7B
+> 0123456
+> TTFT (s)
+> InternVL2-8B
+> SparKV Strong Hybrid Cachegen Prefill SparKV
+> Strong
+> Hybrid CacheGen
+> Prefill 0.0
+> 0.2
+> 0.4
+> Accuracy
+> SparKV
+> Strong
+> Hybrid CacheGen
+> Prefill
+
+Fig. 12: TTFT and response quality of SparKV and baselines on VideoMME using a laptop GPU across VLMs. 
+
+SparKV sustains the lowest TTFT across all interference levels, achieving 1.4× and 1.6× speedups over Strong Hybrid 
+
+and CacheGen , respectively, under severe congestion. This robustness comes from the runtime adaptation mechanism in section IV-D: when bandwidth fluctuates, CacheGen’s throughput-based bitrate selection becomes less effective, while the static partitioning of Strong Hybrid leads to stalls. In contrast, SparKV monitors runtime network conditions and dynamically shifts delayed chunks from streaming to local computation. 
+
+Performance under concurrent requests. We further eval-uate SparKV on LongChat when edge resources are shared by multiple simultaneous LLM-agent requests. As shown in Fig. 14, SparKV remains stable under high concurrency, with TTFT increasing by only 0.15 s. In contrast, the baselines degrade much more sharply. Under the heaviest load, SparKV achieves TTFTs that are 1.4× and 22 .6× lower than those of Strong Hybrid and Local Prefill , respectively. In addition, SparKV keeps the end-to-end energy per request below 173 J, corresponding to 1.5× and 3.3× reductions relative to the same baselines. Since all methods use the same decoding setup, these energy gains primarily reflect the lower overhead of context preparation and the reduced resource contention enabled by adaptive scheduling. 
+
+Scalability with reusable-context length. We evaluate SparKV on reusable contexts ranging from 10K to 38K tokens on the laptop and Jetson AGX platforms. As shown in Fig. 15, SparKV exhibits near-linear TTFT scaling, whereas Local Prefill and Strong Hybrid suffer from super-linear growth due to the increasing overhead of local attention compu-tation. CacheGen remains bounded by wireless throughput, especially under fluctuating network conditions. In contrast, SparKV dynamically shifts work between local computation and streaming, allowing it to better sustain low TTFT as the reusable context grows. 
+
+Overhead breakdown. Although our energy metric covers the full request lifetime, most variation across methods comes from context preparation near the start of decoding. We there-fore break down KV streaming and local computation over-heads and study runtime adaptation under real Wi-Fi traces. Fig. 16 shows that, for cloud-to-edge KV loading, transmission dominates streaming overhead (85%), while Huffman decod-ing and device transfer contribute 14%. On the computation side, attention accounts for 84% of local prefill overhead, confirming block-sparse attention as the main optimization target. The remaining operators scale more regularly with sequence length and are modeled as a small scheduler offset. VII. R ELATED WORK 
+
+On-device LLM deployment. Deploying LLMs on edge devices is limited by memory, compute, and energy con-straints. Prior work addresses these challenges through model compression and system optimization, such as AWQ [26] for weight quantization and recent systems [6] for heterogeneous execution across CPUs, GPUs, and NPUs. S PAR KV is com-plementary: instead of compressing weights or redesigning ex-ecution, it improves context preparation by jointly scheduling wireless KV streaming and on-device computation. 
+
+KV cache loading and reuse. A growing body of work reduces redundant prefill through KV cache reuse and remote loading. InfiniGen [20] speculatively prefetches important KV vectors based on query semantics, mainly for local cache reuse. CacheGen [13] enables remote KV delivery through bitrate-adaptive KV encoding, while hybrid schemes [25] overlap KV streaming with local recomputation. In contrast, SPAR KV explicitly models chunk-level heterogeneity in both streaming and computation and performs dependency-aware scheduling to better exploit overlap under wireless and edge-resource variability. 
+
+KV cache compression. Another line of work reduces KV cache size to lower storage and transmission overhead. H2O [18] retains heavy-hitter tokens with high prompt atten-tion scores, and LLMLingua [19] compresses long contexts through selective pruning. Other methods use quantization or low-rank decomposition [52]; for example, LoRC [53] applies progressive layer-wise low-rank compression, and KIVI [17] uses asymmetric quantization for keys and values. S PAR KV is orthogonal to these approaches and can naturally incorporate KV compression to further reduce wireless transmission and storage cost. VIII. D ISCUSSION AND LIMITATIONS 
+
+Support for Multiple Contexts. SPAR KV currently focuses on accelerating context preparation for a single reusable con-text. However, emerging workloads such as multi-document retrieval-augmented generation often require multiple contexts to be loaded and processed jointly. Treating each context independently can introduce redundant data transfer, repeated KV loading, and fragmented execution. A promising extension 10 IEEE INTERNET OF THINGS JOURNAL 1 2 3 4     
+
+> Num of connected devices
+> 1.0
+> 1.5
+> TTFT (s)
+> 1234
+> Num of connected devices
+> SparKV Strong Hybrid Cachegen
+
+Fig. 13: Impact of wireless interference. 1 2 3 4      
+
+> Num of requests
+> 0.0
+> 2.5
+> 5.0
+> TTFT (s)
+> 1234
+> Num of requests
+> 0
+> 200
+> 400
+> Energy (J)
+> SparKV Strong Hybrid Local prefill
+
+Fig. 14: Impact of concurrent requests. 10 18 24 32 38         
+
+> Context Length (K)
+> 0.0
+> 2.5
+> 5.0
+> TTFT (s)  SparKV Strong Hybrid CacheGen Prefill
+> 10 18 24 32 38
+> Context Length (K)
+> 0
+> 5
+> 10
+
+Fig. 15: Impact of reusable-context length. Transmission  
+
+> 83.2%
+> Cloud
+> 1.8%
+> Decode
+> 10.6%
+> Device
+> transfer 4.4%
+> Streaming
+> Attention
+> 84%
+> Residual &
+> layer norm
+> 10%
+> FFN
+> 5%
+> Computing
+
+Fig. 16: Breakdown of streaming and computation overhead in SparKV on TriviaQA using an RTX 5080 laptop GPU. 
+
+is to support multi-context KV reuse and blending, similar in spirit to CacheBlend [54], so that shared KV states can be reused or merged across related contexts. We leave this direction to future work. 
+
+Extension to Mobile NPUs. SPAR KV is guided by general scheduling principles and is not inherently tied to GPU exe-cution. However, the current implementation and most evalu-ations are built on GPU-oriented software stacks and sparse-attention kernels. Although our measurement study includes a mobile NPU platform to illustrate the efficiency tradeoffs of KV streaming and local computation, we have not yet fully implemented and evaluated S PAR KV on mobile NPUs. Extending the system to NPU-oriented runtimes and kernel libraries is an important direction for future work. IX. C ONCLUSION 
+
+In this paper, we present S PAR KV, a cloud-edge collabora-tive framework for KV cache preparation in on-device LLM inference with reusable contexts. S PAR KV combines wireless KV streaming with local computation through overhead-aware, dependency-aware chunk scheduling, and further adapts the schedule online to handle fluctuations in network and edge resource availability. Extensive experiments across diverse datasets, models, and edge platforms show that SPAR KV significantly reduces TTFT and energy per request while preserving response quality. These results demonstrate that SPAR KV is a practical and effective solution for accelerating context-reuse inference on resource-constrained edge devices. ACKNOWLEDGMENT 
+
+The authors thank anonymous reviewers for their valuable comments and insightful suggestions that helped to improve the manuscript. CONFLICT OF INTEREST 
+
+The authors declare that they have no conflicts of interest. REFERENCES [1] M. L. Team, “The llama 3 herd of models,” arXiv preprint arXiv:2407.21783 , 2024. [2] OpenAI, J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. K. Aleman, D. Almeida, J. Altenschmidt, S. Altman, et al. , “Gpt-4 technical report,” arXiv preprint arXiv:2303.08774 , 2023. [3] G. Team and Google, “Gemini: A family of highly capable multimodal models,” arXiv preprint arXiv:2312.11805 , 2023. [4] Q. Team, “Qwen3 technical report,” 2025. [Online]. Available: https://arxiv.org/abs/2505.09388 [5] A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot, D. de las Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier, L. R. Lavaud, M.-A. Lachaux, P.-A. Stock, T. L. Scao, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed, “Mistral 7b,” arXiv preprint arXiv:2310.06825 , 2023. [6] D. Xu, H. Zhang, L. Yang, R. Liu, G. Huang, M. Xu, and X. Liu, “Fast on-device llm inference with npus,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2025, pp. 445–462. [7] J. Lee, H. Kim, S. Oh, M. Chun, M. Kim, and J. Kim, “Aif: Accelerating on-device llm inference using in-flash processing,” in Proceedings of the 52nd Annual International Symposium on Computer Architecture , 2025, pp. 529–543. [8] D. Xu, W. Yin, H. Zhang, X. Jin, Y. Zhang, S. Wei, M. Xu, and X. Liu, “Edgellm: Fast on-device llm inference with speculative decoding,” 
+
+IEEE Transactions on Mobile Computing , 2024. [9] M. Zhang, X. Shen, J. Cao, Z. Cui, and S. Jiang, “Edgeshard: Efficient llm inference via collaborative edge computing,” IEEE Internet of Things Journal , vol. 12, no. 10, pp. 13 119–13 131, 2025. [10] F. Cai, D. Yuan, Z. Yang, and L. Cui, “Edge-llm: A collaborative framework for large language model serving in edge computing,” in 
+
+2024 IEEE International Conference on Web Services (ICWS) . IEEE, 2024, pp. 799–809. [11] H. Liu, P. Wang, J. Wu, X. Yan, X. Yuan, Y. Zhang, and X. Zhang, “Switchable and dual-tunable multilayered terahertz absorber based on patterned graphene and vanadium dioxide,” Micromachines , vol. 12, no. 6, p. 619, 2021. [12] H.-y. Liu and Y. Chao, “Research on terahertz band electromagnetic characteristics of propagation and scattering in the cold magnetized plasma medium,” Optik , vol. 217, p. 164905, 2020. [13] Y. Liu, H. Li, Y. Cheng, S. Ray, Y. Huang, Q. Zhang, K. Du, J. Yao, S. Lu, G. Ananthanarayanan, et al. , “Cachegen: Kv cache compression and streaming for fast large language model serving,” in Proceedings of the ACM SIGCOMM 2024 Conference , 2024, pp. 38–56. [14] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez, H. Zhang, and I. Stoica, “Efficient memory management for large language model serving with pagedattention,” in Proceedings of the 29th symposium on operating systems principles , 2023, pp. 611–626. [15] T. Dao, “Flashattention-2: Faster attention with better parallelism and work partitioning,” arXiv preprint arXiv:2307.08691 , 2023. [16] P. Steinberger, “Openclaw: Personal ai assistant,” https://openclaw.ai/. [17] Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu, “Kivi: A tuning-free asymmetric 2bit quantization for kv cache,” 
+
+arXiv preprint arXiv:2402.02750 , 2024. [18] Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song, Y. Tian, C. R´ e, C. Barrett, et al. , “H2o: Heavy-hitter oracle for efficient generative inference of large language models,” Advances in Neural Information Processing Systems , vol. 36, pp. 34 661–34 710, 2023. [19] H. Jiang, Q. Wu, C.-Y. Lin, Y. Yang, and L. Qiu, “Llmlingua: Com-pressing prompts for accelerated inference of large language models,” 
+
+arXiv preprint arXiv:2310.05736 , 2023. [20] W. Lee, J. Lee, J. Seo, and J. Sim, “ {InfiniGen }: Efficient generative inference of large language models with dynamic {KV } cache manage-ment,” in 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) , 2024, pp. 155–172. [21] W. Chen, S. He, H. Qu, R. Zhang, S. Yang, P. Chen, Y. Zheng, B. Huai, and G. Chen, “ {IMPRESS }: An {Importance-Informed }{ Multi-Tier }LIU et al. SPARKV: OVERHEAD-AWARE KV CACHE LOADING FOR EFFICIENT ON-DEVICE LLM INFERENCE 11 
+
+prefix {KV } storage system for large language model inference,” in 
+
+23rd USENIX Conference on File and Storage Technologies (FAST 25) ,2025, pp. 187–201. [22] J. Zhang, C. Xiang, H. Huang, H. Xi, J. Zhu, J. Chen, et al. , “Spargeat-tention: Accurate and training-free sparse attention accelerating any model inference,” in Forty-second International Conference on Machine Learning , 2025. [23] H. Jiang, Y. Li, C. Zhang, Q. Wu, X. Luo, S. Ahn, Z. Han, A. H. Abdi, D. Li, C.-Y. Lin, et al. , “Minference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention,” Advances in Neural Information Processing Systems , vol. 37, pp. 52 481–52 515, 2024. [24] J. Ainslie, J. Lee-Thorp, M. De Jong, Y. Zemlyanskiy, F. Lebr´ on, and S. Sanghai, “Gqa: Training generalized multi-query transformer models from multi-head checkpoints,” arXiv preprint arXiv:2305.13245 , 2023. [25] S. Jin, X. Liu, Q. Zhang, and Z. M. Mao, “Compute or load kv cache? why not both?” arXiv preprint arXiv:2410.03065 , 2024. [26] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao, X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quanti-zation for on-device llm compression and acceleration,” Proceedings of machine learning and systems , vol. 6, pp. 87–100, 2024. [27] W. Yin, M. Xu, Y. Li, and X. Liu, “Llm as a system service on mobile devices,” arXiv preprint arXiv:2403.11805 , 2024. [28] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in neural information processing systems , vol. 30, 2017. [29] R. Xu, G. Xiao, H. Huang, J. Guo, and S. Han, “Xattention: Block sparse attention with antidiagonal scoring,” arXiv preprint arXiv:2503.16428 ,2025. [30] J. Zhang, H. Huang, P. Zhang, J. Wei, J. Zhu, and J. Chen, “Sageatten-tion2: Efficient attention with thorough outlier smoothing and per-thread int4 quantization,” arXiv preprint arXiv:2411.10958 , 2024. [31] Alibaba, “Alibaba cloud,” https://www.alibabacloud.com, 2025. [32] Meta AI Team, “Llama-3.1-8b,” https://huggingface.co/meta-llama/ Llama-3.1-8B, 2024. [33] T. Wolf, L. Debut, V. Sanh, J. Chaumond, C. Delangue, A. Moi, P. Cistac, T. Rault, R. Louf, M. Funtowicz, et al. , “Transformers: State-of-the-art natural language processing,” in Proceedings of the 2020 conference on empirical methods in natural language processing: system demonstrations , 2020, pp. 38–45. [34] “llama.cpp,” https://github.com/ggml-org/llama.cpp, 2026. [35] M. Joshi, E. Choi, D. S. Weld, and L. Zettlemoyer, “Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension,” 
+
+arXiv preprint arXiv:1705.03551 , 2017. [36] Z. Yang, P. Qi, S. Zhang, Y. Bengio, W. W. Cohen, R. Salakhutdinov, and C. D. Manning, “Hotpotqa: A dataset for diverse, explainable multi-hop question answering,” arXiv preprint arXiv:1809.09600 , 2018. [37] C. Fu, Y. Dai, Y. Luo, L. Li, S. Ren, R. Zhang, Z. Wang, C. Zhou, Y. Shen, M. Zhang, et al. , “Video-mme: The first-ever comprehensive evaluation benchmark of multi-modal llms in video analysis,” in Pro-ceedings of the Computer Vision and Pattern Recognition Conference ,2025, pp. 24 108–24 118. [38] D. E. Knuth, “Dynamic huffman coding,” Journal of algorithms , vol. 6, no. 2, pp. 163–180, 1985. [39] Gurobi Optimization, LLC, “Gurobi optimizer reference manual, version 11.0,” https://www.gurobi.com, 2024. [40] S. Williams, A. Waterman, and D. Patterson, “Roofline: an insightful visual performance model for multicore architectures,” Communications of the ACM , vol. 52, no. 4, pp. 65–76, 2009. [41] M.-C. Popescu, V. E. Balas, L. Perescu-Popescu, and N. Mastorakis, “Multilayer perceptron and neural networks,” WSEAS Transactions on Circuits and Systems , vol. 8, no. 7, pp. 579–588, 2009. [42] Z. Chen, J. Wu, W. Wang, W. Su, G. Chen, S. Xing, M. Zhong, Q. Zhang, X. Zhu, L. Lu, et al. , “Internvl: Scaling up vision foundation models and aligning for generic visual-linguistic tasks,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,2024, pp. 24 185–24 198. [43] T. Liu, C. Xu, and J. McAuley, “Repobench: Benchmarking repository-level code auto-completion systems,” arXiv preprint arXiv:2306.03091 ,2023. [44] D. Li, R. Shao, A. Xie, Y. Sheng, L. Zheng, J. E. Gonzalez, I. Stoica, X. Ma, and H. Zhang, “How long can open-source LLMs truly promise on context length?” https://lmsys.org/blog/2023-06-29-longchat, Jun 2023. [45] L. Huang, S. Cao, N. Parulian, H. Ji, and L. Wang, “Efficient attentions for long document summarization,” arXiv preprint arXiv:2104.02112 ,2021. [46] T. Koˇ cisk` y, J. Schwarz, P. Blunsom, C. Dyer, K. M. Hermann, G. Melis, and E. Grefenstette, “The narrativeqa reading comprehension challenge,” 
+
+Transactions of the Association for Computational Linguistics , vol. 6, pp. 317–328, 2018. [47] Y. Bai, X. Lv, J. Zhang, H. Lyu, J. Tang, Z. Huang, Z. Du, X. Liu, A. Zeng, L. Hou, et al. , “Longbench: A bilingual, multitask benchmark for long context understanding,” arXiv preprint arXiv:2308.14508 , 2023. [48] Y. Bai, S. Tu, J. Zhang, H. Peng, X. Wang, X. Lv, S. Cao, J. Xu, L. Hou, Y. Dong, et al. , “Longbench v2: Towards deeper understanding and reasoning on realistic long-context multitasks,” arXiv preprint arXiv:2412.15204 , 2024. [49] E. Mozaffariahrar, F. Theoleyre, and M. Menth, “A survey of wi-fi 6: Technologies, advances, and challenges,” Future Internet , vol. 14, no. 10, p. 293, 2022. [50] Y. Ren, H. Zhang, F. R. Yu, W. Li, P. Zhao, and Y. He, “Industrial internet of things with large language models (llms): an intelligence-based reinforcement learning approach,” IEEE Transactions on Mobile Computing , 2024. [51] Y. Li, Q. Zhang, H. Yao, R. Gao, X. Xin, and M. Guizani, “Next-gen service function chain deployment: Combining multi-objective optimiza-tion with ai large language models,” IEEE Network , 2025. [52] C.-C. Chang, C.-Y. Lin, Y. Akhauri, W.-C. Lin, K.-C. Wu, L. Ceze, and M. S. Abdelfattah, “xkv: Cross-layer svd for kv-cache compression,” 
+
+arXiv preprint arXiv:2503.18893 , 2025. [53] R. Zhang, K. Wang, L. Liu, S. Wang, H. Cheng, C. Zhang, and Y. Shen, “Lorc: Low-rank compression for llms kv cache with a progressive compression strategy,” arXiv preprint arXiv:2410.03111 , 2024. [54] J. Yao, H. Li, Y. Liu, S. Ray, Y. Cheng, Q. Zhang, K. Du, S. Lu, and J. Jiang, “Cacheblend: Fast large language model serving for rag with cached knowledge fusion,” in Proceedings of the Twentieth European Conference on Computer Systems , 2025, pp. 94–109.

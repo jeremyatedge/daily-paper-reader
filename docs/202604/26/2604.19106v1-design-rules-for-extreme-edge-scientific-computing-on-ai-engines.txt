@@ -1,0 +1,292 @@
+Title: Design Rules for Extreme-Edge Scientific Computing on AI Engines
+
+URL Source: https://arxiv.org/pdf/2604.19106v1
+
+Published Time: Wed, 22 Apr 2026 00:44:14 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# Design Rules for Extreme-Edge Scientific Computing on AI Engines 
+
+Zhenghua Ma 1, G Abarajithan 1, Dimitrios Danopoulos 2, Olivia Weng 1, Francesco Restuccia 1, Ryan Kastner 1
+
+> 1
+
+University of California San Diego, La Jolla, CA, USA 
+
+> 2
+
+European Organization for Nuclear Research (CERN), Geneva, Switzerland 
+
+{zhm007, agnaneswaran }@ucsd.edu, dimitrios.danopoulos@cern.ch, {oweng, frestuccia, kastner }@ucsd.edu 
+
+Abstract —Extreme-edge scientific applications use machine learning models to analyze sensor data and make real-time decisions. Their stringent latency and throughput requirements demand small batch sizes and require that model weights remain fully on-chip. Spatial dataflow implementations are common for extreme-edge applications. Spatial dataflow works well for small networks, but it fails to scale to larger models due to inherent resource scaling limitations. AI Engines on modern FPGA SoCs offer a promising alternative with high compute density and additional on-chip memory. However, the architec-ture, programming model, and performance-scaling behavior of AI Engines differ fundamentally from those of the programmable logic, making direct comparison non-trivial and the benefits of using AI Engines unclear. This work addresses how and when 
+
+extreme-edge scientific neural networks should be implemented on AI Engines versus programmable logic. We provide systematic architectural characterization and micro-benchmarking and in-troduce a latency-adjusted resource equivalence (LARE) metric that identifies when AI Engine implementations outperform programmable logic designs. We further propose spatial and API-level dataflow optimizations tailored to low-latency scientific inference. Finally, we demonstrate the successful deployment of end-to-end neural networks on AI Engines that cannot fit on programmable logic when using the HLS 4ML toolchain. 
+
+I. I NTRODUCTION 
+
+The scientific community increasingly relies on real-time machine learning (ML) inference to process high-rate sensor data [1]–[4]. Extreme-edge workloads operate at tens of mega-hertz and require end-to-end latencies on the order of a few microseconds. To meet these constraints, all model weights reside fully on-chip, and inference uses small neural networks (NNs) with a low batch size [5]. Thus, the scientific commu-nity has primarily focused on smaller NNs implemented on FPGA programmable logic (PL) or as an ASIC. 
+
+> HLS
+
+4ML [6] is a popular open-source toolchain for im-plementing machine learning models on FPGA PL or ASIC. 
+
+> HLS
+
+4ML employs a spatial dataflow architecture where each layer is implemented as a separate datapath, and all weights are stored on-chip. While this spatial dataflow architecture enables low-latency and high-throughput performance, it is inherently resource-intensive. The spatial mapping scales roughly with the NN’s size and depth. When implementing larger ML models, PL resources quickly become fully utilized, forcing aggressive reuse of arithmetic units, thereby sharply reducing performance, as shown in Fig. 1. Furthermore, higher reuse factors make HLS optimization problems more challenging, often increasing synthesis tool runtimes to the point of failure. The AI Engine (AIE) is a high-performance, 2D array of VLIW vector processors (compute tiles) designed for deter-ministic, high-throughput execution of digital signal process-ing and ML workloads [7]. AIEs offer a promising alternative to PL for extreme-edge scientific computing, and many in the scientific community are considering AIEs for next-generation applications [8], [9]. AIEs use a spatial programming model where NN kernels are mapped to the VLIW vector processors and interconnected through data-flow graphs [10]. While AIE programming models are being developed [11]–[13], they lack the maturity of PL programming tools. Although AIEs and PL coexist on the same Versal FPGA SoC [14], [15], they are fundamentally distinct architectures with unique performance and resource-scaling behaviors, mak-ing the benefits of AIE deployment unclear to the extreme-edge scientific community. Moreover, existing AIE program-ming models are primarily optimized for high-throughput, batched General Matrix Multiplication (GEMM) computations [16]–[20] rather than for low-latency, event-driven, weights-on-chip inference required in this domain. As a result, the scientific community lacks a systematic methodology to deter-mine when and how to implement extreme-edge NNs on AIEs versus PL. This work aims to bridge this gap. 
+
+Our key contributions include:  
+
+> •
+
+Modeling and micro-benchmarking of workloads be-tween PL and AIEs under realistic resource and perfor-mance budgets, capturing the design space of PL paral-lelism and reuse. We introduce the Latency-Adjusted Re-source Equivalence (LARE) metric as a decision bound-ary for determining the tradeoff between AIE and PL implementations. Furthermore, LARE provides insights into when AIEs are underutilized.  
+
+> •
+
+Tiling and dataflow optimization for implementing low-latency scientific workloads on AIEs. We derive prac-tical design rules for spatial and API-level tiling from empirical benchmarking. We further quantify architec-tural bottlenecks including column exhaustion and PL-AIE boundary-crossing overhead, providing guidance for efficient low-latency deployment.  
+
+> •
+
+Implementation and evaluation of end-to-end NNs for extreme-edge scientific computing. As shown in Fig.1, with our tiling and dataflow design rules, larger NNs that previously could not meet the trigger frequency on PL can now be implemented successfully on AIEs.   
+
+> arXiv:2604.19106v1 [cs.AR] 21 Apr 2026 Fig. 1. Our design rules for AIE allow larger NN implementations to meet and surpass the 40 MHz throughput requirement of the LHC trigger system [21], [22]. While PL is sufficient for small NNs such as Jet-tagger [23] and
+> τEvent Selection [24], larger NNs such as VAE [25], Qubit Readout [26] and the Deep Autoencoder [21] can only meet the performance requirement on AIEs using our design rules.
+
+The rest of the paper is organized as follows. Section II reviews the unique requirements of low-latency scientific applications and motivates our research questions. Sections III and IV present our main contributions, including architectural characterization, micro-benchmarking, and design optimiza-tion rules with experimental evaluations. Section V demon-strates end-to-end deployment of NNs and the benefits of our design optimizations. Section VI reviews related work. Finally, Section VII concludes the paper. II. B ACKGROUND AND MOTIVATION 
+
+This section describes the unique requirements and state-of-the-art tools in extreme-edge scientific computing. We review spatial dataflow implementations of NNs for high-energy physics applications on FPGAs and their scaling limits for larger NNs. Finally, we present the research challenges and introduce the prospective benefits of leveraging AIEs. 
+
+A. Low-Latency Scientific Edge Computing 
+
+Real-time edge inference for scientific applications imposes strict latency and bandwidth requirements. A representative example is the CERN Large Hadron Collider (LHC), built to study fundamental physics by colliding protons at nearly the speed of light. Its detectors capture hundreds of terabytes of data per second [1], [27]–[29], describing a wide variety of collision events. However, only a small fraction of these events are scientifically valuable, and storing all detector data is infeasible both in volume and cost. Consequently, the system requires filtering near the sensors to retain only the most relevant data. This requires extreme low-latency and high-throughput processing to keep up with the collisions that occur at a rate of 40 MHz [21], [22]. FPGA platforms have proven to be effective for such low-latency workloads. However, under the above latency and throughput requirements, streaming the weights from off-chip demands bandwidth beyond the capacity of the on-board DRAM interface [4], [5], [14], [30], [31]. Therefore, all weights must be pre-loaded and must remain stationary on-chip throughout inference. 
+
+B. Spatial Dataflow Frameworks 
+
+Spatial dataflow frameworks such as HLS 4ML [6] and FINN [32] streamline the NN deployment on FPGAs. In particular, HLS 4ML was developed to serve the scientific com-munity, providing accessible hardware deployment for users without significant expertise in FPGA or hardware design. However, spatial dataflow architectures exclusively allocate hardware resources to each layer, leading to resource usage that scales roughly linearly with the NN’s parameter count and depth. While designers can tune the reuse factor–that is, how many operations are time-multiplexed onto the same arithmetic units–to trade performance for resource savings, large NNs inevitably require higher reuse factors, which substantially increase latency. Beyond a certain scale, even aggressive reuse cannot prevent EDA tools from failing to meet resource constraints. This challenge considerably limits the size of the NNs that can be deployed on PL. 
+
+C. AIE Benefits and Research Challenges 
+
+The AIE architecture offers a promising solution to the scal-ability challenge. For instance, the Versal VEK280 board [14] integrates 304 compute tiles of AIE-ML architecture, each with 64 KB of local memory. Each AIE tile is capable of computing 256 int8 MACs per cycle, the equivalent of 58 DSP58s [14]. As a hardened ASIC, AIE can operate at up to 1 GHz, about 3.2× higher than the 312.5 MHz PL-side clock used in our setup, potentially providing a substantial performance boost. Achieving high performance requires careful consideration of the data movement and compute patterns. The PL fabric supports fully custom data paths, interconnects, and fine-grained placement and routing generated by modern EDA tools, enabling data to move exactly when and where it is needed with minimal overhead. In contrast, AIEs operate as loosely coupled VLIW processors with fixed memory hierar-chies. Designers are responsible for explicitly programming the workloads on each AIE tile and managing the dataflow both within a tile and across the array. Inefficient data move-ment can introduce DMA stalls, memory contention, and additional buffering latency, leading to under-utilized compute cores. These factors must be carefully managed to avoid performance degradation. The extreme-edge scientific computing community has shown interest in using AIEs as an alternative to PL implemen-tations, through application studies and emerging deployment toolchains [8], [9], [13]. In particular, AIE 4ML [13] demon-strates an end-to-end deployment toolchain for quantized NN, supporting spatial tiling and placement. However, because the architectures and programming models of PL and AIEs differ fundamentally, two key questions must be addressed for AIEs to be used effectively in this domain:  
+
+> •
+
+When to deploy? PL resource congestion forces aperformance-resource trade-off in HLS 4ML . Since AIEs follow a different design space and scaling behavior, it is not immediately clear when they should replace PL. Under what workload sizes and resource budgets does AIE deployment become more beneficial than PL?  
+
+> •
+
+How to deploy? Extreme-edge scientific applications introduce distinct workload and dataflow patterns. Given the many spatial and API-level tiling and data-movement options on AIE, how should we design dataflow optimiza-tions for this domain? Our work studies these questions. Section III answers when 
+
+to deploy through architectural characterization and micro-benchmarking. Section IV proposes dataflow optimizations to address how to deploy extreme-edge scientific NNs. 
+
+D. Experimental Setup 
+
+All experiments are performed on an AMD-Xilinx Versal VEK280 board equipped with an AIE-ML array. AIE perfor-mance is measured using cycle-accurate hardware emulation. For a fair comparison, the PL baselines are implemented on the same VEK280 device. We extend the HLS 4ML framework to support Versal platforms. Performance and resource utilization are reported using AMD Xilinx Vitis and Vivado 2025.2 synthesis and implementation tools. III. A RCHITECTURAL CHARACTERIZATION AND 
+
+MICRO -BENCHMARKING 
+
+This section addresses the question of when it is beneficial to use AIE . We begin by exploring the HLS 4ML design space and identifying where its scalability breaks down, limiting the effective deployment of larger NNs. We then compare the different HLS 4ML and AIE design spaces and present results from micro-benchmarking experiments. Finally, we extract cross-domain performance and resource trends from these micro-benchmarks, which also motivates the dataflow choices elaborated in Section IV. 
+
+A. Reuse Factor and the PL Resource Wall 
+
+The primary design choice for HLS 4ML is the user-defined 
+
+reuse factor (rf ), which adjusts parallelism in the layer datapaths. HLS 4ML converts ML models defined in PyTorch, TensorFlow, or Keras into HLS projects, where the rf changes pipeline initiation interval (II) and loop-unrolling HLS direc-tives. This guides the HLS tools in trading parallelism for resource savings and creates a large performance–resource design space. Logic and physical synthesis are handled au-tomatically by backend EDA tools. For small NNs, hls4ml provides high performance because the design can be fully parallelized. As the workload grows, however, fitting the design into the available PL resources requires increasing the reuse factor and time-multiplexing arithmetic units. A larger reuse factor therefore trades per-formance for resource savings and reduces throughput.     
+
+> Fig. 2. HLS 4ML performance scalability. Performance is measured by Interval, i.e., the time between output batches in steady-state execution. A smaller Interval indicates higher throughput and thus better performance. In the resource-abundant regime, HLS 4ML can fully parallelize the design, so Interval remains nearly constant while resource consumption increases with workload sizes. In the constrained-resource regime, arithmetic units must be time-multiplexed with a reuse factor, thereby reducing throughput and increasing the interval. AIE performance is also shown for reference.
+
+Beyond the per-layer reuse factor, HLS 4ML also exposes two higher-level strategies: Latency and Resource . The Latency strategy prioritizes parallelism and relies heavily on LUTs and FFs. The Resource strategy is more conservative and makes greater use of resources such as BRAM when resources become constrained. We construct a synthetic workload of dense layers and ex-amine how performance scales with workload size in HLS 4ML 
+
+(see Fig. 2). As workload size increases, both strategies see an increase in the interval (the time between output batches in steady-state execution), especially when the design no longer fits on the PL with rf =1 . Under the Latency strategy, the interval rises sharply, and resources are quickly exhausted. Under the Resource strategy, the interval grows steadily, making it a more practical option for medium-sized NNs that require a resource-latency trade-off. This trend also motivates our choice of the Resource strategy as the PL baseline in later comparisons with AIE. Between the two HLS 4ML strategies, Resource is the more scalable and resource-efficient implementation, providing a more meaningful comparison. If PL already outperforms AIE under the Resource strategy for small workloads, then the Latency strategy would only strengthen that result. Conversely, once AIE outperforms the Resource strategy at larger scales, it will necessarily outperform the Latency strategy as well, since the latter reaches the PL resource wall much earlier. We also plot an AIE implementation as a reference. Here we use a naive mapping that deploys one layer to one AIE tile. Since AIE resources remain abundant in this regime, the initiation interval is determined by layer size rather than number of layers. Together, these results show that HLS 4ML is highly effective at small scale, but its scalability ends relatively early, motivating the use of AIE for larger workloads. Algorithm 1: LARE metric for dense layers (nin , n out )
+
+input : Dense layer shape: input nin , output nout 
+
+for rf ∈ Legal reuse factors for nin , n out :
+
+Find PL resource consumption RPL (nin , n out , rf )Find PL performance PPL (nin , n out , rf )Find AIE performance PAIE (nin , n out )
+
+Interpolate and find 
+
+rf eq s.t. P AIE (nin , n out ) = PPL (nin , n out , rf eq )
+
+output: LARE = RPL (nin , n out , rf eq )   
+
+> Fig. 3. Micro-benchmarking to understand resource–latency trade-off. Each colored line represents one layer shape on PL; each point on a colored line corresponds to a different reuse factor. Larger reuse factor (top-left) results in less resource usage and higher interval (weaker performance). The black points on colored lines mark the AIE performance ( yaxis) and LARE value (xaxis) of the corresponding layer. The blue region represents congested PL resource, where large reuse factor is required for PL deployment, and the AIE achieves better latency. The red region indicates resource-redundant PL, where spatial dataflow PL implementations provide better latency than AIE.
+
+B. Design Space Divergence and Micro-Benchmarking 
+
+It is challenging to make direct comparisons between the PL and AIE design spaces. Section III-A describes how the PL performance-resource trade-off in HLS 4ML is primarily controlled by the per-layer reuse factor. AIEs follow a vector-processor programming model with a deterministic network-on-chip, and their performance depends mainly on work-load dimensions together with spatial and API-level tiling. A meaningful comparison must address the additional PL design parameter of reuse factor, which is not present in AIEs. To compare the two domains fairly and extract generalizable insights, we perform micro-benchmarking experiments on the atomic workload of a single dense layer mapped to one AIE tile. Micro-benchmarking focuses on isolating layer-level design trends that translate to larger designs. Because the reuse factor is assigned per layer, evaluating the same layer at different reuse factors effectively represents that layer under different NN resource budgets. As the NN size grows, the budget available to each layer shrinks, forcing higher reuse. In this sense, a single-layer resource and performance trade-off curve captures how that layer would behave across NNs of different sizes. For the AIE micro-benchmark, performance is fixed for a given layer shape if the workload is mapped to one tile. This allows us to compare the AIE performance with the PL resource-performance trade-off curve. We define the minimum PL resource required for HLS 4ML to match the AIE perfor-mance as the latency-adjusted resource equivalent (LARE), as shown in Algorithm 1. We repeat the experiment of reuse factor sweep and deter-mining LARE for different dense layer shapes (Fig. 3). For each shape, the colored curve traces the PL resource-latency trade-off, and the black point marks the PL resource required to match the AIE interval. In this sense, LARE identifies the crossover between the PL-favorable and AIE-favorable regimes for that layer shape. This metric provides:  
+
+> •
+
+A decision boundary . If the available PL resource for the layer exceeds its LARE value, then the PL implemen-tation can match or outperform the AIE implementation. Otherwise, the resource-constrained PL will have worse performance due to inefficient reuse.  
+
+> •
+
+An efficiency indicator . LARE also reflects how ef-fectively the AIE implementation uses its compute tile resources. A low LARE means that the same performance can be matched with only a small PL budget, suggesting that the implementation is not very efficient and could benefit from further AIE optimizations. 
+
+C. Summary and Discussion 
+
+> HLS
+
+4ML is effective when the model size is small and sufficient PL resources are available. When HLS 4ML becomes highly resource-constrained, the performance suffers, making AIE a preferable option. The PL-AIE crossover is not only determined by model size, but also by the layer shape and the resource budget available to that layer. Micro-benchmarking experiments and the LARE metric provide a practical decision boundary for choosing between PL and AIE. Fig. 3 also shows that the LARE trend is not linear, or even monotonic. This indicates that AIE utilization depends strongly on workload size and shape. In this section, we consider only the naive mapping of one layer to one AIE tile, regardless of shape. The results, therefore, also motivate the next section: how to improve AIE performance through tiling and dataflow optimization. IV. AIE T ILING AND DATAFLOW OPTIMIZATIONS 
+
+Implementing low-latency NNs on the AIE involves nav-igating a complex design space of architectural constraints and tiling parameters with varying trade-offs. The under-utilization of naive mappings observed in Section III motivates exploring strategies to distribute workloads across more AIE compute tiles to increase performance by optimally leveraging parallelism. This section details the implementation strategy for GEMM, the primary compute workload in scientific NNs, using the AIE 4ML framework [13]. To satisfy microsecond-level latency constraints, we follow the established convention for extreme-edge scientific infer-ence by using the smallest possible batch size (8 for the int8 Fig. 4. Performance analysis of GEMM workloads with batch size of 8 implemented in a single compute tile, to measure the performance impact of API-level tiling strategies. Each two-column group along the x-axis corresponds to a workload size, with the number of operations increasing linearly by 4096 across groups; the two workloads within a group have the same number of operations but differ in asymmetry ( QK -larger vs QN -larger). The y-axis shows the                  
+
+> aie::mmul API sizes (SM, S K, S N)that are legal for the datatype i8 ×i8 . We observe that the APIs (4 ,8,8) and (4 ,16 ,8) achieve the best performance across all workload sizes, and spatial tiling with larger QNconsistently yields better performance.
+
+data type in AIE) and keeping all model weights stationary and fully on-chip. This approach diverges from traditional GEMM implementations for larger NNs, which rely on high-throughput batching and external memory access for weights, since those workloads do not face the same strict performance constraints. We focus on two levels of tiling: spatial tiling across compute tiles to parallelize each GEMM workload, and API-level tiling within each compute tile to efficiently utilize vector processing units. We characterize the architec-tural constraints of AIE and propose design rules for API-level and spatial tiling based on empirical benchmarking. We also quantify the latency cost of crossing the PL-AIE boundary and present a design rule for hybrid implementations. 
+
+A. Two-Level GEMM Tiling 
+
+The standard implementation of an M, K, N GEMM work-load A(M,K )×B(K,N )=C(M,N ) in AI Engines follows the two-level tiling hierarchy detailed in Algorithm 2 [13]. 
+
+1) Spatial Level: The global workload is partitioned across 
+
+PK ×PN compute tiles of the AIE array. The K and N
+
+dimensions are divided into PK and PN compute-tile columns and rows, respectively. Each compute tile gets a spatial tile workload of size M ×QK ×QN .
+
+2) API Level: In each compute tile, the workload is fur-ther subdivided at the API level into smaller blocks of size 
+
+(SM , S K , S N ). This tuple must be one of the few legal tuples supported by the aie::mmul API. The API is called 
+
+RM , R K , R N times over time, to process the spatial tile. This formulation defines the global workload dimensions to physical hardware mapping, serving as the basis for the per-formance analysis and design rules in the following sections. 
+
+B. Architectural Constraints 
+
+Extreme-edge scientific workloads typically receive data directly into the PL [3], [26]. To process this data in AI Engines, it must be streamed through the Programmable Logic 
+
+Algorithm 2: Tiling GEMM in two levels. Spatial (tiles, size): (P, Q )K,N & API (tiles, size): (R, S )M,K,N 
+
+input : A ∈ RM ×K , B ∈ RK×N – Input matrices 
+
+input : (PK , P N ) – No. of compute tiles (col, row) 
+
+input : (SM , S K , S N ) – Legal API tile sizes 
+
+output: C ∈ RM ×N – Output matrix 
+
+(QK , Q N ) = ( K/P K , N/P N );
+
+(RM , R K , R N ) = ( M/S M , Q K /S K , Q N /S N );
+
+C = 0 ;
+
+spatial for 2d (pk, p n) ∈ [0 , P K ) × [0 , P N ) :
+
+(kq , n q ) = ( pkQK , p nQN );
+
+for 2d (rm, r n) ∈ [0 , R M ) × [0 , R N ) :
+
+// 2x unrolled in implementation 
+
+(m, n ) = ( rmSM , n q + rnSN );
+
+Ct = 0 ;
+
+for rk ∈ [0 , R K ) :
+
+k = kq + rkSK ;
+
+At = A[m:m+SM , k :k+SK ];
+
+Bt = B[k:k+SK , n :n+SN ];
+
+Ct += aie::mmul.mac (At, B t);
+
+C[m:m+SM , n :n+SN ] += Ct; // cascade 
+
+I/O (PLIO) interfaces. At a typical clock frequency of 312.5 MHz, a 128-bit PLIO provides a bandwidth of 5 GB/s. The AIE array of VEK280 consists of 38 columns and 8 rows of compute tiles. The current version of the AIE 4ML 
+
+toolchain restricts usage to 31 columns (indices 7 to 37) to minimize routing effort, since PLIOs are placed starting there. Within the AIE array, each compute tile contains a scalar pro-cessor and a vector unit capable of 256 int8 ×int8 MACs per cycle optimized for fixed-point arithmetic. AMD provides high-level API calls to program vector units for matrix multi-plication: aie::mmul<m,k,n,dtype,dtype> [33], [34]. For data movement, every compute tile has (1) one input and one output port for streaming, each 32-bit; (2) a 512-bit cascade bus that allows partial sums to be moved from west to east for accumulation; and (3) a 64 KB local data memory accessible via two 256-bit load units and one 256-bit store unit per cycle at 1 GHz, providing a local read and write bandwidth of 64 GB/s and 32 GB/s, respectively. 
+
+C. API-Level Tiling Optimization 
+
+With hardware constraints in mind, we first study GEMM decomposition within a single compute tile to determine design rules for the optimal tile size (S) and count (R) in API-level tiling. To maximize vector-unit utilization, the GEMM inside a compute tile is manually unrolled 2×2×2 times, making the effective tile size twice the base API tile sizes. Fig. 4 shows the results of our benchmarking experiment, which sweeps the size and shape of a workload (8 , Q K , Q N )
+
+in a single compute tile and measures the performance in GOP/s for all legal API sizes. We find that (4 , 8, 8) and 
+
+(4 , 16 , 8) consistently outperform other API tile shapes. While their performance is similar, (4 , 8, 8) offers finer granularity, as it permits a minimum K of 16 (due to 2× unrolling), compared to 32 for the (4 , 16 , 8) shape. Therefore, we choose S=(4 , 8, 8) 
+
+for further analysis. We summarize this design rule as: 
+
+Design Rule 1: For extreme-edge scientific computing, a default API tile size of S = (4 , 8, 8) offers the best overall performance and granularity. Furthermore, Fig. 4 also demonstrates the impact of work-load asymmetry. Performance is up to 2 × higher when QN >QK than when QK > Q N for a fixed single-compute-tile workload size, and this advantage carries over to the global workload. This is because the wide vector processing units and output accumulators are better utilized when the output dimension is larger. 
+
+Design Rule 2: Compute-tile performance for a fixed workload size (MAC count) varies with workload shape. API tiling should prioritize the N dimension (output chan-nels) over the K dimension (input reduction). 
+
+D. Spatial Tiling Optimization 
+
+Having identified an efficient API shape, we next examine how the workload should be mapped across the AIE array, shifting the analysis to array-level parallelism and its impli-cations for performance. Spatial tiling partitions the global workload into QK,N -sized sub-workloads and assigns them to PK,N columns and rows of compute tiles, as defined in Al-gorithm 2. The dedicated cascade bus propagates partial sums between compute tiles, and the sub-workloads are assigned west to east to minimize data movement. Fig. 5 shows the benchmarking results of spatially tiling a workload of global size (8 , 128 , 128) across varying numbers of columns and rows of compute tiles, with API size fixed to 
+
+(4 , 8, 8) . Along the negative-slope diagonals (i + j=const) ,the factor of parallelism, i.e., the number of compute tiles per           
+
+> Fig. 5. Latency reduction of tiling a GEMM workload / dense layer of size (8,128,128) spatially, across PKcolumns and PNrows of compute tiles. The API tile size (SM, S K, S N)is fixed to (4,8,8). Each arrow shows the percentage change in latency upon doubling the number of compute tiles along row/column in the AIE array.
+
+layer, ( PK ×PN ) stays constant. We observe that for a fixed factor of parallelism PK PN , configurations that allocate more compute tiles along the K dimension consistently achieve lower latency than those that allocate more compute tiles along the N dimension. This matches the trend at the API-level favoring smaller RK .
+
+Design Rule 3: Spatial tiling a given layer across the AIE array should prioritize column-wise expansion, with row-wise tiling used more selectively. Next, we observe that while more parallelism generally yields higher performance (as expected), performance scales much more slowly with the number of compute tiles. Each arrow shows the effect of doubling the number of compute tiles along either row or column direction of the AIE array. 
+
+Design Rule 4: Spatial tiling exhibits diminishing returns. A workload of (M, Q K , Q N )=(8 ×32 ×64) per compute tile provides reasonably strong performance; further spatial tiling yields <15% gains while requiring twice the tiles. Although increasing spatial parallelism initially increases performance, the improvement is not monotonic. In the mea-sured design space, performance is maximized at a spatial tile size of (QK , Q N ) = (16 , 32) , whereas further spatial tiling reduces performance. 
+
+Design Rule 5: Using more compute tiles does not neces-sarily improve performance. To avoid under-utilization, the per-tile workload should be at minimum 8×16 ×32 .
+
+E. The Cost of Column Exhaustion 
+
+The previous results suggest that column-wise expansion is beneficial, but that trend cannot continue indefinitely on a finite array. We therefore examine the performance implications of this preferred spatial tiling strategy once it exceeds the physical width of the device. When this occurs, subsequent layers must be placed in “bands” [13], which are additional rows of compute tiles above the initial layers (Fig. 6). This architectural shift results in a measurable performance loss. To quantify the impact of column exhaustion, we conduct a sweep of spatial-tiling asymmetries in Fig. 6. We used a constant model with 8 layers, 192 input/output features, and a batch size of 8. This configuration was selected to maximize the number of available sweep points while remaining within AIE hardware constraints. The datatype was fixed at i8 ×i8 
+
+using the (4 , 8, 8) API. To account for manual unrolling by a factor of 2× and prevent latency impact from uneven spatial tiling, we ensured that each compute tile processed a minimum workload of (8 , 16 , 16) . The current implementation of AIE 4ML limits the usable array width to 31 columns. Nevertheless, the analysis is not tied to this specific limit and would remain valid if this restriction were relaxed, with the relevant transition occurring at a different column count. In this experiment, the total parallelization factor per layer was fixed at PK PN =12 , while varying the spatial-tiling asym-metry (PK , P N )= (cols, rows) of compute tiles per layer:  
+
+> •
+
+PK ×PN =2 ×6: This requires 16 total columns (8 layers × 2 columns). Since this fits within the 31-column limit, all layers are placed in a single band.  
+
+> •
+
+PK ×PN =3 ×4: This requires 24 columns. It still fits within a single band and demonstrates improved per-formance over the 2-column configuration, following the trend established in Section IV-D.  
+
+> •
+
+PK ×PN =4 ×3: This requires 32 columns, exceeding the 31-column limit. Consequently, AIE 4ML places 7 layers in the first band and the 8th layer in a second band above the first. This forces layers across different bands to share the same set of memory tiles, leading to resource contention and performance degradation.  
+
+> •
+
+PK ×PN =6 ×2: This requires 48 columns, where 5 layers are placed in the first band and 3 in the second, further worsening the latency. These results demonstrate that, while column-wise spatial tiling is generally superior, its benefits are lost once the model exceeds the array’s physical width. 
+
+Design Rule 6: Column exhaustion is costly. A model implementation should spatially tile each layer across as many AIE columns as possible (maximizing PK ), while not exceeding the column limit and utilizing only one band. 
+
+F. The Cost of Crossing the Fabric Boundary 
+
+Versal devices integrate a PL and an AIE array on the same die, making heterogeneous implementations a design option. The AIE array is particularly well suited to reg-ular, vectorizable dense workloads such as GEMM, which align with its vector-oriented programming model and matrix-multiplication support [13], [18], [34]. By contrast, the PL               
+
+> Fig. 6. Latency impact of exhausting the available AIE columns. We use a dense model with 8 layers, each of size (8,192,192), datatype i8 ×i8 ,and API tile size (4 ,8,8) each implemented in PK×PN=12 compute tiles so other latency factors remain unchanged. We then vary the spatial tiling asymmetry (PK, P N). The results show that column-wise expansion improves performance only up to the single-band column limit; once layers spill into multiple bands, resource contention introduces a latency penalty.
+> Fig. 7. Latency overhead of crossing the AIE-PL boundary. Each experiment has the same dense model with 16 equal layers, always 8 layers in AIE and 8 layers in the PL, varying only the number of crossings. The gradient of the line fit to total latency suggests a latency overhead of 3.9% per crossing.
+
+remains a flexible domain for implementing custom datapaths and auxiliary functions such as bit-manipulating logic and fast data reordering using RTL or HLS [35]–[37]. Recent AIE–PL hybrid designs have also used the PL to implement nonlinear activation functions [38]. A designer may, therefore, place nonlinear or other auxiliary stages in the PL while keeping GEMM-dominated stages in the AIE. For such a heterogeneous implementation, a funda-mental question is the latency penalty of crossing the PL–AIE boundary. We therefore quantify this overhead directly. Metric VAE [25] Qubit [26] Autoencoder [39]                    
+
+> MACs 34.8k 82.9k 116.7k
+> Min. HLS 4ML r.f. 816 32
+> PL Perf. (MHz) 20.8 12.5 8.4
+> Naive AIE Perf. (MHz) 22.7 14.4 15.9
+> Optimized Perf. (MHz) 97.9 58.9 58.8 TABLE I FULL NN D EPLOYMENT RESULTS .
+
+For this, we constructed a dense model with 16 layers, 
+
+i8 ×i8 datatype, and batch size 8, with input/output di-mensions fixed per sweep. To keep the computational cost constant across all experiments, each configuration used ex-actly 8 layers in the PL and 8 layers in the AIE, with the first and last layers always placed in the PL. Because current versions of HLS 4ML and AIE 4ML do not natively support automated model partitioning, we manually extracted the dense implementations from both flows and composed a hybrid pipeline [6], [13]. AIE layers were mapped one per compute tile, while PL layers used a reuse factor of 1. We then swept the number of PL-AIE boundary crossings from 2 to 14 with a stride of 2. The total latency was obtained by combining the PL latency reported by HLS synthesis with the AIE latency reported by cycle-accurate AIE simulation. The results in Fig. 7 show a strong linear trend with 
+
+R2=0 .98 , indicating that our experiment isolates the latency penalty of crossing the boundary. For every workload, each additional crossing contributes a latency overhead of approx-imately 3.9% relative to the baseline case of two crossings (input and output only). This result provides a quantitative penalty term that any designer considering a PL-AIE split should incorporate into the mapping decision. 
+
+Design Rule 7: For hybrid PL-AIE pipelines, each addi-tional PL-AIE boundary crossing adds about 3.9% latency relative to the two-crossing baseline. A heterogeneous split is worthwhile only when the computational benefit of placing a stage in its preferred domain exceeds this cost. V. F ULL NN D EPLOYMENT 
+
+We seek to answer two practical questions on real extreme-edge scientific workloads: (1) Can AIE serve as a competitive alternative once PL implementations are forced into high reuse by resource congestion? (2) How much performance gain can be achieved through the design rules developed in Section IV? We evaluate three workloads whose PL implementation can-not satisfy the performance goals shown in Fig.1: the VAE at LHC [25], the multi-Qubit readout discriminator [26], and the large autoencoder from the MLPerf Tiny benchmarks [39]. All models use 8-bit quantization, and the results are summarized in Table I, with performance reported in millions of inferences per second (MHz). We observe that the naive AIE imple-mentation (one compute tile per layer) is competitive with PL designs that require high reuse, while applying our design rules yields up to a 4 × performance improvement. While the PL implementation cannot meet the 40 MHz extreme-edge collision rate target [22], the optimized AIE designs exceed it. VI. R ELATED WORK 
+
+Several recent works have investigated the use of AIEs and AMD Versal ACAP platforms for large ML workloads. CHARM [16], [17] proposes analytical models and conducts design space exploration to balance workloads in different-sized accelerators to support variable-size matrix multiplica-tions in transformer layers. MaxEva [18] explores hard-wiring datapaths between AIE tiles, allowing higher performance at the cost of increased resource consumption and reduced flex-ibility. XVDPU [40] proposes a methodology aimed at high performance by leveraging AIE tiles to compute convolutions while using the PL for auxiliary functions like buffering, data movements, and scheduling. SPARTA [41] leverages the Multi-Level Intermediate Representation (MLIR) compiler framework to support the development of spatial accelerators for horizontal diffusion weather stencil prediction. Brown [19] explored optimal approaches for structuring AIE kernels in Versal platforms and their interface with the PL to accel-erate atmospheric modeling, showing increased performance compared with traditional AMD Alveo U280 platforms. Noah et al. [42] evaluated the use of AIEs for space applications, mainly targeting CNNs and FFT, demonstrating their effec-tiveness in providing speedup and power efficiency. Chen et al. [20] leveraged the heterogeneity of Versal platforms to optimize AI inference for Graph Neural Networks, proposing a custom hardware module for sparse primitives to be deployed in PL, combined with efficient computation of the dense primitive on AIEs. Yang et al. [43] proposed analytical models and code generation to automate and optimize the mapping of arbitrary-precision integer multiplication in Versal ACAP platforms leveraging PL, AIEs, and CPU. Zhang et al. [44] presented a customized abstract transformer accelerator family for Versal platforms, which can be efficiently mapped into a customized accelerator for a target transformer architecture. Prior work has predominantly focused on optimizing AIEs for large-scale matrix multiplications. To the best of our knowledge, this paper is the first to investigate the design rules of AIEs under the strict low-latency and high-performance requirements of extreme-edge scientific computing workloads. VII. C ONCLUSION 
+
+This work addresses when and how NNs for extreme-edge scientific computing should be implemented on AIEs. While the implementation of small networks on PL using HLS 4ML 
+
+remains effective, resource scaling for larger networks forces higher reuse and worse performance. We introduce the LARE metric that quantifies the regime where the deployment on AIEs becomes the better option. We then derive design rules for spatial and API-level tiling, and analyze the performance impacts of workload asymmetry, diminishing returns from over-tiling, AIE column exhaustion, and PL-AIE boundary crossings. Finally, as summarized in Fig. 1 and Table I, our de-sign rules enable larger real-world models that were previously unable to meet the strict extreme-edge performance targets on PL to exceed those targets on AIEs, thereby expanding the frontier of fully on-chip inference. REFERENCES [1] J. Duarte, N. Tran, B. Hawks, C. Herwig, J. Muhizi, S. Prakash, and V. J. Reddi, “Fastml science benchmarks: Accelerating real-time scientific edge machine learning,” arXiv preprint arXiv:2207.07958 , 2022. [2] G. Di Guglielmo, F. Fahim, C. Herwig, M. B. Valentin, J. Duarte, C. Gingu, P. Harris, J. Hirschauer, M. Kwok, V. Loncar et al. , “A recon-figurable neural network asic for detector front-end data compression at the hl-lhc,” IEEE Transactions on Nuclear Science , vol. 68, no. 8, pp. 2179–2186, 2021. [3] Y. Wei, R. F. Forelli, C. Hansen, J. P. Levesque, N. Tran, J. C. Agar, G. Di Guglielmo, M. E. Mauel, and G. A. Navratil, “Low latency optical-based mode tracking with machine learning deployed on fpgas on a tokamak,” Review of scientific instruments , vol. 95, no. 7, 2024. [4] T. Baldi, J. Campos, B. Hawks, J. Ngadiuba, N. Tran, D. Diaz, J. Duarte, R. Kastner, A. Meza, M. Quinnan et al. , “Reliable edge machine learning hardware for scientific applications,” in 2024 IEEE 42nd VLSI Test Symposium (VTS) . IEEE, 2024, pp. 1–5. [5] O. Weng, A. Redding, N. Tran, J. M. Duarte, and R. Kastner, “Ar-chitectural implications of neural network inference for high data-rate, low-latency scientific applications,” arXiv preprint arXiv:2403.08980 ,2024. [6] F. Fahim, B. Hawks, C. Herwig, J. Hirschauer, S. Jindariani, N. Tran, L. P. Carloni, G. Di Guglielmo, P. Harris, J. Krupa et al. , “hls4ml: An open-source codesign workflow to empower scientific low-power machine learning devices,” arXiv preprint arXiv:2103.05579 , 2021. [7] S. Ahmad, S. Subramanian, V. Boppana, S. Lakka, F.-H. Ho, T. Knopp, J. Noguera, G. Singh, and R. Wittig, “Xilinx first 7nm device: Versal ai core (vc1902).” in Hot Chips Symposium , 2019, pp. 1–28. [8] I. Xiotidis, N. C. Hall, T. Du, N. Konstantinidis, and D. Miller, “Amd versal ai-engines for fixed latency environments,” arXiv preprint arXiv:2603.13852 , 2026. [9] J. Gonski, J. Ott, S. Abbaszadeh, S. Addepalli, M. Cremonesi, J. Dick-inson, G. Di Guglielmo, E. Y. Ertorer, L. Gray, R. Herbst et al. ,“Machine learning on heterogeneous, edge, and quantum hardware for particle physics (ml-hequpp),” Carnegie Mellon U.; Pisa U.; Pittsburgh U.; INFN, Padua; Kansas U.; CERN . . . , Tech. Rep., 2026. [10] Advanced Micro Devices, Inc., AI Engine Graph Programming Guide (UG1076) , AMD, 2025, version 2025.2. [Online]. Available: https://docs.amd.com/r/en-US/ug1076-ai-engine-graph-programming [11] J. Zhuang, S. Xiang, H. Chen, N. Zhang, Z. Yang, T. Mao, Z. Zhang, and P. Zhou, “Aries: An agile mlir-based compilation flow for reconfigurable devices with ai engines,” in Proceedings of the 2025 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , 2025, pp. 92–102. [12] S. Levental, S. Taylor, S. Eldridge et al. , “MLIR-AIE: An Open-Source Compiler Toolchain for AMD AI Engines,” in Proceedings of the 2024 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays (FPGA ’24) . ACM, 2024. [13] D. Danopoulos, E. Lupi, C. Sun, S. Dittmeier, M. Kagan, V. Loncar, and M. Pierini, “Aie4ml: An end-to-end framework for compiling neural networks for the next generation of amd ai engines,” arXiv preprint arXiv:2512.15946 , 2025. [14] AMD Xilinx, VEK280 Evaluation Board User Guide (UG1612) , 2025, accessed: 2025-10-30. [Online]. Available: https://docs.amd.com/r/en-US/ug1612-vek280-eval-bd [15] ——, VCK190 Evaluation Board User Guide (UG1366) , 2024, accessed: 2024-11-09. [Online]. Available: https://docs.amd.com/r/en-US/ug1366-vck190-eval-bd [16] J. Zhuang, J. Lau, H. Ye, Z. Yang, Y. Du, J. Lo, K. Denolf, S. Neuendorf-fer, A. Jones, J. Hu et al. , “Charm: C omposing h eterogeneous a ccele r ators for m atrix multiply on versal acap architecture,” in Proceedings of the 2023 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , 2023, pp. 153–164. [17] J. Zhuang, J. Lau, H. Ye, Z. Yang, S. Ji, J. Lo, K. Denolf, S. Neuen-dorffer, A. Jones, J. Hu et al. , “Charm 2.0: Composing heterogeneous accelerators for deep learning on versal acap architecture,” ACM Trans-actions on Reconfigurable Technology and Systems , vol. 17, no. 3, pp. 1–31, 2024. [18] E. Taka, A. Arora, K.-C. Wu, and D. Marculescu, “Maxeva: Maximizing the efficiency of matrix multiplication on versal ai engine,” in 2023 International Conference on Field Programmable Technology (ICFPT) .IEEE, 2023, pp. 96–105. [19] N. Brown, “Exploring the versal ai engines for accelerating stencil-based atmospheric advection simulation,” in Proceedings of the 2023 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , 2023, pp. 91–97. [20] P. Chen, P. Manjunath, S. Wijeratne, B. Zhang, and V. Prasanna, “Exploiting on-chip heterogeneity of versal architecture for gnn infer-ence acceleration,” in 2023 33rd International Conference on Field-Programmable Logic and Applications (FPL) . IEEE, 2023, pp. 219– 227. [21] E. Govorkova et al. , “Autoencoders on fpgas for real-time, unsupervised new physics detection at 40 mhz at the large hadron collider (2021),” 
+
+arXiv preprint arXiv:2108.03986 , 2021. [22] C. collaboration et al. , “The cms trigger system,” arXiv preprint arXiv:1609.02366 , 2016. [23] J. Duarte, N. Tran, B. Hawks, C. Herwig, J. Muhizi, S. Prakash, and V. J. Reddi, “Fastml science benchmarks: Accelerating real-time scientific edge machine learning,” arXiv preprint arXiv:2207.07958 , 2022. [24] D. Misra, “Low-latency on-chip tau event selection with machine learning for the belle ii level-1 trigger,” Talk at Fast Machine Learning for Science Conference, 2025, cERN Indico contribution. [Online]. Available: https://indico.cern.ch/event/1496673/contributions/6637927/contribution.pdf [25] H. Jia, A. Dave, J. Gonski, and R. Herbst, “Analysis of hardware synthesis strategies for machine learning in collider trigger and data acquisition,” arXiv preprint arXiv:2411.11678 , 2024. [26] P. K. Gautam, S. Kalipatnapu, U. Singhal, B. Lienhard, V. Singh, C. S. Thakur et al. , “Low-latency machine learning fpga accelerator for multi-qubit-state discrimination,” arXiv preprint arXiv:2407.03852 , 2024. [27] C. Collaboration et al. , “The cms experiment at the cern lhc,” Journal of instrumentation , vol. 3, no. August 2008, pp. 1–334, 2008. [28] A. M. Sirunyan, A. Tumasyan, W. Adam, F. Ambrogi, B. Arnold, H. Bergauer, T. Bergauer, M. Dragicevic, J. Ero, A. E. Del Valle et al. ,“Performance of the cms level-1 trigger in proton-proton collisions at √s = 13 tev,” Journal of Instrumentation , vol. 15, no. 10, 2020. [29] ATLAS Collaboration, “Operation of the atlas trigger system in run 2,” 
+
+Journal of Instrumentation , vol. 15, no. 10, p. P10004, 2020. [30] AMD Xilinx, ZCU102 Evaluation Board User Guide(UG1182) , 2025, accessed: 2025-10-30. [Online]. Available: https://docs.amd.com/v/u/en-US/ug1182-zcu102-eval-bd [31] ——, ZCU104 Evaluation Board User Guide(UG1267) , 2024, accessed: 2025-10-30. [Online]. Available: https://docs.amd.com/v/u/en-US/ug1267-zcu104-eval-bd [32] Y. Umuroglu, N. J. Fraser, G. Gambardella, M. Blott, P. Leong, M. Jahre, and K. Vissers, “Finn: A framework for fast, scalable binarized neural network inference,” in Proceedings of the 2017 ACM/SIGDA interna-tional symposium on field-programmable gate arrays , 2017, pp. 65–74. [33] AMD Xilinx, “AI Engine API Documentation (Vitis 2024.1),” https://www.xilinx.com/htmldocs/xilinx2024 1/aiengine api/aie api/doc/, 2024, accessed: 2025-03-28. [34] ——, AI Engine Kernel and Graph Programming Guide (UG1079) , 2024, accessed: 2025-03-28. [Online]. Available: https://docs.amd.com/r/en-US/ug1079-ai-engine-kernel-coding [35] AMD, Versal Adaptive SoC System and Solution Planning Methodology Guide (UG1504) , 2025, version 2025.2. [Online]. Available: https://docs.amd.com/r/en-US/ug1504-acap-system-solution-planning-methodology [36] ——, Versal Adaptive SoC Design Guide (UG1273) , 2025, version 2025.2. [Online]. Available: https://docs.amd.com/r/en-US/ug1273-versal-acap-design [37] ——, Vitis High-Level Synthesis User Guide (UG1399) , 2025, version 2025.2. [Online]. Available: https://docs.amd.com/r/en-US/ug1399-vitis-hls [38] M. Sapkas, A. Triossi, and M. Zanetti, “A latency-constrained, gated recurrent unit (gru) implementation in the versal ai engine,” 2026. [Online]. Available: https://arxiv.org/abs/2511.15626 [39] C. Banbury, V. J. Reddi, P. Torelli, J. Holleman, N. Jeffries, C. Kiraly, P. Montino, D. Kanter, S. Ahmed, D. Pau et al. , “Mlperf tiny bench-mark,” arXiv preprint arXiv:2106.07597 , 2021. [40] X. Jia, Y. Zhang, G. Liu, X. Yang, T. Zhang, J. Zheng, D. Xu, Z. Liu, M. Liu, X. Yan et al. , “Xvdpu: A high-performance cnn accelerator on the versal platform powered by the ai engine,” ACM Transactions on Reconfigurable Technology and Systems , vol. 17, no. 2, pp. 1–24, 2024. [41] G. Singh, A. Khodamoradi, K. Denolf, J. Lo, J. G´ omez-Luna, J. Melber, A. Bisca, H. Corporaal, and O. Mutlu, “Sparta: spatial acceleration for efficient and scalable horizontal diffusion weather stencil computation,” in Proceedings of the 37th International Conference on Supercomputing ,2023, pp. 463–476. [42] N. Perryman, C. Wilson, and A. George, “Evaluation of xilinx versal architecture for next-gen edge computing in space,” in 2023 IEEE aerospace conference . IEEE, 2023, pp. 1–11. [43] Z. Yang, J. Zhuang, J. Yin, C. Yu, A. K. Jones, and P. Zhou, “Aim: Accelerating arbitrary-precision integer multiplication on heterogeneous reconfigurable computing platform versal acap,” in 2023 IEEE/ACM International Conference on Computer Aided Design (ICCAD) . IEEE, 2023, pp. 1–9. [44] W. Zhang, Y. Liu, and Z. Bao, “Cat: Customized transformer accelerator framework on versal acap,” arXiv preprint arXiv:2409.09689 , 2024.

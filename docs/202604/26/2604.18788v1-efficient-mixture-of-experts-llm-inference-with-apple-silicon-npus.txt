@@ -1,0 +1,1090 @@
+Title: Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs
+
+URL Source: https://arxiv.org/pdf/2604.18788v1
+
+Published Time: Wed, 22 Apr 2026 00:15:47 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs 
+
+Afsara Benazir 
+
+University of Virginia Charlottesville, Virginia, USA 
+
+hys4qm@virginia.edu 
+
+Felix Xiaozhu Lin 
+
+University of Virginia Charlottesville, Virginia, USA 
+
+felixlin@virginia.edu 
+
+Abstract 
+
+Apple Neural Engine (ANE) is a dedicated neural processing unit (NPU) present in every Apple Silicon chip. Mixture-of-Experts (MoE) LLMs improve inference efficiency via sparse activation but are challenging for NPUs in three ways: ex-pert routing is unpredictable and introduces dynamic tensor shapes that conflict with the shape specific constraints of NPUs, several irregular operators e.g. top-k, scatter/gather etc. are not NPU-friendly, and launching many small ex-pert kernels incur substantial dispatch and synchronization overhead. NPUs are designed to offload AI compute from CPU and GPU; our goal is to enable such offloading for MoE inference, particularly during prefill, where long-context workloads consume substantial system resources. This paper presents NPUMoE , a runtime inference engine that accelerates MoE execution on Apple Silicon by offload-ing dense, static computation to NPU, while preserving a CPU/GPU fallback path for dynamic operations. NPUMoE 
+
+uses offline calibration to estimate expert capacity and popu-larity that drives three key techniques: (1) Static tiers for ex-pert capacity to address dynamic expert routing (2) grouped expert execution to mitigate NPU concurrency limits (3) load aware expert compute graph residency to reduce CPU–NPU synchronization overhead. Experiments on Apple M-series devices using three representative MoE LLMs, four long-context workloads show that NPUMoE consistently outper-forms baselines reducing latency by 1.32x–5.55x, improving energy efficiency by 1.81x–7.37x, and reducing CPU-cycle usage by 1.78x–5.54x through effective NPU offloading. 
+
+1 Introduction 
+
+Recent advances in large language models (LLMs) increas-ingly adopt Mixture-of-Experts (MoE) architectures to scale model capacity efficiently through sparse activation [ 36 ]. On-device LLM inference ensures complete privacy and per-sonalization but rarely runs in isolation: the CPU must keep the OS responsive (UI thread, I/O, networking etc.), and the GPU is often tasked with rendering/camera/display pipelines and interactive graphics. Under heavy load, this can lead to resource contention and degrade system responsiveness [ 40 ]. Neural processing units (NPUs) e.g Apple Neural Engine (ANE), Qualcomm Hexagon NPU, AMD NPUs etc. are widely integrated into commodity mobile platforms [ 18 ] offering high peak computing power and increased power efficiency Runtime  …                                 
+
+> Chunk N
+> Prompt Chunk 1
+> GPU: resources are free for background tasks
+> Dispatch Gather + Weighted ΣDispatch Comm.
+> Hot Experts
+> Attn LM head
+> ANE Dense operations
+> indexing, scatter, emb .
+> lookup , token routing,
+> CPU Dynamic operations
+> Cold
+> Experts
+> Challenge: NPU
+> concurrency
+> Proposed: Grouped
+> Expert Execution ( §4.2)
+> Serial execution
+> Separate
+> compute graphs A single static
+> compute graph
+> NPU device queue
+> E1
+> E2
+> En
+> …E1 E2
+> Proposed: Load Aware
+> Compute Graph
+> Residency ( §4.3)
+> CPU-NPU
+> CPU only
+> Dispatch Execution time
+> E2E runtime (s)
+> Challenge: CPU -NPU
+> synchronization overhead
+> Hot experts
+> Cold experts
+> E4 E5 E7
+> E0 E2 E3 CPU
+> ANE
+> Challenge: Dynamic
+> Expert Routing
+> Proposed: Static tiers for
+> expert capacity ( §4.1)
+> E0 E1 E2 E3 E4 E5 E6 E7 E0 E1 E2 E3 E4 E5 E6 E7
+> Chunk size Imbalance Ratio
+> Tier 3
+> Tier 2
+> Tier 1
+> Capacity Estimation
+> #tokens
+> Expert ID Expert ID
+> #tokens
+> High frequency experts
+> padding
+> Top -k
+
+Figure 1. Our System: NPUMoE 
+
+relative to CPUs/GPUs. Prior work primarily focuses on efficient execution of dense transformer models on mobile GPUs [ 9 ] and NPUs [ 11 , 12 , 43 ]. In contrast, MoE LLMs such as PhiMoE [ 1 ], Qwen3 MoE [ 47 ] etc. exhibit dynamic, sparse execution patterns that are fundamentally misaligned with NPU execution pipelines. In addition to executing a dense attention block, in MoE architectures, a router dynamically chooses a subset of ex-perts for each token instead of activating the entire network. Each expert is typically a small feed-forward block (FFN); tokens are routed to the selected experts for processing and then gathered back after computation. This introduces run-time dynamism characterized by dynamic expert selection, token-level routing, irregular memory access patterns, and varying load across different experts. Apple Neural Engine (ANE) is Apple’s dedicated hard-ware component for neural processing tasks to accelerate machine learning workload [ 41 ], widely deployed in over two billion devices [ 7 ]. Under Apple’s unified memory ar-chitecture, the CPU, GPU, and ANE share a single memory pool; this allows large-capacity MoE models to remain fully resident on-device, reducing data movement overhead. ANE is explicitly specialized for FP16 compute, with a 16-core ANE (Apple M2) delivering up to 15.8 TFLOPS compute [ 23 ]. These characteristics make Apple Silicon particularly attrac-tive for on-device LLM inference at high precision. 
+
+LLM acceleration on NPU. NPUs support static, dense operations of typical LLMs, but its hardware design restricts execution of dynamic operations unique to MoE LLMs. Of-floading LLM compute to NPU offers key benefits: reduced resource contention - CPU/GPU can prioritize interactive 
+
+1
+
+> arXiv:2604.18788v1 [cs.LG] 20 Apr 2026 Afsara Benazir and Felix Xiaozhu Lin
+
+tasks, and keep other apps responsive; better power and en-ergy efficiency [ 22 ] which helps sustain performance longer on battery-powered devices. We identify a key opportunity to adapt the dynamic shapes of MoE inference to the static execution constraints of NPU. During prefill, the context length is dynamic and depends on the specific prompt, whereas during decode only one token is processed owing to autoregressive generation. For long-context tasks, the prefill phase dominates inference [ 15 , 24 ], accounting for 80% of end-to-end inference latency and 70% of CPU cycles (Figure 2), thus we mainly target prefill acceleration in this work. This work presents NPUMoE (ref. Figure 1), a runtime inference engine that accelerates MoE LLM inference on NPUs. We use Apple Neural Engine (ANE) as a representa-tive mobile NPU to illustrate key characteristics and con-straints of mobile NPUs due to its tight integration with Apple’s hardware-software stack, and widespread deploy-ment across Apple devices. MoE execution on NPU presents several challenges. 
+
+(1) Model dynamism complicates compute graph cre-ation. NPU is designed for static, shape-specific compute graphs (§2) compiled ahead of time (e.g., via Core ML [ 21 ]), that allows it to be compute efficient but conflicts with stan-dard LLM inference where input tensors and operator shapes vary across prompts and batches. Prior systems mitigate this via chunked prefill and graph bucketing [ 2 , 50 ] but such strategies presume dense, predictable structure and cannot be directly applied to all MoE operations. At runtime, each expert can get an arbitrary number of tokens and construct-ing graphs for all possible expert capacities is infeasible. 
+
+(2) Limited support for irregular/dynamic operators. 
+
+NPU imposes strict constraints: (1) it is shape sensitive: vari-able tensor shapes such as token to expert assignment, large dimension tensors in attention, unsupported operators etc. can trigger CPU fallback. (2) it is optimized for static dense operators and convolutions e.g. conv2D but cannot perform arbitrary runtime dependent core MoE operations such as dynamic indexing, tensor reshaping, top-k (router) etc. (3) Limited support for masking, reductions, and conditional logic complicates attention masking and expert aggregation. 
+
+(3) Limited concurrency and frequent dispatch overhead. 
+
+NPUs have limited concurrency: many small compute graphs can serialize on a single device queue, causing high launch overhead and low utilization. Allocating individual compute graphs to each expert can cause a subgraph explosion, trig-gering CPU fallback. CPU-NPU synchronization can account for >60% of runtime in worst case (ref. Figure 8); this dom-inates end-to-end performance when a workload is split into many small subgraphs. Similarly, repeatedly invoking NPU for small kernels e.g., each expert’s FFN can cause per-invocation overhead to dominate execution time. To address these challenges, our insight is to transform the MoE execution pipeline to maximize NPU utilization while retaining CPU/GPU fallback for dynamic operations. 
+
+Goal. Our overarching principle is straightforward: while it would be ideal to execute all computations on NPU, MoE dynamism makes this impractical; therefore, we aim to max-imize NPU offload/usage while choosing which parameters and operations to offload and which compute unit to utilize through careful graph design. 
+
+Design (§3) Our design treats NPU as the primary execu-tion engine; CPU/GPU acts as a secondary fallback path for unsupported operations. Dense projections such as atten-tion and expert FFN blocks are primarily executed on NPU, dynamic operators whose behavior depends on runtime in-put such as top-k, dynamic indexing etc. are delegated to CPU/GPU. Expert activations are returned to CPU for rout-ing, aggregation, and fallback execution when needed. We, thus (1) partition runtime operators across compute units that maximize energy efficiency and overall utilization while meeting latency targets, (2) construct efficient NPU-friendly compute graphs employing non-trivial techniques: 
+
+Static Tiers for Expert Capacity (§4.1) NPUMoE respects NPU shape sensitivity: each expert is bounded to a fixed token capacity per layer. This introduces an explicit capaci-ty/accuracy tradeoff: smaller capacities reduce wasted com-pute and improve utilization (less padding), but increase the likelihood of overflow/token dropping when many tokens route to the same expert, affecting accuracy. NPUMoE uses offline calibration to estimate each expert’s expected work-load and maps experts to static capacity tiers accordingly: popular experts receive larger capacities (e.g., top quartile gets 4x base capacity), while less frequently used experts receive smaller capacities, focusing resources on experts that most impact compute and latency. 
+
+Grouped Expert Execution (§4.2) NPUMoE accommo-dates NPU concurrency limitations: fine-grained expert exe-cution creates too many small compute graph launches that can serialize on the same device queue, increasing launch count and data movement overheads. To mitigate serializa-tion of compute graphs, NPUMoE batches multiple experts into a single static, grouped dense FFN compute graph, so that one invocation executes several experts as a single fused block with shared launch overhead and scheduling costs, thus maximizing NPU utilization. Grouping creates an ex-plicit tradeoff between group size and per-expert capacity. 
+
+Load Aware Expert Compute Graph Residency (§4.3) 
+
+CPU/NPU synchronization introduces latency; NPUMoE 
+
+uses load-aware placement of grouped expert compute graphs across available execution units to meet latency tar-gets. In particular, (1) short, bursty workloads - such as cold experts that receive only a few routed tokens underutilize NPU and increase end-to-end latency and (2) small groups of few experts cannot amortize graph launch overhead. In such cases, running them on CPU avoids this dispatch  
+
+> 2Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs 84%
+> 82%
+> 30%
+> 18%
+> CPU Cycles
+> E2E latency
+> Prefill Decode
+
+Figure 2. Prefill phase dominates end-to-end inference. overhead. NPUMoE therefore maintains a small resident 
+
+working set of expert compute graphs on NPU, formed by hot expert groups whose launches can be amortized, while relegating cold experts to the CPU/GPU fallback path. Expert popularity (§4.3) determines the hot/cold state of each expert. 
+
+Implementation and Evaluation (§5) We implement 
+
+NPUMoE from scratch, using the ANEMLL [ 5] library for model conversion and Apple’s Core ML [ 21 ] stack (via Swift) for runtime. We compare against three baselines (in §5) that differ in how MoE runtime operations are executed, with primary emphasis on long-context prefill workloads. We evaluate NPUMoE on three popular MoE LLMs: Phi-3.5-MoE-Instruct, Phi-tiny-MoE-Instruct, and Qwen3-30B-A3B across two Apple M-series devices: M2 Ultra and M2 Max. 
+
+NPUMoE consistently provides the best performance-efficiency tradeoff across workloads: it reduces prefill la-tency by 1.32x–5.55x, energy consumption by 1.81x–7.37x and CPU-cycle usage by 1.78x–5.54x, with negligible ac-curacy loss (<1.1% compared to FP16) on our test datasets. These gains come from our proposed techniques (§4.1-§4.3) that accelerate the model execution path through effective offloading of compute to NPU and from carefully balancing grouping, capacity selection, and padding overhead. Overall results demonstrate the effectiveness of exploiting mobile NPUs for dynamic MoE model inference. We will make our codebase open-source. Our contributions are as follows: 
+
+• We investigate the challenges and limitations of MoE inference on NPUs and perform an in-depth analysis of MoE on Apple Neural Engine. 
+
+• We introduce three novel techniques: static tiers for expert capacity, grouped expert execution, and load-aware expert residency. Combined, they accelerate MoE inference and efficiency significantly. 
+
+• We design an inference engine NPUMoE , a first-of-its-kind system that systematically optimizes MoE efficiency for NPUs. Our comprehensive end-to-end evaluation demonstrate the superiority of NPUMoE 
+
+over competitive baselines. 
+
+2 Background 
+
+Mixture of experts. architecture popularized by models such as Switch Transformer [ 16 ], GShard [ 28 ] etc. performs sparse computation by routing tokens to specialized feed for-ward network (FFN) blocks (i.e. experts) (ref. Figure 3). MoE inference is fundamentally dynamic: the router performs top-k selection and dispatches tokens via scatter, performs dense Input     
+
+> Router
+> E0
+> Output
+> Token to expert
+> assignment
+> (topK =2)
+> token 1E0, E2
+> ……
+> token nE5, E7 Attention
+> E1 …
+> Embedding
+> En E2
+> Weighted sum
+> Nx
+> Active expert
+> Inactive expert
+
+Figure 3. Mixture of Experts architecture Operations  Supported                              
+
+> by ANE
+> Supported
+> by CPU
+> Standard /Depthwise Convolution ✓✓
+> Standard/Batched MatMul ✓✓
+> Activations (ReLU, etc.) ✓✓
+> Element -wise (add etc.) ✓✓
+> nn.Linear (as Conv2d) ✓✓
+> Dynamic shapes/tensors ×✓
+> Indexing ×✓
+> Dilated Convolutions ×✓
+> TopK sampling ×✓
+> Scatter/Gather ×✓
+> Comparison Ops (>, <= etc.) ×✓
+> Layernorm ×✓
+> Custom Operators ×✓
+
+Figure 4. Runtime operations supported by ANE and CPU. expert FFN compute, gathers expert output, and attention and each expert must handle variable input tokens. 
+
+Apple Neural Engine. is Apple Silicon’s dedicated NPU for energy-efficient, high-throughput neural network inference. Its unified-memory architecture allows the CPU, GPU, and ANE to access the same memory pool, making the platform attractive for on-device LLM inference; e.g., M2 Ultra with 192GB RAM integrates a 32-core Neural Engine rated at up to 31.6 TOPS [ 41 ]. However, similar to other commodity NPUs, ANE imposes static graph and shape rigidity constraints and offers limited support for runtime dynamic operations [ 43 , 50 ]; list of supported operations in Figure 4. Terminol-ogy : Core ML [ 21 ] is Apple’s machine learning framework optimized to minimize memory/power consumption. 
+
+Motivation. Expert routing is highly imbalanced [ 16 ]: a small subset of experts receive most tokens, while others are rarely activated, leading to wasted compute, extra com-munication and memory traffic, and throughput bottlenecks (§2). Prior work [ 1 , 16 , 30 , 31 ] addresses this issue mainly during training through auxiliary load-balancing losses and heuristics to ensure uniform distribution of tokens across all experts. In contrast, our microbenchmark (Figure 5) show that expert load during inference remains highly skewed and varies across layers. This motivates treating expert execution as a load-aware systems problem, where compute placement and expert capacity are tailored to expected workload. 
+
+Compute graph. is a sequence of connected operations that define data flow through the model (ref. Figure 6). Prior work [ 11 ] and §A.4 show that graph build time is significantly 
+
+> 3
+
+Afsara Benazir and Felix Xiaozhu Lin PhiMoE -3.5 -Instruct (prefill)  PhiMoE -3.5 -Instruct (decode)  
+
+> Qwen1.5 -MoE -A2.7B (prefill) Qwen1.5 -MoE -A2.7B (decode)
+
+Figure 5. Expert load imbalance in prefill and decode for Phi-3.5-MoE and Qwen1.5-MoE-A2.7B. Imbalance ratio is the maximum expert load divided by the average layer load; values above 1 indicate greater skew. Input     
+
+> Hidden states
+> Reshape
+> Input
+> Shape Result
+> Conv
+> Dilations
+> Groups
+> Result
+> Input
+> Pad
+> Strides
+> Weight
+> Reshape
+> Input
+> Shape Result
+> Softmax
+> Input Result
+> TopK
+> Input
+> TopK
+> weights
+> K
+> Return indices
+> Sort
+> Weight
+> Reduce Sum
+> Input
+> Keep_dims Result
+> Cast
+> Reshape
+> Output
+> expert_indices
+> Output
+> routing_weights
+> Tensor data
+
+Figure 6. A compute graph of a single MoE router. Dense MatMul 
+
+Shape=(M,N,K) 
+
+CPU only 
+
+(ms )
+
+CPU+NPU 
+
+(ms )
+
+NPU 
+
+speedup 
+
+(64, 4096, 4096)  1.27  1.24  1.03x 
+
+(256, 4096, 4096)  3.80  2.67  1.35x 
+
+(512, 4096, 4096)  7.33  3.80  1.94x 
+
+(1024, 4096, 4096)  15.20  7.22  2.12x 
+
+(2048, 4096, 4096)  30.78  13.15  2.34x 
+
+(32048, 4096, 14336)  3322.26  3201.00  1.04x 
+
+Figure 7. Runtime of dense matmuls on M2 Ultra demon-strates NPU efficiency. Benefit is reduced for very small (M=64) or very large matrices (M=32048). higher than execution time, making runtime dynamic graph construction on NPU impractical. Each compute graph is unique, components with similar shape but different weights cannot trivially share a single graph [21]. 
+
+Scenario. Two deployment scenarios exist: (1) Available memory is limited, weights are swapped in and out from host/flash memory at runtime (e.g. non-unified memory de-vices) and (2) Available memory large enough to hold all experts (e.g. unified memory of Apple Silicon). Prior work [ 9] has focused mostly on scenario 1 and adopted techniques such as expert prefetching and caching. We focus on scenario 2 and assume all model weights reside in device memory. 
+
+NPU Efficiency. We microbenchmark several dense matmul operations on M2 Ultra to compare NPU and CPU efficiency (ref. Figure 7); across varying input shapes NPU demon-strates 1.4x–2.3x lower runtime than CPU. However, this 0 1.5 3 
+
+> CPU-NPU
+> CPU only 1.45s
+> 2.66s
+> Dispatch Execution time
+> E2E runtime (s)
+
+Figure 8. CPU-NPU synchronization overhead. benefit appears only when enough work is amortized per launch and graph compute isn’t too small (M=64) or too large (M=32048 or vocab size). 
+
+CPU-NPU coordination. pays the cost of high synchro-nization [ 14 ]. Unified memory helps communication, but it does not eliminate coordination cost; several recent systems show that synchronization and launch overheads can be com-parable to kernel execution time for fine-grained workloads [ 11 ]. As shown in Figure 8, frequent short NPU invocations amplify dispatch overhead and device-queue serialization, reducing overall NPU utilization. 
+
+Why not GPU by default? For on-device mobile LLM in-ference, the GPU should not be assumed to be the default accelerator as it is a shared system resource tasked with graphics rendering, display, and other latency-sensitive in-teractive workloads [ 49 ] whereas ANE is a dedicated ML accelerator designed for sustained throughput and energy efficiency [ 20 ]. For long-context workload, prefill dominates end-to-end inference [ 2 ] thus accelerating dense prefill for NPU is more valuable than monopolizing GPU for compute. Apple advocates harnessing ANE for demanding ML work-load leaving GPU to execute non-ML workloads [8, 23]. 
+
+3 NPUMoE : Overview 
+
+3.1 Workflow Workflow consists of two phases (ref. Figure 9): 
+
+Offline : 1 We calibrate experts offline to estimate expert capacity tiers (§4.1) and expert popularity to derive an opti-mal expert placement policy (§4.3). 2 Using this calibration data, we apply our key techniques (§4.1-§4.3) to construct the optimized Core ML compute graph: pretrained model weights are loaded, the optimized graph is prepared for con-version, and compiled for its target compute units. 
+
+Runtime : 3 When a prompt arrives, we process the prefill chunk and offload NPU-supported static, dense operations (i.e. attention and expert FFN) for that chunk; activations return to CPU. 4 Remaining dynamic operations follow the fallback path: routing, top-k dispatch etc. runs on CPU, selected (hot) experts execute on NPU while cold experts fallback to CPU. CPU and NPU synchronize during execution, while GPU resources remain available for background tasks. 
+
+3.2 Design Principle 
+
+At a high level our target principle is (1) to maximize com-pute offloaded to NPU while treating the CPU (or GPU) as a fallback path for dynamic or unsupported operations. 
+
+4Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs Offline  Runtime 
+
+> Chunk N
+> Prompt
+
+Compute Graph 
+
+Construction 
+
+> Graph Preparation
+> Optimized
+> runtime model
+> Load pretrained
+> model weights
+
+2
+
+Comm. 
+
+ANE 
+
+CPU 
+
+GPU 
+
+Hot Experts Attn 
+
+Router  Cold Experts 
+
+Attn 
+
+Layer i
+
+Dispatch  Gather + 
+
+Reduce  Σ …. 
+
+3
+
+4
+
+Layer i+1 
+
+…. 
+
+…. 
+
+Background/Non -ML tasks 
+
+Dense operations 
+
+Dyanmic operations  Router  
+
+> Chunk 1 output
+
+Grouped Expert Execution( §4.2) 
+
+Static tiers for expert capacity ( §4.1)                
+
+> E0 E1 E2 E3 E4 E5 E6 E7
+> Tier 3
+> Tier 2
+> Tier 1
+> E4 E8
+> E13 E1
+> E6 E15
+> E11 E14
+> Group of 8
+> hot experts
+> E0 E2 E7 E3 Group of 4
+> cold experts
+
+Load aware compute graph residency (§4.3) 
+
+> Expert
+> Placement Policy
+> Expert Popularity
+> Determination
+
+Expert Capacity 
+
+Estimation 
+
+Techniques 
+
+Layer N 
+
+Offline 
+
+Calibration 
+
+1
+
+Figure 9. Our system NPUMoE - incorporates key design (1) Static tiers for expert capacity (§4.1) (2) Grouped Expert Execution (§4.2) and (3) Load aware compute graph residency (§4.3). GPU resources remain available for background tasks while CPU and NPU synchronize between runtime operations. and (2) optimize for resource efficiency. In particular, we seek to achieve target latency goals, improve energy effi-ciency, reduce CPU cycles used and minimize CPU–NPU synchronization. Variable prompt length breaks static atten-tion graphs; padding to max context (e.g. 128K) is infeasible, hence following prior work we adopt chunked prefill [43]. 
+
+Operator Partitioning We employ a hybrid partitioning strategy that ensures maximum utilization of available re-sources respecting target latency/energy. We place dense workloads on NPU, while keeping dynamic or control-heavy operations on CPU. Specifically, attention (Q/K/V projec-tions, softmax, stateful KV cache update) and expert FFN compute execute on NPU with static tensor shapes, whereas layerNorm, masking, expert routing (top-𝑘 /argmax), and token dispatch/merge operations (scatter, gather, weighted combine) execute on the CPU due to their dynamic indexing and irregular memory access patterns. 
+
+Considerations for graph construction Aside from static shapes, efficient NPU execution also depends on tensor lay-out. Shapes that are powers of two and sizes that are multi-ples of 16 (e.g., 16, 32, 48, 64) improve memory access and utilization [ 6 ]; tensors should be 16-byte aligned to ensure ef-ficient execution and compatibility with NPU hardware con-straints. In practice, transformer linear layers ( nn.Linear )are often rewritten as 1x1 convolutions ( nn.Conv2d ) to better utilize NPU-optimized kernels [ 23 ], fixed-shape KV caches are also standard implementation choices for Core ML [5]. 
+
+Optimization When routed tokens exceed an expert’s static capacity (§4.1), NPUMoE prunes the overflow tokens using an activation-based saliency score to limit accuracy degra-dation: tokens with lower saliency, ranked by the L2 norm of attention output activations are discarded first, following prior activation-magnitude pruning methods [ 4, 32 ]. The saliency score is derived from activations, while overflow ranking and pruning are performed on CPU. Inference accu-racy is reported in section 5. E0 E1 E2 E3 E4 E5 E6 E7                           
+
+> (a) Token to expert assignment
+> Dynamic Routing
+> E0 E1 E2 E3 E4 E5 E6 E7
+> (b) Capacity Overprovisioning
+> Compute waste
+> E0 E1 E2 E3 E4 E5 E6 E7
+> (c) Token Dropping
+> Accuracy loss
+> E0 E1 E2 E3 E4 E5 E6 E7
+> (d) Ours: Capacity Tiers
+> Chunk size Imbalance Ratio
+> Tier 3
+> Tier 2
+> Tier 1
+> Capacity Estimation
+> Frequency
+> Frequency
+> Frequency
+> Frequency
+> Expert ID Expert ID Expert ID Expert ID
+> padding pruning
+
+Figure 10. Static tiers for expert capacity. (§4.1) 
+
+3.3 Offline Calibration 
+
+We perform an offline calibration pass that measures per-layer expert routing statistics and derives an expert popular-ity ranking. NPUMoE then uses this ranking to configure two runtime decisions: capacity-tier assignment (§4.1) and expert compute graph residency (§4.3). For each layer, we record how often each expert is selected and rank experts by their cumulative token assignments. Details in section 5. We validate our profiling along two dimensions: (1) accuracy of expert popularity estimation, and (2) cross-dataset stability of dominant experts in §5.8. 
+
+4 System Design 
+
+4.1 Static Tiers for Expert Capacity Issue : A key challenge in MoE inference is that token-to-expert assignment is inherently unpredictable: after routing, different experts receive variable numbers of tokens, and this load can vary across prompts and layers. This dictates variable length input to each expert, hence dynamic input shapes and dynamic compute graphs at runtime; such vari-ability interacts poorly with NPU execution, which cannot execute dynamic shapes at runtime. 
+
+Approach : To make expert execution compatible with NPU, we replace dynamic per-expert token counts with estimated fixed capacities proportional to each expert’s expected load. 
+
+5Afsara Benazir and Felix Xiaozhu Lin 
+
+When an expert receives more tokens than its capacity, two overflow policies are possible: (i) padding, i.e., allocating a larger uniform capacity to all experts to avoid dropping to-kens, at the cost of lower utilization; or (ii) pruning, which drops a small fraction of routed tokens based on our opti-mization in §3.2. 
+
+Problem Formulation Figure 10 illustrates a tiered capacity design that converts highly skewed token-to-expert assign-ment into a small number of static shapes. Let 𝑛 𝑒 be the number of tokens routed to expert 𝑒 in a layer after top-𝑘 routing. Because {𝑛 𝑒 }𝐸 𝑒 =1 is typically imbal-anced (ref. Figure 10a), provisioning all experts for the worst case, 𝐶 𝑒 = max 𝑒 ′ 𝑛 𝑒 ′ , avoids overflow but incurs substantial padding cost (ref. Figure 10b). Using a smaller uniform ca-pacity 𝐶 reduces padding, but when 𝑛 𝑒 > 𝐶 , the overflow 
+
+𝑑 𝑒 = max (0, 𝑛 𝑒 − 𝐶 ) must be dropped (fig.10c), degrading overall accuracy. A uniform fixed-capacity design therefore trades off compute waste against accuracy loss. To avoid this, we organize capacities into a small number of tiers, 𝑇 = {𝐶 (1) , 𝐶 (2) , 𝐶 (3) }, 𝐶 (1) > 𝐶 (2) > 𝐶 (3) , and as-sign each expert to the smallest tier that matches its expected load: 𝜏 (𝑒 ) = max { 𝑗 | 𝑛 𝑒 ≤ 𝐶 ( 𝑗 ) }. High frequency experts are mapped to higher-capacity tiers, while low frequency experts use smaller tiers (fig.10d). 
+
+Expert Capacity Estimation. We use the prefill chunk size 𝐵 and the per-layer routing imbalance ratio 𝑟 ℓ to esti-mate expert capacity at layer ℓ. As shown in Figure 5, we first measure the expected token load of each expert from a calibration dataset and compute the imbalance ratio as 
+
+𝑟 ℓ = max 𝑒 ∈ { 1,...,𝐸 } 𝑛 ℓ,𝑒 
+
+> 1
+> 𝐸
+
+Í𝐸 𝑒 =1 𝑛 ℓ,𝑒 
+
+,
+
+where 𝑛 ℓ,𝑒 denotes the number of tokens routed to expert 
+
+𝑒 at layer ℓ, and 𝐸 is the number of experts in that layer. Thus, 𝑟 ℓ is computed per layer and captures routing skew: 
+
+𝑟 ℓ = 1 indicates perfectly balanced routing, while larger values indicate greater imbalance. We define the base capacity as 𝐶 base = 𝐵 /𝐸 , i.e., the average per-expert load under balanced routing. Using 𝑟 ℓ , the busiest expert at layer ℓ is estimated as 
+
+𝑛 ℓ, max ≈ 𝑟 ℓ · 𝐵 𝐸 .
+
+For example, if 𝐵 = 256 , 𝐸 = 8, and 𝑟 ℓ = 2, then 𝑛 ℓ, max ≈
+
+2 · 256 8 = 64 tokens. Layers with higher routing skew use larger capacities, while more balanced layers use smaller ones to reduce padding. For completeness, overflow tokens cannot be easily spilled to CPU/GPU as Core ML determines the compute graph and device placement statically at compile time. Dynamic tensor partitioning across devices is therefore unsupported, making static capacity estimation the more practical design choice. Input buffer X [T,                 
+
+> H, 1, 1] ;T = E*C
+> X1= X[0:C]
+> Partition into
+> contiguous
+> slices
+> X2= X[C:2C]
+> Xn= X[(n -1) C:nC ]
+> Group tokens by expert ID
+> Expert 1 FFN
+> Expert 2 FFN
+> Expert N FFN
+> Expert output Yx
+> Shape=[C, H]
+> Grouped output Y
+> Concat (Y 1, Y 2,..Y N)
+> Shape=[T,H]
+> Per group routing metadata
+> Expert Count token_IDs
+> E164 [t 100 , t 32 , t 5..]
+> E228 [t 231 , t 2, t 105 ..]
+> En32 [t 1, t 23 , t 67 ..]
+> Token Index Map
+> (tokenIdx ,expertIdx ) →
+> routing_weight )
+> Scatter -add
+> A single compute
+> graph with N experts
+> Y1
+> YN
+
+…… 
+
+> Gather Expert Execution
+> …
+
+Figure 11. Grouped Expert Execution (§4.2) 
+
+4.2 Grouped Expert Execution 
+
+Following §4.1, a naive, straightforward approach is to allo-cate a separate compute graph for each expert after estimat-ing its capacity but this incurs non-trivial dispatch overhead. 
+
+Issue : Fine-grained per-expert execution launches many small graphs at runtime. Since these launches typically share a single device queue, they are serviced sequentially, limiting NPU concurrency. Concurrent host threads may submit work in parallel on NPU, but that does not guarantee concurrent execution on the accelerator [ 45 , 46 ]. When each graph is short-lived (such as a single expert), fixed launch overhead can dominate la-tency; launching all experts separately may cost more than the useful NPU compute itself [3]. 
+
+Approach: NPUMoE groups multiple experts into a dense, static FFN compute graph, enabling a single invocation to process several experts as a fused block with shared launch and scheduling overhead. By consolidating experts within a unified compute graph, NPUMoE reduces the overhead associated with individual launches. Each expert in a single group have the same capacity tier to prevent dynamic shapes. Execution illustrated in Figure 11 is as follows. 1 Group tokens by expert ID. For a group of 𝐺 experts with per-expert capacity 𝐶 , the runtime first determines which routed tokens belong to each expert 𝑒 𝑔 in that group. 2 Allocate a grouped input buffer. 𝑋 ∈ R(𝐺 ·𝐶 ) × 𝐻 ×1×1, where 𝐻 is the hidden dimension. 3 Partition into contiguous expert slices. The buffer is viewed as 𝐺 contiguous expert slices 
+
+𝑋 = [𝑋 1; 𝑋 2; . . . ; 𝑋 𝐺 ], 𝑋 𝑔 ∈ R𝐶 ×𝐻 ×1×1.
+
+Here, 𝑋 𝑔 contains the packed token block for expert 𝑒 𝑔 . 4
+
+Gather routed tokens into expert slices. Let 𝑛 𝑔 denote the number of routed tokens assigned to expert 𝑒 𝑔 , with 
+
+𝑛 𝑔 ≤ 𝐶 . The routed token embeddings 𝑇 𝑔 ∈ R𝑛 𝑔 ×𝐻 ×1×1 are packed into the front of slice 𝑋 𝑔 , while the remaining rows are zero-padded: 𝑋 𝑔 [0 : 𝑛 𝑔 ] ← 𝑇 𝑔 , 𝑋 𝑔 [𝑛 𝑔 : 𝐶 ] ← 0.
+
+5 Expert execution. Each expert operates on its own static capacity slice, 𝑌 𝑔 = 𝑓 𝑒 𝑔 (𝑋 𝑔 ), and the grouped output is formed by concatenation: 𝑌 = concat (𝑌 1, . . . , 𝑌 𝐺 ).
+
+6 Weighted scatter. After execution, the runtime scatters only the valid first 𝑛 𝑔 rows from each output slice, discards padded rows, and cumulates the results back to their original 
+
+6Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs All experts on ANE or CPU               
+
+> E1 E4 E6 E7
+> E0 E2 E3 E5
+> (i) Naïve Expert Placement
+> (ii) Load aware Expert Placement
+> E0
+> E1
+> E2
+> E3
+> E4
+> E5
+> E6
+> E7
+> Hot Expert Cold Expert
+> E0 E1 E2 E3 E4 E5 E6 E7
+> Expert popularity ranking
+> ANE resident group
+> CPU resident group
+
+Figure 12. Expert placement based on expert popularity on different compute units (§4.3). E0 means expert 0 and so on. token position multiplied by their corresponding routing weights. This layout eliminates dynamic indexing inside the com-piled graph: expert-to-token assignment is resolved before invocation, and the model only sees a dense, statically shaped tensor. For example, if four experts receive (64 , 32 , 32 , 0) to-kens and 𝐶 = 64 , then the first slice is fully occupied, the next two are partially padded, and the last slice is entirely padding. This converts imbalanced routing into a dense, static layout suitable for grouped execution. 
+
+Configuration: We explore configurations with different group sizes (e.g., 4, 8, and 16 experts per graph) and fixed per-expert capacities (e.g., 16, 32, and 64). These choices create explicit trade-offs: (1) Large group size + higher capacity (e.g., 
+
+8 × 64 ) improves launch amortization and reduces queue pressure. However, it can overprovision lightly used experts and waste compute; in extreme cases, it can block group parallelism and fall back to CPU execution (e.g., 16 × 128 ). (2) 
+
+Large group size + lower capacity ( 8 × 16 ) still benefits from launch amortization with less wasted compute, but overflow risk rises under bursty workloads. (3) Small group size + higher capacity ( 4 × 64 ) handles imbalanced routing better than larger groups and reduces overflows, but it requires more launches and can still waste work through padding. (4) 
+
+Small group size + lower capacity ( 4 × 16 ) is efficient under light, balanced loads, but it needs frequent dispatches and can still face token overflow. 
+
+Observation : We observe a hard feasibility boundary: if a compute graph becomes too large (e.g. >1.2 GB for M2 Ul-tra), execution falls back to CPU; grouping all 16 experts of PhiMoE into a single graph is not optimal for NPU; careful consideration is needed as to how much weight to accumu-late in one compute graph. Impact of grouping is in §5.7. 
+
+4.3 Load-Aware Compute Graph Residency Issue 1 : Grouped expert execution amortizes launch over-head, but the choice of grouping interacts directly with routed token load. When a high-demand expert is grouped with low-demand ones, the system must either overprovi-sion the whole group through padding to the highest tier in that group, causing poor utilization, or keep capacity low and force the hot expert to drop tokens. 
+
+Issue 2 : Uniform NPU offload is not always beneficial as CPU-NPU coordination introduces latency. Small, bursty workloads caused by cold experts or very fine-grained group-ing often fail to amortize CPU-NPU dispatch and synchro-nization overhead; this launch cost can outweigh useful com-pute and increase end-to-end latency. 
+
+Approach: NPUMoE uses a load-aware expert placement policy that jointly decides which experts are grouped to-gether and where the resulting grouped compute graph should reside. The policy is driven by offline calibration, which estimates per-layer expert popularity from routing statistics, and by grouping granularity, which determines whether a grouped configuration contains enough useful work to amortize graph launch overhead. NPUMoE keeps a small resident working set of hot (high-demand) experts on NPU to amortize dispatch overhead, while configurations with fine-grained grouping (such as 2 × 8), where individual groups are small and bursty, are relegated to the CPU/GPU fallback path. This avoids unnecessary CPU-NPU synchro-nization for small workloads, reduces compute waste, and improves utilization by matching expert demand to the most suitable execution unit. 
+
+Expert Popularity. Offline calibration ranks experts at each layer by cumulative routed-token count, revealing a skewed activation pattern in which a small subset of experts con-sistently receives most routed tokens. We treat these as hot experts and the remainder as cold experts. We find that dom-inant experts are not strongly dataset-specific (ref. §5.8): experts that are highly active on one benchmark tend to remain highly active on another. 
+
+Grouping granularity. NPUMoE groups experts by ex-pected demand: hot experts are grouped together, while cold experts are grouped separately. This avoids mixing highly active and rarely used experts in the same graph, which would otherwise increase padding and reduce useful work per invocation. Impact of group size is in §5.7. 
+
+Expert Compute Graph Placement Policy illustrated in Figure 12, determines which experts should be grouped and, ultimately, where their compute graphs should reside. 
+
+NPUMoE assigns grouped expert graphs to the execution unit that best matches their expected load. Hot groups remain on NPU because their demand is sufficient to amortize launch and synchronization cost, whereas cold groups or very small groups are mapped to CPU, where short, bursty workloads avoid NPU dispatch cost. This reduces unnecessary CPU-NPU coordination and improves NPU efficiency. 
+
+5 Evaluation 
+
+5.1 Experimental Setup Hardware Our primary target platform is Apple M-series devices representing unified memory architecture. We use an M2 Max (64GB memory, 12-core CPU, 16-core ANE) and 
+
+> 7Afsara Benazir and Felix Xiaozhu Lin
+
+Table 1. Models used in experiment. Model  #layers  Total                 
+
+> Params
+> Active
+> params
+> #Experts
+> (Total/Activated) Sparsity
+> Phi -3.5 -MoE -Instruct 32 42.6B 6.6B 16/2 8
+> Phi -tiny -MoE -Instruct 32 3.8B 1.1B 16/2 8
+> Qwen3 -30B -A3B 48 30.5 B3.3B 128 /8 16
+
+Table 2. Comparing targets. Baselines  Attention  Expert FFN         
+
+> Core ML (CPU only) CPU CPU
+> Core ML (naïve) CPU NPU
+> ANEMLL NPU CPU
+> Ours NPU NPU
+
+an M2 Ultra (192GB memory, 24-core CPU, 32-core ANE) as our hardware testbed. 
+
+Model We experiment with three popular MoE models as illustrated in Table 1 representing state-of-the-art (SOTA) MoE models with expert counts ranging from 16 to 128 (1) Phi-3.5-MoE-instruct [ 33 ], a 32-layer MoE model with 16 experts and top-k=2 routing. Full model has 42.6B parameters (83.75 GB), each expert being 150MB in size. (2) Phi-tiny-MoE-Instruct [ 34 ], a smaller variant from the PhiMoE model family with 3.8B params (7.51 GB in size). (3) Qwen3-30B-A3B [ 47 ] has 48 layers with a total of 128 experts (28.64 GB in size). Moving forward, we address them as PhiMoE, PhiMoE-tiny and Qwen3-MoE respectively. 
+
+Workload We target long context understanding tasks such as QA, retrieval based tasks, MCQ etc. where prefill typi-cally has a larger context and decode generates a few tokens; thus our primary focus is targeted towards ensuring prefill efficiency . We evaluate three representative datasets using standard few-shot prompting [ 38 ]: (a) HellaSwag [ 52 ], a com-monsense reasoning benchmark with narrative contexts and multiple-choice completions; (b) BoolQ [ 13 ], a QA dataset with yes/no answers; and (c) RULER [ 19 ], a long-context benchmark focused on retrieval and aggregation over ex-tended inputs with short outputs. 
+
+Comparing targets We compare NPUMoE with 3 baselines, all based on Core ML to maintain consistency. They differ in where attention and expert FFNs execute. Table 2 summarizes the placement policy for each system: (1) Core ML (CPU) :executes all operators on CPU. (2) CoreML (naïve) : default CoreML scheduling is used; expert FFN can be dispatched to NPU while control and unsupported paths remain on CPU. At runtime, Core ML decides if experts can run on NPU. (3) ANEMLL [ 5]: library closest to ours that accelerates dense transformer LLMs for NPU. We preserve its original backbone to run dense transformer blocks on NPU and let the rest execute on CPU. 
+
+NPUMoE represents our system with all our optimizations enabled. We enable chunked prefill following [ 2]. ANE is optimized for FP16 compute [ 23 ] and dequantizes INT8 to 0
+
+400 
+
+800 
+
+1200 
+
+0 30 60 90 120    
+
+> ANEMLL
+> CoreML
+> (naive)
+> CoreML (CPU)
+> high CPU
+> usage
+> Worst
+> performance
+> Total runtime energy (J)
+> Ours Lowest
+> latency
+
+Total runtime (s) 
+
+> ~60B
+> ~140B
+> > 220B
+> CPU cycles
+
+Figure 13. Trade-off analysis of latency, energy consump-tion, and CPU cycle usage for PhiMoE. NPUMoE achieves the optimal pareto frontier compared to all baselines. FP16 before computation [ 37 ]. Unless otherwise noted, all comparisons use the same model checkpoint, tokenizer, FP16 precision, and real routing traces from workload. 
+
+Offline Calibration We profile and evaluate on separate randomized subsets of our test datasets. Accuracy is eval-uated by (1) prediction accuracy on unseen inputs and (2) cross-dataset validation. Both are measured using per-layer median Overlap@K [ 29 ] between offline-profiled and run-time routed experts. Accuracy reported in §5.8. 
+
+Hyperparameters We vary (1) expert token capacity ∈{32 , 64 , 128 }, (2) group size 𝐺 ∈ { 4, 8}, (3) prompt length 
+
+𝑃 ∈ { 1024 , 4096 }, and (4) prefill chunk size ∈ { 256 , 512 , 1024 }.
+
+Performance metrics We primarily optimize and focus on evaluating prefill performance. We report three metrics: (1) Runtime latency, measured in TTFT (time-to-first-token); (2) Energy efficiency, measured as energy per token (EPT); calculated for N tokens as: 
+
+EPT = 𝐸 compute + 𝐸 comm .
+
+𝑁 tokens 
+
+,𝐸 compute means energy spent in compute by CPU, GPU (if active) and ANE combined. 𝐸 comm . measures energy spent in data movement and storage during inference. (3) Reduction in CPU usage, measured by CPU cycles consumption. We use CPU cycles as an offload proxy to account for NPU utilization; fewer CPU cycles indicate that more compute is offloaded from CPU to NPU. We also report end-to-end results covering both prefill and decode. According to our benchmark workloads, the average decode length is 8 tokens. All device energies are collected with Zeus [ 39 ]. Accuracy is measured with the LM Evaluation Harness [ 17 ]. Lower EPT, lower TTFT, and lower CPU cycle usage indicate better efficiency. 
+
+5.2 Overall Performance 
+
+Across all configurations, NPUMoE consistently provides the best overall performance-efficiency trade-off, as shown in Figure 13. For PhiMoE on M2 Ultra, NPUMoE achieves 
+
+> 8
+
+Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs 0          
+
+> 30
+> 60
+> 0
+> 100
+> 200
+> 0
+> 75
+> 150
+> 0
+> 50
+> 100
+> 3.44x
+> slower
+> 1.33x ↓ 1.0x 1.58x ↓
+> 3.85x
+> slower
+> 1.50x ↓ 1.0x 1.72x ↓
+> 3.70x
+> slower
+> 1.56x ↓ 1.0x 2.07x ↓
+> 5.55x
+> slower
+> 1.95x ↓
+> 1.0x
+> MoE block
+> Attention
+> TTFT (s) ↓
+> TTFT (s) ↓
+> 1.32x ↓
+> TTFT (s) ↓
+> MoE block
+> Attention MoE block
+> Attention
+> MoE block
+> Attention
+> TTFT (s) ↓
+> (C, P) = (256, 1024) (C, P) = (512, 1024) (C, P) = (512, 4096) (C, P) = (1024, 4096)
+
+Figure 14. Prefill latency (TTFT) breakdown for PhiMoE on M2 Ultra across varying prompt lengths (P) and prefill chunk sizes (C), split into Attention and MoE components. Expert FFN takes up over 86% of TTFT, indicating that expert execution dominates prefill latency. 1.32x–5.55x lower latency, 1.81x–7.37x higher energy effi-ciency, and 1.78x–5.54x lower CPU-cycle usage than the baselines across real routing traces with varying prompt lengths and chunk sizes during prefill (§5.3–§5.5). This trend also holds for PhiMoE-tiny and Qwen3-MoE. Their speedups range from 1.11x to 1.87x and from 1.19x to 3.86x, while energy-efficiency gains range from 1.70x to 2.68x and from 1.84x to 3.89x, respectively (§A). Accuracy is consistently maintained with <1.1% degradation on our test datasets (ref. Table 3). Thus we do not trade efficiency for performance. 
+
+5.3 Runtime Latency Prefill latency. NPUMoE consistently achieves the lowest prefill latency across all evaluated prompt lengths and chunk settings, outperforming all baselines by 1.32x–5.55x (Figure 14). At prompt length 1024, it reduces TTFT by 2.07x and 1.32x over CoreML(CPU), 5.55x and 3.44x over CoreML(naïve), and 1.95x and 1.33x over ANEMLL at chunk sizes 256 and 512, respectively. At prompt length 4096, 
+
+NPUMoE remains the fastest configuration, delivering 1.58x, 3.85x, and 1.50x lower latency at chunk 512, and 1.72x, 3.70x, and 1.56x lower latency at chunk 1024 over CoreML(CPU), CoreML(naïve), and ANEMLL, respectively. 
+
+Breakdown: Figure 14 shows that TTFT reduction is driven mainly by the MoE block, while attention latency increases by ∼27.6% depending on NPU or CPU backend. CPU-NPU dispatch can account for >60% time as evident from the MoE block runtime of CoreML(naïve). 
+
+End-to-end latency. NPUMoE achieves the largest end-to-end gains on our long-context workloads with short outputs. Results show up to 3.86x speedup over CoreML(naïve), 1.26x over CoreML(CPU), and 1.19x over ANEMLL. 
+
+5.4 Energy Efficiency Prefill. Figure 15 reports energy per token. Across all chunk sizes and prompt lengths, our system achieves the lowest energy per token. Relative to our design, CoreML (CPU), CoreML (naïve), and ANEMLL consume 1.81x–3.19x, 4.71x-7.37x, and 1.86x–3.43x higher energy per token, respectively. 0                        
+
+> 150
+> 300
+> 0
+> 250
+> 500
+> 0
+> 300
+> 600
+> 0
+> 500
+> 1000
+> CoreML
+> (CPU)
+> CoreML
+> (naïve)
+> ANEMLL Ours
+> (C, P) = (256, 1024) (C, P) = (512, 1024) (C, P) = (512, 4096) (C, P) = (1024, 4096)
+> CPU ( mJ )ANE ( mJ )Comm. ( mJ )
+> Energy per token ( mJ /token)
+> Energy per token ( mJ /token)
+> Energy per token ( mJ /token)
+> Energy per token ( mJ /token)
+> 2.14x ↑
+> 6.30x ↑
+> energy
+> 2.01x ↑
+> 1.0x
+> 3.19x ↑
+> 7.37x ↑
+> energy
+> 3.43x ↑1.0x
+> 1.81x ↑
+> 4.71x ↑
+> energy
+> 1.86x ↑
+> 1.0x
+> 2.3x ↑
+> 5.23x ↑
+> energy
+> 2.49x ↑
+> 1.0x
+> CoreML
+> (CPU)
+> CoreML
+> (naïve)
+> ANEMLL Ours CoreML
+> (CPU)
+> CoreML
+> (naïve)
+> ANEMLL Ours CoreML
+> (CPU)
+> CoreML
+> (naïve)
+> ANEMLL Ours
+
+Figure 15. Energy consumption breakdown per token across varying prefill chunk sizes (C) and prompt lengths (P) for Phi-MoE on the M2 Ultra. NPUMoE consistently demonstrates the highest energy efficiency across all configurations. 0 50 100 150              
+
+> Ours
+> ANEMLL
+> CoreML(naïve)
+> CoreML(CPU)
+> prefill chunk = 512, prompt len. = 1024
+> 050 100 150
+> Ours
+> ANEMLL
+> CoreML(naïve)
+> CoreML(CPU)
+> prefill chunk = 256, prompt len. = 1024
+> 0150 300 450
+> Ours
+> ANEMLL
+> CoreML(naïve)
+> CoreML(CPU)
+> prefill chunk = 256, prompt len. = 4096
+> 0100 200 300 400
+> Ours
+> ANEMLL
+> CoreML(naïve)
+> CoreML(CPU)
+> prefill chunk = 512, prompt len. = 4096
+> 3.78x ↑
+> 3.61x ↑
+> 2.45x ↑
+> 3.20x ↑
+> 1.78x ↑ 2.98x ↑
+> 2.82x ↑
+> 3.70x ↑
+> 2.09x ↑
+> 3.43x ↑
+> 5.54x ↑
+> 2.21x ↑
+> CPU cycles (in billions) CPU cycles (in billions)
+> CPU cycles (in billions) CPU cycles (in billions)
+> 1.0x
+> 1.0x 1.0x
+> 1.0x
+
+Figure 16. Total CPU cycles consumption across prefill work-loads for PhiMoE on M2 Ultra (Lower is better). Reduced usage indicate effective offloading of compute to NPU. Our gains persist across both short and long prompts and remain robust as chunk size increases. For short prompts (length=1024), the largest advantage appears at chunk size 512, where CoreML (naïve), CoreML (CPU), and ANEMLL consume 7.37x, 3.19x, and 3.43x more energy per token than ours, respectively. For longer prompts, ours reduces energy per token by 4.71-5.23x over CoreML (naïve), 1.81-2.30x over CoreML (CPU), and 1.86-2.49x over ANEMLL. Overall, our method maintains a low and stable energy cost of roughly 52–137 mJ/token. Notably, CoreML (naïve) spends 4.44x-5.69x more energy on data communication alone than ours, underscoring the overhead of naïve CPU–NPU coordination. 
+
+End-to-end. NPUMoE achieves the best efficiency with 3.89x lower energy than CoreML(naïve), 1.84x lower than CoreML(CPU), and 1.95x lower than ANEMLL end-to-end on our test datasets. 
+
+5.5 Reduction in CPU usage Prefill. Figure 16 shows that our method consistently re-quires fewer CPU cycles than all other baselines. For prompt length 1024, our method reduces CPU cycles by 3.78x, 3.61x, and 2.98x at prefill chunk 256, and by 2.45x, 3.20x, and 1.78x at prefill chunk 512, relative to CoreML (CPU), CoreML (naïve), and ANEMLL, respectively. For longer prompts (4096), the 
+
+9Afsara Benazir and Felix Xiaozhu Lin 
+
+Table 3. Inference accuracy of NPUMoE on PhiMoE across four long-context workloads shows negligible degradation. Dataset  Avg. token                           
+
+> drop rate %
+> Avg padded
+> tokens %
+> Acc.
+> (FP16)
+> Acc.
+> (ours)
+> Acc.
+> Degradation
+> BoolQ (fewshot=2) 14.66 %31.73% 86 .00% 86 .00% 0.0%
+> Hellaswag (fewshot=10) 10.63% 34.77% 88.57% 87.62% -1.07%
+> RULER -niah _single_2 (zeroshot) 21.77 %37.49% 95.50% 95.00% -0. 52 %
+> RULER -niah_multikey_1 (zeroshot) 21.00% 37.00% 96.00% 96.00% 0.0%
+
+Table 4. MoE block runtime breakdown (in ms) for a single layer of PhiMoE on M2 Ultra (chunk=256, prompt len.=1024). Per-block latency is dominated by expert FFN and scatter/write-back cost, while router, padding etc. over-heads remain negligible. Operation  CoreML (CPU) ( ms ) CoreML (naïve) ( ms ) ANEMLL ( ms ) Ours ( ms )                              
+
+> Router 1111
+> Gather tokens to expert buffer 3.62 1.95 3.73 1.24
+> Padding 01.62 00.37
+> Expert FFN 969.53 3369.86 983.05 530.91
+> Scatter (write back) 901.06 896.76 902.87 775.52
+> Residual addition 440.62 435.23 440.22 398.34
+> End to end MoE block runtime 2315.83 4706.42 2330.87 2165.46
+
+same trend holds: at prefill chunk 256, we reduce CPU cy-cles by 2.09-3.70x, and at prefill chunk 512, by 2.21x-5.54x, against baselines. 
+
+End-to-end. NPUMoE consistently maintains the lowest total CPU cycles consumption, reducing count by 2.64x-3.75x over CoreML (CPU), 3.17x-4.67x over CoreML (naïve), and 2.01x-2.99x over ANEMLL across all test workloads. Thus, our design effectively shifts compute off the CPU, as proven from reduced CPU cycles usage, increasing NPU utilization. 
+
+5.6 Inference Accuracy 
+
+NPUMoE incurs negligible ( ∼1%) accuracy loss even under 
+
+∼10-20% token drop rate (ref. Table 3). Only low importance tokens are dropped, so accuracy is largely preserved: tokens still propagate via attention and residuals and are re-routed in later layers. Prior work demonstrates that aggressively dropping tokens has negligible impact on accuracy [ 53 ] and, by filtering out noisy or redundant data, can actually improve overall model performance [48]. 
+
+NPUMoE ’s efficiency does not come from reducing effec-tive work through token dropping since it still pads roughly 31.7%-37.5% of total tokens to satisfy static design constraints. Both RULER tasks maintain 96.0% accuracy despite the high-est drop and padding rates, showing strong robustness for long-context retrieval workloads. 
+
+5.7 Detailed evaluation of a Single MoE Block Per operation runtime breakdown analysis. Table 4 il-lustrates runtime of each operation inside an MoE block. 
+
+NPUMoE reduces expert FFN time by ∼40–50% and moder-ately improves scatter time by ∼10–15%, yielding an overall speedup of 5–10% over CoreML (CPU) and ANEMLL, and 
+
+Table 5. Per-token latency & energy across expert grouping, capacity and execution mode for PhiMoE. Config ( GxC )                                                            
+
+> Total
+> expert
+> chunks
+> Parallel execution Serial execution
+> Latency per
+> token ( ms )
+> Energy per
+> token ( mJ )
+> Latency per
+> token ( ms )
+> Energy per
+> token ( mJ )
+> No grouping
+> G =1
+> C=1..512 16 CANNOT RUN 0.25 1.96
+> 1x32 16 0.13 0.99 0.31 1.43
+> 1x64 16 0.08 0.62 0.23 1.17
+> 1x128 16 0.07 1.66 0.16 0.89
+> Group
+> size =
+> 4 4x32 40.14 1.00 0.27 1.22
+> 4x64 40.10 0.94 0.19 0.98
+> Group size = 8  8x32 20.15 0.97 0.26 1.16
+> 8x64 20.11 0.79 0.18 0.93
+> 8x96 20.10 0.85 0.15 0.88
+> 8x128 20.10 0.74 0.14 0.96
+> 8x192 20.15 0.96 0.15 0.92
+> 8x256 20.16 0.98 0.16 0.99
+
+54% over CoreML (naïve). This indicates that system-level gains come primarily from improving expert parallelism and reducing data movement. 
+
+Varying per expert input token capacity. Increasing per-expert input token capacity improves latency and en-ergy efficiency, although this benefit saturates quickly due to padding and graph launch overhead (ref. Table 5). With-out grouping, latency drops by 1.94x from 0.31 ms/token at 1x32 to 0.16 ms/token at 1x128; energy efficiency improves by 1.22x-1.61x. With grouping, the benefit is larger : latency improves by 1.44x at 8x64 and 1.73x at 8x96 over 8x32 at group size=8; energy efficiency improves by 1.25x-1.32x. 
+
+Expert parallelism. Table 5 shows the impact of expert parallelism on latency and energy. NPU supports limited concurrent compute graphs; exceeding this limit, e.g. many enumerated shapes, can trigger CPU fallback. Such as, run-ning all 16 experts in parallel for token range 1 to 512 is infeasible, while serial execution is 1.4x-2.9x slower. Group-ing mitigates this trade-off by reducing expert chunks and avoiding NPU queue serialization and CPU fallback. 
+
+Impact of group size on dispatch. Larger groups reduce dispatch overhead by lowering the number of expert graph executions: this effect is especially visible on NPUs where many small graphs amplify launch and synchronization cost (Table 5). At the same per-expert capacity, throughput improves with group size : for capacity 32, latency drops from 0.31 ms/token at 1x32 to 0.27 at 4x32 (1.15x) and 0.26 at 8x32 (1.19x); for capacity 64, it falls from 0.23 at 1x64 to 0.19 at 4x64 (1.21x) and 0.18 at 8x64 (1.28x). Energy per-token results in Table 5 indicates that larger groups create denser workloads and improve backend utilization. 
+
+5.8 Ablation Study Effectiveness of optimizations. To isolate the contribu-tion of each component, we also evaluate the following abla-tions: (1) Ours-base , which uses operator partitioning with a naïve one-graph-per-expert design and fixed expert shape; (2) Ours-T : Ours-base with static tiers for expert capacity; 
+
+10 Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs 500               
+
+> 1500
+> 2500
+> 3500
+> 4500
+> 0100 200 300 400 500 600
+> Static tiers for expert
+> capacity
+> Grouped Expert
+> Execution
+> Load -aware
+> compute graph
+> residency
+> Ours -base
+> Ours -T✓
+> Ours -TG ✓✓
+> Ours -all ✓✓✓
+> Avg. Latency (s )
+> Avg. Energy (J)
+> Ours -all
+> Ours -base
+> Ours -T
+> Coreml (naïve)
+> Coreml (CPU) Best latency
+> Best energy
+> efficiency ANEMLL
+
+Figure 17. Impact of our key techniques. (3) Ours-TG : Ours-T with grouped expert execution; and (4) 
+
+Ours-all : Ours-TG with load-aware expert compute residency. 
+
+Our three techniques make a significant contribution to the overall improvement. Figure 17 highlights how each technique contributes to the latency-energy tradeoff. Directly offloading prefill workloads to NPU without any of our techniques (Ours-base) gives the worst performance. Ours-all achieves the best latency, 2.89x faster than Ours-base and 1.09x faster than Ours-TG, while Ours-TG gives the best energy efficiency at 998.4, using 3.74x less prefill energy than Ours-base and 1.31x less than Ours-T. Both grouped variants outperform the rest , indicating that per-dispatch overhead from 16 separate prediction calls is a major cost. 
+
+Impact of padding. On our test workload, on average, 35.35% of all computed tokens were zero-padded. Padding introduces 1.25-1.36x higher CPU cycles and 27–29% higher runtime depending on device config. Thus, increasing expert capacity indiscriminately is not beneficial. 
+
+Does graph eviction happen? Load and cache operation is done once at compile time; unless unified memory RAM is overloaded compute graph stays in place. 
+
+Which prefill chunk size to choose? Chunk selection is workload dependent. For shorter prompts (length=1024), increasing chunk size from 256 to 512 mainly improves en-ergy, raising our advantage from 2.01x-6.30x to 3.19x-7.37x across baselines. For 4096-token prompts: increasing chunk size from 512 to 1024 widens the energy gap to 2.30x-5.23x, maintains the lowest TTFT at 1.44x-3.70x, and improves CPU-cycle reduction to 2.21x-5.54x. Larger chunks are more effective for long-context prefill, upto its upper bound [2]. 
+
+Calibration accuracy. For prediction accuracy on unseen inputs, the mean overlap is 86%/94% for top-4/top-8 experts in prefill. Across datasets, PhiMoE achieves 65.2% overlap in prefill and 77.0% in decode, with many layers reaching near 100% overlap (ref. Figure 18). Overall, offline calibration is effective at predicting dominant runtime experts; stability improves with larger K. 
+
+Comparison to GPU. GPU is 1.26x-5.4x faster, but uses 1.87x-4.48x more energy and draws 5.65x-9.41x higher power per run (Appendix A). Note. In this work, GPU serves a throughput reference only as our objective is not to match (a) Prefill 
+
+> (b) Decode
+
+Figure 18. Cross-dataset validation for offline calibration. Overlap@K for top experts on BoolQ and HellaSwag datasets exhibit consistent overlap across dominant experts. peak GPU throughput, but to reduce CPU pressure and im-prove sustained on-device efficiency by offloading suitable MoE operators to NPU. 
+
+Limitation. Our optimization primarily targets long-context, prefill-dominated workloads. In our current prototype, decode follows the same execution pipeline as prefill; decode is memory-bound and single-token gen-eration offers limited parallelism, it does not amortize CPU–NPU coordination overhead as effectively as prefill. 
+
+6 Related work 
+
+On-Device LLM Acceleration has largely focused on dense transformer inference on mobile GPUs [ 9] and NPUs e.g. llm.npu[ 43 ], Hybe [ 35 ], HeteroLLM [ 11 ], sd.npu [ 12 ], Open-Pangu [ 14 ] etc. using techniques such as chunked prefill [ 2], graph bucketing [ 50 ], tensor partitioning [ 10 ] etc. to accommodate the limitations of GPU or NPU while address-ing key deployment constraints such as limited memory, static-shape, and hardware-aware scheduling. But they do not address the runtime challenges of executing dynamic and sparse models on NPUs. 
+
+MoE Execution on Heterogeneous Devices Existing MoE inference frameworks primarily target memory-constrained deployments [ 9, 26 , 27 , 54 ] by leveraging heterogeneous CPU and GPU setups through techniques such as expert caching [ 9, 44 ], prefetching [ 51 ], and tensor migration [ 25 ]. MoE inference on mobile NPUs is largely unexplored, few prior work exist but they target custom, datacenter-class accelera-tors and their serving stacks e.g. Huawei’s CloudMatrix-Infer [ 55 ] and xDeepServe [ 42 ]. While NPU scheduling, virtualiza-tion have been explored [ 45 , 46 ], they do not target on-device models. NPUMoE is the first to accelerate on-device MoE inference through effective NPU offloading. 
+
+> 11
+
+Afsara Benazir and Felix Xiaozhu Lin 
+
+7 Conclusion 
+
+We present NPUMoE , a runtime engine that enables efficient MoE inference on Apple Neural Engine by adapting dynamic expert routing to NPU’s device specific constraints. By com-bining key techniques, NPUMoE improves NPU utilization and consistently reduces latency, energy, and CPU-cycle usage on long-context workloads. These results show that, despite the mismatch between MoE dynamism and NPU con-straints, careful systems co-design can make mobile NPUs an effective target for sparse LLM inference. 
+
+8 Acknowledgements 
+
+The authors acknowledge the use of generative AI to improve grammar, light editing, proofreading and code debugging. All content and ideas remain the original work of the authors. 
+
+References 
+
+[1] Marah Abdin, Jyoti Aneja, Harkirat Behl, Sébastien Bubeck, Ronen Eldan, Suriya Gunasekar, Michael Harrison, Russell J Hewett, Mojan Javaheripi, Piero Kauffmann, et al . 2024. Phi-4 technical report. arXiv preprint arXiv:2412.08905 (2024). [2] Amey Agrawal, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav S Gulavani, and Ramachandran Ramjee. 2023. Sarathi: Effi-cient llm inference by piggybacking decodes with chunked prefills. arXiv preprint arXiv:2308.16369 (2023). [3] Osayamen Jonathan Aimuyo, Byungsoo Oh, and Rachee Singh. 2025. FlashMoE: Fast Distributed MoE in a Single Kernel. arXiv preprint arXiv:2506.04667 (2025). [4] Yash Akhauri, Ahmed F AbouElhamayed, Jordan Dotzel, Zhiru Zhang, Alexander M Rush, Safeen Huda, and Mohamed S Abdelfattah. 2024. Shadowllm: Predictor-based contextual sparsity for large language models. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing. 19154–19167. [5] ANEMLL Contributors. 2026. ANEMLL: Artificial Neural Engine Machine Learning Library. https://github.com/Anemll/Anemll GitHub repository, version 0.3.5 beta, accessed 2026-04-07. [6] antmikinka. 2024. Optimization Guidelines for the Apple Neural Engine (ANE). https://gist.github.com/antmikinka/ 715499ae63630575065b22e5cb6ad8dd . GitHub Gist. Accessed: 2026-04-15. [7] Apple Inc. 2023. Apple Reports First Quarter Results . Corporate Report. Apple Inc. https://www.apple.com/newsroom/2023/02/apple-reports-first-quarter-results/ 
+
+[8] Apple Machine Learning Research. 2024. Deploying Attention-Based Vision Transformers to Apple Neural Engine. Apple Machine Learning Research (5 Jan 2024). https://machinelearning.apple.com/ research/vision-transformers 
+
+[9] Shiyi Cao, Shu Liu, Tyler Griggs, Peter Schafhalter, Xiaoxuan Liu, Ying Sheng, Joseph E Gonzalez, Matei Zaharia, and Ion Stoica. 2025. Moe-lightning: High-throughput moe inference on memory-constrained gpus. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1. 715–730. [10] Le Chen, Dahu Feng, Erhu Feng, Yingrui Wang, Rong Zhao, Yubin Xia, Pinjie Xu, and Haibo Chen. 2025. Characterizing mobile soc for accelerating heterogeneous llm inference. In Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles . 359–374. [11] Le Chen, Dahu Feng, Erhu Feng, Rong Zhao, Yingrui Wang, Yubin Xia, Haibo Chen, and Pinjie Xu. 2025. Heterollm: Accelerating large language model inference on mobile socs platform with heterogeneous ai accelerators. arXiv e-prints (2025), arXiv–2501. [12] Zhiyang Chen, Daliang Xu, Haiyang Shen, Chiheng Lou, Mengwei Xu, Shangguang Wang, Xin Jin, and Yun Ma. 2025. Accelerating Mobile Language Model via Speculative Decoding and NPU-Coordinated Execution. arXiv preprint arXiv:2510.15312 (2025). [13] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. 2019. Boolq: Exploring the surprising difficulty of natural yes/no questions. In Proceedings of the 2019 conference of the north American chapter of the association for computational linguistics: Human language technologies, volume 1 (long and short papers). 2924–2936. [14] Yuntao Dai, Jing Wu, Hang Gu, and Teng Wang. 2026. Accelerat-ing OpenPangu Inference on NPU via Speculative Decoding. arXiv preprint arXiv:2603.03383 (2026). [15] Kuntai Du, Bowen Wang, Chen Zhang, Yiming Cheng, Qing Lan, Hejian Sang, Yihua Cheng, Jiayi Yao, Xiaoxuan Liu, Yifan Qiao, et al .2025. Prefillonly: An inference engine for prefill-only workloads in large language model applications. In Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles . 399–414. [16] William Fedus, Barret Zoph, and Noam Shazeer. 2022. Switch trans-formers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research 23, 120 (2022), 1–39. [17] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. 2024. The Language Model Evaluation Harness. doi: 10.5281/zenodo.12608602 
+
+[18] Zixu Hao, Jianyu Wei, Tuowei Wang, Minxing Huang, Huiqiang Jiang, Shiqi Jiang, Ting Cao, and Ju Ren. 2025. Scaling llm test-time compute with mobile npu on smartphones. arXiv preprint arXiv:2509.23324 (2025). [19] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. 2024. RULER: What’s the real context size of your long-context language models? arXiv preprint arXiv:2404.06654 (2024). [20] Paul Hübner, Andong Hu, Ivy Peng, and Stefano Markidis. 2025. Ap-ple vs. oranges: Evaluating the apple silicon m-series socs for hpc performance and efficiency. In 2025 IEEE International Parallel and Distributed Processing Symposium Workshops (IPDPSW) . IEEE, 45– 54. [21] Apple Inc. 2026. Core ML. https://developer.apple.com/machine-learning/core-ml/ Accessed: 2026-03-02. [22] Apple Inc. 2026. Core ML Models. https://developer.apple.com/ machine-learning/models/ Accessed: 2026-03-02. [23] Apple Inc. 2026. Deploying Transformers on the Apple Neural En-gine. https://machinelearning.apple.com/research/neural-engine-transformers Accessed: 2026-03-02. [24] Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xu-fang Luo, Surin Ahn, Zhenhua Han, Amir H Abdi, Dongsheng Li, Chin-Yew Lin, et al . 2024. Minference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention. Advances in Neural Information Processing Systems 37 (2024), 52481–52515. [25] Jaehoon Jung, Jinpyo Kim, and Jaejin Lee. 2023. Deepum: Tensor migration and prefetching in unified memory. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . 207–221. [26] Keisuke Kamahori, Tian Tang, Yile Gu, Kan Zhu, and Baris Kasikci. 2025. Fiddler: CPU-GPU Orchestration for Fast Inference of Mixture-of-Experts Models. In The Thirteenth International Conference on Learning Representations (ICLR). 12 Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs 
+
+[27] Rui Kong, Yuanchun Li, Qingtian Feng, Weijun Wang, Xiaozhou Ye, Ye Ouyang, Linghe Kong, and Yunxin Liu. 2024. SwapMoE: Serv-ing Off-the-shelf MoE-based Large Language Models with Tunable Memory Budget. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (ACL). [28] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. 2020. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668 (2020). [29] Minchong Li, Feng Zhou, and Xiaohui Song. 2025. Bild: Bi-directional logits difference loss for large language model distillation. In Proceedings of the 31st International Conference on Computational Linguistics. 1168–1182. [30] Aixin Liu, Bei Feng, Bin Wang, Bingxuan Wang, Bo Liu, Chenggang Zhao, Chengqi Dengr, Chong Ruan, Damai Dai, Daya Guo, et al . 2024. Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model. arXiv preprint arXiv:2405.04434 (2024). [31] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al . 2024. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 (2024). [32] Zichang Liu, Jue Wang, Tri Dao, Tianyi Zhou, Binhang Yuan, Zhao Song, Anshumali Shrivastava, Ce Zhang, Yuandong Tian, Christopher Re, et al . 2023. Deja vu: Contextual sparsity for efficient llms at infer-ence time. In International Conference on Machine Learning. PMLR, 22137–22176. [33] Microsoft. 2024. Phi-3.5-MoE-instruct. https://huggingface.co/ microsoft/Phi-3.5-MoE-instruct Hugging Face model card. Accessed: 2026-04-09. [34] Microsoft. 2025. Phi-tiny-MoE-instruct. https://huggingface.co/ microsoft/Phi-tiny-MoE-instruct Hugging Face model card. Accessed: 2026-04-09. [35] Seungjae Moon, Junseo Cha, Hyunjun Park, and Joo-Young Kim. 2025. Hybe: GPU-NPU Hybrid System for Efficient LLM Inference with Million-Token Context Window. In Proceedings of the 52nd Annual International Symposium on Computer Architecture (ISCA) .808–820. [36] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. 2017. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 (2017). [37] Manjeet Singh. 2026. Inside the M4 Apple Neural Engine. https: //maderix.substack.com/p/inside-the-m4-apple-neural-engine-615 .maderix’s Substack. [38] Kimi Team, Angang Du, Bohong Yin, Bowei Xing, Bowen Qu, Bowen Wang, Cheng Chen, Chenlin Zhang, Chenzhuang Du, Chu Wei, et al .2025. Kimi-vl technical report. arXiv preprint arXiv:2504.07491 (2025). [39] The ML-Energy Initiative. 2025. zeus-apple-silicon: Zeus device support for Apple Silicon . https://github.com/ml-energy/zeus-apple-silicon GitHub repository. [40] Xinming Wei, Jiahao Zhang, Haoran Li, Jiayu Chen, Haoning Guan, Rui Qu, Maoliang Li, Xiang Chen, and Guojie Luo. 2025. Agent. xpu: Efficient scheduling of agentic llm workloads on heterogeneous soc. arXiv preprint arXiv:2506.24045 (2025). [41] Wikipedia contributors. 2026. Apple Neural Engine. https://en. wikipedia.org/wiki/Neural_Engine Accessed: 2026-03-02. [42] Ao Xiao, Bangzheng He, Baoquan Zhang, Baoxing Huai, Bingji Wang, Bo Wang, Bo Xu, Boyi Hou, Chan Yang, Changhong Liu, et al . 2025. xdeepserve: Model-as-a-service on huawei cloudmatrix384. arXiv preprint arXiv:2508.02520 (2025). [43] Daliang Xu, Hao Zhang, Liming Yang, Ruiqi Liu, Gang Huang, Meng-wei Xu, and Xuanzhe Liu. 2025. Fast on-device llm inference with npus. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1. 445–462. [44] Leyang Xue, Yao Fu, Zhan Lu, Luo Mai, and Mahesh Marina. 2024. Moe-infinity: Efficient moe inference on personal machines with sparsity-aware expert cache. arXiv preprint arXiv:2401.14361 (2024). [45] Yuqi Xue, Yiqi Liu, Lifeng Nai, and Jian Huang. 2023. V10: Hardware-assisted npu multi-tenancy for improved resource utilization and fairness. In Proceedings of the 50th Annual International Symposium on Computer Architecture. 1–15. [46] Yuqi Xue, Yiqi Liu, Lifeng Nai, and Jian Huang. 2024. Hardware-assisted virtualization of neural processing units for cloud plat-forms. In 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO). IEEE, 1–16. [47] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al . 2025. Qwen3 technical report. arXiv preprint arXiv:2505.09388 (2025). [48] C. Yang, Y. Sui, J. Xiao, et al . 2025. TopV: Compatible Token Pruning with Inference Time Optimization for Fast and Low-Memory Multi-modal Vision Language Model. arXiv:2503.18278 [cs.CV] [49] Juheon Yi and Youngki Lee. 2020. Heimdall: mobile GPU coordina-tion platform for augmented reality applications. In Proceedings of the 26th Annual International Conference on Mobile Computing and Networking. 1–14. [50] Wangsong Yin, Daliang Xu, Mengwei Xu, Gang Huang, and Xuanzhe Liu. 2025. Dynamic sparse attention on mobile socs. arXiv preprint arXiv:2508.16703 (2025). [51] Enda Yu, Zhaoning Zhang, Dezun Dong, Yongwei Wu, and Xi-angke Liao. 2025. PreScope: Unleashing the Power of Prefetch-ing for Resource-Constrained MoE Inference. arXiv preprint arXiv:2509.23638 (2025). [52] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019. Hellaswag: Can a machine really finish your sentence?. In Proceedings of the 57th annual meeting of the association for computational linguistics. 4791–4800. [53] H. Zhang, M. Lyu, C. He, Y. Ao, and Y. Lin. 2025. TrimTokenator: Towards Adaptive Visual Token Pruning for Large Multimodal Models. arXiv:2509.00320 [cs.CV] [54] Yuxin Zhou, Zheng Li, Jun Zhang, Jue Wang, Yiping Wang, Zhongle Xie, Ke Chen, and Lidan Shou. 2025. FloE: On-the-Fly MoE Inference on Memory-constrained GPU. In Proceedings of the International Conference on Machine Learning (ICML). [55] Pengfei Zuo, Huimin Lin, Junbo Deng, Nan Zou, Xingkun Yang, Yingyu Diao, Weifeng Gao, Ke Xu, Zhangyu Chen, Shirui Lu, et al . 2025. Serving large language models on huawei cloudmatrix384. arXiv preprint arXiv:2506.12708 (2025). 13 Afsara Benazir and Felix Xiaozhu Lin 
+
+A Appendix 
+
+A.1 Phimoe-tiny 11.776      
+
+> 18.528
+> 11.328
+> 6.304
+> 0
+> 10
+> 20
+> Prefill
+> 5.6064
+> 6.464 5.824 5.0432
+> 0
+> 3.5
+> 7
+> Decode
+> 17.382
+> 4
+> 24.992
+> 17.152 11.347
+> 2
+> 0
+> 12.5
+> 25
+> End -to -end
+> 95.584
+> 148.512
+> 81.568
+> 47.232
+> 0
+> 80
+> 160
+> Prefill
+> 47.344 51.712 45.136
+> 27.472
+> 0
+> 30
+> 60
+> Decode
+> 142.928
+> 200.224
+> 126.704
+> 74.704
+> 0
+> 125
+> 250
+> End -to -end
+
+(a) Latency 
+
+(b) Energy efficiency 
+
+> Runtime (s) Energy (J)
+
+Figure 19. Runtime latency and energy efficiency of PhiMoe-tiny running on M2 MAX. 
+
+A.2 Qwen3-MoE Table 6. Latency breakdown of Qwen 30B on M2 Ultra. Speedup is relative to ours. 
+
+Mode Wall (s) Exp (s) Attn (s) Speedup ours 0.572 0.464 0.086 1.00x coreml 1.139 0.978 0.095 1.99x anemll 1.144 0.988 0.090 2.00x 
+
+Table 7. Energy efficiency of Qwen3-MoE compared to base-lines, running on M2 Ultra. 
+
+Mode Energy/run (J) CPU (J) ANE (J) Comm. (J) Energy Eff. Ours 3.80 1.23 1.20 1.37 1.00x coreml-only 12.67 9.66 0.00 3.01 3.33x anemll 12.13 8.87 0.26 2.99 3.19x 
+
+A.3 Comparison with GPU backend Table 8. Running a dense attention kernel with GPU vs NPU backend, averaged over 20 runs. 
+
+Metric GPU NPU GPU vs NPU 
+
+Runtime (ms) 7.09 38.27 GPU 5.40x faster Energy (mJ) 515.60 275.70 GPU 1.87x ↑ energy Avg power (W) 66.80 7.10 GPU 9.41x ↑ power draw 
+
+Table 9. Running attention+MoE block with GPU vs NPU backend. 
+
+Metric GPU Ours(NPU) GPU vs. Ours(NPU) Runtime (s) 0.99 1.26 GPU 1.26x faster Energy/run (J) 54.72 12.21 GPU 4.48x ↑ energy Avg power (W) 54.29 9.61 GPU 5.65x ↑ power draw 
+
+A.4 Compute Graph Pytorch   
+
+> Model
+> prepare graph
+> coremltools
+> Model Intermediate
+> Language (MIL) compile CoreML
+> model
+> Set input/output shape
+> Trace graph
+> Freeze graph
+> Set precision
+> FP16/INT8
+> convert
+> Set compute device
+> Rewrite operators
+> Set buffer ( MLState )
+> validate
+> Static
+> (1,512,4096)
+> Enumerated
+> (1,X,4096)
+> X= [128,256,512]
+> RangeDim
+> [(1,512), 4096)]
+> 1
+> 2
+> 4
+> nn.Linear
+> nn.Conv2D
+> .cpuOnly
+> .cpuAndNeuralEngine
+> .cpuAndGPU
+> .all 3
+> 5
+> 6
+> 7
+> 8
+
+Figure 20. PyTorch to Core ML compute graph creation. Figure 20 shows the conversion pipeline from PyTorch mod-els to NPU-compatible graphs. 
+
+14
