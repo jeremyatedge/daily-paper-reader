@@ -1,0 +1,591 @@
+Title: Nautile-370M: Spectral Memory Meets Attention in a Small Reasoning Model
+
+URL Source: https://arxiv.org/pdf/2604.24809v1
+
+Published Time: Wed, 29 Apr 2026 00:01:34 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Nautile-370M: Spectral Memory Meets Attention in a Small Reasoning Model 
+
+Trickstr 
+
+Maixent Chenebaux 
+
+April 29, 2026 
+
+Abstract 
+
+We present Nautile-370M , a 371-million-parameter small language model designed for ef-ficient reasoning under strict parameter and inference budgets. Nautile-370M uses a hybrid backbone in which two SeqCond Attention (SCA) layers—a linear-time spectral sequence op-erator inspired by SeqCondenser [2]—alternate with one transformer layer. This design aims to retain the long-context efficiency and state-tracking benefits of structured sequential models while preserving the expressive token-to-token routing of attention. The model was trained on a single Cloud TPU v4-64 pod slice provided through the Google TPU Research Cloud (TRC) program; the subsequent reinforcement learning stage was carried out on a single NVIDIA DGX Spark. We prove that the SCA readout mechanism can exactly retrieve any individual token from the prefix summary and can reproduce any output of softmax attention as a special case, establishing that SCA is at least as expressive as full self-attention in the continuous limit. We also describe the training data pipeline and outline a reinforcement learning stage specialized for reasoning, verification, and response quality. 
+
+# 1 Introduction 
+
+This paper describes Nautile-370M , a 371-million-parameter reasoning-oriented language model whose backbone alternates a novel sequence operator, SeqCond Attention (SCA), with standard transformer layers. SCA computes a compressed summary of the prefix by evaluating the gradient of the empirical characteristic function at a small set of learned spectral points, and reads it out via a complex inner product. This gives it the efficiency of a linear recurrence ( O(1) state update at inference, parallel scan during training) while grounding the mechanism in a well-studied mathematical object. The model was pretrained on a single TPU v4-64 pod slice (Google TRC) and post-trained with reinforcement learning on a single NVIDIA DGX Spark. During the RL stage we encountered a failure mode of standard GRPO on small models: when the policy’s success rate is low, the negative-advantage gradient mass dominates and reasoning quality degrades. We propose two mitigations—a gradient-balanced GRPO variant and a scored self-distillation stage—that together bring GSM8K accuracy from 28.0% to 33.4%. 1
+
+> arXiv:2604.24809v1 [cs.LG] 27 Apr 2026
+
+Contributions. 
+
+• SCA (SeqCond Attention). A sequence operator derived from the characteristic function of the prefix distribution. We provide the theoretical motivation and describe how it reduces to a trainable linear recurrence with complex-valued state (Section 2). 
+
+• Theoretical expressiveness. We prove that the SCA readout can extract any individual token from the prefix summary (Theorem 1), recover the full weighted distribution (Corollary 3), and reproduce any output of a softmax attention layer as a special case (Corollary 4). SCA is therefore at least as expressive as full self-attention in the continuous limit. 
+
+• Hybrid architecture. A 24-layer backbone interleaving 16 SCA layers and 8 transformer layers, totaling 371M parameters (Section 2). 
+
+• Training pipeline. A data curriculum combining 350B tokens of FineWeb-Edu with 250B to-kens from SYNTH [11] and additional SYNTH-style synthetic chain-of-thought and instruction data distilled from multiple teacher models (Section 3). 
+
+• Gradient-balanced GRPO. A modification of standard GRPO that rescales the negative-advantage gradient to prevent it from dominating the positive one, enabling stable RL training at low success rates (Section 4). 
+
+• Scored self-distillation. An on-policy self-distillation stage that fine-tunes the model on its own verified correct traces, yielding an unexpected but noticeable boost in reasoning accuracy (Section 4). 
+
+# 2 Model Architecture 
+
+2.1 Overview 
+
+Nautile-370M is a decoder-only autoregressive language model with approximately 371 million parameters. Its backbone is organized into 24 layers arranged in repeated blocks of the form SCA → SCA → Transformer ,
+
+yielding 16 SCA layers and 8 transformer layers in total. The key architectural hyperparameters are summarized below. 2Parameter Value 
+
+Model dimension D 1024 Feed-forward dimension Dff 2730 Total layers 24 (16 SCA + 8 Transformer) Context length 1024 Tokenizer cl100k base 
+
+Weight tying Yes 
+
+SCA layers 
+
+Memory heads K / Query heads K′ 16 / 16 (no GQA) Head dimension H 64 Spectral samples M 2Expand factor 2× (dinner = 2048) SwiGLU expansion 3×
+
+Depthwise conv kernel 4
+
+Transformer layers 
+
+Attention heads 16 KV heads (GQA) 4Head dimension 64 Each layer is wrapped with pre-norm RMS normalization [18] and residual connections. The SCA/SCA/Transformer ratio is motivated by the observation that much of language modeling consists of incremental state updates, while only a subset of tokens require global competitive selection. The transformer component is intentionally standard: a classical pre-norm causal trans-former block [15] with rotary position embeddings [14] and grouped-query attention [1], inserted periodically inside the hybrid stack. 
+
+2.2 SeqCond Attention (SCA) Layer 
+
+SCA is inspired by SeqCondenser [2], a layer for inductive sequence representation, and adapts its characteristic-function mechanism to the autoregressive generation setting. It is derived from a principled theoretical object—the derivative of a characteristic function—and then systemati-cally discretized into a practical neural layer. We present the full derivation before describing the implementation. 
+
+2.2.1 Theoretical Foundation: Characteristic Prefix Summary 
+
+Let ( h1, . . . , ht) be the sequence of embeddings observed up to step t. We model this prefix as the support of a discrete random variable X in the embedding space and summarize it through the 
+
+characteristic function 
+
+φX (θ) = Eei⟨θ,X ⟩, θ ∈ Rd.
+
+By the injectivity theorem, φX determines the distribution of X uniquely. All moments, when they exist, are recoverable: 
+
+E[X⊗n] = ( −i) n ∇nθ φX (θ) θ=0 .
+
+3The characteristic representation is therefore a sufficient statistic for the sequence-induced distri-bution: no information is lost. SCA operates not on φX itself but on its gradient with respect to the spectral variable: 
+
+∇θφX (θ) = i EX e i⟨θ,X ⟩.
+
+The signal X now appears multiplicatively inside the expectation: the derivative summary jointly encodes the spectral phase and the values of the underlying random variable. It is therefore strictly more informative for downstream readout than φX alone, which only carries phase. This gradient object is the core representation maintained by SCA. 
+
+2.2.2 Spectral Readout via Hermitian Inner Product 
+
+Given the derivative summary S1: t(θ) = ∇θφX1: t (θ), the layer extracts a token-conditioned output by computing a Hermitian inner product in the function space L2(Rd, C). A spectral query wt(θ)is derived from the current token, and the readout is defined as 
+
+ot = ⟨S1: t, w t⟩L2 =
+
+Z
+
+S1: t(θ) wt(θ) dθ. 
+
+This Hermitian inner product plays the role of an attention mechanism: the current token emits a query and the prefix summary returns a value. The crucial difference is that the memory being queried is a spectral condensation of the entire prefix, not a stored list of past key-value vectors. The conjugation wt ensures sesquilinearity, which is the natural pairing for complex-valued functions and preserves phase-sensitive retrieval. The readout is not merely a heuristic analogy with attention: it is provably capable of exact individual token retrieval. 
+
+Theorem 1 (Exact token retrieval) . Let h1, . . . , ht ∈ Rd be pairwise distinct embeddings. For every index j ∈ { 1, . . . , t }, the spectral query 
+
+wj (θ) = i t
+
+(2 π)d ei⟨θ, hj ⟩
+
+satisfies Z
+
+> Rd
+
+S1: t(θ) wj (θ) dθ = hj ,
+
+where the integral is interpreted in the distributional (Fourier-inversion) sense. Proof. Expanding the summary and the conjugated query: 
+
+Z
+
+> Rd
+
+S1: t(θ) wj (θ) dθ =
+
+Z
+
+> Rd
+
+i
+
+t
+
+> t
+
+X
+
+> k=1
+
+hk ei⟨θ, hk ⟩ · −i t
+
+(2 π)d e−i⟨θ, hj ⟩ dθ 
+
+= 1(2 π)dtX
+
+> k=1
+
+hk
+
+Z
+
+> Rd
+
+ei⟨θ, hk −hj ⟩ dθ 
+
+= 1(2 π)dtX
+
+> k=1
+
+hk · (2 π)d δ(hk − hj ) = hj ,
+
+4where the penultimate equality uses the identity R 
+
+> Rd
+
+ei⟨θ,ξ ⟩ dθ = (2 π)d δ(ξ). 
+
+Remark 2. The theorem establishes that the derivative characteristic summary is a lossless en-coding of the prefix: every individual token can be recovered by choosing the appropriate spectral query. Any gap between this theoretical guarantee and the practical behavior of the layer stems from the approximations introduced when discretizing the continuous theory—not from the mechanism itself. Those approximations are described in Section 2.2.3. We formalize the connection with self-attention in Corollary 4 below. 
+
+The result extends to the recovery of the full weighted distribution. In the general (non-uniform) setting, the empirical characteristic function is φX (θ) = Ptk=1 pk ei⟨θ, hk ⟩ with arbitrary weights 
+
+pk > 0, P 
+
+> k
+
+pk = 1. 
+
+Corollary 3 (Full distribution recovery) . Let h1, . . . , ht ∈ Rd be pairwise distinct with associated weights p1, . . . , p t > 0. Then: 1. The derivative summary S1: t(θ) = i Ptk=1 pk hk ei⟨θ, hk ⟩ encodes the weighted embeddings: the readout with query wj (θ) = 1i (2 π)d ei⟨θ, hj ⟩ yields 
+
+Z
+
+> Rd
+
+S1: t(θ) wj (θ) dθ = pj hj .
+
+2. The weights alone are recoverable from φX : the scalar query ˜wj (θ) = 1(2 π)d ei⟨θ, hj ⟩ gives 
+
+Z
+
+> Rd
+
+φX (θ) ˜ wj (θ) dθ = pj .
+
+3. Since S1: t = ∇θφX determines φX up to the known constant φX (0) = 1 , the gradient summary alone suffices to recover both the support {hk} and the weights {pk}.Proof. Part (1) follows from Theorem 1 with the substitution hk 7 → pk hk in the Fourier inversion step. Part (2) is the same argument applied to the scalar function φX . For part (3), observe that 
+
+φX (θ) = 1 + R θ 
+
+> 0
+
+S1: t(τ ) · dτ (path integral from the origin), so φX is determined by S1: t; combining (1) and (2) then recovers pj and hj separately. The linearity of the integral immediately yields the connection with attention: 
+
+Corollary 4 (SCA subsumes self-attention) . For any coefficients α1, . . . , α t ∈ R (not necessarily non-negative or summing to one), the composite spectral query w(θ) = Ptk=1 αk wk(θ) satisfies 
+
+Z
+
+> Rd
+
+S1: t(θ) w(θ) dθ =
+
+> t
+
+X
+
+> k=1
+
+αk hk.
+
+In particular, any output of a softmax attention layer, which computes a convex combination P 
+
+> k
+
+αkVk with αk ≥ 0, P 
+
+> k
+
+αk = 1 , is a special case of the SCA readout. The spectral mecha-nism is therefore at least as expressive as full self-attention in the continuous limit, and strictly more general since it places no non-negativity or normalization constraint on the retrieval weights. 
+
+5Proof. By linearity of the integral and Theorem 1: R S1: t(θ) w(θ) dθ = P 
+
+> k
+
+αk
+
+R S1: t(θ) wk(θ) dθ =P 
+
+> k
+
+αk hk.
+
+Remark 5 (Why the gradient, not the function) . The choice to operate on ∇θφX rather than φX
+
+is not cosmetic—it is structurally necessary for value retrieval. Since φX (θ) is scalar -valued, any inner-product readout against a scalar query can only produce a scalar: applying Fourier inversion to φX recovers the weight pj of token j, but never the embedding hj ∈ Rd itself. The information about {hk} is in principle contained in φX (by the injectivity theorem), but extracting it requires solving a spectral estimation inverse problem. The gradient ∇θφX (θ) ∈ Cd is vector -valued, and each embedding hk appears as a multiplicative coefficient of its exponential. This turns the inverse problem into a direct, single-step linear readout (Theorem 1). In short: the gradient transforms a hard retrieval problem into a trivial one. 
+
+Everything up to this point is exact : the characteristic function, its gradient, the L2 inner product, and the retrieval theorems are objects of pure mathematics, with no approximation, no parameteri-zation, and no finite-dimensional constraint. The next section introduces the compromises required to turn this ideal formulation into a trainable neural layer. 
+
+2.2.3 From Continuous Theory to Discrete Layer 
+
+We now bridge the gap between the ideal objects above and the practical implementation. The only approximation required is the discretization of the continuous spectral domain θ ∈ Rd to a finite set of evaluation points. Note that the prefix distribution itself was always discrete—a sum over the observed embeddings h1, . . . , ht—so no approximation is introduced on that side. 
+
+Finite spectral grid. The readout integral ot = R S1: t(θ) wt(θ) dθ ranges over all of Rd, which is not directly computable. We replace it by a learned quadrature rule : a finite set of M spectral evaluation points {θm}Mm=1 with associated weights {ωm}, both trained end-to-end. This is analo-gous to approximating a Fourier integral by a weighted sum over a discrete set of frequencies—the classical setting of numerical quadrature, except that here the nodes and weights are optimized by gradient descent rather than fixed by a deterministic rule. With M small (in our case M = 2), the approximation is coarse but sufficient because the downstream loss directly supervises which spectral regions are useful. Note that M counts spectral points per head : for Nautile-370M with 
+
+K = 16 memory heads, the total number of learned spectral points is K × M = 32, which is considerably larger than the per-head count suggests. 
+
+ot =
+
+Z
+
+S1: t(θ) wt(θ) dθ ≈
+
+> M
+
+X
+
+> m=1
+
+ωm S1: t(θm) wt(θm).
+
+Causal summary. The theoretical derivative summary S1: t(θ) = i Ptk=1 1 
+
+> t
+
+hk ei⟨θ, hk ⟩ is already a finite sum over the discrete prefix. For the practical layer, we introduce two additional degrees of freedom: unnormalized positive contribution weights ατ and a learned feature map ψ inside the phase. These are parameterization choices, not approximations. Evaluated at the discrete spectral 6grid, the summary becomes a running sum: 
+
+St(θm) = 
+
+> t
+
+X 
+
+> τ=1
+
+ατ hτ exp  i θm · ψ(hτ ),
+
+where ατ > 0 is an unnormalized contribution weight and ψ is a learned feature map. Unlike a normalized probabilistic formulation (where P 
+
+> τ
+
+ατ = 1), the weights are kept positive but uncon-strained , which increases expressivity and avoids a costly normalization pass. Because this summary is additive in τ , causality is immediate: St = St−1 + αt ht eiθm·ψ(ht). This additive structure is what enables the prefix-scan implementation used in training and constant-time updates at inference. 
+
+2.2.4 Implementation 
+
+The following describes the concrete forward pass. The layer has K memory heads, K′ query heads (with GQA ratio K/K ′), head dimension H, and M spectral sample points. Let xt ∈ RD be the input at position t.
+
+Step 1: Input projection & local mixing. A single dense projection followed by a causal depthwise convolution (kernel size c) and SiLU activation produces two branches: [ zmem ; zquery ] = SiLU   DWConv c(Win xt).
+
+The memory branch zmem yields per-head key values kt ∈ RK×H and a scalar score st ∈ RK . The query branch zquery yields spectral query coordinates qre  
+
+> t
+
+, q im  
+
+> t
+
+∈ RK′×H×M .
+
+Step 2: Contribution weights. The positive contribution weight decomposes into a content gate and a temporal decay: 
+
+αt = softplus  γ s t + β| {z }
+
+> content gate
+
+× exp   − λk · d(t)| {z }
+
+> temporal decay
+
+,
+
+where γ, β are per-head learned scale and bias, λk > 0 is a per-head decay slope (parameterized via softplus in log-space), and d(t) is a distance-to-boundary function. 
+
+Step 3: Phase modulation & complex encoding. The phase is computed via a bounded softsign modulation: 
+
+ϕt = η kt
+
+1 + |η kt| ⊙ θ, rt + i it = αt kt ei ϕt ,
+
+where η is a per-head learned phase scale and θ ∈ RK×H×M is the learned spectral grid. 7Step 4: Causal accumulation. Real and imaginary parts are accumulated by causal prefix sum (or matrix multiply for short sequences): 
+
+Rt =
+
+> t
+
+X 
+
+> τ=1
+
+rτ , It =
+
+> t
+
+X 
+
+> τ=1
+
+iτ , Zt =
+
+> t
+
+X 
+
+> τ=1
+
+ατ .
+
+The normalized state is ˆRt = Rt/Z t, ˆIt = It/Z t.
+
+Step 5: Spectral readout. The Hermitian match between state and query, scaled by 1 /√H, is integrated over spectral samples: 
+
+ore  
+
+> t
+
+=
+
+> M
+
+X
+
+> m=1
+
+ωm
+
+  ˆRt qre  
+
+> t
+
++ ˆIt qim 
+
+> t
+
+
+
+> m
+
+, oim  
+
+> t
+
+=
+
+> M
+
+X
+
+> m=1
+
+ωm
+
+  ˆIt qre  
+
+> t
+
+− ˆRt qim 
+
+> t
+
+
+
+> m
+
+.
+
+Step 6: Output fusion. The concatenated complex output [ ore  
+
+> t
+
+; oim  
+
+> t
+
+] passes through gated RMS normalization (gated by a projection of the original input xt), a per-head SwiGLU [13] expansion, and a final dense projection back to RD.Algorithm 1 summarizes the complete forward pass. 
+
+2.2.5 Properties 
+
+Compared with full self-attention, SCA offers three structural advantages: 1. Lossless prefix encoding (in theory): the derivative characteristic summary preserves the full statistical content of the prefix distribution; the practical layer is a finite-dimensional ap-proximation of this object. 2. Linear-time causal accumulation: the additive state update yields O(L) prefix scans during training and O(1) state updates at decoding. 3. Structured conditional retrieval: extraction is a learned Hermitian inner product in spectral space, not a dense pairwise attention over the full prefix. 
+
+2.3 Hybrid Layer Design 
+
+Let fs denote a SCA layer and fa a transformer layer. The backbone repeats a fs ◦ fs ◦ fa motif: 
+
+F = ( fa ◦ fs ◦ fs )L/ 3.
+
+Why not SCA alone? Corollary 4 shows that SCA subsumes self-attention in the continuous limit. However, the practical layer evaluates the spectral integral at only M = 2 points per head. This finite quadrature cannot reproduce an arbitrary convex combination over t prefix 8Algorithm 1: SCA Layer — Forward Pass 
+
+Input : X ∈ RB×L×D
+
+Output: Y ∈ RB×L×D
+
+Params: Win , W out , W gate , W read ; spectral grid θ ∈ RK×H×M ; integration weights 
+
+ω ∈ RK′×H×M ; decay slopes λ; phase scale η; score scale γ, bias β
+
+// Step 1: Input projection & local mixing 
+
+[ zmem ; zq ] ← SiLU  DWConv( Win X);
+
+k ← zmem [:dim mem] . reshape( B, L, K, H ); 
+
+s ← zmem [dim mem:]; 
+
+qre , q im ← split  zq. reshape( B, L, K ′, H, M, 2) ;
+
+// Step 2: Contribution weight 
+
+α ← softplus( γ · s + β) × exp( −λ · d(t)); 
+
+// Step 3: Phase modulation & complex encoding 
+
+ϕ ← softsign( η · k) ⊙ θ;
+
+r + i i ← α k ei ϕ;
+
+// Step 4: Causal accumulation (prefix sum) 
+
+Rt ← cumsum( r); 
+
+It ← cumsum( i); 
+
+Zt ← cumsum( α); ˆRt ← Rt/Z t;ˆIt ← It/Z t;
+
+// Step 5: Spectral readout (Hermitian inner product) 
+
+ore ← P 
+
+> m
+
+ωm( ˆRt qre + ˆIt qim )m / √H;
+
+oim ← P 
+
+> m
+
+ωm( ˆIt qre − ˆRt qim )m / √H;
+
+// Step 6: Output fusion 
+
+o ← GatedRMSNorm  [ ore ; oim ], W gate X;
+
+Y ← Wout SwiGLU( Wread o); tokens when t ≫ K · M . Operations that require precise pairwise comparison—such as coreference resolution, exact copying, or symbolic alignment—may therefore exceed the effective bandwidth of a single discretized SCA layer. Periodic attention layers provide an exact O(L2) fallback for these operations. 
+
+Complementary computational primitives. SCA and attention differ not only in cost but in 
+
+kind . SCA maintains a fixed-size complex state that is updated additively at each position ( O(1) per step); it excels at incremental accumulation of distributional statistics over the prefix. Attention computes explicit pairwise scores across all positions ( O(L2) per layer); it excels at selective routing where a small number of specific tokens must be compared. The two mechanisms are therefore structurally complementary: SCA handles the bulk of context propagation, and attention handles the sparse precise comparisons that a coarse spectral summary cannot resolve. 9The 2:1 ratio. The choice of two SCA layers per attention layer was guided by the literature on hybrid SSM-Transformer architectures [4, 5, 7] rather than by systematic ablation. With a fixed 30-day TPU allocation and no guarantee that the architecture would be competitive at this scale, we had to commit to a configuration early and train to convergence. The 2:1 ratio was a pragmatic bet: it allocates roughly two-thirds of the depth to efficient O(1) state propagation and one-third to exact token-to-token routing, consistent with the ratios reported in prior hybrid work. When intermediate checkpoints suggested suboptimal behavior, we applied marginal corrections (learning rate adjustments, data mixing), but the layer ratio itself was never revised. Whether a different split (e.g. 3:1 or 1:1) would improve performance at this scale remains an open question that we did not have the compute budget to explore. 
+
+# 3 Training Data 
+
+3.1 Curriculum 
+
+Training proceeds in two stages: 1. FineWeb-Edu [10] ( ~350B tokens): broad factual and linguistic coverage—entities, dis-course structure, expository text—providing the knowledge base for downstream reasoning. 2. SYNTH [11] ( ~250B tokens): PleIAs’ large-scale synthetic reasoning corpus, emphasiz-ing explicit chain-of-thought traces, structured answers, and instruction following. This stage converts the latent knowledge acquired in stage 1 into operational reasoning behavior. 
+
+3.2 Synthetic Augmentation and Template Distillation 
+
+On top of the main curriculum, we add approximately 4 million synthetic documents aligned to the SYNTH [11] template. Their role is to improve instruction following, response formatting, and the practical elicitation of knowledge already stored in the model. These documents are generated from diverse instruction, conversational, creative-writing, and assistant datasets, but are rewritten to match the style and structure of the PleIAs SYNTH corpus as closely as possible. To keep this augmentation on-template, we use retrieval-guided generation over a sample of SYNTH [11] itself. For each prompt, we retrieve the five nearest SYNTH examples and inject them into the teacher prompt. The teacher then produces a new answer conditioned on nearby in-template ex-amples. This is effectively a form of distillation with format guidance [6]. 
+
+3.3 Teacher Models and Difficulty-Aware Distillation 
+
+The synthetic augmentation is distilled from a mixture of teacher models, including GPT-OSS-20B, GPT-OSS-120B, Mistral Small 3.2, and Mistral Large 3, with teacher choice depending on task difficulty. In practice, these few million documents are critical: they teach the model to follow instructions, respect answer formats, and make better use of knowledge that is already present in the weights. 10 3.4 Compute Infrastructure 
+
+All pretraining and supervised fine-tuning was performed on a single Cloud TPU v4-64 pod slice (64 TPU v4 chips) provided through the Google TPU Research Cloud (TRC) program, a research initiative that grants temporary access to Cloud TPU resources at no cost. The JAX-based training stack was designed to run entirely within this allocation. After the 30-day TRC allocation expired, the reinforcement learning stage (Section 4) was carried out on a single NVIDIA DGX Spark. 
+
+# 4 Reinforcement Learning for Reasoning 
+
+4.1 Motivation 
+
+Because the SYNTH [11] corpus was distilled from a mixture of teacher models (Section 3), the supervised model produces chain-of-thought (CoT) [16] traces that vary in style, verbosity, and structure. The reasoning is functional but lacks unity. The reinforcement learning stage addresses this coherence gap through a three-stage pipeline: LLM-judge–based GRPO for format alignment, a gradient-balanced GRPO variant for reasoning, and on-policy self-distillation. 
+
+Standard GRPO on Nautile-370M. A natural first attempt is to use verifiable rewards on mathematical benchmarks (e.g. exact-match correctness on GSM8K) and train with standard GRPO [12]. We tried this extensively from the SFT checkpoint—varying compute dtypes, clipping schedules, learning rates, and reward formulations including soft/continuous variants—but were unable to produce stable improvements. The proximate cause is a gradient imbalance: with a 28% GSM8K success rate, roughly 72% of sampled completions receive negative advantages while only 28% receive positive ones, so the gradient ascent term (suppressing incorrect traces) system-atically overwhelms the gradient descent term (reinforcing correct ones). We hypothesize that this imbalance is exacerbated by the nature of our pretraining. Because Nautile-370M was trained on 250B tokens of chain-of-thought data (SYNTH), reasoning is not a behavior acquired ad hoc during RL—it is an integral part of the model’s representations. As a result, most incorrect completions follow a structurally sound chain of thought but arrive at the wrong answer due to knowledge gaps (factual errors, arithmetic slips) rather than reasoning failures. In our case, standard GRPO treated these traces as uniformly bad and actively suppressed them, degrading the very reasoning capability that pretraining built in. We do not claim this generalizes beyond our specific setup; it may be an artifact of the unusually high proportion of chain-of-thought SFT data in our pretraining. 
+
+4.2 Stage 1: Format Alignment via Dr. GRPO 
+
+We run 1 200 steps of Dr. GRPO [9], a GRPO variant that drops standard-deviation normalization of advantages: the group-relative advantage of completion i is simply Ai = ri − ¯r, where ¯ r is the group mean, without dividing by the within-group standard deviation. This prevents the gradient signal from being inflated by trivially easy or trivially hard groups. 11 Reward design. Each completion in a group of four candidates is scored by Mistral Large 3 
+
+acting as an LLM judge. The judge produces three criterion scores on a 1–5 scale and a holistic score from 0–100. The scalar reward is 
+
+r = 0 .5 × 0.30 sreason + 0 .55 sanswer + 0 .15 sfollow 
+
+5| {z }
+
+> weighted criterion score
+
++0 .5 × soverall 
+
+100 ,
+
+with an additive overlong penalty applied to completions that exceed the generation budget. Groups in which every completion receives an overall score above 90 (and a minimum above 85) are skipped as mastered. 
+
+Update rule. The policy gradient loss uses token-level normalization (DAPO-style [9]): the loss for each completion is weighted by its token count divided by the total tokens in the group, so every token contributes equally regardless of response length. A KL penalty against a frozen reference model (the SFT checkpoint) is added with coefficient β.This stage successfully unifies the output format: responses become cleaner and more consistent in structure. However, it does not produce measurable gains on downstream reasoning benchmarks (+0.98 pp on GSM8K, see Table 1), confirming that format alignment and reasoning improvement are largely orthogonal objectives at this scale. 
+
+4.3 Stage 2: Gradient-Balanced GRPO 
+
+With the output format stabilized by Stage 1, we switch to a verifiable reward signal on GSM8K. We first re-attempted standard GRPO from the Stage 1 checkpoint, hoping that the improved formatting would raise the success rate enough to escape the gradient imbalance described in Section 4.1. It did not: standard GRPO produced the same degradation pattern as before the RLAI stage, confirming that the imbalance is not an artifact of hyperparameter choice or starting checkpoint. To correct this, we decouple the positive and negative components of the policy gradient and normalize their magnitudes independently: 
+
+g+ = X 
+
+> i:Ai>0
+
+Ai ∇θ log πθ(yi | x), g− = X 
+
+> i:Ai<0
+
+Ai ∇θ log πθ(yi | x),g = g+ + ∥g+∥∥g−∥ + ϵ g−.
+
+This ensures that the destructive gradient component never dominates the constructive one, re-gardless of the proportion of correct completions in the group. With this modification, we obtain consistent improvements when training on GSM8K [3] (+2.40 pp over Stage 1, see Table 1). How-ever, the gains plateau after roughly 500 steps: as the success rate climbs toward 31%, the model exhausts the reasoning improvements accessible via policy gradient on correct/incorrect comple-tions alone, and further training yields diminishing returns. This motivates a qualitatively different approach. 12 4.4 Stage 3: On-Policy Self-Distillation 
+
+The most effective stage is conceptually the simplest. We sample CoT completions from the cur-rent policy on a collection of reasoning tasks, score them using the same advantage computation as GRPO (without standard-deviation normalization), and retain the traces with positive advantages. The model is then fine-tuned on its own successful reasoning traces via supervised loss, where the cross-entropy gradient for each example is scaled by its advantage . Because the advantages are unnormalized ( Ai = ri − ¯r), problems that the model rarely solves correctly produce comparatively large advantages for their few correct traces, while problems that are already easy yield small ad-vantages. The supervised loss therefore automatically up-weights hard problems and down-weights mastered ones, providing a built-in curriculum effect without any explicit difficulty scheduling. This on-policy self-distillation avoids the gradient-balance issues of online RL entirely: the model learns only from completions it has already produced and that have been verified as correct. This approach is closely related to two lines of prior work. STaR [17] bootstraps reasoning by generating rationales, filtering to those that produce correct answers, and fine-tuning on them iteratively—the key mechanism is identical to our Stage 3. More recently, Liu et al. [8] propose Simple Self-Distillation (SSD), which samples model outputs at various temperatures and fine-tunes on them with standard SFT, without any verifier or reward model. SSD differs from our approach in that it fine-tunes on all sampled outputs rather than filtering by correctness; their theoretical analysis traces the gains to a reshaping of token-level distributions that suppresses distractor tails where precision matters while preserving diversity where exploration is beneficial. Our approach can be seen as a scored variant of SSD: by retaining only positive-advantage completions, we perform an explicit quality filter that SSD omits, at the cost of requiring a reward signal. Despite its simplicity, this stage yielded large improvements on reasoning benchmarks in our pipeline. We do not draw a general conclusion from this single data point; the relative effectiveness of each stage is likely sensitive to the specific model, data mix, and starting checkpoint. 
+
+4.5 Results 
+
+Table 1 summarizes GSM8K pass@1 accuracy after each stage of the post-training pipeline. 
+
+Stage GSM8K (%) 
+
+After SFT (baseline) 27.98 + Dr. GRPO (Stage 1) 28.96 + Gradient-balanced GRPO (Stage 2) 31.36 + Scored self-distillation (Stage 3) 33.43 
+
+Table 1: GSM8K pass@1 accuracy of Nautile-370M after each reinforcement learning stage. Each row is cumulative: Stage n builds on the checkpoint produced by Stage n − 1. 13 5 Evaluation 
+
+Table 2 compares Nautile-370M with publicly available models of similar size across a range of reasoning and language understanding benchmarks. Bold indicates the best score in each column; underline indicates the second best.                                                                           
+
+> Benchmark Nautile Qwen2.5 Granite LFM2.5 SmolLM2 370M 0.5B 350M 350M 360M
+> Training tokens ∼0.8T 18T 10–12T 28T 4T OpenBookQA 49.3 34.4 31.6 26.4 24.2 ARC 57.0 50.1 30.0 32.8 43.7 CommonsenseQA 46.8 46.5 36.2 44.3 18.4 GSM8K (0-shot) 33.4 28.3 31.5 33.0 7.4 PIQA 61.5 61.3 50.8 49.5 48.2 IFEval 36.9 31.6 55.4 62.4 41.0 TriviaQA 23.8 27.8 25.2 22.9 28.0
+> MATH500 2.4 18.8 5.6 12.2 0.0 MMLU-Pro 14.9 14.3 11.2 18.6 10.3 MMLU 39.2 33.7 35.0 39.1 35.8 GPQA Diamond 27.3 10.1 26.3 24.8 23.2
+> Average 35.7 32.4 30.8 33.3 25.5
+
+Table 2: Benchmark comparison of Nautile-370M against models of similar size. All scores are accuracy (%), evaluated in 0-shot. The evaluation is strict: if a model produces multiple candidate answers, the response is scored as incorrect. Bold = best; underline = second best. 
+
+# 6 Discussion 
+
+Three observations from the development of Nautile-370M are worth highlighting. 
+
+Standard GRPO and heavily SFT-trained models. Our experience suggests that standard GRPO can be counterproductive when applied to a model whose reasoning is already deeply in-tegrated through extensive supervised pretraining. In this regime, incorrect completions are not random—they are structurally sound reasoning limited by knowledge gaps—and the binary cor-rect/incorrect signal of GRPO suppresses them indiscriminately. The gradient-balanced variant (Section 4.2) and especially on-policy self-distillation (Section 4.3) proved far more effective be-cause they preserve or reinforce the existing reasoning structure rather than penalizing it. We do not claim this is a general failure mode of GRPO for small models; it may be specific to checkpoints with a high ratio of chain-of-thought SFT data. 
+
+Self-distillation as an unexpected boost. Fine-tuning the model on its own verified correct traces produced a noticeable accuracy gain that we did not anticipate. We tentatively attribute this to the model being exposed to self-consistent, on-distribution correct reasoning traces, but the mechanism is not fully understood and warrants further investigation. 14 Hybrid layers and the 2:1 ratio. The SCA/SCA/Transformer motif was chosen empirically. Whether the optimal ratio changes with model scale, context length, or task distribution is an open question that would benefit from systematic ablation. 
+
+Intended use and limitations. Nautile-370M is designed for language understanding and sci-entific reasoning, not for multi-turn conversation or code generation. We consider that open-ended chat requires, at minimum, several billion parameters to maintain coherent persona, long dialogue context, and stylistic flexibility. Similarly, at 371M parameters the model cannot be a useful code agent; we therefore deliberately exclude dedicated coding datasets, coding benchmarks, and code-completion objectives from all training stages. Code may still appear incidentally in the pretraining corpus, but no capacity is spent on it. Our position is that training on code at this scale would dilute the representation budget available for language and reasoning at the cost of both. Instead, our primary objective is a compact model with solid common-sense reasoning and reliable logic—qualities that make it well suited for downstream classification and characterization tasks 
+
+such as sentiment analysis, intent detection, topic labeling, and structured information extraction. The reasoning-oriented training pipeline is specifically intended to produce a model that can be effi-ciently fine-tuned for such tasks, where precise understanding matters more than fluent generation at scale. A further target application is large-scale opinion modeling: by instantiating thousands of distinct persona through lightweight conditioning, the model can generate survey-scale opinion re-sponses at high throughput on modest hardware, enabling synthetic population studies that would be prohibitively slow with multi-billion-parameter models. 
+
+# 7 Conclusion 
+
+We introduced Nautile-370M, a 371M-parameter reasoning-oriented language model combining SCA—a layer grounded in the derivative of the characteristic function—with periodic transformer blocks. We proved that the SCA readout can exactly retrieve any individual prefix token, recover the full weighted distribution, and reproduce any softmax attention output as a special case; moreover, the derivative formulation is structurally necessary, since the characteristic function itself does not support direct value retrieval. The model was trained entirely on a single TPU v4-64 node via the Google TRC program, with reinforcement learning completed on a single DGX Spark. On the RL side, we described an instability of standard GRPO that we encountered with this specific model and proposed two mitigations: gradient-balanced GRPO and on-policy self-distillation, the latter yielding the largest gains in our pipeline. 
+
+# References 
+
+[1] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zeiler, Sumit Sanghai, and Yi Tay. GQA: Training generalized multi-query transformer models from multi-head checkpoints. In 
+
+Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing ,pages 4895–4901, 2023. [2] Maixent Chenebaux and Tristan Cazenave. SeqCondenser: Inductive representation learning 15 of sequences by sampling characteristic functions. In Text, Speech, and Dialogue (TSD 2024) ,volume 15048 of Lecture Notes in Computer Science , pages 1–12. Springer, 2024. [3] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. [4] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. 
+
+arXiv preprint arXiv:2312.00752 , 2023. [5] Albert Gu, Karan Goel, and Christopher R´ e. Efficiently modeling long sequences with struc-tured state spaces. In International Conference on Learning Representations , 2022. [6] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. 
+
+arXiv preprint arXiv:1503.02531 , 2015. [7] Opher Lieber, Barak Lenz, Hofit Bata, Gal Cohen, Jonathan Osin, Itay Dalmedigos, Erez Safahi, Shaked Meirom, Yonatan Belinkov, Shai Shalev-Shwartz, et al. Jamba: A hybrid transformer-mamba language model. arXiv preprint arXiv:2403.19887 , 2024. [8] Wenlong Liu et al. Embarrassingly simple self-distillation improves code generation. arXiv preprint arXiv:2604.01193 , 2025. [9] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Fan, Tianyu Liu, Ruoxi Zheng, Hang Luo, Wai-kin Lam, Siamak Rajmohan, Qing Zhang, et al. Understanding R1-Zero-like training: A critical perspective. arXiv preprint arXiv:2503.20783 , 2025. [10] Guilherme Penedo, Hynek Kydl´ ıˇ cek, Loubna Ben Allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The FineWeb datasets: Decanting the web for the finest text data at scale. arXiv preprint arXiv:2406.17557 , 2024. [11] PleIAs. SYNTH: A large-scale synthetic reasoning dataset. https://huggingface.co/ datasets/PleIAs/SYNTH , 2024. Hugging Face dataset. [12] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y K Li, Y Wu, et al. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [13] Noam Shazeer. GLU variants improve transformer. arXiv preprint arXiv:2002.05202 , 2020. [14] Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. arXiv preprint arXiv:2104.09864 , 2021. [15] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Infor-mation Processing Systems , volume 30, 2017. [16] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed Chi, Quoc V Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Advances in Neural Information Processing Systems , volume 35, pages 24824–24837, 2022. 16 [17] Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah D Goodman. STaR: Bootstrapping reasoning with reasoning. In Advances in Neural Information Processing Systems , volume 35, pages 15476–15488, 2022. [18] Biao Zhang and Rico Sennrich. Root mean square layer normalization. arXiv preprint arXiv:1910.07467 , 2019. 17

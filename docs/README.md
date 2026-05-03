@@ -6,104 +6,123 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-26
-- 运行时间：2026-04-26 19:59:11 UTC
+- 最新运行日期：2026-05-03
+- 运行时间：2026-05-03 19:39:09 UTC
 - 运行状态：成功
-- 本次总论文数：28
-- 精读区：17
+- 本次总论文数：34
+- 精读区：23
 - 速读区：11
 
 ### 今日简报（AI）
-今日深度复盘 28 篇前沿论文，重点拆解 2025 低功耗计算机视觉挑战赛的满分
-- 详情：[/202604/26/README](/202604/26/README)
+今日深度解析 34 篇 AI 论文，聚焦边缘计算与机器人部署，产出两篇满分硬核研究。
+重点关注边缘设备 Softmax 硬件优化及 VLA 模型在多 XPU 上的加速方案，打
+- 详情：[/202605/03/README](/202605/03/README)
 
 ### 精读区论文标签
-1. [Evaluation of Winning Solutions of 2025 Low Power Computer Vision Challenge](/202604/26/2604.19054v1-evaluation-of-winning-solutions-of-2025-low-power-computer-vision-challenge)  
+1. [Hardware-Efficient Softmax and Layer Normalization with Guaranteed Normalization for Edge Devices](/202605/03/2604.23647v1-hardware-efficient-softmax-and-layer-normalization-with-guaranteed-normalization-for-edge-devices)  
    标签：评分：10.0/10、query:aiot
-   evidence：针对边缘设备的低功耗计算机视觉挑战赛，平衡精度与能耗
-2. [Evaluation of Winning Solutions of 2025 Low Power Computer Vision Challenge](/202604/26/2604.19054v2-evaluation-of-winning-solutions-of-2025-low-power-computer-vision-challenge)  
+   evidence：边缘设备的高效硬件非矩阵乘法运算
+2. [Characterizing Vision-Language-Action Models across XPUs: Constraints and Acceleration for On-Robot Deployment](/202605/03/2604.24447v1-characterizing-vision-language-action-models-across-xpus-constraints-and-acceleration-for-on-robot-deployment)  
    标签：评分：10.0/10、query:aiot
-   evidence：平衡准确性、延迟和能量的边缘设备高效视觉模型
-3. [Energy Efficient LSTM Accelerators for Embedded FPGAs through Parameterised Architecture Design](/202604/26/2604.19293v1-energy-efficient-lstm-accelerators-for-embedded-fpgas-through-parameterised-architecture-design)  
+   evidence：在严格的成本和能源预算下，使用边缘加速器进行机器人部署
+3. [Deployment-Aligned Low-Precision Neural Architecture Search for Spaceborne Edge AI](/202605/03/2604.24492v1-deployment-aligned-low-precision-neural-architecture-search-for-spaceborne-edge-ai)  
    标签：评分：10.0/10、query:aiot
-   evidence：用于资源受限嵌入式FPGA的高能效LSTM加速器
-4. [ImageHD: Energy-Efficient On-Device Continual Learning of Visual Representations via Hyperdimensional Computing](/202604/26/2604.21280v1-imagehd-energy-efficient-on-device-continual-learning-of-visual-representations-via-hyperdimensional-computing)  
+   evidence：边缘AI的低精度神经架构搜索
+4. [AHASD: Asynchronous Heterogeneous Architecture for LLM Adaptive Drafting Speculative Decoding on Mobile Devices](/202605/03/2604.25326v1-ahasd-asynchronous-heterogeneous-architecture-for-llm-adaptive-drafting-speculative-decoding-on-mobile-devices)  
    标签：评分：10.0/10、query:aiot
-   evidence：通过FPGA实现边缘AI的能效片上学习
-5. [E2AFS: Energy-Efficient Approximate Floating Point Square Rooter for Error Tolerant Computing](/202604/26/2604.16964v1-e2afs-energy-efficient-approximate-floating-point-square-rooter-for-error-tolerant-computing)  
+   evidence：移动端大模型推理的异构架构
+5. [NVLLM: A 3D NAND-Centric Architecture Enabling Edge on-Device LLM Inference](/202605/03/2604.25699v1-nvllm-a-3d-nand-centric-architecture-enabling-edge-on-device-llm-inference)  
+   标签：评分：10.0/10、query:aiot
+   evidence：面向边缘设备LLM推理的3D NAND中心化架构
+6. [At the Edge of the Heart: ULP FPGA-Based CNN for On-Device Cardiac Feature Extraction in Smart Health Sensors for Astronauts](/202605/03/2604.25799v1-at-the-edge-of-the-heart-ulp-fpga-based-cnn-for-on-device-cardiac-feature-extraction-in-smart-health-sensors-for-astronauts)  
+   标签：评分：10.0/10、query:aiot
+   evidence：用于CNN推理的超低功耗FPGA硬件加速
+7. [Hierarchical adaptive control for real-time dynamic inference at the edge](/202605/03/2604.26470v1-hierarchical-adaptive-control-for-real-time-dynamic-inference-at-the-edge)  
+   标签：评分：10.0/10、query:aiot
+   evidence：边缘实时动态推理的分层自适应控制
+8. [EdgeSpike: Spiking Neural Networks for Low-Power Autonomous Sensing in Edge IoT Architectures](/202605/03/2604.27004v1-edgespike-spiking-neural-networks-for-low-power-autonomous-sensing-in-edge-iot-architectures)  
+   标签：评分：10.0/10、query:aiot
+   evidence：低功耗边缘物联网感知的协同设计SNN框架
+9. [VitaLLM: A Versatile, Ultra-Compact Ternary LLM Accelerator with Dependency-Aware Scheduling](/202605/03/2604.27396v1-vitallm-a-versatile-ultra-compact-ternary-llm-accelerator-with-dependency-aware-scheduling)  
+   标签：评分：10.0/10、query:aiot
+   evidence：专为高效三值LLM推理定制的软硬件协同设计加速器
+10. [EdgeFM: Efficient Edge Inference for Vision-Language Models](/202605/03/2604.27476v1-edgefm-efficient-edge-inference-for-vision-language-models)  
+   标签：评分：10.0/10、query:aiot
+   evidence：视觉语言模型的高效边缘推理
+11. [On-Device Vision Training, Deployment, and Inference on a Thumb-Sized Microcontroller](/202605/03/2604.23012v1-on-device-vision-training-deployment-and-inference-on-a-thumb-sized-microcontroller)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于边缘AI和嵌入式系统的能效硬件
-6. [Fully Analog Resonant Recurrent Neural Network via Metacircuit](/202604/26/2604.17277v1-fully-analog-resonant-recurrent-neural-network-via-metacircuit)  
+   evidence：微控制器上的端侧CNN训练与推理
+12. [A Multiplication-Free Spike-Time Learning Algorithm and its Efficient FPGA Implementation for On-Chip SNN Training](/202605/03/2604.23218v1-a-multiplication-free-spike-time-learning-algorithm-and-its-efficient-fpga-implementation-for-on-chip-snn-training)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于边缘智能的全模拟谐振循环神经网络
-7. [AccelCIM: Systematic Dataflow Exploration for SRAM Compute-in-Memory Accelerator](/202604/26/2604.17692v1-accelcim-systematic-dataflow-exploration-for-sram-compute-in-memory-accelerator)  
+   evidence：用于片上SNN训练的无乘法算法及FPGA实现
+13. [Sparsity-Aware Event-Driven Impulse Radio Transceivers for Reliable Neuromorphic Inference](/202605/03/2604.23559v1-sparsity-aware-event-driven-impulse-radio-transceivers-for-reliable-neuromorphic-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：SRAM存内计算加速器的系统数据流探索
-8. [Unlocking the Edge deployment and ondevice acceleration of multi-LoRA enabled one-for-all foundational LLM](/202604/26/2604.18655v1-unlocking-the-edge-deployment-and-ondevice-acceleration-of-multi-lora-enabled-one-for-all-foundational-llm)  
+   evidence：基于物联网的AI应用和边缘智能的类脑推理
+14. [BitRL: Reinforcement Learning with 1-bit Quantized Language Models for Resource-Constrained Edge Deployment](/202605/03/2604.24273v1-bitrl-reinforcement-learning-with-1-bit-quantized-language-models-for-resource-constrained-edge-deployment)  
    标签：评分：9.0/10、query:aiot
-   evidence：智能手机上高效端侧LLM推理的硬件感知框架
-9. [Efficient Mixture-of-Experts LLM Inference with Apple Silicon NPUs](/202604/26/2604.18788v1-efficient-mixture-of-experts-llm-inference-with-apple-silicon-npus)  
+   evidence：用于资源受限边缘部署的1位量化语言模型
+15. [DECOFFEE: Decentralized Reinforcement Learning for Time-critical Workload Offloading and Energy Efficiency across the Computing Continuum](/202605/03/2604.24507v1-decoffee-decentralized-reinforcement-learning-for-time-critical-workload-offloading-and-energy-efficiency-across-the-computing-continuum)  
    标签：评分：9.0/10、query:aiot
-   evidence：利用Apple Silicon NPU实现高效的MoE LLM推理
-10. [Design Rules for Extreme-Edge Scientific Computing on AI Engines](/202604/26/2604.19106v1-design-rules-for-extreme-edge-scientific-computing-on-ai-engines)  
+   evidence：物联网应用的负载卸载与能效
+16. [AHASD: Asynchronous Heterogeneous Architecture for LLM Adaptive Drafting Speculative Decoding on Mobile Devices](/202605/03/2604.25326v2-ahasd-asynchronous-heterogeneous-architecture-for-llm-adaptive-drafting-speculative-decoding-on-mobile-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：现代 FPGA SoC 上的 AI 引擎用于极端边缘科学计算
-11. [Silicon Aware Neural Networks](/202604/26/2604.19334v1-silicon-aware-neural-networks)  
+   evidence：移动端NPU-PIM系统上LLM的异步异构架构
+17. [AHASD: Asynchronous Heterogeneous Architecture for LLM Adaptive Drafting Speculative Decoding on Mobile Devices](/202605/03/2604.25326v3-ahasd-asynchronous-heterogeneous-architecture-for-llm-adaptive-drafting-speculative-decoding-on-mobile-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：针对硅感知的神经网络软硬协同设计
-12. [Towards Energy Impact on AI-Powered 6G IoT Networks: Centralized vs. Decentralized](/202604/26/2604.19377v1-towards-energy-impact-on-ai-powered-6g-iot-networks-centralized-vs-decentralized)  
+   evidence：移动端NPU-PIM系统的异步异构架构
+18. [FED-FSTQ: Fisher-Guided Token Quantization for Communication-Efficient Federated Fine-Tuning of LLMs on Edge Devices](/202605/03/2604.25421v1-fed-fstq-fisher-guided-token-quantization-for-communication-efficient-federated-fine-tuning-of-llms-on-edge-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：AI驱动的6G物联网网络中的能效
-13. [Micro Language Models Enable Instant Responses](/202604/26/2604.19642v1-micro-language-models-enable-instant-responses)  
+   evidence：边缘设备联邦微调的Fisher引导Token量化
+19. [DUAL-BLADE: Dual-Path NVMe-Direct KV-Cache Offloading for Edge LLM Inference](/202605/03/2604.26557v1-dual-blade-dual-path-nvme-direct-kv-cache-offloading-for-edge-llm-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：针对具有功耗和计算约束的边缘设备的超紧凑模型
-14. [LLM-Guided Safety Agent for Edge Robotics with an ISO-Compliant Perception-Compute-Control Architecture](/202604/26/2604.20193v1-llm-guided-safety-agent-for-edge-robotics-with-an-iso-compliant-perception-compute-control-architecture)  
+   evidence：边缘大模型推理的内存管理优化
+20. [Multibit neural inference in a N-ary crossbar architecture](/202605/03/2604.26979v1-multibit-neural-inference-in-a-n-ary-crossbar-architecture)  
    标签：评分：9.0/10、query:aiot
-   evidence：符合ISO标准的边缘机器人感知-计算-控制架构
-15. [Enabling Mixed criticality applications for the Versal AI-Engines](/202604/26/2604.21124v1-enabling-mixed-criticality-applications-for-the-versal-ai-engines)  
+   evidence：通过存内计算实现能效神经推理
+21. [LLM-Guided Runtime Parameter Optimization for Energy-Efficient Model Inference](/202605/03/2604.27032v1-llm-guided-runtime-parameter-optimization-for-energy-efficient-model-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：用于AI和信号处理负载的异构架构
-16. [SparKV: Overhead-Aware KV Cache Loading for Efficient On-Device LLM Inference](/202604/26/2604.21231v1-sparkv-overhead-aware-kv-cache-loading-for-efficient-on-device-llm-inference)  
+   evidence：通过参数优化实现能效模型推理
+22. [Focus Session: Autonomous Systems Dependability in the era of AI: Design Challenges in Safety, Security, Reliability and Certification](/202605/03/2604.27807v1-focus-session-autonomous-systems-dependability-in-the-era-of-ai-design-challenges-in-safety-security-reliability-and-certification)  
    标签：评分：9.0/10、query:aiot
-   evidence：硬件资源受限下的高效设备端大模型推理
-17. [GraphLeap: Decoupling Graph Construction and Convolution for Vision GNN Acceleration on FPGA](/202604/26/2604.21290v1-graphleap-decoupling-graph-construction-and-convolution-for-vision-gnn-acceleration-on-fpga)  
+   evidence：安全关键型自主系统中嵌入式AI的设计挑战
+23. [NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA Bidirectional Ring Topologies and Stream-Dataflow Architectures](/202605/03/2604.28059v1-neuroring-scaling-spiking-neural-networks-via-multi-fpga-bidirectional-ring-topologies-and-stream-dataflow-architectures)  
    标签：评分：9.0/10、query:aiot
-   evidence：通过解耦图构建在FPGA上加速视觉图神经网络
+   evidence：基于FPGA流数据流架构的SNN加速器
 
 ### 速读区论文标签
-1. [FlexVector: A SpMM Vector Processor with Flexible VRF for GCNs on Varying-Sparsity Graphs](/202604/26/2604.10113v1-flexvector-a-spmm-vector-processor-with-flexible-vrf-for-gcns-on-varying-sparsity-graphs)  
+1. [KAIROS: Stateful, Context-Aware Power-Efficient Agentic Inference Serving](/202605/03/2604.16682v1-kairos-stateful-context-aware-power-efficient-agentic-inference-serving)  
    标签：评分：8.0/10、query:aiot
-   evidence：用于加速图卷积网络推理的向量处理器架构
-2. [Wearable AI in the Era of Large Sensor Models](/202604/26/2604.10172v1-wearable-ai-in-the-era-of-large-sensor-models)  
+   evidence：针对代理式 AI 推理的上下文感知功耗优化系统
+2. [Neuroscience Inspired Graph Operators Towards Edge-Deployable Virtual Sensing for Irregular Geometries](/202605/03/2604.16722v1-neuroscience-inspired-graph-operators-towards-edge-deployable-virtual-sensing-for-irregular-geometries)  
    标签：评分：8.0/10、query:aiot
-   evidence：可穿戴人工智能与多模态传感器集成的人机中心应用
-3. [Energy-Efficient Hybrid Data Computation via Coordinated AirComp and Edge Offloading](/202604/26/2604.10196v1-energy-efficient-hybrid-data-computation-via-coordinated-aircomp-and-edge-offloading)  
+   evidence：针对能耗限制的脉冲神经元边缘部署虚拟传感
+3. [Open-TQ-Metal: Fused Compressed-Domain Attention for Long-Context LLM Inference on Apple Silicon](/202605/03/2604.16957v1-open-tq-metal-fused-compressed-domain-attention-for-long-context-llm-inference-on-apple-silicon)  
    标签：评分：8.0/10、query:aiot
-   evidence：能效混合计算与边缘卸载
-4. [The xPU-athalon: Quantifying the Competition of AI Acceleration](/202604/26/2604.10852v1-the-xpu-athalon-quantifying-the-competition-of-ai-acceleration)  
+   evidence：在消费级嵌入式硬件上实现高效LLM推理
+4. [Active Inference-Based Adaptive Routing for Heterogeneous Edge AI Services](/202605/03/2604.17373v1-active-inference-based-adaptive-routing-for-heterogeneous-edge-ai-services)  
    标签：评分：8.0/10、query:aiot
-   evidence：评估AI加速器的功耗和能效
-5. [Flint: Compiler Enabled Cluster-Free Design Space Exploration for Distributed ML](/202604/26/2604.17550v1-flint-compiler-enabled-cluster-free-design-space-exploration-for-distributed-ml)  
+   evidence：跨云边连续体的异构边缘AI服务自适应路由
+5. [GreenDyGNN: Runtime-Adaptive Energy-Efficient Communication for Distributed GNN Training](/202605/03/2604.23139v1-greendygnn-runtime-adaptive-energy-efficient-communication-for-distributed-gnn-training)  
    标签：评分：7.0/10、query:aiot
-   evidence：分布式机器学习系统的设计空间探索
-6. [EcoShift: Performance-Aware Power Management for Power-Constrained Heterogeneous Systems](/202604/26/2604.17635v1-ecoshift-performance-aware-power-management-for-power-constrained-heterogeneous-systems)  
+   evidence：分布式GNN训练的能效通信
+6. [Distributed Electromagnetic Neural Networks for Task-Oriented Semantic Communications](/202605/03/2604.23901v1-distributed-electromagnetic-neural-networks-for-task-oriented-semantic-communications)  
    标签：评分：7.0/10、query:aiot
-   evidence：针对功耗受限系统的性能感知功耗管理
-7. [AutoPPA: Automated Circuit PPA Optimization via Contrastive Code-based Rule Library Learning](/202604/26/2604.18445v1-autoppa-automated-circuit-ppa-optimization-via-contrastive-code-based-rule-library-learning)  
+   evidence：无人机赋能的分布式语义通信神经网络
+7. [RefEvo: Agentic Design with Co-Evolutionary Verification for Agile Reference Model Generation](/202605/03/2604.24218v1-refevo-agentic-design-with-co-evolutionary-verification-for-agile-reference-model-generation)  
    标签：评分：7.0/10、query:aiot
-   evidence：针对功耗与性能的自动化电路PPA优化
-8. [Joint Scheduling of Multi-Band Radar Sensing and DNN Inference for Cross-Stage Parallelism](/202604/26/2604.18520v1-joint-scheduling-of-multi-band-radar-sensing-and-dnn-inference-for-cross-stage-parallelism)  
+   evidence：用于SoC架构探索的高保真参考模型快速开发
+8. [Nautile-370M: Spectral Memory Meets Attention in a Small Reasoning Model](/202605/03/2604.24809v1-nautile-370m-spectral-memory-meets-attention-in-a-small-reasoning-model)  
    标签：评分：7.0/10、query:aiot
-   evidence：雷达感知与 DNN 推理在多核执行上的联合调度
-9. [RankGuide: Tensor-Rank-Guided Routing and Steering for Efficient Reasoning](/202604/26/2604.16694v1-rankguide-tensor-rank-guided-routing-and-steering-for-efficient-reasoning)  
+   evidence：严格预算下高效推理的小语言模型
+9. [A Class AAA Solar Testbed for Reproducible Long-Term Characterization of Energy-Harvesting Systems](/202605/03/2604.24950v1-a-class-aaa-solar-testbed-for-reproducible-long-term-characterization-of-energy-harvesting-systems)  
    标签：评分：6.0/10、query:aiot
-   evidence：小型和大型推理模型之间的协作以提高效率
-10. [ReaLB: Real-Time Load Balancing for Multimodal MoE Inference](/202604/26/2604.19503v1-realb-real-time-load-balancing-for-multimodal-moe-inference)  
+   evidence：评估超低功耗能量采集系统的实验平台
+10. [Folding Tensor and Sequence Parallelism for Memory-Efficient Transformer Training & Inference](/202605/03/2604.26294v1-folding-tensor-and-sequence-parallelism-for-memory-efficient-transformer-training--inference)  
    标签：评分：6.0/10、query:aiot
-   evidence：实时负载均衡与精度调节以提升推理效率
-11. [ReaLB: Real-Time Load Balancing for Multimodal MoE Inference](/202604/26/2604.19503v2-realb-real-time-load-balancing-for-multimodal-moe-inference)  
+   evidence：通过并行执行实现内存高效的Transformer训练与推理
+11. [FACT: Compositional Kernel Synthesis with a Three-Stage Agentic Workflow](/202605/03/2604.26666v1-fact-compositional-kernel-synthesis-with-a-three-stage-agentic-workflow)  
    标签：评分：6.0/10、query:aiot
-   evidence：实时负载均衡与精度调节以提升推理效率
+   evidence：用于GPU内核优化的代理工作流
 
 
 <div class="dpr-home-promo-card">

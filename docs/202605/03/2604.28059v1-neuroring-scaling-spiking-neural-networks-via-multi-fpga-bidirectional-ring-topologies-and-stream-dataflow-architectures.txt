@@ -1,0 +1,513 @@
+Title: NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA Bidirectional Ring Topologies and Stream-Dataflow Architectures
+
+URL Source: https://arxiv.org/pdf/2604.28059v1
+
+Published Time: Fri, 01 May 2026 01:21:34 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA Bidirectional Ring Topologies and Stream-Dataflow Architectures 
+
+Muhammad Ihsan Al Hafiz and Artur Podobas 
+
+KTH Royal Institute of Technology, Stockholm, Sweden 
+
+{miahafiz, podobas}@kth.se 
+
+Abstract. Spiking neural networks (SNNs) are a promising paradigm for energy-efficient event-driven computation, but large-scale SNN ex-ecution remains challenging because sparse spike communication and synchronization can dominate runtime. Existing solutions across CPU, GPU, ASIC, and FPGA platforms offer different trade-offs between pro-grammability, efficiency, and scalability. To address this gap, we present NeuroRing, a modular and scalable SNN accelerator based on a stream-dataflow architecture and a bidirectional ring topology, implemented in High-Level Synthesis (HLS) on programmable FPGAs. NeuroRing sup-ports modular single- and multi-FPGA deployment and is compatible with existing SNN workflows through integration with the NEST sim-ulator. We evaluate NeuroRing on the cortical microcircuit benchmark and a Sudoku constraint-satisfaction workload. Results show that Neu-roRing preserves the key activity statistics of the NEST reference model, achieves faster-than-real-time execution of the full-scale cortical micro-circuit with a real-time factor (RTF) of 0.83, exhibits meaningful strong and weak scaling, and provides competitive energy efficiency on two pro-grammable FPGAs. These results position NeuroRing as a flexible and scalable platform for both neuroscience simulation and broader event-driven applications. 
+
+Keywords: SNN · Accelerator · FPGA · Stream · Dataflow · Ring Topology. 
+
+1 Introduction 
+
+Spiking Neural Networks (SNNs) are a promising model for energy-efficient event-driven computation and biologically realistic brain simulation, and are used in everything from computational neuroscience [8], constraint satisfaction problems [10], to computer vision [1]. SNNs are energy-efficient because of sparse spike-based communication, where neurons exchange information only when events occur. However, large-scale SNN workloads remain challenging, partic-ularly for a high density of connections between neurons, such as the cortical microcircuit model [11]. In such workloads, spike communication and synchro-nization can dominate execution cost, requiring specialized architectures or al-gorithms that exploit the characteristics of event-driven computation.  
+
+> arXiv:2604.28059v1 [cs.AR] 30 Apr 2026 2M. I. A. Hafiz et al.
+
+A broad range of systems has been developed to accelerate large-scale SNN simulation, each with different trade-offs. Specialized neuromorphic hardware, such as SpiNNaker, has demonstrated real-time simulation of the full cortical microcircuit at biological time scales [12], but such platforms are less accessible than commodity Central Processing Unit (CPU) and Graphics Processing Unit (GPU) systems. GPU-based approaches have also achieved near-real-time per-formance on similar workloads [4], while High-Performance Computing (HPC) deployments of the NEST simulator [2] have demonstrated strong performance and straightforward scaling across compute nodes [8]. Reconfigurable hardware offers another attractive option: Field Programmable Gate Array (FPGA)-based systems have shown strong energy efficiency and flexibility [13], from single-node devices [9] to large FPGA clusters [5, 7]. However, existing FPGA-based SNN accelerators are often optimized for specific workloads, hardware organizations, or deployment settings. As a result, there remains a need for architectures that combine modularity, scalable multi-FPGA execution, backend-agnostic integra-tion, and practical portability, while remaining suitable for high-performance large-scale SNN simulation. In this work, we propose NeuroRing, a stream-dataflow SNN architecture with a bidirectional ring topology and support for multi-FPGA scaling through modular High Level Synthesis (HLS) kernels. The main contributions of this paper are as follows: 1. We present the design and implementation of NeuroRing, a modular SNN accelerator core that supports both single- and multi-FPGA deployment through stream-based communication and bidirectional ring routing. 2. We integrate NeuroRing with the NEST simulator through a Python-based workflow and evaluate it on two representative workloads: the cortical mi-crocircuit benchmark for neuroscience and a Sudoku solver for constraint satisfaction. 3. We analyze the architectural trade-offs of NeuroRing through design-space exploration and evaluate its scalability under both strong-scaling and weak-scaling configurations. 4. We compare NeuroRing against the Dardel supercomputer baseline in a strong-scaling setting and show substantially lower power and energy con-sumption while maintaining competitive execution performance. 
+
+2 Spiking Neural Networks 
+
+SNNs are the third generation of artificial neural networks that encode informa-tion in the timing of spikes [3]. This network is inspired by biological neurons, which use action potentials called spikes, to encode temporal information in their signals [14]. This mechanism for transferring information can lead to en-ergy savings in hardware implementation because we only send discrete spikes in asynchronous, sparse processing, as performed in the human brain. The dynamics of spiking neurons can be described through different – more or less biologically plausible – models. The neuron model represents the mathemati-NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 3
+
+cal formulation of the behavior of the neural membrane potential and ion channel conductances [3]. Examples of neuron models include the Leaky Integrate-and-Fire (LIF) model, the Izhikevich model, and the Hodgkin-Huxley model. The LIF model is a common neural model popular for its simplicity and ability to represent what is observed in vitro. Formally, the LIF is composed of two Ordi-nary Differential Equations (ODEs) with a spike-generation event condition: 
+
+LIF 
+
+
+
+dV dt = − V − EL + ( Isyn + IDC )Rτm
+
+dI syn 
+
+dt = − Isyn 
+
+τsyn 
+
++ δ(t − tj )
+
+if V > V th : emit _spike () , V = Vreset 
+
+(1) The LIF model integrates an incoming electrical signal with a decaying charge over time and fires a spike when the threshold is reached. The neuron dynamics are represented by Equation 1 [12]. The membrane potential V evolves with time constant τm relative to leak reversal potential (resting potential) EL, driven by synaptic current Isyn , direct current IDC , and membrane resistance R. The synaptic current decays with time constant τsyn and increases on spike arrival. 
+
+δ(t − tj ) denotes a spike arriving at time tj , represented as an instantaneous impulse added to the synaptic current. When the membrane potential V is more than the threshold potential Vth , the neuron emits a spike and resets to the reset potential Vreset . Example networks using LIF in this paper are the cortical microcircuit and the Sudoku solver. 
+
+3 Related work 
+
+A wide range of SNN accelerators has been proposed across ASIC, CPU, GPU, and FPGA platforms to improve simulation speed and energy efficiency. A com-mon, non-trivial benchmark used to quantify accelerator performance is the cor-tical microcircuit model [11], which has a dense (and realistic) connection den-sity [7]. The cortical microcircuit benchmark is particularly challenging because its relatively large synaptic fanout makes spike communication and distribution a major design concern, unlike more structured computer-science workloads with smaller connection fanout. In 2019, Rhodes et al. [12] demonstrated real-time simulation of the cortical microcircuit on SpiNNaker, a specialized neuromorphic platform. Subsequent work explored more accessible platforms. Golosio et al. [4] used a GPU-based approach and achieved near-real-time performance on a similar workload. Kurth et al. [8] later mapped the microcircuit model built in the NEST simulator to HPC compute nodes, achieving performance beyond biological real time while also enabling straightforward scaling across supercomputer nodes. Reconfigurable hardware has further improved the balance between flexibility and energy efficiency. Heittmann et al. [5] used a large FPGA cluster of 432 Xilinx Z7045 devices and achieved an Real-Time Factor (RTF) of 0.25, at an energy 4 M. I. A. Hafiz et al. 
+
+cost of 783 nJ per synaptic event. Kauth et al. [7] reduced the platform scale to 35 NetFPGA SUME devices and reported an RTF of 0.05 with 48 nJ per synaptic event. More recently, Lindqvist et al. [9] used a single-node Agilex 7 FPGA and achieved an RTF of 0.79 with 21 nJ per synaptic event. These studies show that FPGAs are attractive for scalable SNN simulation, but they also highlight a remaining challenge: building modular architectures that are scalable across single and multiple devices and flexible with respect to both the simulator backend and the workload domain. NeuroRing addresses this gap through a stream-dataflow architecture and a bidirectional ring topol-ogy that supports modular deployment, backend-agnostic integration, and the execution of both neuroscience and constraint-satisfaction workloads. 
+
+4 The NeuroRing Architecture 
+
+4.1 Stream-Dataflow Processing Core 
+
+The NeuroRing processing core is built from the NeuroRing and SynapseRouter 
+
+kernels, which follow a stream-dataflow design. These kernels are instantiated as compute units and paired to form one NeuroRing core. Most on-chip com-munication is stream-based, allowing the compute units to execute concurrently and overlap computation with communication. As shown in Fig. 1, one Neu-roRing core consists of two Compute Units (CUs): the NeuroRing CU, and the 
+
+SynapseRouter CU. The NeuroRing CU contains three main processes: the Neu-ron Processing Unit (NPU), synapse-list fetch, and spike recorder. The NPU performs the neuron-state update and spike generation. NeuroRing supports the LIF neuron model and Poisson generator, although other neuron models can be integrated by modifying the NPU code. The NPU uses an 8-lane pipelined architecture, where eight 32-bit floating-point synaptic weights are processed in parallel from a packed 256-bit input stream. Neuron-state variables, such as membrane potential and synaptic current, are stored in on-chip memory and partitioned by a factor of 8 to sustain parallel access by the processing lanes. The NPU outputs spike events, which are passed to the synapse-list fetch pro-cess. For each emitted spike, the corresponding outgoing synapse list is fetched from High Bandwidth Memory (HBM). Each synapse entry is encoded as a 64-bit packet containing a 32-bit synaptic weight, a 2-bit synchronization word, a 22-bit destination field, and an 8-bit delay field. These entries are transferred via 256-bit Advanced eXtensible Interface (AXI) burst accesses, corresponding to four synapse packets per transaction. To reduce routing latency, the synapse list is sorted according to destination-core proximity, so that locally consumed and nearest-neighbor packets are generated first. The fetched packets are then dispatched to either the left or right ring stream based on the shorter route to the destination core, with routing determined by the destination core ID. After the synapse list of each spiking neuron has been emitted, a local synchronization token is inserted to ensure that all packets associated with the current spike are propagated before the next neuron is processed, helping prevent ring conges-tion and deadlock. After all spikes in the current timestep have been emitted, NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 5     
+
+> Fig. 1. Architecture of our proposed NeuroRing core, showing (left) the overarching core architecture, and (right) details of the NPU and the accumulator structure.
+
+the NPU generates a global synchronization token that propagates through the right ring to signal the timestep’s completion across all cores. During this pe-riod, the spike recorder writes spike traces back to HBM. The HBM interface uses one AXI4 master interface, which can be mapped to one or more HBM channels depending on the required memory capacity. The HBM address space is divided into a spike-recording region and a synapse-list region. The SynapseRouter is an independent CU and runs concurrently with the NeuroRing CU. It is activated by incoming AXI-stream packets and internal streams. Each router receives packets from two sources: the local NeuroRing CU and the neighboring core. Packets addressed to the current core are con-sumed locally and sent to the accumulator, while packets for other destinations are forwarded to the next core in the ring. Incoming packets from neighboring cores are prioritized to preserve ring progress and avoid deadlock by overload-ing. Eight accumulators operate in parallel to process packets delivered by the left and right routers. Each accumulator has a proportional destination address based on the core capacity and core ID. Synaptic weights are accumulated in a circular buffer with 8-bit delay indexing. Although this supports up to 256 delay positions, the current implementation allocates 64 delay slots per neuron, which is sufficient for the evaluated workloads and reduces memory usage. The accumulator data are stored in UltraRAM (URAM); since each URAM word can hold 72 bits, two 32-bit synaptic weights are packed into a single URAM word to improve storage efficiency. At timestep completion, each accumulator releases the synaptic-weight value scheduled for the next timestep, packs it into the input stream, and forwards it to the NPU to start the next timestep cycle. 
+
+4.2 Bidirectional Ring Topology 
+
+A bidirectional ring topology is adopted to support scalable development within and across FPGAs. Because our design is modular, NeuroRing cores can be 6 M. I. A. Hafiz et al.  
+
+> Fig. 2. Bidirectional ring topology and experiment setup.
+
+replicated and connected to neighboring cores via their left and right AXI-stream ports. Within a single device, these connections form a closed bidirectional ring. Across devices, the ring is extended through high-speed serial links. Figure 2a shows the system-level organization. Each device contains multiple NeuroRing cores and two Aurora kernels located at the ring boundaries. The Aurora kernels provide inter-FPGA serial communication and extend the ring across devices via full-duplex QSFP links. This organization preserves the same left/right routing semantics used within a single FPGA while enabling multi-device scaling. Each core is assigned a unique core ID used to determine packet routing and destination matching. In the Vitis flow, scaling is realized by replicating NeuroRing-core instances and specifying their stream connections in the connectivity configuration file. Aurora kernels are only required for multi-FPGA deployments. Because all target devices use the same kernel image, the generated bitstream can be reused across FPGAs. This makes the architecture straightforward to extend from a single-device implementation to a multi-FPGA deployment. 
+
+4.3 Hardware Generalization 
+
+NeuroRing is designed as a modular and backend-agnostic architecture for event-driven neural simulation. Rather than assuming a simulator-specific backend, it operates on a flattened synapse-list representation, in which each neuron stores its outgoing synaptic connections as a list of destination, delay, and synaptic weight entries. This abstraction allows NeuroRing to support different network-generation flows, provided that they can export compatible connectivity data and a supported neuron model. In this work, the network is generated using the NEST simulator [2], after which the synaptic connections are extracted and converted into the synapse-list representation required by NeuroRing. The architecture can be configured for different neuron capacities per core, synapse-list sizes, and timestep settings. The number of replicated cores is lim-ited by the available hardware resources of the target FPGA. In addition, the neuron model can be modified by adapting the HLS implementation of the NPU, allowing the same architecture to support different neuron dynamics. NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 7
+
+5 Experimental Setup 
+
+NeuroRing is implemented in C++ using AMD Vitis HLS and synthesized with the Vitis 2025.1 flow for the AMD/Xilinx Alveo U55C FPGA. Experi-ments were conducted on a host server equipped with two U55C cards con-nected through Peripheral Component Interconnect Express (PCIe), while inter-FPGA communication was realized through Aurora links over two QSFP ca-bles, as shown in Fig. 2b. The NeuroRing source code is publicly available at https://github.com/ihsanalhafiz/NeuroRing. Neural workloads were generated using NEST v3.9.0, and the host runtime was implemented in Python 3.10.19 using pyxrt to transfer network data, launch FPGA kernels, and retrieve results. As a software baseline, we also used the CPU partition of the Dardel supercomputer. Latency was measured on the host side; it is the wall-clock simulation time unless stated otherwise. FPGA power was obtained using xrt-smi examine , while CPU power on Dardel was collected using pat_run and pat_report . Performance is reported using the RTF, de-fined as wall-clock simulation time divided by biological simulation time [9, 7]. To evaluate performance and scalability, NeuroRing is compiled with neuron ca-pacities of 2048, 4096, 5632, and 8192 neurons/core. Depending on the workload, the number of deployed cores ranges from 1 to 20, and both single-FPGA and two-FPGA configurations are evaluated. 
+
+5.1 Case Studies 
+
+The Cortical Microcircuit is a model of a unit cell of early mammalian sensory cortex that covers 1mm 2 of its surface in a spiking network. The full-scale network consists of 77,169 neurons that are organized into four layers of inhibitory and excitatory populations, denoted by 2/3E, 2/3I, 4E, 4I, 5E, 5I, 6E, and 6I [11]. Neuron connections are encoded using population-specific prob-abilities, with a total of ∼ 0.3 billion synapses. Every neuron receives a DC or Poisson-distributed input. The model has become well-adopted by the com-putational neuroscience community for benchmarking neuroscience simulators because it involves a realistic number of connections with realistic probabilities [7]. The fanout synapse connection has an average of 3873, with a maximum of 6749. It poses challenges for spike communication and memory bandwidth in hardware. It is simulated with a timestep of 0.1 ms, and all simulation parame-ters are obtained from [11]. The cortical microcircuit is tested at Full, Half, and Quarter neuron scales with a synaptic scale factor of 1, corresponding to 77,169, 38,586, and 19,292 neurons, respectively. The simulation time is 10 seconds for performance evaluation. We used DC input to drive the network. 
+
+The Sudoku workload is derived from the NEST example network [6] and im-plements a winner-takes-all formulation, with each Sudoku digit represented by five neurons. All digit neurons are connected to their column, row, and squares. The resulting 9 ×9 Sudoku network contains 3645 neurons. In addition to the recurrent constraint connections, the network includes Poisson stimulation and background noise sources. Three easy Sudoku benchmark instances are used. 8 M. I. A. Hafiz et al. 
+
+Table 1. Hardware utilization and operating frequency of the NeuroRing architecture                                                                                        
+
+> No Core Use Cores Setup Freq. LUT Reg BRAM URAM DSP Capacity Case (MHz) (%) (%) (%) (%) (%) 12048 Half CM b20 2 FPGAs 268.3 a49.26 a37.04 a44.54 a26.04 a18.88 a
+> 24096 Quarter CM b51 FPGA 304.1 29.45 22.07 20.49 21.88 9.46 34096 Half CM b10 1 FPGA 203.5 49.81 37.94 31.25 43.75 18.88 44096 Full CM b20 2 FPGAs 272.4 a50.24 a38.46 a45.29 a42.71 a18.88 a
+> 55632 Full CM b14 2 FPGAs 198.7 a38.59 a29.26 a66.67 a41.25 a14.01 a
+> 68192 Full CM b10 2 FPGAs 260.0 a31.13 a22.87 a54.71 a37.50 a9.46 a
+> 74096 Sudoku 1c1 FPGA 302.1 15.72 10.82 26.69 9.38 2.22
+> aResource utilization reported per FPGA (dual-FPGA systems use identical boards).
+> bCM = Cortical Microcircuit benchmark.
+> cOne compute core and one Poisson spike generator.
+
+6 Results and Discussion 
+
+6.1 Hardware Utilization 
+
+All kernels are synthesized with a target frequency of 300 MHz. Table 1 reports the achieved frequency and hardware utilization for the evaluated NeuroRing configurations. Larger designs generally show higher utilization and lower oper-ating frequency, reflecting a timing-closure trade-off. Smaller neuron capacities per core also raise utilization because more cores are required for the same work-load. DSP usage remains relatively low because the current implementation uses the LIF neuron model, which is less arithmetic-intensive than models such as the Izhikevich or Hodgkin–Huxley models [13]. The Sudoku configuration has the lowest utilization, as it uses only one NeuroRing compute core and one Poisson spike-generator core. 
+
+6.2 Correctness 
+
+Correctness is evaluated against NEST, used here as the software reference. The comparison uses the full-scale cortical microcircuit mapped to a NeuroRing con-figuration with 4096 neurons/core, 20 cores, and 2 FPGAs. Validation is based on three standard spike-train statistics: firing rate, coefficient of variation (CV) of inter-spike intervals, and Pearson correlation [9, 7, 5]. Figure 3 shows that NeuroRing reproduces the main layer-wise spiking structure of NEST across excitatory and inhibitory populations. Figure 4 shows that NeuroRing closely matches the NEST reference across layers L23, L4, L5, and L6 for firing rate, CV of inter-spike intervals, and Pearson correlation. The overall agreement in-dicates that NeuroRing preserves both the irregular spiking behavior and the correlation structure of the cortical microcircuit. Small differences remain in some tails and peak shapes, likely due to implementation-level numerical and synchronization effects. Overall, the close match in both raster patterns and layer-wise statistics confirms that NeuroRing reproduces the essential dynamics of the NEST baseline. NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 91.00 1.05 1.10 1.15 1.20 1.25 1.30 1.35 1.40 
+
+> time (s)
+> 2/3E
+> 2/3I
+> 4E
+> 4I
+> 5E
+> 5I
+> 6E
+> 6I
+> neuron id
+
+NEST         
+
+> 1.00 1.05 1.10 1.15 1.20 1.25 1.30 1.35 1.40
+> time (s)
+
+NeuroRing 
+
+Fig. 3. Layer-wise raster plots of the cortical microcircuit. 0 10 20                                                                   
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> p
+> L23E
+> NEST
+> NeuroRing
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8 L23I
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L23E
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L23I
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L23E
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L23I
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> p
+> L4E
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8 L4I
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L4E
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L4I
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L4E
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L4I
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> p
+> L5E
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8 L5I
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L5E
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L5I
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L5E
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L5I
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> p
+> L6E
+> 010 20
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8 L6I
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L6E
+> 0.0 0.5 1.0 1.5
+> 0
+> 1
+> 2
+> 3L6I
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L6E
+> 0.00 0.05
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125 L6I
+
+Firing Rate [Hz] Coefficient of Variation of Inter-Spike Intervals Pearson Correlation 
+
+Fig. 4. Layer-wise statistical comparison for the full-size cortical microcircuit. 
+
+6.3 Architectural Design Space Exploration 
+
+This experiment explores how neuron capacity per core affects real-time per-formance, power, and energy efficiency under a full-size cortical microcircuit workload on a fixed two-FPGA deployment. Figure 5 shows the trade-off asso-ciated with varying the neuron capacity per core. As shown in Fig. 5a, reducing the core capacity lowers the real-time factor (RTF), which indicates faster exe-cution relative to biological time. Among the evaluated design points, the 4096-neuron/core configuration achieves the best performance with an RTF of 0.83, while the 8192-neuron/core configuration gives the highest RTF of 1.11. This trend suggests that smaller core capacities benefit from increased parallelism as the number of cores increases. The 5632-neuron/core configuration does not fol-low a linear trend, likely because its post-implementation frequency (198.7 MHz) 10 M. I. A. Hafiz et al.     
+
+> 8192 (10 Cores) 260.0 MHz
+> 5632 (14 Cores) 198.7 MHz
+> 4096 (20 Cores) 272.4 MHz
+> 0.6
+> 0.8
+> 1
+> 1.2
+> 1.4
+> 1.11 1.04
+> 0.83
+> RTF
+> a) RTF vs. Core Capacity
+> 8192 (10 Cores) 260.0 MHz
+> 5632 (14 Cores) 198.7 MHz
+> 4096 (20 Cores) 272.4 MHz
+> 0
+> 50
+> 100
+> 150
+> 70 .24 69 .89
+> 83 .08
+> Total Power (W)
+> b) Power & Energy Efficiency
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 82 75 73
+> Energy / Synaptic Event (nJ)
+
+Fig. 5. Impact of core capacity variation on RTF, Power, and Energy 
+
+is lower than that of the 4096- and 8192-neuron/core cases. This indicates that the performance trend is influenced not only by the number of cores but also by the achievable clock frequency after implementation. Figure 5b shows that lower core capacity increases total power consumption, from about 70 W for the 8192- and 5632-neuron/core cases to 83.08 W for the 4096-neuron/core case. This behavior is expected because smaller core capacities require more cores to be instantiated, leading to higher resource utilization and greater system-level activity. However, the lower-capacity configuration also achieves the lowest en-ergy per synaptic event, decreasing from 82 nJ at 8192 neurons/core to 73 nJ at 4096 neurons/core. Overall, these results show that reducing the neuron capacity per core im-proves both real-time performance and energy per synaptic event, at the cost of increased total power. These results suggest that, for this workload and platform, smaller core capacities are favorable when the primary objective is real-time performance and energy per synaptic event, provided that sufficient hardware resources are available. 
+
+6.4 System Scalability 
+
+Strong Scaling evaluates how performance changes when a fixed workload is distributed over more hardware resources. Here, the half-size cortical microcir-cuit is used as the fixed workload and executed on both the NeuroRing and the Dardel CPU platform under single-unit and dual-unit configurations. For Neu-roRing, the single-unit configuration uses 10 cores with 4096 neurons/core on 1 FPGA, while the dual-unit configuration uses 20 cores with 2048 neurons/core on 2 FPGAs. For Dardel, the single-unit and dual-unit configurations use 1 and 2 CPU nodes, respectively, with 2 ntasks per node and 32 CPUs per task. Figure 6a shows that scaling NeuroRing from a single-unit to a dual-unit configuration reduces the RTF from 0.73 to 0.51, corresponding to a speedup of about 1.43 ×. For Dardel, the RTF decreases from 0.43 to 0.36, giving a smaller speedup of about 1.19 ×. In both cases, the speedup is sublinear, indicating that communication and synchronization overhead limit ideal strong scaling. For NeuroRing, this overhead mainly comes from the longer ring and inter-NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 11 
+
+> Single Unit
+> Dual Unit
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1 
+
+> 0.73
+> 0.51
+> 0.43 0.36
+> RTF
+
+a) RTF  
+
+> NeuroRing Dardel CPU
+> Single Unit
+> Dual Unit
+
+0
+
+200 
+
+400 
+
+600 
+
+800  
+
+> 32 .71 79 .17
+> 314 .1
+> 587 .6
+> Power (W)
+
+b) Power 
+
+> Single Unit
+> Dual Unit
+
+0
+
+200 
+
+400 
+
+600  
+
+> 49 84
+> 275
+> 428
+> Energy (nJ)
+
+c) Energy per Synaptic Event 
+
+Fig. 6. Strong-scaling comparison for the Half cortical microcircuit between NeuroRing and the Dardel CPU system. 
+
+> Quarter (5 Cores) (1 FPGA) 304.1 MHz
+> Half (10 Cores) (1 FPGA) 203.5 MHz
+> Full (20 Cores) (2 FPGAs) 272.4 MHz
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+> Hardware Shift to 2 FPGAs
+> 0.52
+> 0.73
+> 0.83
+> RTF
+
+a) Weak Scaling RTF 
+
+> Quarter (5 Cores) (1 FPGA) 304.1 MHz
+> Half (10 Cores) (1 FPGA) 203.5 MHz
+> Full (20 Cores) (2 FPGAs) 272.4 MHz
+
+0
+
+50 
+
+100 
+
+150  
+
+> 27 .32 32 .71
+> 83 .08
+> Total Power (W)
+
+b) Power & Energy Efficiency 
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+100  
+
+> 56 49
+> 73
+> Energy / Synaptic Event ( nJ)
+
+Fig. 7. Performance weak scaling of the NeuroRing architecture (4096 Neurons/core). 
+
+FPGA communication, while for Dardel, it is associated with inter-node MPI communication. Figures 6b and 6c show that the reduction in runtime is accompanied by higher power and energy cost on both platforms. For NeuroRing, total power in-creases from 32.71 W to 79.17 W, and energy per synaptic event rises from 49 nJ to 84 nJ when moving from one to two FPGAs. Dardel shows a similar trend, in-creasing from 314.1 W to 587.6 W and from 275 nJ to 428 nJ, respectively. These results indicate that NeuroRing can exploit additional FPGA resources for this fixed workload, demonstrating strong scaling, although the achieved gains are limited by increased communication distance within the ring and inter-FPGA communication overhead. Compared with the CPU-based Dardel platform, Neu-roRing achieves a comparable RTF trend under scaling while operating at sub-stantially lower power and energy, suggesting its potential as an energy-efficient platform. 
+
+Weak Scaling evaluates how performance changes when the workload size and the number of resources are increased proportionally. In this experiment, a core capacity of 4096 neurons/core is used so that the Quarter, Half, and Full cortical microcircuit workloads can be mapped to 5, 10, and 20 cores, respectively. 12 M. I. A. Hafiz et al. 
+
+Table 2. State-of-the-art Comparison for the full-size cortical microcircuit use case.                                 
+
+> Simulator Hardware Platform RTF Energy/Syn.Ev.(nJ)
+> Fast SNN FPGA [9] 1 Agilex 7 FPGA 0.79 21 neuroAIx [7] 35 NetFPGA SUME FPGA 0.05 48 IBM INC-3000 [5] 432 Xilinx XC Z7045 FPGA 0.25 783 NeuronGPU [4] 1 GeForce RTX 2080 Ti GPU 1.06 180 NEST [8] 2 AMD EPYC Rome CPU 0.53 480 SpiNNaker [12] 318 ASIC ASIC 1.00 600
+> NeuroRing (4096) 2 AMD/Xilinx Alveo U55C FPGA 0.83 73
+
+In ideal weak scaling, the RTF remains constant as the problem size and hardware resources grow proportionally. However, Fig. 7a shows that the RTF increases from 0.52 for the Quarter workload to 0.73 for the Half workload and 0.83 for the Full workload, indicating a deviation from ideal weak scaling. The degradation from Quarter to Half occurs even within a single FPGA and is likely influenced by the lower post-implementation frequency of the Half con-figuration (203.5 MHz) compared with the Quarter configuration (304.1 MHz). The Full configuration reaches a higher frequency (272.4 MHz), but its execution is distributed across two FPGAs, which introduces additional inter-FPGA com-munication and synchronization overhead. As a result, the larger configuration still shows a higher RTF. Figure 7b shows that total power increases with scale, rising from 27.32 W for Quarter to 32.71 W for Half and 83.08 W for Full. The increase is particularly pronounced when moving to the two-FPGA configura-tion. In terms of energy per synaptic event, the Half configuration gives the best result at 49 nJ, compared with 56 nJ for Quarter and 73 nJ for Full. Overall, proportional resource growth is applied, but weak-scaling efficiency degrades due to lower frequency and inter-FPGA overhead. 
+
+6.5 State-of-the-art Comparison 
+
+To position NeuroRing with respect to prior SNN simulation platforms, Table 2 compares the full-size cortical microcircuit use case across FPGA, GPU, CPU, and ASIC-based systems. For NeuroRing, we report the configuration with 20 cores, 4096 neurons/core, deployed on 2 AMD/Xilinx Alveo U55C FPGAs. Table 2 shows that NeuroRing achieves real-time execution for the full-size cortical microcircuit, with an RTF of 0.83. Although NeuroRing does not provide the lowest reported energy per synaptic event among FPGA-based systems, it remains substantially more energy-efficient than the GPU and CPU baselines listed in the table, and also improves upon large SpiNNaker cluster [12] and large FPGA cluster [5]. These results position NeuroRing as a competitive FPGA-based SNN simulation platform that balances performance, energy efficiency, and architectural flexibility. In particular, NeuroRing operates in real time using two U55C FPGAs while remaining fully programmable, scalable across devices, modular, and applicable to more general SNN workloads beyond neuroscience benchmarks, including constraint-satisfaction-style applications such as Sudoku solving. NeuroRing: Scaling Spiking Neural Networks via Multi-FPGA 13                                                                                                                                                                                                                            
+
+> Sudoku 1
+> 658931427
+> 432678915
+> 917245683
+> 296354871
+> 581762349743819256
+> 129583764865497132374126598
+> Sudoku 2
+> 254683197687915342913427568345871926726349851
+> 891256473
+> 538764219
+> 162598734
+> 479132685Sudoku 3
+> 496715832753428196218639745
+> 531267984649183257827954613374892561185376429
+> 962541378Performance summary: Sim.Time = 0.5 s, End-to-End Latency = 0.53–0.57 s, SNN Exec. Latency = 0.06–0.07 s, Power ≈20.8 W, Energy = 109–110 nJ/synaptic event.
+
+Fig. 8. Three Sudoku benchmarks. Gray cells: given puzzle. Blue cells: solver solution. 
+
+6.6 Beyond Neuroscience: Constraint Satisfaction Problem 
+
+To demonstrate that NeuroRing is not limited to neuroscience workloads, we apply it to Sudoku, formulated here as an SNN winner-takes-all network as described in Section 5. Three Sudoku benchmark puzzles are executed on a sin-gle FPGA using one NeuroRing core with 4096 neurons/core and one auxiliary Poisson-generator core. The same parameter set is used for all three instances, in-cluding 200 Hz stimulus and noise rates, inhibitory weight -100, stimulus/noise weights 200, synaptic delay 1.0 ms, and LIF neuron parameters dt = 0 .1 ms, 
+
+Cm = 250 pF, Ie = 200 pA, τm = 20 ms, tref = 2 ms, τsyn,ex = τsyn,in = 5 ms, 
+
+Vreset = −70 mV, EL = −65 mV, Vth = −50 mV, and Vm ∼ U (−65 , −55) mV. Different puzzles may require retuning input-rate and synaptic-weight parame-ters; we leave systematic transferability analysis to future work. The solution is decoded from the digit population with the highest spike count in each cell. Figure 8 shows that all three puzzles are solved correctly. It shows stable performance across the instances, with end-to-end latency of 0.53–0.57 s, SNN execution latency of 0.06–0.07 s, and power of about 20.8 W. The higher energy per synaptic event compared with the cortical microcircuit case is due to the smaller number of synaptic events, so the fixed platform power is distributed over less spike-processing work. These results show that NeuroRing can support constraint satisfaction problems beyond neuroscience benchmarks on a compact single-FPGA configuration. 
+
+7 Conclusion 
+
+This paper presented NeuroRing, a modular and scalable multi-FPGA architec-ture for spiking neural network simulation based on a bidirectional ring topology and stream-dataflow execution in HLS. NeuroRing supports configurable neuron capacity per core, scales across single- and multi-FPGA deployments, and pre-serves the key statistics of the NEST reference model. Results showed real-time execution of the full-size cortical microcircuit, meaningful strong and weak scal-ing, and competitive energy efficiency on only two programmable FPGAs. The 14 M. I. A. Hafiz et al. 
+
+Sudoku case study further demonstrated the applicability of constraint satisfac-tion beyond neuroscience. These results position NeuroRing as a flexible and efficient platform for scalable SNN simulation and other event-driven workloads. 
+
+References 
+
+1. Agarwal, R., Ghosal, P., Murmu, N., Nandi, D.: Spiking Neural Network in Com-puter Vision: Techniques, Tools and Trends. In: Borah, S., Gandhi, T.K., Piuri, V. (eds.) Advanced Computational and Communication Paradigms. pp. 201–209. Springer Nature, Singapore (2023) 2. Gewaltig, M.O., Diesmann, M.: NEST (neural simulation tool). Scholarpedia 2(4), 1430 (2007). https://doi.org/10.4249/scholarpedia.1430 3. Ghosh-Dastidar, S., Adeli, H.: Spiking neural networks. International Journal of Neural Systems 19 (04), 295–308 (Aug 2009) 4. Golosio, B., Tiddia, G., De Luca, C., Pastorelli, E., Simula, F., Paolucci, P.S.: Fast Simulations of Highly-Connected Spiking Cortical Models Using GPUs. Frontiers in Computational Neuroscience 15 (Feb 2021) 5. Heittmann, A., Psychou, G., Trensch, G., Cox, C.E., Wilcke, W.W., Diesmann, M., Noll, T.G.: Simulating the Cortical Microcircuit Significantly Faster Than Real Time on the IBM INC-3000 Neural Supercomputer. Frontiers in Neuroscience 15 
+
+(Jan 2022) 6. J Gille, S Furber, A Rowley: Script controlling the simulation of a sin-gle game of Sudoku — NEST Simulator Documentation, https://nest-simulator.readthedocs.io/en/latest/auto_examples/sudoku/sudoku_solver.html 7. Kauth, K., Stadtmann, T., Sobhani, V., Gemmeke, T.: neuroAIx-Framework: de-sign of future neuroscience simulation systems exhibiting execution of the cortical microcircuit model 20 × faster than biological real-time. Frontiers in Computational Neuroscience 17 (Apr 2023) 8. Kurth, A.C., Senk, J., Terhorst, D., Finnerty, J., Diesmann, M.: Sub-realtime sim-ulation of a neuronal network of natural density. Neuromorphic Computing and Engineering 2(2), 021001 (Mar 2022) 9. Lindqvist, B.A., Podobas, A.: Algorithms for Fast Spiking Neural Network Simu-lation on FPGAs. IEEE Access 12 , 150334–150353 (2024) 10. Pignari, R., Fra, V., Macii, E., Urgese, G.: Efficient Solution Validation of Con-straint Satisfaction Problems on Neuromorphic Hardware: The Case of Sudoku Puzzles. IEEE Transactions on Artificial Intelligence 6(8), 2061–2072 (Aug 2025) 11. Potjans, T.C., Diesmann, M.: The Cell-Type Specific Cortical Microcircuit: Relat-ing Structure and Activity in a Full-Scale Spiking Network Model. Cerebral Cortex (New York, NY) 24 (3), 785–806 (Mar 2014) 12. Rhodes, O., Peres, L., Rowley, A.G.D., Gait, A., Plana, L.A., Brenninkmeijer, C., Furber, S.B.: Real-time cortical simulation on neuromorphic hardware. Philosoph-ical Transactions of the Royal Society A: Mathematical, Physical and Engineering Sciences 378 (2164), 20190160 (Dec 2019) 13. Szczerek, W.J., Podobas, A.: A Quarter of a Century of Neuromorphic Archi-tectures on FPGAs – an Overview (Apr 2025), http://arxiv.org/abs/2502.20415, arXiv:2502.20415 [cs] 14. Vreeken, J.: Spiking neural networks, an introduction (2023), https://webdoc.sub.gwdg.de/ebook/serien/ah/UU-CS/2003-008.pdf

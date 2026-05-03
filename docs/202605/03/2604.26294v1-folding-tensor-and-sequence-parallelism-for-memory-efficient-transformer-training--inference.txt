@@ -1,0 +1,1132 @@
+Title: Folding Tensor and Sequence Parallelism for Memory-Efficient Transformer Training & Inference
+
+URL Source: https://arxiv.org/pdf/2604.26294v1
+
+Published Time: Thu, 30 Apr 2026 00:26:10 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Folding Tensor and Sequence Parallelism for Memory-Efficient Transformer Training & Inference 
+
+Vasu Shyam Anna Golubeva Quentin Anthony 
+
+Zyphra 
+
+Abstract —We present tensor and sequence parallelism (TSP), a parallel execution strategy that folds tensor parallelism and sequence parallelism onto a single device axis. In conventional multi-dimensional parallelism layouts, tensor parallelism (TP) shards model weights while sequence parallelism (SP) shards tokens, reducing per-device parameter or activation memory, respectively. Traditionally, each scheme is assigned its own mesh dimension. TSP instead assigns each rank both a weight shard and a sequence shard, reducing both parameter and activation memory along the same device axis. We implement this design with two runtime schedules. For attention, ranks iterate over broadcast parameter shards and reconstruct context through a sequence-wise key/value exchange. For gated MLPs, weight shards circulate in a ring while partial outputs accumulate locally. By sharding both weights and activations across the same devices, TSP trades additional communication volume for reduced memory overhead. We provide a theoretical commu-nication and memory analysis, describe our implementation of TSP attention and gated MLP blocks, and benchmark TSP against TP, SP, and TP+SP. These results position TSP as a hardware-aware alternative for long-context and memory-constrained model training, and as a viable axis of parallelism in concert with existing parallelism schemes such as pipeline and expert parallelism for dense and mixture-of-expert models. 
+
+I. I NTRODUCTION 
+
+Multidimensional parallelism is a key paradigm for scaling AI training and inference across modern HPC clusters. For large language models, the principal forms of parallelism are tensor (TP), pipeline (PP), expert (EP), data (DP), and sequence parallelism (SP). We focus on tensor and sequence parallelism and present a method for folding them both onto a single device-mesh axis. In tensor parallelism, the weight matrices of each layer are partitioned across devices. Each rank stores and applies a shard of every linear projection, and the partial results are reconciled through collective commu-nication, typically an all-reduce or a reduce-scatter/all-gather pair. This reduces per-device parameter memory (including gradients and optimizer states) in proportion to the TP degree. Sequence parallelism instead partitions the input along the sequence dimension, so each rank holds and attends over only a fraction of the sequence. This reduces per-device activation memory and distributes the quadratic-in-sequence-length at-tention cost, but leaves model parameters fully replicated. In the standard multidimensional-parallelism framework, a logical mesh is formed from the full set of devices and 
+
+> *
+
+Corresponding authors: vasu@zyphra.com , anna@zyphra.com ,
+
+quentin@zyphra.com 
+
+each parallelism strategy is assigned its own orthogonal axis. Because the total device count is fixed ( N = T · Σ · NDP · NPP ,where T and Σ are the tensor- and sequence-parallel degrees respectively) every rank allocated to one axis reduces the ranks available for the others. In particular, using separate axes for TP and SP allocates T · Σ ranks to model parallelism, leaving correspondingly fewer replicas for data parallelism. Here we show that the TP and SP axes can be collapsed into a single axis of size NTSP , with each rank holding both a shard of the sequence and a shard of the model weights. This yields the per-device memory benefits of both forms of parallelism, the benefits being reduced parameter memory from weight sharding and reduced activation memory from sequence sharding, while freeing the ranks that would other-wise form the second orthogonal axis to serve as additional data-parallel replicas. Concretely, for multi-head attention, each iteration of the TSP loop broadcasts one rank’s weight shards (the 
+
+WQ, W K , W V , W O projections, packed into a single buffer) to all peers. Every rank then computes local projections on its sequence shard and participates in an all-gather of the keys and values to reconstruct the full sequence context. A zigzag partitioning scheme balances the causal-attention workload across ranks. For the MLP, the analogy between 
+
+σ(X · W ⊤ 
+
+> 1
+
+) W2 and softmax( Q · K⊤) V motivates a ring-communication schedule. Weight shards circulate via point-to-point send/recv while each rank accumulates partial outputs locally, eliminating the all-reduce that standard TP requires. A further benefit is topological: Because NTSP ≤ NTP · NSP ,the combined group can be mapped entirely within the high-bandwidth intra-node domain (NVLink or AMD Infinity Fab-ric). The conventional two-axis layout requires NTP ·NSP ranks for the same degree of tensor and sequence sharding, which in many configurations spills onto lower-bandwidth inter-node interconnects (InfiniBand, Ethernet) and under-utilizes the available bisection bandwidth. II. B ACKGROUND 
+
+Distributed model training relies on combining multiple forms of parallelism across a fixed set of accelerator devices. Each parallelism scheme incurs its own trade-offs, and the exact mesh dimensions must be chosen based on the com-bination of model topology and cluster hardware. We focus on two forms of parallelism: tensor parallelism (TP), which 
+
+> arXiv:2604.26294v1 [cs.CL] 29 Apr 2026
+
+Fig. 1: Per-GPU theoretical memory breakdown by parallelism strategy for a 7B-parameter dense transformer model with selective recomputation ( B = 1 ). All schemes are evaluated on a single 8-GPU node ( D = 8 ): TP uses T = 8 , SP uses 
+
+Σ = 8 , TSP uses DTSP = 8 , and TP+SP uses a balanced mesh with T = 2 , Σ = 4 . At short context (left, S=8192 ), weight-proportional memory (parameters, gradients, optimizer states) dominates and TP or TSP provide the largest reduction. At long context (right, S=65536 ), activation memory becomes the bottleneck. The dotted line represents the 192 GB VRAM of the MI300X GPU; bars crossing this line will OOM. shards weights across ranks, and sequence parallelism (SP), which shards the token sequence across ranks. At a high level, a layer’s communication pattern is de-termined by which tensors (weights, activations, gradients, and optimizer states) are replicated and which are sharded. If weights are sharded, each rank computes only a portion of the weights’ results of the full sequence, and all ranks’ partial results must be shared via collective communication operations. If the sequence is sharded, each rank stores only a subset of tokens, and any sequence-dependent operations such as attention will require collective operations to perform the full operation across the full sequence. This perspective makes TP and SP complementary: TP shards across weights, while SP shards across the sequence. 
+
+A. Tensor Parallelism 
+
+Tensor parallelism partitions the parameters of a layer across multiple devices while keeping the inputs replicated. In a Transformer block, this is typically implemented by sharding the output dimension of projection matrices such as WQ, WK ,
+
+WV , and the up and gate projections of the MLP, followed by a row-parallel output projection whose partial results are summed across ranks. For a linear map Y = XW ⊤, each rank stores only a shard of W , computes its local contribution, and then participates in an all-reduce to form the full output. The main advantage of TP is that parameter, gradient, and optimizer-state memory, along with per-device FLOPs, all decrease in proportion to the TP degree. However, TP requires very high communication volume (see Section IV-C2), which effectively restricts it to high-bandwidth intra-node commu-nication fabrics such as AMD Infinity Fabric or NVIDIA NVLink. It is also difficult to overlap TP computation with communication, which makes efficient TP designs challenging. Finally, activations remain replicated across the TP group, which becomes the primary bottleneck on long sequences. Worse, the already-high TP communication volume is pro-portional to activation size and therefore grows with sequence length (see Section IV). 
+
+B. Sequence Parallelism 
+
+Sequence parallelism partitions the input along the sequence dimension while keeping model parameters replicated. Each rank processes only a subset of tokens, which reduces the per-rank activation memory and FLOPs. For SP on attention, each rank holds a shard of the sequence, computes local queries, keys, and values, and then exchanges the sequence-dependent tensors needed to recover the correct causal attention context. For causal attention, naive equal-sized sequence chunks lead to load imbalance because later tokens attend to larger prefixes and therefore incur more work. A common remedy is a zigzag context partition in which each rank receives two disjoint subsequences, one near the beginning of the sequence and one near the end, so that the total causal attention workload is more evenly distributed. In this regime, SP reduces activation memory and attention FLOPs per rank, but leaves parameter memory fully replicated. It is therefore most attractive when activation storage, rather than model-state storage, is the dominant bottleneck. Sequence parallelism is becoming increasingly necessary as the supported context sizes for models increase dramatically. 2Fig. 2: Weights and sequence sharding under TP, SP, TP+SP, and TSP. Note that TP+SP uses two orthogonal axes to split the parallel groups while TSP lets both weights and activations be sharded simultaneously along the same devices. SP implementations differ in how the K/V exchange is realized. Ring Attention (Liu et al., 2024) circulates K/V shards point-to-point around the SP group, overlapping each step’s transfer with the corresponding blockwise FlashAtten-tion computation. This keeps activation memory bounded to a single block at a time but requires D−1 sequential P2P steps per layer. An all-gather variant exchanges all K/V shards in a single collective and then runs FlashAttention once against the full-sequence keys and values, trading a higher peak K/V buffer for a single bandwidth-optimal collective and a simpler kernel call. DeepSpeed-Ulysses (Jacobs et al., 2024) instead replaces the sequence-dimension exchange with all-to-alls that redistribute Q/K/V across the head dimension, so each rank attends over the full sequence for a subset of heads. The forward-pass communication volume is comparable across these variants, but their sensitivity to topology and overlap dif-fers. Ring is favorable when per-step compute is large enough to hide each P2P transfer and the fabric does not deliver full bandwidth to small subgroups. All-gather is favorable when the full collective fits in memory and the fabric is bandwidth-optimal at full subgroup size. All-to-all is favorable when the head count is large relative to the sequence shard size. 
+
+C. Conventional TP+SP 
+
+In prior works, TP and SP are combined by assigning them to orthogonal dimensions of the device mesh. If the TP degree is T and the SP degree is Σ, then the model replica uses a total of T · Σ devices. TP reduces weight, optimizer, and gradient memory by a factor of T , while SP reduces activation memory by a factor of Σ. It also cleanly separates the communication patterns of the two strategies, with TP using reductions over the tensor-parallel group and SP using sequence-dependent communication operations over the sequence-parallel group. However, this separation has two disadvantages: First, the communication domains of TP and SP may not map cleanly onto the cluster’s communication topology. A configuration that is reasonable from a logical parallelism standpoint may still force one of the parallel groups to span slower inter-node links rather than high-bandwidth intra-node links. Second, a two-dimensional model replica mesh consumes many ranks that could be used to expand along the data-parallel axis. 
+
+D. Parallelism Folding 
+
+Parallelism folding is the idea of collapsing two logically distinct sharding dimensions onto a single device-mesh axis, so that each rank simultaneously owns shards along both partitioning schemes. Concretely, a fold of TP and SP gives every rank both a slice of the layer weights and a slice of the activations, rather than placing those two tensors on orthogonal axes of size T and Σ.While this lowers peak memory since more tensors are sharded across the same number of ranks instead of replicated, the trade-off is that each layer must now communicate along both folded axes during a single pass, where the two axes would otherwise communicate independently and at different points. This generally raises the per-layer communication volume, but this does not necessarily lead to a proportional increase in wall-clock cost if this communication is overlapped with compute (see Section III). Folding strategies also help to free ranks from the model-parallel mesh onto the data-parallel axis. This allows us to add DP replicas with a fixed cluster size. Such parallelism folding strategies are preferable only when its memory savings or reduction in redundant computation outweigh the addi-tional communication cost, which is often achievable when sharding communication is across intra-node interconnects or overlapped with compute. III. D ESIGN 
+
+A. TSP schedules 
+
+We now describe the forward-pass designs for the TSP attention and gated MLP blocks. In both cases, each rank owns a shard of the sequence and a shard of the layer weights. TSP attention is illustrated in Figure 3 and specified in Algorithm 1. 3Fig. 3: TSP Attention block design 
+
+Fig. 4: TSP MLP block design Each rank stores a zigzag-partitioned sequence shard (Brandon et al., 2023) and a shard of the attention projections. The shards for WQ, WK , WV , and WO are packed into a single buffer and broadcast one weight-owning rank at a time. After receiving the shard for iteration r, every rank applies it to its local tokens to produce the queries, keys, and values for that head shard. Causal attention still requires access to the full key/value context, so the local K, V tensors are all-gathered across the TSP group and reordered back into sequence order before FlashAttention is applied. The resulting partial attention output is projected by the corresponding slice of WO and accumulated into the local output buffer. After all D weight shards have been visited, each rank holds the full attention output for its local tokens. The MLP schedule, illustrated in Figure 4 and specified in Algorithm 2, uses weight rotation instead of broadcast. Each rank begins with its local shards of the gate, up, and down projections, computes the gated MLP contribution for its local sequence tokens, and accumulates the result into a local output buffer. The weight shards then circulate around the TSP group using point-to-point communication, so that after D iterations every rank has applied every MLP shard to its own sequence shard. Unlike standard tensor parallelism, this schedule does not require an all-reduce over the BSh -shaped activation output: the sequence remains local, and only the weights move. Thus the MLP communication cost is parameter-proportional, and the output accumulation remains local to each rank. The use of broadcast for attention and a ring for the MLP is motivated by (but not limited to) AMD’s intra-node topology. Unlike NVSwitch systems, where any subset of GPUs can communicate at full bandwidth, MI300X nodes use xGMI Infinity Fabric, whose bandwidth is highest when all eight GPUs participate in a collective. A k-GPU subgroup has aggregate bandwidth that scales as (k − 1) · Blink rather than a topology-wide constant Bmax (Anthony et al., 2025), which makes bandwidth-bound collectives over fewer ranks less attractive. The opposite trend holds for small-message latency, where fewer participants is better. In TSP, the MLP point-to-point ring is efficient because each step is compute-heavy enough to hide the transfer: the moved shard has size 
+
+Pmlp βP /D while the matching GEMMs cost on the order of BS · (F h/D ) · h. Attention instead uses a broadcast loop because its dominant communication is the sequence-wise K/V all-gather, an activation-proportional collective that benefits from engaging all ranks simultaneously. The packed weight 4TABLE I: Notation used in §IV.                                     
+
+> Symbol Definition
+> DParallel degree; number of devices (GPUs) in the parallel group
+> T, ΣTensor- and sequence-parallel degrees in a 2-dimensional mesh, with D=TΣ
+> BMicro-batch size per GPU
+> SSequence length
+> hModel embedding / residual dimension
+> nh, n kv Number of query heads and key/value heads
+> dPer-head dimension, d=h/n h
+> gGQA ratio, g=nh/n kv
+> FFFN expansion factor
+> LNumber of transformer layers
+> βPBytes per parameter element (forward precision)
+> βgBytes per gradient element
+> noNumber of optimizer states (e.g. 3 for mixed-precision AdamW: first moment, second moment, and master parameter copy)
+> βoBytes per optimizer-state element (e.g. 4 for fp32 states)
+> Pattn Attention parameters per layer, 2
+> 
+> 1 + 1
+> g
+> 
+> h2
+> Pmlp Gated-MLP parameters per layer, 3F h 2
+> PLTotal parameters per layer, Pattn +Pmlp
+> CCommunication volume (bytes)
+
+broadcast is smaller than the K/V exchange and is amortized over the full TSP group. Both primitives are thus matched to the arithmetic intensity and bandwidth structure of the corresponding block, which matters especially on xGMI-based AMD systems and is no worse on fully symmetric NVSwitch fabrics. IV. T HEORETICAL ANALYSIS 
+
+In this section, we build a detailed theoretical model of the memory costs, FLOPs, and communication volume of different parallelism schemes. We compare data parallelism (DP), tensor parallelism (TP), sequence parallelism (SP), conventional two-dimensional tensor–sequence parallelism (TP+SP), and tensor– sequence parallelism on a single folded axis (TSP). Through-out, we use the notation in Table I. We assume a dense decoder-only transformer with pre-norm residual connections, multi-head (or grouped-query) attention with learned linear projections for Q, K, V , and O, and a gated MLP (e.g. SwiGLU) with three weight matrices. We ignore the parameter and FLOP contributions of the em-bedding/unembedding layers, positional encodings, and layer normalization, and assume models that are large enough to make these architectural choices unimportant. For one transformer layer, the parameter count is 
+
+PL = Pattn + Pmlp =
+
+
+
+2
+
+
+
+1 + 1
+
+g
+
+
+
++ 3 F
+
+
+
+h2. (1) The attention term accounts for the Q, K, V , and O projection matrices (with K and V projecting to h/g dimensions each under grouped-query attention). The MLP term accounts for the gate, up, and down projections in a gated MLP. 
+
+A. Memory decomposition 
+
+We decompose the per-GPU persistent memory into four terms: 1) Parameter memory ( Mp): the storage for the model weights, LP LβP for the full model. 2) Gradient memory ( Mg ): the storage for gradient accu-mulators, LP Lβg for the full model. 3) Optimizer state memory (Mo): the storage for no
+
+optimizer states at βo bytes each (e.g. first and second mo-ments plus a high-precision parameter copy for Adam), totalling LP Lnoβo for the full model. 4) Activation memory ( Ma): the storage for intermediate activations needed for backpropagation. Parameter, gradient, and optimizer memory are proportional to the parameter count, so their sum is LP L(βP + βg + noβo).
+
+B. Activation memory 
+
+Following Korthikanti et al. (2023), we distinguish two activation-recomputation regimes. Under selective recomputa-tion, most activations are stored but the attention probability matrices and associated dropout masks are recomputed during the backward pass, giving 
+
+M sel  
+
+> a
+
+= LBSh (16 βP + 2) . (2) Under full recomputation, only the input to each transformer layer is stored and all other activations are recomputed from these checkpoints, giving 
+
+M full  
+
+> a
+
+= LBSh β P . (3) When no recomputation is used, all activations, including the attention probability matrices, are retained: 
+
+M none  
+
+> a
+
+= LBSh 
+
+
+
+16 βP + 2 + (2 βP + 1) nhSh
+
+
+
+. (4) 
+
+C. Communication volume 
+
+We denote by C the communication volume in bytes transferred per layer per device. For a message of total size 
+
+N , ring-style collectives incur the following communication volume: all-reduce: 2N D−1 
+
+> D
+
+,
+
+all-gather: N D−1 
+
+> D
+
+,
+
+broadcast: N. 
+
+Importantly, activation recomputation introduces additional communication overhead: when activations are recomputed during the backward pass, the forward-pass communication for that layer must be repeated. We account for this in the training totals below by writing Cfwd+bwd for training without recomputation and Cfwd+bwd+recomp for training with full recomputation, where the latter incurs an extra forward pass of communication per layer. 
+
+1) Data Parallelism (DP): DP replicates the full model on every device and shards only the batch. The forward pass requires no communication; the backward pass synchronizes gradients via a single all-reduce of size PLβg :
+
+Cfwd DP = 0 , (5) 
+
+Cfwd+bwd DP = 2 PLβg D−1 
+
+> D
+
+, (6) 
+
+Cfwd+bwd+recomp DP = 2 PLβg D−1 
+
+> D
+
+. (7) 5Algorithm 1 TSP Multi-Head Attention (forward pass on rank p). For clarity we present the MHA case; GQA replaces the K/V shard widths h/D with h/ (gD ) and reduces the K/V all-gather volume by 1/g accordingly. 
+
+Require: X ∈ RB×Sloc ×h ▷ zigzag-partitioned local sequence shard, Sloc = S/D 
+
+Require: Local weight shards W(p) 
+
+> Q
+
+, W(p) 
+
+> K
+
+, W(p) 
+
+> V
+
+∈ R(h/D )×h, W(p) 
+
+> O
+
+∈ Rh×(h/D )
+
+Require: Head bucket size Bh, world size D, head dim d, heads per shard Hs = nh/D 
+
+Ensure: Y ∈ RB×Sloc ×h
+
+1: Sc ← Sloc /2 ▷ half local seq length (zigzag) 
+
+2: Y ← 0B×Sloc ×h
+
+3: for r = 0 , . . . , D − 1 do ▷ loop over weight-owning ranks 
+
+4: W ← BROADCAST ([ W(p) 
+
+> Q
+
+∥W(p) 
+
+> K
+
+∥W(p) 
+
+> V
+
+∥W(p)
+
+> O
+> ⊤
+
+], src = r) ▷ packed bcast 
+
+5: Unpack W(r) 
+
+> Q
+
+, W(r) 
+
+> K
+
+, W(r) 
+
+> V
+
+, W(r)
+
+> O
+> ⊤
+
+from W
+
+6: Q ← X W (r)
+
+> Q
+> ⊤
+
+, K ← X W (r)
+
+> K
+> ⊤
+
+, V ← X W (r)
+
+> V
+> ⊤
+
+▷ local projections 
+
+7: Reshape Q, K, V to [B, S loc , H s, d ]
+
+8: s1 ← (p + 1) Sc, s2 ← (2 D − p) Sc ▷ zigzag causal bounds 
+
+9: A ← 0B×Sloc ×Hs×d
+
+10: for b = 0 , B h, 2Bh, . . . , H s − Bh do ▷ head bucketing 
+
+11: Kb, Vb ← K[: ,:, b :b+Bh, :] , V[: ,:, b :b+Bh, :] 
+
+12: [ ˆKb∥ ˆVb] ← ALL GATHER ([ Kb∥Vb], dim = seq )
+
+13: ˆKb ← ZIG ZAG REORDER ( ˆKb), ˆVb ← ZIG ZAG REORDER ( ˆVb)
+
+14: Q(1)  
+
+> b
+
+, Q(2)  
+
+> b
+
+← SPLIT (Q[: ,:, b :b+Bh, :] , dim = seq )
+
+15: O(1)  
+
+> b
+
+← CAUSAL ATTN (Q(1)  
+
+> b
+
+, ˆK[: ,:s1] 
+
+> b
+
+, ˆV[: ,:s1] 
+
+> b
+
+)
+
+16: O(2)  
+
+> b
+
+← CAUSAL ATTN (Q(2)  
+
+> b
+
+, ˆK[: ,:s2] 
+
+> b
+
+, ˆV[: ,:s2] 
+
+> b
+
+)
+
+17: A[: ,:, b :b+Bh, :] ← [O(1)  
+
+> b
+
+; O(2)  
+
+> b
+
+] ▷ concat along seq 
+
+18: end for 
+
+19: Y ← Y + FLATTEN (A) W(r)
+
+> O
+> ⊤
+
+▷ output projection + accumulate 
+
+20: end for 
+
+21: return Y
+
+Algorithm 2 TSP Gated Ring MLP (forward pass on rank p)
+
+Require: X ∈ RB×Sloc ×h ▷ local sequence shard on rank p, Sloc = S/D 
+
+Require: Local weight shards W(p)1 , W(p)3 ∈ R(F h/D )×h, W(p)2 ∈ R(F h/D )×h
+
+Require: Activation σ, world size D
+
+Ensure: Y ∈ RB×Sloc ×h
+
+1: Y ← 0B×Sloc ×h
+
+2: W1, W2, W3 ← W(p)1 , W(p)2 , W(p)3
+
+3: for t = 0 to D − 1 do 
+
+4: if t < D − 1 then ▷ overlap P2P with compute below 
+
+5: W′
+
+> 1
+
+, W′
+
+> 2
+
+, W′ 
+
+> 3
+
+← ASYNC RING SEND RECV (W1, W2, W3)
+
+▷ send to (p+1) mod D, recv from (p−1) mod D
+
+6: end if 
+
+7: G ← σ X W ⊤
+
+> 1
+
+ ▷ gate projection + activation 
+
+8: H ← X W ⊤ 
+
+> 3
+
+▷ up-projection 
+
+9: Y ← Y + ( G ⊙ H) W2 ▷ down-projection + accumulate 
+
+10: if t < D − 1 then 
+
+11: WAIT ( ) 
+
+12: W1, W2, W3 ← W′
+
+> 1
+
+, W′
+
+> 2
+
+, W′
+
+> 3
+
+13: end if 
+
+14: end for 
+
+15: return Y
+
+6Fig. 5: Forward-pass theoretical communication volume (a) and per-GPU memory (b) as a function of sequence length, for the 7B reference model used throughout the paper ( h=4096 , L=32 , MHA, F =4 ; full configuration in Appendix C). Parallelism degree D=8 , micro-batch B=1 . TSP communication exceeds TP at short sequences due to weight movement, but the gap narrows as the activation-proportional term grows. 
+
+Fig. 6: Forward-pass theoretical communication volume (a) and per-GPU memory (b) as a function of total parameter count (S=32768 , D=8 , B=1 , MHA). TSP provides the lowest per-GPU memory across the full range, which translates to throughput improvements due to reduced parallelism and higher batch sizes. Because the forward pass is communication-free, recomputa-tion adds no communication overhead. Every device stores the full model, so no weight-proportional memory term is reduced: 
+
+MP = LP LβP , Mg = LP Lβg ,Mo = LP Lnoβo, Ma ∈ { M full  
+
+> a
+
+, M sel  
+
+> a
+
+, M none  
+
+> a
+
+}.
+
+2) Tensor Parallelism (TP): TP shards weights across D
+
+devices while each device still processes the full sequence. In the implementation considered here, attention is head-parallel and the MLP is column-parallel followed by row-parallel reduction. The attention output projection requires one all-reduce of size BShβ P , and the MLP output requires another; the backward pass introduces two more all-reduces of the same size. Recomputation (but only full block-wise recomputation, since selective recomputation in the style of Korthikanti et al. (2023) can target only the local activations per rank within the 7Fig. 7: Ratio of theoretical TSP to TP forward communication volume as a function of micro-batch size B and sequence length S (h=4096 , D=8 , MHA). Green cells (ratio < 1)indicate regimes where TSP communicates less than TP. The break-even boundary corresponds to the condition BS > 8h.attention and MLP blocks) repeats the two forward all-reduces: 
+
+Cfwd TP = 4 BShβ P D−1 
+
+> D
+
+, (8) 
+
+Cfwd+bwd TP = 8 BShβ P D−1 
+
+> D
+
+, (9) 
+
+Cfwd+bwd+full recomp TP = 12 BShβ P D−1 
+
+> D
+
+. (10) TP communication is therefore activation-proportional rather than weight-proportional. Because parameters, gradients, and optimizer states are sharded across D devices while each device retains the full sequence: 
+
+MP = LP LβP 
+
+> D
+
+, Mg = LP Lβg 
+
+> D
+
+,Mo = LP Lnoβo 
+
+> D
+
+, Ma ∈ { M full  
+
+> a
+
+, M sel  
+
+> a
+
+, M none  
+
+> a
+
+}.
+
+TP reduces all weight-proportional memory in the attention and MLP blocks by 1/D , but leaves activations unsharded. 
+
+3) Sequence Parallelism (SP): SP replicates weights and shards the activations across D devices. In the implementation considered here, the sequence is partitioned using a ZigZag layout for causal load balancing. The MLP remains local be-cause weights are replicated, and only attention communicates. Of the SP variants surveyed in §II-B, we analyze the all-gather formulation, since it uses the same K/V exchange primitive as the TSP attention schedule (§III-A) and there-fore yields a like-for-like cost comparison; ring and all-to-all variants have comparable forward volume but differ in overlap and topology sensitivity. Each device computes local 
+
+Q, K, V on its sequence shard and all-gathers K, V across the SP group. The forward all-gather moves two tensors of total size BShβ P /g ; the backward pass repeats this exchange for the attention gradients and adds a gradient all-reduce for the replicated weights. Recomputation repeats the forward K/V exchange: 
+
+Cfwd SP = 2BShβ P
+
+g 
+
+> D−1
+> D
+
+, (11) 
+
+Cfwd+bwd SP = 4BShβ P
+
+g 
+
+> D−1
+> D
+
++ 2 PLβg D−1 
+
+> D
+
+, (12) 
+
+Cfwd+bwd+recomp SP = 6BShβ P
+
+g 
+
+> D−1
+> D
+
++ 2 PLβg D−1 
+
+> D
+
+. (13) For MHA (g = 1), the forward cost reduces to 
+
+2BShβ P D−1 
+
+> D
+
+.Because the full model is replicated, all weight-proportional memory is unchanged; only activations are sharded by D:
+
+MP = LP LβP , Mg = LP Lβg ,Mo = LP Lnoβo, Ma ∈ { M full  
+
+> a
+
+/D, M sel  
+
+> a
+
+/D, M none  
+
+> a
+
+/D }.
+
+4) Tensor and Sequence Parallelism (TSP): TSP shards both weights and sequence on the same D-way axis. Each device stores only 1/D of the model parameters and only 
+
+1/D of the sequence, but must move weights at runtime. For attention, the implementation loops over the D weight shards. In each iteration, it broadcasts a packed shard contain-ing Wq , Wk, Wv , and W ⊤ 
+
+> o
+
+(costing Pattn βP /D per broadcast, totalling Pattn βP over all D iterations), then all-gathers the corresponding K/V activations across the sharded sequence dimension. For the gated MLP, the ring algorithm rotates W1,
+
+W2, and W3 around the parallel group, where each of the D−1
+
+ring steps transfers a shard of size Pmlp βP /D . Combining these terms, the forward communication per layer is 
+
+Cfwd TSP = Pattn βP + Pmlp βP D−1 
+
+> D
+
++ 2BShβ P
+
+g 
+
+> D−1
+> D
+
+. (14) The backward pass mirrors the forward weight movement and K/V exchange. Like DP and SP, TSP requires a separate full-model gradient all-reduce. Recomputation repeats the forward communication: 
+
+Cfwd+bwd TSP = 2 Pattn βP + 2 Pmlp βP D−1
+
+> D
+
++ 4BShβ P
+
+g 
+
+> D−1
+> D
+
++ PLβg D−1 
+
+> D
+
+, (15) 
+
+Cfwd+bwd+recomp TSP = 3 Pattn βP + 3 Pmlp βP D−1
+
+> D
+
++ 6BShβ P
+
+g 
+
+> D−1
+> D
+
++ 2 PLβg D−1 
+
+> D
+
+. (16) Because both weights and activations are sharded by D:
+
+MP = LP LβP 
+
+> D
+
+, Mg = LP Lβg 
+
+> D
+
+,Mo = LP Lnoβo 
+
+> D
+
+, Ma ∈ { M full  
+
+> a
+
+/D, M sel  
+
+> a
+
+/D, M none  
+
+> a
+
+/D }.
+
+TSP is therefore the only scheme that reduces both weight-proportional and activation memory by the same 1/D factor on a single parallelism axis. 85) Conventional TP+SP on a 2D Mesh: For completeness, consider a two-dimensional mesh with TP degree T and SP degree Σ, where D = T Σ. In this setting, weights are sharded by T and sequence is sharded by Σ. The dominant forward communication combines SP K/V exchange (all-gathered over the Σ-way SP group) with TP output reductions (all-reduced over the T -way TP group): 
+
+Cfwd TP+SP = 2BShβ P
+
+gT  
+
+> Σ−1Σ
+
++ 4BShβ P
+
+Σ  
+
+> T−1
+> T
+
+. (17) Training doubles the activation terms. Because weights are sharded along the TP axis but replicated along the SP axis, parameter gradients must be all-reduced over the Σ-way SP group at cost 2( PLβg /T ) Σ−1Σ :
+
+Cfwd+bwd TP+SP = 4BShβ P
+
+gT  
+
+> Σ−1Σ
+
++ 8BShβ P
+
+Σ 
+
+> T−1
+> T
+
++ 2PLβg
+
+T 
+
+> Σ−1Σ
+
+, (18) 
+
+Cfwd+bwd+recomp TP+SP = 6BShβ P
+
+gT  
+
+> Σ−1Σ
+
++ 12 BShβ P
+
+Σ 
+
+> T−1
+> T
+
++ 2PLβg
+
+T 
+
+> Σ−1Σ
+
+. (19) Weight-proportional memory scales with 1/T , while activation memory scales with 1/Σ:
+
+MP = LP LβP 
+
+> T
+
+, Mg = LP Lβg 
+
+> T
+
+,Mo = LP Lnoβo 
+
+> T
+
+, Ma ∈ { M full  
+
+> a
+
+/Σ, M sel  
+
+> a
+
+/Σ, M none  
+
+> a
+
+/Σ}.
+
+Unlike TSP, TP+SP does not apply a single D-way sharding factor to both memory classes simultaneously. 
+
+D. FLOPs 
+
+Ignoring softmax, normalization, masking, and other point-wise operations, the dominant forward FLOPs of a single transformer layer are 
+
+Fattn ≈ 4
+
+
+
+1 + 1
+
+g
+
+
+
+BSh 2 + 4 BS 2h, (20) 
+
+Fmlp ≈ 6F BSh 2, (21) where the first term in Fattn accounts for the Q, K, V, O 
+
+projections (with K, V projecting to h/g dimensions each) and the second for the attention score and context computation over all nh query heads. Thus 
+
+Flayer ≈
+
+
+
+4
+
+
+
+1 + 1
+
+g
+
+
+
++ 6 F
+
+
+
+BSh 2 + 4 BS 2h. (22) DP performs the full layer on every device: 
+
+FDP ≈ Flayer . (23) By contrast, TP, SP, TP+SP, and TSP all ideally reduce the per-device leading-order arithmetic by the parallel degree: 
+
+FTP ≈ FSP ≈ FTSP ≈ Flayer 
+
+D , (24) 
+
+FTP+SP ≈ Flayer 
+
+T Σ . (25) 
+
+E. Practical trade-offs 
+
+TP is attractive when weight-proportional memory (pa-rameters, gradients, optimizer states) is the main bottleneck and high-bandwidth all-reduces are cheap, but it does not reduce activation memory and is therefore ineffective at long sequence lengths. SP is attractive for long-context workloads because it reduces activation memory and keeps the MLP local, but it fully replicates weights and still requires gradient synchronization. TP+SP offers independent control over the two sharding axes but inherits both TP-style reductions and SP-style K/V exchange. TSP is the only scheme that reduces both weight-proportional and activation memory by 1/D on a single axis without requiring D2 total devices. Its downside is runtime weight movement, so it is most attractive when memory replication is the dominant bottleneck and weight traffic can be overlapped with compute. 
+
+F. Regime analysis 
+
+The key trade-off for TSP is that it eliminates both weight replication and sequence replication, but introduces a weight-movement term per layer. In the large-D regime where D−1 
+
+> D
+
+≈
+
+1, comparing TSP and TP forward communication reduces to 
+
+Pattn βP + Pmlp βP + 2BShβ P
+
+g < 4BShβ P (26) whenever 
+
+PL < 2BSh 
+
+
+
+2 − 1
+
+g
+
+
+
+. (27) For MHA ( g = 1 ), this simplifies to 
+
+PL < 2BSh ⇐⇒ (4 + 3 F )h < 2BS. (28) With F = 4 , this becomes 16 h < 2BS , or equivalently BS > 
+
+8h. Thus, at long context lengths or moderate batch sizes, we expect TSP to be communication-competitive with TP despite moving weights at runtime. 
+
+G. TSP versus SP 
+
+In the forward pass, TSP and SP share the same activation-communication term, 2BShβ P D−1 
+
+> D
+
+/g . TSP additionally moves weights at runtime, with per-layer cost Pattn βP +
+
+Pmlp βP D−1 
+
+> D
+
+, whereas SP leaves weights replicated and there-fore has no weight-movement term. During training, both schemes require gradient communi-cation, but for different reasons. In SP, the full model is replicated across the sequence-parallel group, so parameter gradients must be synchronized by an all-reduce of cost 
+
+2PLβg D−1 
+
+> D
+
+. In TSP, the parameters are sharded, but each shard is broadcast to, or rotated through, all sequence shards during the forward pass. Thus backward produces partial gradients for each weight shard on multiple ranks, which must be reduced back to the owning rank. This operation is naturally a reduce-scatter or sum-to-owner reduction rather than an all-reduce, with tight cost PLβg D−1 
+
+> D
+
+(half of the all-reduce volume); for direct comparison with SP, we conservatively upper-bound its cost by 2PLβg D−1 
+
+> D
+
+.9TABLE II: Dominant per-layer communication volume C (bytes per device) in the forward pass.                         
+
+> Strategy Activation term Weight term Total forward volume DP 000
+> TP 4BShβ PD−1
+> D04BShβ PD−1
+> D
+> SP 2BShβ P
+> g
+> D−1
+> D02BShβ P
+> g
+> D−1
+> D
+> TP+SP 2BShβ P
+> gT
+> Σ−1Σ+ 4BShβ P
+> Σ
+> T−1
+> T0same TSP 2BShβ P
+> g
+> D−1
+> DPattn βP+Pmlp βPD−1
+> Dsum
+
+TABLE III: Dominant per-GPU memory by category. M full  
+
+> a
+
+, M sel  
+
+> a
+
+, and M none  
+
+> a
+
+denote activation memory under full recomputation (3), selective recomputation (2), and no recomputation (4), respectively. Temporary communication buffers are omitted.                                       
+
+> Strategy Parameters Gradients Optimizer states Activations DP LP LβPLP LβgLP LnoβoM{·}
+> a
+> TP LP LβP/D LP Lβg/D LP Lnoβo/D M{·}
+> a
+> SP LP LβPLP LβgLP LnoβoM{·}
+> a/D
+> TP+SP LP LβP/T LP Lβg/T LP Lnoβo/T M{·}
+> a/Σ
+> TSP LP LβP/D LP Lβg/D LP Lnoβo/D M{·}
+> a/D
+
+TABLE IV: Leading-order forward FLOPs per device, ignor-ing softmax, normalization, and other pointwise operations. Backward FLOPs are of the same order. 
+
+Strategy Forward FLOPs per device DP 
+
+
+
+4
+
+
+
+1 + 1
+
+> g
+
+
+
++ 6 F
+
+
+
+BSh 2 + 4 BS 2h
+
+TP, SP, TSP 
+
+h 
+
+4
+
+
+
+1 + 1
+
+> g
+
+
+
++ 6 F
+
+
+
+BSh 2 + 4 BS 2h
+
+i
+
+/D 
+
+TP+SP 
+
+h 
+
+4
+
+
+
+1 + 1
+
+> g
+
+
+
++ 6 F
+
+
+
+BSh 2 + 4 BS 2h
+
+i
+
+/(T Σ) 
+
+Under this accounting, the training communication costs are 
+
+Cfwd+bwd TSP ≲ 2Pattn βP + 2 Pmlp βP D−1
+
+> D
+
++ 4BShβ P
+
+g 
+
+> D−1
+> D
+
++ 2 PLβg D−1 
+
+> D
+
+, (29) 
+
+Cfwd+bwd SP = 4BShβ P
+
+g 
+
+> D−1
+> D
+
++ 2 PLβg D−1 
+
+> D
+
+. (30) Thus, when βP ≈ βg and D is large, TSP and SP have com-parable training communication up to the additional weight-movement terms in TSP. The principal advantage of TSP over SP is therefore not lower communication volume but lower memory: TSP reduces parameter, gradient, and optimizer-state memory by 1/D , whereas SP leaves all weight-proportional memory fully replicated. 
+
+H. Recomputation communication overhead 
+
+When activation recomputation is employed, the additional forward-pass communication during the backward pass can be significant. For TP, full recomputation increases the to-tal training communication by 50% (from 8BShβ P D−1 
+
+> D
+
+to 
+
+12 BShβ P D−1 
+
+> D
+
+). For SP and TSP, the overhead is propor-tionally similar but includes only the attention K/V exchange component, since the MLP is local in SP and the MLP ring in TSP can be overlapped. In all cases, selective recomputation incurs less overhead than full recomputation, since only the attention sub-layer communication is repeated. 
+
+I. Communication and computation overlap 
+
+The practical viability of TSP depends not only on total communication volume but on how much of that communica-tion can be hidden behind computation. Our implementation uses explicit overlap strategies for both sublayers. For the gated MLP, the ring schedule is naturally amenable to overlap similar to schemes such as Liu et al. (2024). At step t, each rank launches asynchronous point-to-point send/recv operations for the next weight shards on a dedicated communication stream while computing the current local projections and gated accumulation on the default compute stream. The rank waits on communication only when the next shard is needed, so weight communication is pipelined with the dominant GEMM compute. For attention, each forward pass consists of three stages: broadcasting one rank’s packed parameter shard, computing local Q, K, V projections, and all-gathering the corresponding 
+
+K, V activations before FlashAttention. We pipeline these stages explicitly using one communication stream for weight broadcasts and a second for K, V all-gathers, while the default stream performs projections, FlashAttention kernels, and output GEMMs. The schedule is staggered so that at step 
+
+r, FlashAttention for shard r −1 overlaps with the all-gather for shard r and the broadcast for shard r+1 .10 (a) The architecture of a single node (b) Cluster topology Fig. 8: The architecture of the Zyphra pretraining cluster. Each node contains 8 MI300X GPUs interconnected with Infinity Fabric. Each GPU is assigned its own Pollara 400 Gbps NIC, which connects the GPU to its respective switch in a rails-only topology. Our cluster switch topology is a two-level rails-only setup, with four physical leaf switches, and four spine switches per leaf switch. We have 4 physical leaf switches per slice. Each slice consists of 30 servers. The slices are aggregated via 4 spine switches per leaf. Each compute node is connected to the head-node and storage node via a separate interconnect to avoid contention of data/checkpoint loading and training comms. V. C LUSTER SETUP 
+
+Tensor parallelism (TP) and sequence parallelism (SP) are ultimately hardware-aware schemes, and our analysis of any parallelism requires a discussion of how it maps to available hardware. To facilitate such discussions, we describe our cluster in this section as well as Appendix A. 
+
+A. Node Architecture 
+
+Each compute node consists of eight MI300X GPUs con-nected via Infinity Fabric, dual-socket Intel Xeon CPUs with 2 TB of DDR5 memory, a dedicated Pollara 400 Gbps NIC per GPU, and local NVMe storage for high-throughput datasets and checkpoints (see Figure 8). A detailed description for the compute, storage, and login nodes is provided in Table V and Appendix A. 
+
+B. Cluster Architecture 
+
+Instead of the classical Clos (Al-Fares et al., 2008) topology, individual nodes are interconnected in a rails-only topology, which was popularized in Wang et al. (2024) as a way to exploit the nature of 3D-parallel deep learning training com-munication patterns to reduce the number of Arista 7060X6-64PE (Arista Networks, 2025) switches. Specifically, our cluster switch topology is a two-level rails-only setup, with four physical leaf switches, and four spine switches per leaf switch. This design trades some path diversity and routing flexibility compared to a full Clos fabric for lower cost on physical switches and simpler wiring. In practice, this means the topology leads to a slight performance penalty compared to a Clos network unless the parallelism topology and collective communication algorithm is carefully designed to avoid cross-rail traffic. Our cluster employs two physically separate networks. The Pollara training fabric handles all collective communication for distributed training, while a VPC network manages dataset I/O, checkpoints, and cluster management. This separation prevents storage operations from interfering with model communication (gradients, optimizer states, etc). The VPC network connects each node via Pensando DSC SmartNIC/DPUs to a separate leaf–spine fabric, providing approximately 200 Gbps through-put to the storage node from any of the compute nodes. VI. R ESULTS 
+
+We now evaluate the empirical behavior of TSP using the implementation described in §III. All experiments are conducted on the cluster described in §V using MI300X GPUs with Infinity Fabric intra-node interconnect and Pollara inter-node interconnect. 
+
+A. Peak memory versus sequence length 
+
+Figure 9 shows per-device peak memory across sequence lengths from 16K to 128K tokens. TSP yields the lowest peak memory among all measured strategies at every point. At 16K tokens, TSP and TP are nearly identical (31.0 GB versus 31.5 GB), consistent with the short-context regime in which weight-proportional memory dominates. We expect TSP to have the same weight sharding behavior as TP (which is why the initial point is nearly even with TP), and for the TSP sequence length slope to match that of SP. This behavior matches the memory model in §IV. TP reduces only weight-proportional terms within TP-supported blocks, SP reduces only the activation term, and TSP applies a single 1/D sharding factor to both terms simultaneously. The results also show that for TP+SP layouts, memory is 11 TABLE V: Hardware specifications for compute, storage, and login nodes. Each node type has separate local drives for the OS.                                     
+
+> Hardware Element Compute Node Storage Node Login Node GPUs 8 MI300X ——(AMD, 2024)
+> RAM 2 TB DDR5 256 GB DDR5 80 GB 16 ×128 GB DIMMs 16 ×16 GB DIMMs 5×16 GB DIMMs Samsung M321RAJA0MB0-CWMNY Samsung M321R2GA3BB6-CQKET (virtual/QEMU) 5600 MT/s 4800 MT/s
+> CPU 2×Intel Xeon Platinum 8570 2×Intel Xeon Gold 6426Y 2×Intel Xeon 56 cores, 2 threads/core 16 cores, 2 threads/core (Sapphire Rapids) 1 TB RAM per socket 128 GB RAM per socket 8 cores, 2 threads/core
+> Networking 8×Pollara 400 NICs (400Gbps) 1×Pensando DSC NIC (200Gbps) —
+> Storage 25.6 TB 120 TB 8×NVMe drives (3.2 TB each) 16 ×NVMe drives ( ≈7.6 TB each) ≈1 TB Micron MTFDKCC3T2TGQ RAID0 array ( /dev/md127 )
+
+Fig. 9: Per-GPU peak memory as a function of sequence length for TP, TP+SP (two factorizations), and TSP, all on a single node (8 MI300X GPUs). TSP provides the lowest peak memory across all tested sequence lengths, with the advantage widening as context grows. determined by the split between TP and SP. Specifically, when context is short, a larger TP degree performs better because model-state memory dominates. However at long context, the activation term dominates and the advantage shifts only partially toward larger SP degree. 
+
+B. Throughput versus sequence length 
+
+We collect total throughput measurements of the forward pass in Figures 10 and 11. In the sequence-length sweeps at 
+
+D=2 and D=4 (Figure 10), TSP consistently outperforms the matched TP+SP baseline. A similar trend appears at longer context in Figure 11. Increasing the folded degree does not col-lapse TSP throughput. These empirical measurements indicate that the theoretical extra communication volume traffic does not lead to a significant increase in wall-clock time. Weight transfers are pipelined behind the dominant GEMMs using the overlap strategy described in §IV, so they consume bandwidth without consuming critical-path time. 
+
+C. Throughput versus micro-batch size 
+
+Figure 12 presents a micro-batch-size sweep at fixed se-quence length. Because the folded layout reduces both model-state memory and activation memory, larger micro-batches can fit into device memory, which improves throughput and reduces per-replica parallelism. VII. D ISCUSSION 
+
+The principal benefit of TSP is reduced replication of both weights and activations. The results above suggest that in the long-context and memory-constrained settings that motivated this work, eliminating replication matters more than minimiz-ing communication volume. Communication volume and communication cost are not the same thing: The theoretical analysis in §IV predicts higher volume for TSP, but how much that translates into wall-clock cost depends on whether collectives are latency- or bandwidth-bound, how much traffic can be overlapped with matrix multiplication, and how much memory headroom remains for larger problem sizes such as increased batch size. In the peak memory results, TSP remains close to TP in the short-context regime, where weight-proportional memory dominates, and then increasingly diverges in the long-context regime as activations become dominant. TSP inherits TP’s reduced memory at short context and SP’s reduced memory at long context, without requiring the two-dimensional device allocation of conventional TP+SP. Because folding reduces the number of devices in the com-bined model-parallel group, the entire folded model replica can more easily fit within the high-bandwidth intra-node domain. This is beneficial in some combinations of models and sequence lengths despite incurring more raw communication volume, since the alternative in a conventional layout TP, SP, or TP+SP may require one of the parallelism axes to span the slower inter-node links. The crossover point between TSP and conventional parallelism schemes will depend on the ratio of accelerator FLOPs to intra- and inter-node communication bandwidth, and our results are obtained on hardware where intra-node bandwidth is especially favorable. 12 Fig. 10: Forward-pass throughput (tokens/s) versus sequence length for TSP and matched TP+SP baselines at folded degrees 
+
+D=2 (left) and D=4 (right), on 2 full nodes (16 MI300X GPUs). 
+
+Fig. 11: Forward-pass throughput (tokens/s) versus sequence length at degrees D=2 , D=4 , and D=8 over the 32K–128K range, on 128 full nodes (1024 MI300X GPUs). The TSP advantage grows with increasing degree. 
+
+Fig. 12: Forward+backward throughput (tokens/s) versus micro-batch size at degrees D=2 , D=4 , and D=8 on 2 full nodes (16 MI300X GPUs). TSP maintains a consistent advantage over TP+SP across batch sizes. TSP composes orthogonally with the existing axes of multi-dimensional parallelism. Because the TSP group is a single mesh dimension, it can be combined with additional TP, SP, PP, EP, or DP axes and existing mesh implementations. As a concrete example, suppose a workload calls for a tensor-sharding factor of 8 and a sequence-sharding factor of 2. A conventional layout uses (TP=8) × (SP=2) = 16 model-parallel ranks; if a node holds 8 GPUs, this forces one axis across inter-node links. The same effective sharding can instead be expressed as (TP=4) ×(TSP=2) = 8 ranks, fitting entirely within a node and freeing the remaining 8 ranks to expand the data-parallel mesh. More generally, TSP can be inserted as a flexible axis wherever the parallelism budget would otherwise force model-parallel groups across slow links, which makes it a useful addition to the pool of potential parallelism schemes and enables easier optimization to future or unforeseen hardware topologies. 13 VIII. R ELATED WORK 
+
+a) Parallelism: Tensor parallelism (TP) for Transformers was established in Megatron-LM (Shoeybi et al., 2019). TP has since become an important axis of scale-up model parallelism in works such as Narayanan et al. (2021). Sequence-parallel (SP) variants further shard activations along the sequence dimension to reduce memory (Korthikanti et al., 2023), while Mesh-TensorFlow formalized the assignment of parallelism dimensions to orthogonal mesh axes (Shazeer et al., 2018). Long-context methods extend this line in three main di-rections: ring-based attention, which circulates KV blocks point-to-point and overlaps communication with blockwise attention (Liu et al., 2024; Li et al., 2023); all-gather-based sequence parallelism, which exchanges all KV shards in a single collective before running attention against the full-sequence keys and values; and all-to-all-based context par-allelism, which redistributes QKV so each device attends over the full sequence for a subset of heads (Jacobs et al., 2024). Subsequent schemes combine these ideas with round-robin or zigzag token layouts to better load-balance causal-attention (Brandon et al., 2023; Grattafiori et al., 2024; Fang & Zhao, 2024). 
+
+b) Folding and MLP Ring communication: The most direct inspiration for our work is MoE Parallel Folding by Liu et al. (2026), which decouples the parallel mappings used by attention and MoE blocks and folds communication-intensive dimensions into compact groups, such that different block types can adopt different parallel layouts. TSP adopts the folding intuition in the dense transformer setting for TP and SP specifically. Instead of placing TP and SP on separate mesh axes, TSP collapses them onto a single folded dimension. This also distinguishes TSP from prior ring-attention methods, which circulate activations while keeping MLP computation local with replicated weights. The closest prior work in that direction is METP by Liang et al. (2025), which applies ring-based point-to-point communication to both attention and MLP layers for long-sequence training. IX. C ONCLUSION 
+
+We have presented tensor and sequence parallelism (TSP), a parallel execution strategy that folds tensor parallelism and sequence parallelism onto a single device axis. By assigning each rank both a weight shard and a sequence shard, TSP reduces both per-device parameter-proportional (parameters, optimizer states, gradients) memory and activation memory. Our theoretical analysis characterizes the expected communi-cation and memory trade-offs, and we have validated these with an empirical evaluation on up to 1024 MI300X GPUs. TSP achieves the lowest peak memory compared to TP, SP, and TP+SP meshes across all tested sequence lengths while maintaining competitive throughput. The advantage widens with increasing parallelism degree and sequence length. These results position TSP as a practical, topology-aware alternative for long-context and memory-constrained model training. 14 REFERENCES 
+
+Mohammad Al-Fares, Alexander Loukissas, and Amin Vahdat. A scalable, commodity data center network architecture. In Proceedings of the ACM SIGCOMM 2008 Conference on Data Communication , SIGCOMM ’08, pp. 63–74, New York, NY, USA, 2008. Association for Computing Machin-ery. ISBN 9781605581750. doi: 10.1145/1402958.1402967. URL https://doi.org/10.1145/1402958.1402967. AMD. The AMD CDNA™ 3 architecture. White paper, AMD, 2024. URL https://www.amd.com/content/ dam/amd/en/documents/instinct-tech-docs/white-papers/ amd-cdna-3-white-paper.pdf. AMD Pensando. AMD Pollara 400 Card. https://www.amd.com/content/dam/amd/en/ documents/pensando-technical-docs/product-briefs/ pollara-product-brief.pdf, 2024. Quentin Anthony, Yury Tokpanov, Skyler Szot, Srivatsan Ra-jagopal, Praneeth Medepalli, Anna Golubeva, Vasu Shyam, Robert Washbourne, Rishi Iyer, Ansh Chaurasia, Tomas Figliolia, Xiao Yang, Abhinav Sarje, Drew Thorstensen, Amartey Pearson, Zack Grossbart, Jason van Patten, Emad Barsoum, Zhenyu Gu, Yao Fu, and Beren Millidge. Training foundation models on a full-stack amd platform: Compute, networking, and system design, 2025. URL https://arxiv. org/abs/2511.17127. Arista Networks. 7060x6 series 800g data center switches: Data sheet. Data Sheet 04-0053-08, Arista Networks, Santa Clara, California, June 2025. URL https://www.arista. com/assets/data/pdf/Datasheets/7060X6-Datasheet.pdf. Ac-cessed: April 30, 2026. William Brandon, Aniruddha Mishra, Mayank Nrusimha, Rameswar Panda, and Jacob Andreas. Striped attention: Faster ring attention for causal transformers. arXiv preprint arXiv:2311.09431 , 2023. Jiarui Fang and Shangchun Zhao. A unified sequence par-allelism approach for long context generative AI. arXiv preprint arXiv:2405.07719 , 2024. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhi-nav Pandey, Abhishek Kadian, Ahmad Al-Dahle, et al. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 ,2024. Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, and Yuxiong He. DeepSpeed Ulysses: System optimizations for enabling training of extreme long sequence transformer models. In Proceedings of the ACM Symposium on Princi-ples of Distributed Computing (PODC) , 2024. Vijay Anand Korthikanti, Jared Casper, Sangkug Lym, Lawrence McAfee, Michael Andersch, Mohammad Shoeybi, and Bryan Catanzaro. Reducing activation recomputation in large transformer models. In Proceedings of Machine Learning and Systems (MLSys) , 2023. Shenggui Li, Fuzhao Xue, Chaitanya Baranwal, Yongbin Li, and Yang You. Sequence parallelism: Long sequence train-ing from system perspective. In Proceedings of the Annual Meeting of the Association for Computational Linguistics (ACL) , 2023. Hao Liang et al. Memory-efficient tensor parallelism. Fron-tiers of Information Technology & Electronic Engineering ,2025. Dennis Liu, Zijie Yan, Xin Yao, Tong Liu, Vijay Korthikanti, Evan Wu, Shiqing Fan, Gao Deng, Hongxiao Bai, Jianbin Chang, Ashwath Aithal, Michael Andersch, Mohammad Shoeybi, Jiajie Yao, Chandler Zhou, David Wu, Xipeng Li, and June Yang. Moe parallel folding: Heterogeneous parallelism mappings for efficient large-scale moe model training with megatron core, 2026. URL https://arxiv.org/ abs/2504.14960. Hao Liu, Matei Zaharia, and Pieter Abbeel. Ring attention with blockwise transformers for near-infinite context. In Inter-national Conference on Learning Representations (ICLR) ,2024. Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Anand Ko-rthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia. Efficient large-scale language model training on gpu clusters using megatron-lm, 2021. URL https://arxiv. org/abs/2104.04473. Noam Shazeer, Youlong Cheng, Niki Le, Gaurav Meshram, Rajat Monga, Yanping Huang, Yonghui Zhou, Jeremy Combes, et al. Mesh-TensorFlow: Deep learning for super-computers. In Advances in Neural Information Processing Systems (NeurIPS) , 2018. Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. Megatron-LM: Training multi-billion parameter language models us-ing model parallelism. arXiv preprint arXiv:1909.08053 ,2019. Weiyang Wang, Manya Ghobadi, Kayvon Shakeri, Ying Zhang, and Naader Hasani. Rail-only: A low-cost high-performance network for training llms with trillion param-eters, 2024. URL https://arxiv.org/abs/2307.12169. 15 APPENDIX ACLUSTER DETAILS 
+
+A. Compute Nodes 
+
+Each compute node contains:  
+
+> •
+
+GPUs : 8 MI300X (AMD, 2024) GPUs connected via Infinity Fabric intra-node interconnect  
+
+> •
+
+RAM : 2 TB of DDR5 RAM. Specifically, 16x128 GB DIMMs of Samsung M321RAJA0MB0-CWMNY, run-ning at 5600 MT/s.  
+
+> •
+
+CPU : 2 physical sockets of Intel Xeon Platinum 8570, each with 56 physical cores and 2 threads per core. Each socket is connected to 1 TB of RAM (8 DIMMs)  
+
+> •
+
+Networking Cards : Eight Pollara 400 (AMD Pensando, 2024) network interface cards (NICs), each at 400Gbps. One Pensando DSC 200 GbE cloud NIC for loading data and checkpoints.  
+
+> •
+
+Storage : 25.6 TB split into 8 physical NVMe drives (Micron MTFDKCC3T2TGQ-1BK1DABDB), each with 3.2 TB. 
+
+1) Storage Node: The storage node contains:  
+
+> •
+
+RAM : 256 GB of DDR5 RAM. Specifically, 16x16 GB DIMMs of Samsung M321R2GA3BB6-CQKET, running at 4800 MT/s.  
+
+> •
+
+CPU : 2 physical sockets of Intel(R) Xeon(R) Gold 6426Y, each with 16 physical cores and 2 threads per core. Each socket is connected to 128 GB of RAM (8 DIMMs).  
+
+> •
+
+Networking Cards : One Pensando DSC 100 GbE cloud NIC for loading data and checkpoints.  
+
+> •
+
+Storage : 120 TB configured as a single RAID0 array (‘/dev/md127‘) from 16 physical NVMe drives (Micron 7450 MTFDKCC7T6TFR), each with 7.6 TB. Each of the above nodes have separate local drives for the OS. 
+
+2) Login Node: The login node is a VM that contains:  
+
+> •
+
+RAM : 80 GB system memory, installed as 5×16 GB DIMMs (virtual/QEMU).  
+
+> •
+
+CPU : 2 sockets of Intel Xeon (Sapphire Rapids), each with 8 cores and 2 threads per core (virtualized under KVM).  
+
+> •
+
+Storage : 1 TB total, split into 3 virtual disks: vda (100 GB), vdb (520 GB), and vdc (520 GB) APPENDIX BAUTHOR CONTRIBUTIONS 
+
+a) Vasu Shyam: Conceptualization; algorithm design and development; initial correctness verification. 
+
+b) Anna Golubeva: Large-scale experimental evaluation; collection and organization of experimental data. 
+
+c) Quentin Anthony: Theoretical analysis and cost mod-eling; manuscript writing and preparation; final figure and plot formatting. APPENDIX CREFERENCE MODEL CONFIGURATION 
+
+Unless otherwise stated, all theoretical figures and analyses in this paper use the following 7B dense decoder-only trans-former configuration.                       
+
+> Hyperparameter Value
+> Hidden / residual dimension h4096 Number of layers L32 Number of query heads nh32 Number of K/V heads nkv 32 (MHA, g= 1 )Per-head dimension d128 FFN expansion factor F4 (gated MLP) Forward precision βP2 bytes (bf16/fp16) Gradient precision βg2 bytes Optimizer states no,βo3, 4 bytes (mixed-precision AdamW)
+
+The total parameter count under this configuration is L·(4+ 3F )h2 ≈ 8.6 B, ignoring embedding and norm parameters; we refer to it as the ”7B reference model” in the main text. 16
