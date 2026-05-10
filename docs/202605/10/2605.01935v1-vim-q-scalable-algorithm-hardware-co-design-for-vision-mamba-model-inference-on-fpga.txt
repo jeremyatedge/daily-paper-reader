@@ -1,0 +1,712 @@
+Title: ViM-Q: Scalable Algorithm-Hardware Co-Design for Vision Mamba Model Inference on FPGA
+
+URL Source: https://arxiv.org/pdf/2605.01935v1
+
+Published Time: Tue, 05 May 2026 01:16:28 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# ViM-Q: Scalable Algorithm-Hardware Co-Design for Vision Mamba Model Inference on FPGA 
+
+Shengzhe Lyu, Yuhan She, Patrick S. Y. Hung, Ray C. C. Cheung ∗, Weitao Xu ∗
+
+City University of Hong Kong, Hong Kong 
+
+{shengzhe.lyu, yuhanshe3-c }@my.cityu.edu.hk, {psyhung, r.cheung, weitaoxu }@cityu.edu.hk 
+
+Abstract —Vision Mamba (ViM) models offer a compelling efficiency advantage over Transformers by leveraging the linear complexity of State Space Models (SSMs), yet efficiently deploy-ing them on FPGAs remains challenging. Linear layers struggle with dynamic activation outliers that render static quantization ineffective, while uniform quantization fails to capture the weight distribution at low bit-widths. Furthermore, while associative scan accelerates SSMs on GPUs, its memory access patterns are misaligned with the streaming dataflow required by FPGAs. To address these challenges, we present ViM-Q 1, a scalable algorithm-hardware co-design for end-to-end ViM inference on the edge. We introduce a hardware-aware quantization scheme combining dynamic per-token activation quantization and per-channel smoothing to mitigate outliers, alongside a custom 4-bit per-block Additive Power-of-Two (APoT) weight quantization. The models are deployed on a runtime-parameterizable FPGA accelerator featuring a linear engine employing a Lookup-Table (LUT) unit to replace multiplications with shift-add operations, and a fine-grained pipelined SSM engine that parallelizes the state dimension while preserving sequential recurrence. Crucially, the hardware supports runtime configuration, adapting to diverse dimensions and input resolutions across the ViM family. Imple-mented on an AMD ZCU102 FPGA, ViM-Q achieves an average 4.96 × speedup and 59.8 × energy efficiency gain over a quantized NVIDIA RTX 3090 GPU baseline for low-batch inference on ViM-tiny. This co-design shows a viable path for deploying ViM models on resource-constrained edge devices. 
+
+Index Terms —Vision Mamba, State Space Models, FPGA, Quantization, Algorithm-Hardware Co-Design 
+
+I. I NTRODUCTION 
+
+Transformers [1] have achieved remarkable success in computer vision tasks [2]–[10], yet the self-attention mech-anism incurs a computational and memory complexity that is quadratic with respect to the input sequence length. This inher-ent inefficiency poses significant challenges for deployment in resource-constrained or latency-sensitive environments. State Space Models (SSMs), particularly Mamba [11], [12], have emerged as a powerful alternative in various vision tasks [13]– [21], offering linear-time complexity while maintaining or even surpassing the performance of Transformers. Among these, Vision Mamba (ViM) [13] successfully adapts this architecture for image tasks, demonstrating strong capabilities in visual representation learning. Despite its promise, achieving efficient ViM deployment remains a significant research challenge. Research focused on 
+
+∗Corresponding authors. 
+
+> 1
+
+Code available at: https://github.com/shengzhelyu65/ViM-Q-FCCM-2026 Norm       
+
+> σFlip
+> Causal Conv1D Causal Conv1D
+> Flip
+> ViM Encoder
+> A∆B
+> C
+> E
+> Dz
+
+·State Update            
+
+> Loop
+> Linear Projection
+> σSiLU
+> u
+> SSoftPlus
+> Element -wise Mul/Add
+> z
+> σ
+> Forward
+> SSM
+> S∆BuC
+> Flip
+> σ
+> Backward
+> SSM
+> S∆BuC
+> z
+> Selective SSM
+> EExponential
+
+· Dot Product 
+
+Figure 1: Architecture of the ViM encoder and the detailed dataflow of the selective SSM mechanism. 
+
+algorithms primarily targets quantization to reduce memory footprint and computational complexity. While sophisticated Post-Training Quantization (PTQ) schemes [22]–[29] excel at preserving accuracy, these methods frequently neglect hard-ware constraints. They introduce complex operations that are inefficient for hardware mapping, which renders the quantized models impractical for edge implementations. Similarly, deploying ViM on modern hardware platforms faces distinct hurdles. General-purpose GPUs encounter bot-tlenecks in edge scenarios as they suffer from resource under-utilization at low batch sizes, which are typical workloads for real-time applications. Furthermore, GPUs struggle to support low-bit quantization efficiently since they often rely on high-latency dequantization operations that undermine the theoreti-cal benefits of reduced precision [30]–[34]. On the other hand, existing FPGA and ASIC accelerators [35]–[40] provide cus-tom architectures but typically rely on rudimentary algorithmic optimizations such as static quantization. These approaches fail to accommodate the dynamic activation outliers inherent to ViM, which inevitably results in severe performance degra-dation. This divergence creates a critical gap: hardware-centric solutions lack the necessary accuracy and adaptivity, while algorithmic solutions remain computationally impractical. A holistic algorithm-hardware co-design is therefore essential to unlock ViM’s full potential on the edge. Figure 1 illustrates the ViM encoder architecture. The com-putational workload is dominated by dense linear projections of varying dimensions and the selective SSM, which acts as a content-aware gate. Based on this architectural analysis, 
+
+> arXiv:2605.01935v1 [cs.AR] 3 May 2026
+
+we identify three critical challenges in designing efficient hardware accelerators for ViM: 
+
+(1) Hardware-aware quantization and efficient linear engine. Maintaining the accuracy of quantization is non-trivial for ViM since static methods fail on dynamic outliers, while uniform weight quantization is inefficient at low bit-widths. Consequently, a dynamic activation scheme combined with a hardware-efficient weight representation is required. To support this, the hardware needs a well-designed dataflow to hide the latency of dynamic quantization. Furthermore, as resource constraints prohibit dedicated units for every linear transformation, a single unified linear engine is essential. 
+
+(2) Mapping recurrent SSM to spatial parallelism. While GPU implementations leverage associative scan to accelerate SSM, migrating it to FPGAs requires prohibitively high mem-ory bandwidth and storage requirements. Thus, the challenge is to replace scans with a fine-grained dataflow that reconciles the sequential dependency of the SSM state update with high spatial parallelism. Additionally, the dataflow must extend beyond the state update by fusing subsequent matrix and element-wise operations, thereby minimizing overall latency. 
+
+(3) Scalability across model dimensions and resolutions. 
+
+The ViM family encompasses diverse configurations char-acterized by varying hidden dimensions and arbitrary input resolutions. To ensure deployment versatility, the objective is to achieve full runtime configuration across all compute modules, including linear, convolutional, and SSM engines. This requires a specialized tiling strategy for each computation module, capable of adapting to arbitrary tensor shapes and sequence lengths without requiring hardware recompilation. To address these challenges, we present ViM-Q , to the best of our knowledge, the first end-to-end FPGA implementa-tion of Vision Mamba models , achieved through a scalable algorithm-hardware co-design. Our key contributions are:  
+
+> •
+
+We introduce a hardware-aware strategy that syner-gizes dynamic per-token activation quantization and per-channel smoothing with per-block 4-bit Additive Power-of-Two weight quantization, which effectively mitigates activation outliers to maintain high accuracy while maxi-mizing the representational efficiency of low-bit weights.  
+
+> •
+
+We propose a unified runtime-parameterizable linear en-gine employing a Lookup-Table computation unit to execute linear operations using pre-calculated results in-dexed by weights. This design replaces multiplications with shift-add operations in real-time, enabling efficient computation while hiding dynamic quantization latency.  
+
+> •
+
+We design a pipelined SSM engine that exploits deep state-level parallelism while respecting the strict token-level recurrence of the state space update. By fusing subsequent matrix and element-wise operations into a unified streaming dataflow, this design significantly re-duces intermediate memory access and overall latency. We implement ViM-Q on an AMD ZCU102 FPGA. Algo-rithmic evaluation confirms robust quantization performance, with ViM-t and ViM-s achieving 74.2% and 79.9% Top-1 
+
+Table I: Qualitative comparison with other hardware accelerators for Mamba-based models.                               
+
+> Feature [36] [37] [35] [38] Ours Target Model Mamba Mamba-2 Mamba Vision Mamba Vision Mamba Target Platform FPGA FPGA ASIC ASIC FPGA Bit Precision W4A4/W8A8 W8A8/W8A16 FIX32 W8A8 W4A8 Quantization Static PTQ Static PTQ None Static PTQ Dynamic PTQ SSM Dataflow Unrolled Pipeline Tree-Based Systolic Scan Spatial Recurrent
+
+accuracy at W4A8 precision, respectively. Hardware bench-marks demonstrate superior efficiency in low-batch scenarios, outperforming a quantized RTX 3090 GPU with an average 4.96 × speedup and 59.8 × energy efficiency gain for ViM-t. We detail the proposed quantization scheme in Section III, the hardware architecture in Section IV, and optimizations for the linear and SSM engines are presented in Sections V and VI. II. R ELATED WORK 
+
+A. Quantization of Mamba and Vision Mamba 
+
+Mamba models, leveraging SSMs with linear time com-plexity, pose unique quantization challenges due to activa-tion outliers. Pierro et al. [23] identified outlier channels and proposed selective quantization. The Quamba frame-work [25] introduced 8-bit per-tensor quantization, extended by Quamba2 [26] with offline sorting, clustering, and per-state-group quantization. For ViM, PTQ4VM [22] uses per-token static quantization and joint learning of smoothing scales, while Shi et al. [27] apply k-scaled token-wise quantization and hidden state reparameterization. Deng et al. propose ViM-VQ [28], which employs post-training vector quantization with optimized codewords. OuroMamba [29] uses data-free quan-tization with synthetic data, and MambaQuant [24] applies smooth-fused rotation to address uneven data distributions. 
+
+B. Hardware Accelerators for Mamba 
+
+Hardware accelerators enhance Mamba model performance, particularly on FPGAs. LightMamba [36] uses hardware-software co-design with up to 4-bit quantization, partial un-rolling, and optimized tiling. Zhou et al. ’s accelerator [37] for Mamba-2 employs a reconfigurable architecture with an intra-layer pipeline for SSM throughput. Li et al. ’s Marca [35] features a PE array for linear and nonlinear operations, with advanced buffer management. Yoon et al. propose Mamba-X [38], which targets ViM on edge devices using a sys-tolic scan array and hybrid quantization. SpecMamba [39] introduces a speculative execution framework that accelerates inference by predicting future tokens and verifying them in parallel on an FPGA, while FastMamba [40] presents a dedicated FPGA accelerator to optimize SSM computations through efficient memory access and pipelining. As summarized in Table I, our work pioneers the FPGA implementation of Vision Mamba, employing a novel W4A8 dynamic PTQ scheme. This distinguishes our design from prior accelerators that rely on static quantization [36], [37], target standard Mamba [35]–[37], or utilize ASICs [35], [38]. III. H ARDWARE -A WARE QUANTIZATION 
+
+To enable efficient FPGA deployment, we target the quan-tization of linear and convolutional layers. Consistent with 2Figure 2: Input images and the corresponding input activation distri-butions of the output projections at the 22nd layer in the tiny ViM model variant. 
+
+prior art [22]–[24], [27]–[29], [37], [38], we retain the SSM module in high precision to avoid severe error accumulation from recurrent state updates. Activation quantization faces dual challenges. First, similar to other large vision models, ViM exhibits persistent channel-wise outliers driven by weight distributions [22]–[24]. Second, the model generates highly dynamic, input-dependent per-token outliers [22], [24]–[26], [29], as shown in Figure 2. This compound variability renders standard static quantization ineffective. Regarding weights, the distribution is typically Gaussian, making uniform quantiza-tion inefficient as it wastes quantization levels on sparse tails. Consequently, a non-uniform scheme is essential to minimize bit-width without compromising accuracy. 
+
+A. Per-Channel Activation Smoothing 
+
+We quantize activations to INT8 to exploit FPGA-native integer arithmetic. To mitigate channel-wise outliers, we adopt smoothing [41], [42] to redistribute quantization dif-ficulty from activations to weights via scaling factors sj =max( |Xj |)α/ max( |Wj |)1−α, where Xj denotes the j-th ac-tivation channel, Wj denotes the corresponding weights, and 
+
+α = 0 .5 is the balancing hyperparameter. To minimize runtime overhead, we fuse the smoothing operation directly into the weights. Smoothing is arithmetically equivalent to scaling down the upstream weights while proportionally scaling up the downstream weights. This allows for offline transformation, requiring the explicit insertion of a smoothing layer only when nonlinearities interrupt linear layers. 
+
+B. Dynamic Per-Token Quantization 
+
+While smoothing alleviates channel outliers, static activation quantization remains suboptimal. A fixed scale derived from a calibration set must guard against rare extremes, resulting in conservative scaling that underutilizes the INT8 range and risks clipping on unseen inputs. To address this, ViM-Q 
+
+implements dynamic per-token quantization. For each token, a dedicated unit calculates the real-time absolute maximum to derive an optimal scaling factor. This maximizes dynamic range utilization, preserving information that is otherwise lost under static activation quantization schemes.                                                                                  
+
+> 1def PerBlock_APoT_WeightQuant(w, B, Q):
+> 2"""
+> 3w:weights, B:block size, Q:APoT levels
+> 4"""
+> 5#1. Reshape tensor into blocks
+> 6w_blk =reshape(w, (-1, B))
+> 7#2. Compute Per-Block Scale
+> 8s=max(abs(w_blk), axis=1)
+> 9#3. Normalize and Clip
+> 10 w_n =clamp(w_blk /s, -1, 1)
+> 11 #4. Extract Sign and Magnitude
+> 12 sign =sign(w_n)
+> 13 mag =abs(w_n)
+> 14 #5. Map Magnitude to nearest APoT level
+> 15 idx =argmin(|mag -Q|)
+> 16 val =Q[idx]
+> 17 return val, sign, s
+
+Figure 3: Post-training per-block APoT weight quantization. Table II: Basis components for 4-bit APoT weights. The final 8 quantization levels are formed by the set {c + f |c ∈ bC , f ∈ bF }.              
+
+> Basis Group Exponent Values ( k)Numerical Values
+> Coarse Basis ( bC){1,2,4}{0,2−1,2−2,2−4}
+> Fine Basis ( bF){3}{0,2−3}
+
+C. Per-Block Additive Power-of-Two Weight Quantization 
+
+We replace standard uniform weight quantization with an aggressive 4-bit per-block Additive Power-of-Two (APoT) scheme. APoT restricts quantization levels to sums of power-of-two terms, enabling non-uniform distribution that allocates higher resolution near zero, where most weights reside [43]– [47]. Crucially, this structure allows hardware to replace costly multiplications with logic-efficient bit-shift operations. 
+
+Per-Block Granularity. A major challenge in low-bit quan-tization is weight outliers, which skew dynamic ranges and degrade precision. Per-channel scaling is often too coarse to mitigate this. To address this, we implement fine-grained per-block quantization as illustrated in Figure 3. By reshaping the weight tensor into small, independent blocks with dedicated scaling factors, we ensure outlier influence is isolated to local regions, significantly preserving fidelity [31], [48], [49]. 
+
+4-bit APoT Construction. We utilize a 4-bit format com-prising 1 sign bit and 3 magnitude bits. To optimize represen-tational capacity, the magnitude indexes 8 levels constructed via a split-basis approach: a 2-bit Coarse Basis bC and a 1-bit Fine Basis bF . As detailed in Table II, the final magnitude 
+
+val = c + f is the sum of one element from each group. This hierarchical construction maintains high accuracy by effectively covering the weight distribution while dramatically reducing the memory footprint. IV. H ARDWARE DESIGN OVERVIEW 
+
+The ViM-Q architecture follows a modular, streaming design where specific ViM functions are implemented as standalone engines. Each engine integrates local BRAM buffers and dedicated burst loaders to maximize AXI bandwidth, while supporting runtime configuration via control parameters ( e.g. ,feature dimensions and patch counts). Operating on a tiling-based dataflow, engines process partitioned input tiles im-mediately upon arrival, communicating via lightweight FIFO buffers. This decoupled pipeline facilitates concurrent exe-cution across modules, effectively hiding memory latency 3❶ Tiling Strategy             
+
+> ❷Weight Reordering
+> K
+> N
+> T x T
+> T x T
+> K x N Burst Read to
+> On -chip BRAM
+> 1
+> Weight
+> X0 X1 Y
+> W1
+> W0
+> 1
+> TT
+> T
+> T
+> @=
+> Activation Output
+> WS0 Per -Block
+> Weight Scale WS1
+> M
+> K
+> K
+> N
+> K/T
+> N
+> M
+> N
+> =x+x
+> ❸Non -Linear Activation Function
+> LUT Pre -computation
+
+Tiled LUT -Based W4A8 Linear Engine                                                                                                                                                  
+
+> x≪7
+> x
+> x≪6x≪4x≪5
+> LUT[1] LUT[2] LUT[3] LUT[4]
+> LUT[5] LUT[6] LUT[7] LUT[0]
+> 0
+> Control Packet
+> Orchestration
+> Dynamic AbsMax -Based
+> Activation Quantization
+> APoT LUT Pre -computation and
+> Control Packet Orchestration
+> Multiplication -free Tiled LUT
+> Indexing and Summation Engine
+> Block -Quantized Weight Scaling
+> and Row -Level Accumulation
+> Fused Dequantization and Post -
+> Processing Pipeline
+> Input Tile
+> x
+> Weight Tile
+> Weight Scale Tile
+> T LUTs
+> Didx LUT Entries
+> 000 x≪7
+> 001 x≪6
+> ••• •••
+> 110 (x ≪6) + (x ≪5)
+> 111 (x ≪4) + (x ≪5)
+> Didx LUT Entries
+> 000 x≪7
+> 001 x≪6
+> ••• •••
+> 110 (x ≪6) + (x ≪5)
+> 111 (x ≪4) + (x ≪5)
+> Didx LUT Entries
+> 000 x≪7
+> 001 x≪6
+> ••• •••
+> 110 (x ≪6) + (x ≪5)
+> 111 (x ≪4) + (x ≪5)
+> Didx LUT Entries
+> 000 x≪7
+> 001 x≪6
+> ••• •••
+> 110 (x ≪6) + (x ≪5)
+> 111 (x ≪4) + (x ≪5)
+> Input Channel
+> Group ID
+> Reset
+> Trigger
+> Flush
+> Trigger
+> Output Channel
+> Group ID
+> +
+> LUT and Control Packet FIFO
+> LUT Indexing and
+> Summation PEs
+> PE Lane 0
+> PE Lane 1
+> PE Lane T -1
+> PE Lane T
+> •••
+> T-in Adder Tree
+> Out
+> …
+> Didx 0
+> Sign
+> Inverter Sign 0
+> LUT 0
+> Didx T
+> Sign
+> Inverter Sign T
+> LUT T
+> ❹Precision -Preserving Pre -shifting
+> 00101011
+> 43
+> 0000101011
+> 10
+> (43) 10 ×0.25 = 10.75
+> (43) INT8 ≫2= (10) INT8
+> ≉
+> Pre -shift F bits
+> 43
+> ×2F
+> 43
+> ×2F-2
+> 001010110000
+> 00001010110000
+> Left -Shifting and Late Scaling to Preserve Precision
+> (43 ×2F)10 ×0.25
+> ((43) INT8 ≪F) ≫2
+> =
+> =
+> (43) INT8 ≪F-2
+
+Figure 4: Unified linear engine design with LUT pre-computation. Key optimizations include: ➊ streaming tiling strategy, ➋ memory-efficient weight reordering, ➌ LUT-based non-linear activations, and ➍ precision-preserving pre-shifting. 0 0.1 0.2 0.3   
+
+> FP16
+> Quantized
+> Component Latency ( ms )
+> Dynamic Act. Quant. MatMul Dequantization
+> 0.230
+> 0.063
+
+Figure 5: Latency breakdown of quantized versus FP16 linear layers (In=384, Out=768) on an NVIDIA RTX 3090. 
+
+to sustain high throughput. The accelerator comprises three primary compute engines: 
+
+Unified Linear Engine. Designed to handle all linear transformations, this engine features a datapath that integrates a dynamic activation quantizer, a Lookup-Table (LUT) pre-computation unit for generating bit-shifted tile results, and a high-throughput LUT indexing and summation core. The pipeline concludes with a post-processing unit supporting dequantization, fused bias addition, and activation functions. 
+
+Fine-Grained Pipelined SSM Engine. Implemented as a dedicated three-stage pipeline, this engine orchestrates state space updates, state projection, and output generation. It harmonizes the SSM’s sequential recurrence with spatial par-allelism: while temporal dependencies are resolved via a low-latency streaming pipeline, the independent feature and state computations are distributed across parallel hardware lanes to maximize throughput and scalability. 
+
+Auxiliary Engines. Lightweight modules handle essential operations including patch embedding, causal convolution, normalization, residual summation, and patch manipulation (e.g. , CLS token extraction and sequence flipping). Each en-gine is fully dataflow-compatible to minimize stalls. Notably, the causal convolution engine optimizes latency by decom-posing windowing and filtering into distinct sub-operations. Like the linear engine, it leverages dynamic quantization and bit-shift computation to ensure efficient execution. V. U NIFIED LINEAR ENGINE DESIGN 
+
+Dynamic quantization introduces a severe runtime bottle-neck on general-purpose hardware. As illustrated in Figure 5, the overhead of computing activation statistics and performing dequantization on the GPU consumes significantly more time than the matrix multiplication itself. While custom FPGA architectures offer a promising solution, unlocking their full efficiency requires addressing three critical challenges: 
+
+First , to eliminate the dynamic quantization overhead, the engine necessitates a specialized streaming dataflow capable of computing quantization parameters on-the-fly, effectively hiding the latency within the execution pipeline. Second ,leveraging the benefits of our 4-bit APoT scheme requires a de-parture from standard arithmetic units. Given the properties of power-of-two values, the challenge is to design an architecture that converts APoT arithmetic into logic-efficient bit-shifting operations. Third , maximizing throughput across the diverse layer shapes of ViM variants necessitates a flexible tiling strategy to support full runtime reconfigurability. Figure 4 illustrates our unified engine workflow, which addresses these challenges through a LUT-based datapath and four critical hardware optimizations ( ➊–➍). 
+
+A. Tiling-Based Dataflow Architecture 
+
+To maximize generality, all linear layers map to a unified en-gine, consistent with prior art [35], [36], [50]–[52]. Operations are decomposed into fixed-size tiles, as shown in Figure 4-➊.Input activations stream as 1 × T vectors and are multiplied against T ×T weight tiles from local BRAMs, while associated per-block scales are retrieved to rescale intermediate results. Partial sums accumulate until a full output tile is produced. To align memory access, we employ offline weight reordering as depicted in Figure 4-➋. The standard matrix is transformed into a hardware-friendly layout where quantized weights are packed into sequential wide words ( e.g. , matching the 256-bit AXI burst length). This eliminates irregular indexing, enabling purely sequential burst reads to minimize DRAM latency. 
+
+B. Dynamic Quantizer and Dequantizer 
+
+Dynamic quantization is critical for model robustness but requires efficient hardware to avoid overhead. Our architec-ture integrates a streaming quantizer that operates on-the-fly. As activation tiles stream in, a compute unit calculates the maximum absolute value via parallel reductions. Each token’s 4Data Genera)on 
+
+> token
+> channel
+> Associative Scan
+> token
+> channel
+> Access Pattern
+> Mismatch
+
+Figure 6: Data access misalignment between the token-major input stream and the channel-major traversal of the associative scan. 
+
+global maximum is converted into a scaling factor, buffered in a FIFO, and forwarded to a division unit where activations are mapped to 8-bit integers. Simultaneously, these scales propagate downstream to the dequantizer for reconstruction. The dequantizer reverses this process by rescaling interme-diate results from the linear core. Fused operations like bias addition and nonlinearities are conditionally applied within the same datapath. To optimize complex activations, we employ a LUT-based approximation as shown in Figure 4-➌, leveraging the fact that functions like SiLU and SoftPlus differ from ReLU by only a small, symmetric offset. Thus, activations pass through a ReLU, requiring no computation other than thresholding at zero, and only the difference is retrieved from the LUT. Exploiting symmetry allows us to store only half the LUT entries, reducing on-chip memory usage. 
+
+C. LUT-Based Linear Computation 
+
+While APoT theoretically replaces multiplications with bit-shifts, a naive implementation via variable barrel shifters per Processing Element (PE) is inefficient. Since our 4-bit weights (3-bit magnitude, 1-bit sign) map to only eight shifting patterns, placing dedicated shifters in every PE results in redundant recalculation and excessive logic overhead. We propose a LUT-based architecture that decouples shifting from the computation loop, transforming arithmetic into lightweight indexing and addition [30], [33], [53]–[55]. 
+
+LUT-Based Pre-computation. Instead of dynamic shifting within each PE, the engine pre-calculates shifted results for each input tile only once. As a 1 × T activation tile streams in, a unit generates eight potential results per element without considering the sign, populating T parallel LUTs. To ensure downstream PEs remain stateless, a control packet containing tile coordinates ( e.g. , group IDs) and sync flags (reset/flush) propagates alongside the LUT data, allowing subsequent PEs to manage partial sum accumulation and result flushing. 
+
+Precision-Preserving Pre-shifting. As detailed in Figure 4-
+
+➍, direct integer right-shifting discards fractional bits, leading to accuracy degradation. We mitigate this by left-shifting inputs by F bits ( e.g. , F = 8 ) to widen the dynamic range. To minimize overhead, we fuse this into LUT generation: for weight basis 2−k, the engine directly computes x ≪ (F − k).This preserves fractional precision throughout accumulation, with the final result right-shifted by F to compensate for the pre-shifting and restore the numerical range. 
+
+LUT Indexing and Summation PEs. As shown in Fig-ure 4, the core linear operation is subsequently reduced to a streamlined indexing and summation process, where pre-computed LUTs are broadcast to T parallel PE lanes, each Stage 3      
+
+> Fused Output Generation
+> ht-1N
+> D
+> NB
+> ut∆tyt
+> N
+> AN
+> D
+> NB
+> htN
+> D
+> NB
+> NB
+> N
+> NB
+> BtCt
+> DDD
+> Stage 1
+> State Space
+> Update Engine
+> Stage 2
+> State Projection
+> Engine
+> Out t
+> (uD )t
+> zt
+> D
+> D
+> D
+
+(a) Three -stage macro -pipeline and tiling strategy.                               
+
+> 01••• D
+> ∆!
+> 𝑢 !
+> 01••• D
+> 𝐵 !𝑛 𝐵 #𝑢 !𝑑 ,𝑛
+> PE Lane 0
+> 𝐴 𝑑 ,𝑛
+> ∆!𝑑
+> (∆𝑢 )!𝑑
+> ex
+> 𝐴 ̅!𝑑 ,𝑛
+> MAC State
+> Register
+> NBPE Lanes
+> ∆!𝑑
+> (∆𝑢 )!𝑑
+> ℎ!𝐵𝑙𝑜𝑐𝑘
+> Broadcast to N BPE Lanes Spatial Parallelism
+> NB
+> D
+> Exp Approximation
+> 01••• NB01••• NB
+> B Block A BRAM Slice
+> State Update
+
+(b) Micro -architecture of state space update engine. 
+
+Figure 7: Fine-grained pipelined SSM architecture. 
+
+corresponding to an output channel. Inside each lane, the 3-bit weight magnitude index controls an 8-to-1 multiplexer to select the pre-computed term from the LUT, while the sign bit drives a conditional inverter for negation. These retrieved values are then summed via an adder tree. By resolving the block-level accumulation locally, the PE outputs a single aggregated result for a weight block, which is then passed to the subsequent stage for scaling and row-level accumulation before final dequantization. VI. F INE -G RAINED PIPELINED SSM D ESIGN 
+
+The selective SSM challenges efficient ViM inference due to its sequential state updates. GPUs accelerate it via associative scan [11]–[13], [56], but this conflicts with FPGA’s streaming model. As shown in Figure 6, a data access conflict arises: input arrives in token-major order, while associative scan requires channel-major traversal. Resolving this mismatch demands an expensive on-chip transposition buffer, consuming excessive BRAM and increasing control complexity. Thus, efficiently mapping the selective SSM onto spatially parallel FPGA architectures remains a key design challenge. 
+
+A. Pipelined SSM Architecture and Tiling 
+
+To exploit FPGA spatial parallelism, we design a fine-grained accelerator that decomposes SSM computation into three decoupled, concurrently operating macro-pipeline stages: 
+
+State Space Update , State Projection , and Fused Output Gen-eration , as shown in Figure 7(a). We employ a tiling strategy along the state dimension, processing blocks of NB states in parallel to adapt to varying state dimensions. 
+
+B. Stage 1: State Space Update Engine 
+
+This stage integrates discretization and state space recur-rence. It streams inputs ∆, u ∈ RL×D and time-variant projection B ∈ RL×N from off-chip memory, while the time-invariant transition matrix A ∈ RD×N resides in on-chip BRAM. Here, L, D, and N denote the sequence length, feature dimension, and state dimension, respectively. 5Discretization Step. We employ a broadcasting architecture to compute the discretized state transition gate ¯A = exp(∆ ·A)
+
+and the input-modulated control term ¯Bu = (∆ · u) · B,as illustrated in Figure 7(b). For token t and channel d, the scalar pair (∆ t[d], u t[d]) is fetched. The product (∆ u)t[d] is computed locally, and both ∆t[d] and (∆ u)t[d] are broadcast across NB parallel PE lanes. These lanes simultaneously receive the projection slice Bt and the corresponding local weights A. Inside the PEs, two parallel operations execute: (1) The ∆ value multiplies local A weights via an optimized exponential approximation to generate the decay gate ¯A. (2) The ∆u value multiplies vector Bt to produce ¯Bu . This dataflow decouples the feature dimension D from the state expansion N , enabling high spatial parallelism. 
+
+Iterative State Update. Following discretization, the engine performs the core recurrence update: 
+
+ht = ht−1 ⊙ ¯A + ¯Bu. (1) Hidden states ht reside entirely in distributed register files. The calculated ¯Bu is fused directly into a Multiply-Accumulate (MAC) operation with the previous state ht−1 and ¯A. This ensures state updates occur with single-cycle latency, produc-ing the updated state tensor h ∈ RL×D×N for the next stage. 
+
+C. Stage 2: State Projection Engine 
+
+This stage functions as a streaming reduction unit and maps the high-dimensional hidden state back to the feature space: 
+
+yt = ht · Ct, (2) where Ct ∈ RN is the token-dependent output weight vector streamed from off-chip memory. The updated state blocks are multiplied by the corresponding slices of Ct. The results are then passed through an adder tree to accumulate values across the state dimension, compressing the N -dimensional state into a single scalar output yt[d] for each feature channel. 
+
+D. Stage 3: Fused Output Generation 
+
+The final stage generates the module output by applying the residual connection and gating mechanism. To minimize memory traffic and latency, we fuse these element-wise oper-ations into a single combinational pipeline. The unit accepts the projected features yt from Stage 2 and simultaneously streams the original input token ut, the skip parameter D, and the gating factor zt from memory. It executes the following composite operation in a single pass: 
+
+Out t = ( yt + ut ⊙ D) ⊙ zt. (3) VII. E XPERIMENTS 
+
+A. Experimental Setup 
+
+Algorithm. We evaluate our proposed quantization method-ology on the tiny (ViM-t), small (ViM-s), and base (ViM-b) ViM model variants, as detailed in Table III. We assessed their performance on the ImageNet-1k classification benchmark, reporting both Top-1 and Top-5 accuracy. 
+
+Hardware Implementation. The proposed accelerator was implemented on an AMD ZCU102 evaluation board. Individ-ual hardware modules were synthesized using C++-based Vitis 
+
+Table III: Vision Mamba model configurations.                   
+
+> Attribute Tiny Small Base
+> Model ViM-t ViM-s ViM-b Parameters 7 M 26 M 98 M # Encoder blocks 24 24 24 Hidden dimension 192 384 768 State dimension 16 16 16
+
+Table IV: Evaluation of ViM models across different quantization precisions and granularities (per-channel vs. per-block).                                                                                         
+
+> Methods W/A Precision Granularity Top 1 (%) Top 5 (%) ViM-t Baseline FP16 —76.07 93.01
+> Uniform W8A8 per-channel 75.83 92.85 Uniform W8A8 per-block 75.86 92.91 PoT W4A8 per-channel 68.18 88.58 PoT W4A8 per-block 70.31 89.77 APoT W4A8 per-channel 72.04 90.91
+> ViM-Q (Ours) W4A8 per-block 74.23 92.00 ViM-s Baseline FP16 —80.48 95.10
+> Uniform W8A8 per-channel 80.37 95.00 Uniform W8A8 per-block 80.41 94.98 PoT W4A8 per-channel 78.04 93.92 PoT W4A8 per-block 78.78 94.32 APoT W4A8 per-channel 78.04 94.07
+> ViM-Q (Ours) W4A8 per-block 79.89 94.80 ViM-b Baseline FP16 —81.88 95.76
+> Uniform W8A8 per-channel 81.86 95.75 Uniform W8A8 per-block 81.83 95.75 PoT W4A8 per-channel 81.09 95.39 PoT W4A8 per-block 81.35 95.51 APoT W4A8 per-channel 80.83 95.36
+> ViM-Q (Ours) W4A8 per-block 81.67 95.62
+
+HLS 2025.2. These modules were integrated into the top-level end-to-end design using SpinalHDL 1.10.1, which generated the system Verilog RTL. The final logic synthesis, place-and-route, and bitstream generation were completed using Vivado 2025.2. On-chip power consumption estimates were derived from the post-implementation reports generated by Vivado. 
+
+Baselines and Measurement. We benchmark ViM-Q 
+
+against an NVIDIA RTX 3090 GPU using FP16 and quantized baselines at a batch size of 1. Both baselines utilize fused CUDA kernels for the parallel associative scan to accelerate SSM recurrence. Lacking native APoT arithmetic support, the quantized GPU baseline uses a dequantization-based approach: compressed weights are dynamically cast back to FP16 before execution on standard tensor cores. Power and latency are recorded via the NVIDIA Management Library (NVML) and averaged over ten iterations after a warm-up phase. Active chip power is isolated by subtracting an estimated 50 W idle board and fan power from raw measurements. 
+
+B. Evaluation of Quantization Scheme 1) Performance of Quantization Scheme: Table IV demon-strates the efficacy of our proposed quantization across the ViM model family. We benchmark our approach against standard uniform quantization and constrained Power-of-Two (PoT) schemes. While APoT uses additive combinations, standard PoT is restricted to single power-of-two values. The results highlight the impact of quantization granularity, where per-block strategies consistently outperform per-channel approaches for all models. For ViM-t, standard 4-bit PoT quan-667.3%                   
+
+> 74.4%
+> 75.3%
+> 62.9%
+> 74.2%
+> 75.3%
+> 54.9%
+> 73.6%
+> 75.1%
+> 78.0%
+> 80.0%
+> 80.1%
+> 77.2%
+> 79.9%
+> 80.1%
+> 75.8%
+> 79.7%
+> 80.1%
+> 81.3%
+> 81.7%
+> 81.7%
+> 81.2%
+> 81.7%
+> 81.7%
+> 80.8%
+> 81.6%
+> 81.8%
+> 50%
+> 60%
+> 70%
+> 80%
+> 90%
+> W=3 W=4 W=5 W=3 W=4 W=5 W=3 W=4 W=5
+> ViM-t ViM-s ViM-b
+> 88.0%
+> 92.2%
+> 92.58%
+> 84.93%
+> 92.00%
+> 92.56%
+> 79.21%
+> 91.69%
+> 92.54%
+> 94.0%
+> 94.8%
+> 94.94%
+> 93.58%
+> 94.80%
+> 94.89%
+> 92.77%
+> 94.71%
+> 94.81%
+> 95.5%
+> 95.6%
+> 95.66%
+> 95.38%
+> 95.62%
+> 95.68%
+> 95.21%
+> 95.61%
+> 95.70%
+> 70%
+> 80%
+> 90%
+> 100%
+> W=3 W=4 W=5 W=3 W=4 W=5 W=3 W=4 W=5
+> Top -1 Accuracy (%)
+> Top -5 Accuracy (%)
+> B = 16
+> B = 16
+> B = 32
+> B = 32
+> B = 64
+> B = 64
+
+Figure 8: Design space exploration of weight bit-widths W and quantization block sizes B.73.2%           
+
+> 69.1%
+> 68.4%
+> 74.2%
+> 74.2%
+> 79.4%
+> 79.1%
+> 78.7%
+> 80.0%
+> 79.9%
+> 81.5%
+> 81.5%
+> 80.7%
+> 81.7%
+> 81.7%
+> 50%
+> 60%
+> 70%
+> 80%
+> 90%
+> W/o Act.
+> Smooth Static Act.
+> Quant. Per -tensor Act.
+> Quant. FP16 Head Ours
+> ViM-t ViM-s ViM-b
+> 91.2%
+> 91.4%
+> 88.0%
+> 92.0%
+> 92.0%
+> 94.6%
+> 94.7%
+> 94.0%
+> 94.9%
+> 94.8%
+> 95.5%
+> 95.6%
+> 95.3%
+> 95.7%
+> 95.6%
+> 60%
+> 70%
+> 80%
+> 90%
+> 100%
+> W/o Act.
+> Smooth Static Act.
+> Quant. Per -tensor Act.
+> Quant. FP16 Head Ours
+> Top -5 Accuracy (%)
+> Top -1 Accuracy (%)
+
+Figure 9: Ablation studies on the key components of our activation and weight quantization framework. 
+
+tization induces significant accuracy degradation. In contrast, APoT recovers substantial performance, achieving 74.23% Top-1 and 92.00% Top-5 accuracy. Notably, as model capacity increases, the quantization shows exceptional robustness. For ViM-s and ViM-b, our method achieves negligible accuracy loss compared to the FP16 baseline. Specifically, ViM-b shows a negligible Top-1 drop of only 0.21%. These results confirm that ViM-Q provides an optimal balance between storage efficiency and task performance. 
+
+2) Design Space Exploration: We conduct a design space exploration across weight bit-widths W ∈ { 3, 4, 5} and block sizes B ∈ { 16 , 32 , 64 }, as illustrated in Figure 8. Results indicate a sharp performance cliff below 4 bits: for ViM-t (B = 32 ), reducing W from 4 to 3 degrades Top-1 accuracy by 11.3%, whereas increasing to W = 5 yields diminishing re-turns, with the larger ViM-b exhibiting identical accuracy. This suggests that 4-bit weights provide sufficient representational capacity without the storage overhead of 5-bit. Regarding quantization granularity, while larger models remain robust to block size variations, ViM-t is more sensitive to coarse granularity. While increasing to B = 64 causes distinct degradation compared to B = 32 , refining the granularity further to B = 16 yields negligible returns. Consequently, we select B = 32 as the global configuration to secure fidelity for compact models while minimizing hardware overhead. 
+
+3) Ablation Study of Quantization Scheme: Figure 9 sum-marizes the ablation study validating individual quantization components. First, removing activation smoothing causes con-
+
+Table V: Resource utilization of our proposed hardware implemen-tation on ZCU102 FPGA. 
+
+Category Metric Utilization Percentage Timing Clock Frequency 350 MHz –Worst Negative Slack 0.040 ns –
+
+Resources 
+
+LUTs as Logic 121,721 44.41% LUTs as Memory 27,520 19.11% Flip-Flops 277,278 50.58% Block RAM Tiles 737 80.81% DSP48 Slices 1,377 54.64% 
+
+Power Dynamic Power 11.96 W –Static Power 0.81 W –Causal Conv1D        
+
+> Selective SSM
+> Linear Engine
+> Layer Smoothing
+> Norm & Residual
+> Patch Operations
+> Patch Embedding
+> ARM Processor
+> (PS)
+> Weight/Bias/Scale
+> Local Buffer
+> De -quantization and
+> Post -Processing
+> Dynamic Activation
+> Quantization
+> Streaming FIFO s
+> LUT Pre -computation
+> Weight Scaling and
+> Accumulation
+> LUT Indexing and
+> Summation Engine
+> State Projection
+> Fused Output Pipeline
+> Streaming FIFO s
+> A/D Local Buffer
+> State -Space Update
+
+Figure 10: Physical floorplan of the implementation on ZCU102 FPGA after place-and-route. 
+
+sistent degradation across all models, with the tiny model suffering a 1.0% drop in Top-1 accuracy, confirming its ne-cessity for outlier mitigation. Next, replacing our fine-grained dynamic activation quantization with a static scheme leads to a catastrophic 5.1% drop for ViM-t, indicating static ranges fail to capture rapid distribution shifts. Similarly, coarsening activation quantization granularity to per-tensor yields the poorest Top-1 accuracy at 68.4%. These findings underscore that both dynamic range adjustment and fine-grained granu-larity for activations are critical. Finally, the performance gap between the fully quantized and full-precision classification head is negligible. This justifies our decision to quantize all linear transformations for maximum hardware efficiency without resorting to mixed-precision overheads. 
+
+C. Evaluation of Hardware Design 1) Physical Implementation and Resource Utilization: We implemented the proposed ViM-Q accelerator on an AMD ZCU102 FPGA. Figure 10 shows the post-implementation floorplan. Table V summarizes the post-route metrics. The design achieves robust timing closure at 350 MHz. Block RAMs are the dominant resource, utilizing 80.81% of capacity for buffering weights and intermediate states to minimize off-chip access. Logic (LUTs/FFs) and DSP usage remain balanced at approximately 50%, leaving room for expansion. Total power consumption is approximately 12.77 W. 
+
+2) Performance Comparison with GPU Baselines: We benchmark end-to-end inference for ViM-t and ViM-s against GPU baselines in Table VII. The results expose the funda-7Table VI: Ablation study of the unified W4A8 linear engine. We evaluate the impact of incremental optimizations on single-layer latency (In=192, Out=384) and synthesis resource utilization. Speedup is normalized to the spatial tiling stage.                                            
+
+> Optimization Stages Single Layer (In=192, Out=384) Linear Engine Utilization
+> Latency (cycles) Speedup BRAM DSP FF LUT
+> Baseline : W4A8 GEMM (Sequential Scalar) 7,435,649 0.02 ×281 46 25,738 32,378 + Spatial Tiling & Parallel Adder Trees 147,780 1.00 ×539 329 167,757 161,587 + Memory-Aligned Weight Reordering 58,780 2.51 ×539 326 137,177 102,819 + Hardware-Efficient Decoding via Bit-Shifting 58,840 2.51 ×539 326 131,100 77,070 + Precision-Preserving Activation Pre-Shifting 58,780 2.51 ×539 326 132,932 94,336
+> + LUT-Based APoT Precomputation (Ours) 58,780 2.51 ×539 326 142,200 77,918
+
+Table VII: End-to-end performance comparison of our FPGA imple-mentation versus GPU baselines at 224 × 224 resolution.                                           
+
+> Metric FPGA (Ours) GPU (Quant.) GPU (FP16)
+> ViM-t ViM-s ViM-t ViM-s ViM-t ViM-s Frequency (MHz) 350 1695 1695 Process (nm) 16 88Precision W4A8 W4A8 FP16 Latency (ms) 53.76 127.3 117.1 119.1 54.60 60.86 Power (W) †12.77 12.77 153.7 155.7 201.1 205.9 Energy (J) 0.686 1.625 18.00 18.54 10.98 12.53 Power Efficiency 1.00 1.00 0.038 ×0.088 ×0.063 ×0.130 ×
+> †GPU power excludes estimated 50 W static board and fan power.
+
+mental structural limitations of GPU architectures in handling low-batch inference and dynamic quantization workloads. A critical finding is that the quantized GPU baseline is significantly slower than its full-precision counterpart, lagging by over 2× for ViM-t. This highlights the high runtime overhead of dynamic quantization on GPUs, as calculating per-token scaling factors negates the speedup of INT8 arithmetic. In contrast, our FPGA architecture integrates the dynamic quantizer directly into the streaming pipeline. This allows us to outperform the quantized GPU on latency across all tests and surpass the FP16 GPU on the compact ViM-t model. Despite utilizing an older 16 nm process compared to the GPU’s 8 nm node, our accelerator demonstrates decisive superiority in efficiency. By eliminating the power-hungry control logic required for GPU flexibility, we achieve a 26 .3×
+
+energy efficiency gain over the quantized GPU baseline for ViM-t, and an 11 .4× advantage for ViM-s. 
+
+3) Throughput and Energy Scaling: Figure 11 evaluates the scalability of throughput and energy efficiency across varying input resolutions. The results highlight the severe inefficiency of GPUs when handling the low-workload scenarios typical of edge deployment. At low resolutions, the GPU suffers from compute under-utilization, as the short sequence lengths fail to saturate its massive parallel cores. In contrast, our FPGA pipeline operates with minimal startup latency, delivering immediate throughput. This results in a peak acceleration of over 9× at 96 ×96 , with an average speedup of 4.96 × for ViM-t and 2.14 × for ViM-s across all resolutions relative to the quantized GPU. Furthermore, ViM-Q demonstrates exceptional energy efficiency. Even as the resolution increases and the GPU begins to amortize its overhead, our design maintains a decisive advantage. Overall, we achieve an average energy efficiency gain of 59 .8× for ViM-t and 26 .1× for ViM-s. 
+
+4) Ablation Study of the Linear Engine Design: Table VI details our incremental linear engine optimizations, which fo-0                          
+
+> 30
+> 60
+> 90
+> 120
+> 96 112 160 224 256 Average 96 112 160 224 256 Average
+> Normalized
+> Energy Efficiency
+> Image Resolution
+> GPU (Quant) Ours
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> 96 112 160 224 256 Average 96 112 160 224 256 Average
+> Normalized
+> Throughput
+> Image Resolution
+> GPU (Quant) Ours
+> ViM -tViM -s
+> 4.96x
+> ViM -tViM -s
+> 59.8x
+> 26.1x
+> 2.14x
+
+Figure 11: Normalized throughput and energy efficiency across varying input resolutions. The GPU baseline is normalized to one. 
+
+cus on maximizing throughput and minimizing logic overhead. First, although spatial tiling unrolls the computation to achieve significant acceleration, it creates irregular, non-sequential memory access patterns. We resolve this via memory-aligned weight reordering, ensuring purely sequential fetches that minimize latency cycles and simplify control logic. Next, by leveraging APoT properties, we replace standard multipliers with lightweight bit-shifts, further dropping LUT consumption to roughly 77 K. Finally, while precision-preserving activation pre-shifting is necessary for accuracy, it introduces logic overhead. We neutralize this through LUT-based APoT pre-computation. By pre-computing APoT terms once per input tile rather than shifting within PEs, we remove complexity from the critical path, yielding a highly efficient final footprint of 78 K LUTs. VIII. C ONCLUSIONS 
+
+We present ViM-Q , an algorithm-hardware co-design frame-work enabling efficient, end-to-end Vision Mamba inference on the edge. By integrating a novel quantization scheme with a runtime-parameterizable FPGA accelerator featuring a unified LUT-based linear engine and a fine-grained pipelined SSM engine, our implementation achieves lower latency and superior energy efficiency compared to GPU baselines. ACKNOWLEDGMENT 
+
+This work was supported by the Research Grants Council of the Hong Kong Special Administrative Region, China (Project No. CityU 11202925, CityU 11202124, and CityU 11201422), the Innovation and Technology Commission of Hong Kong (Project No. MHP/072/23), and City University of Hong Kong (Project 9678187). 8REFERENCES [1] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in Neural Information Processing Systems (NeurIPS) , vol. 30, 2017. [2] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly, J. Uszkoreit, and N. Houlsby, “An image is worth 16x16 words: Transformers for image recognition at scale,” in Proceedings of the International Conference on Learning Representations (ICLR) , 2021. [3] Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin, and B. Guo, “Swin transformer: Hierarchical vision transformer using shifted windows,” in Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2021, pp. 10 012–10 022. [4] H. Touvron, M. Cord, M. Douze, F. Massa, A. Sablayrolles, and H. J´ egou, “Training data-efficient image transformers & distillation through attention,” in Proceedings of the International Conference on Machine Learning (ICML) , 2021, pp. 10 347–10 357. [5] K. He, X. Chen, S. Xie, Y. Li, P. Doll´ ar, and R. Girshick, “Masked au-toencoders are scalable vision learners,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2022, pp. 16 000–16 009. [6] Y. Rao, W. Zhao, B. Liu, J. Lu, J. Zhou, and C.-J. Hsieh, “Dynam-icvit: Efficient vision transformers with dynamic token sparsification,” 
+
+Advances in Neural Information Processing Systems (NeurIPS) , vol. 34, pp. 13 937–13 949, 2021. [7] H. Bao, L. Dong, S. Piao, and F. Wei, “BEit: BERT pre-training of image transformers,” in Proceedings of the International Conference on Learning Representations (ICLR) , 2022. [8] P. Esser, R. Rombach, and B. Ommer, “Taming transformers for high-resolution image synthesis,” in Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition (CVPR) , 2021, pp. 12 873–12 883. [9] S. Khan, M. Naseer, M. Hayat, S. W. Zamir, F. S. Khan, and M. Shah, “Transformers in vision: A survey,” ACM Computing Surveys (CSUR) ,vol. 54, no. 10s, pp. 1–41, 2022. [10] K. Han, Y. Wang, H. Chen, X. Chen, J. Guo, Z. Liu, Y. Tang, A. Xiao, C. Xu, Y. Xu et al. , “A survey on vision transformer,” IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI) , vol. 45, no. 1, pp. 87–110, 2022. [11] A. Gu and T. Dao, “Mamba: Linear-time sequence modeling with selective state spaces,” in Conference on Language Modeling (COLM) ,2024. [12] T. Dao and A. Gu, “Transformers are ssms: generalized models and effi-cient algorithms through structured state space duality,” in Proceedings of the International Conference on Machine Learning (ICML) , 2024, pp. 10 041–10 071. [13] L. Zhu, B. Liao, Q. Zhang, X. Wang, W. Liu, and X. Wang, “Vision mamba: Efficient visual representation learning with bidirectional state space model,” in Proceedings of the International Conference on Ma-chine Learning (ICML) , 2024. [14] Y. Liu, Y. Tian, Y. Zhao, H. Yu, L. Xie, Y. Wang, Q. Ye, J. Jiao, and Y. Liu, “Vmamba: Visual state space model,” Advances in Neural In-formation Processing Systems (NeurIPS) , vol. 37, pp. 103 031–103 063, 2024. [15] W. Yu and X. Wang, “Mambaout: Do we really need mamba for vision?” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2025, pp. 4484–4496. [16] A. Hatamizadeh and J. Kautz, “Mambavision: A hybrid mamba-transformer vision backbone,” in Proceedings of the IEEE/CVF Con-ference on Computer Vision and Pattern Recognition (CVPR) , 2025, pp. 25 261–25 270. [17] H. He, J. Zhang, Y. Cai, H. Chen, X. Hu, Z. Gan, Y. Wang, C. Wang, Y. Wu, and L. Xie, “Mobilemamba: Lightweight multi-receptive visual mamba network,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2025, pp. 4497– 4507. [18] T. Huang, X. Pei, S. You, F. Wang, C. Qian, and C. Xu, “Localmamba: Visual state space model with windowed selective scan,” in Proceedings of the European Conference on Computer Vision (ECCV) , 2024, pp. 12– 22. [19] M. M. Rahman, A. A. Tutul, A. Nath, L. Laishram, S. K. Jung, and T. Hammond, “Mamba in vision: A comprehensive survey of techniques and applications,” arXiv preprint arXiv:2410.03105 (arXiv) , 2024. [20] X. Liu, C. Zhang, F. Huang, S. Xia, G. Wang, and L. Zhang, “Vision mamba: A comprehensive survey and taxonomy,” IEEE Transactions on Neural Networks and Learning Systems (TNNLS) , 2025. [21] F. Ibrahim, G. Liu, and G. Wang, “A survey on mamba architecture for vision applications,” arXiv preprint arXiv:2502.07161 (arXiv) , 2025. [22] Y. Cho, C. Lee, S. Kim, and E. Park, “Ptq4vm: Post-training quantization for visual mamba,” in Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV) , 2025, pp. 1176–1185. [23] A. Pierro and S. Abreu, “Mamba-ptq: Outlier channels in recurrent large language models,” arXiv preprint arXiv:2407.12397 (arXiv) , 2024. [24] Z. Xu, Y. Yue, X. Hu, D. Yang, Z. Yuan, Z. Jiang, Z. Chen, Jiangy-ongYu, XUCHEN, and S. Zhou, “Mambaquant: Quantizing the mamba family with variance aligned rotation methods,” in Proceedings of the International Conference on Learning Representations (ICLR) , 2025. [25] H.-Y. Chiang, C.-C. Chang, N. Frumkin, K.-C. Wu, and D. Marculescu, “Quamba: A post-training quantization recipe for selective state space models,” in Proceedings of the International Conference on Learning Representations (ICLR) , 2025. [26] H.-Y. Chiang, C.-C. Chang, N. Frumkin, K.-C. Wu, M. S. Abdelfattah, and D. Marculescu, “Quamba2: A robust and scalable post-training quantization framework for selective state space models,” in Proceedings of the International Conference on Machine Learning (ICML) , 2025. [27] B.-Y. Shi, Y.-C. Lo, A.-Y. Wu, and Y.-M. Tsai, “Post-training quan-tization for vision mamba with k-scaled quantization and reparame-terization,” in Proceedings of the International Workshop on Machine Learning for Signal Processing (MLSP) , 2025, pp. 1–6. [28] J. Deng, S. Li, Z. Wang, K. Xu, H. Gu, and K. Huang, “Vim-vq: Efficient post-training vector quantization for visual mamba,” in Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) ,2025, pp. 24 518–24 527. [29] A. Ramachandran, M. Lee, H. Xu, S. Kundu, and T. Krishna, “Ouro-mamba: A data-free quantization framework for vision mamba,” in 
+
+Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2025, pp. 21 177–21 186. [30] Z. Mo, L. Wang, J. Wei, Z. Zeng, S. Cao, L. Ma, N. Jing, T. Cao, J. Xue, F. Yang et al. , “Lut tensor core: A software-hardware co-design for lut-based low-bit llm inference,” in Proceedings of the International Symposium on Computer Architecture (ISCA) , 2025, pp. 514–528. [31] S. Dai, R. Venkatesan, M. Ren, B. Zimmer, W. Dally, and B. Khailany, “Vs-quant: Per-vector scaled quantization for accurate low-precision neural network inference,” Machine Learning and Systems (MLSys) ,vol. 3, pp. 873–884, 2021. [32] L. Wang, L. Ma, S. Cao, Q. Zhang, J. Xue, Y. Shi, N. Zheng, Z. Miao, F. Yang, T. Cao et al. , “Ladder: Enabling efficient low-precision deep learning computing through hardware-aware tensor transformation,” in 
+
+Proceedings of the USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2024, pp. 307–323. [33] J. Wei, S. Cao, T. Cao, L. Ma, L. Wang, Y. Zhang, and M. Yang, “T-mac: Cpu renaissance via table lookup for low-bit llm deployment on edge,” in Proceedings of the European Conference on Computer Systems (EuroSys) , 2025, pp. 278–292. [34] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao, X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quantiza-tion for on-device llm compression and acceleration,” Machine Learning and Systems (MLSys) , vol. 6, pp. 87–100, 2024. [35] J. Li, S. Huang, J. Xu, J. Liu, L. Ding, N. Xu, and G. Dai, “Marca: Mamba accelerator with reconfigurable architecture,” in Proceedings of the IEEE/ACM International Conference on Computer-Aided Design (ICCAD) , 2024, pp. 1–9. [36] R. Wei, S. Xu, L. Zhong, Z. Yang, Q. Guo, Y. Wang, R. Wang, and M. Li, “Lightmamba: Efficient mamba acceleration on fpga with quantization and hardware co-design,” in Proceedings of the Conference on Design, Automation and Test in Europe (DATE) , 2025, pp. 1–7. [37] K. Zhou, H. Jiao, W. Huang, and Y. Huang, “An efficient fpga-based hardware accelerator of fully quantized mamba-2,” in Proceedings of the IEEE International Symposium on Field-Programmable Custom Computing Machines (FCCM) , 2025, pp. 217–226. [38] D. Yoon, G. Lee, J. Chang, Y. Lee, D. Lee, and M. Rhu, “Mamba-x: An end-to-end vision mamba accelerator for edge computing devices,” in 
+
+Proceedings of the IEEE/ACM International Conference on Computer-Aided Design (ICCAD) , 2025, pp. 1–9. [39] L. Zhong, S. Xu, H. Wen, T. Xie, Q. Guo, Y. Wang, and M. Li, “Specmamba: Accelerating mamba inference on fpga with speculative decoding,” in Proceedings of the IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . IEEE, 2025, pp. 1–9. 
+
+9[40] A. Wang, H. Shao, S. Ma, and Z. Wang, “Fastmamba: A high-speed and efficient mamba accelerator on fpga with accurate quantization,” in 
+
+Proceedings of the IEEE Computer Society Annual Symposium on VLSI (ISVLSI) , vol. 1, 2025, pp. 1–6. [41] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han, “Smoothquant: Accurate and efficient post-training quantization for large language models,” in Proceedings of the International Conference on Machine Learning (ICML) , 2023, pp. 38 087–38 099. [42] M. Li, Y. Lin, Z. Zhang, T. Cai, J. Guo, X. Li, E. Xie, C. Meng, J.-Y. Zhu, and S. Han, “SVDQuant: Absorbing outliers by low-rank com-ponent for 4-bit diffusion models,” in Proceedings of the International Conference on Learning Representations (ICLR) , 2025. [43] S.-E. Chang, Y. Li, M. Sun, R. Shi, H. K.-H. So, X. Qian, Y. Wang, and X. Lin, “Mix and match: A novel fpga-centric deep neural network quantization framework,” in Proceedings of the IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2021, pp. 208–220. [44] H. Shi, X. Cheng, W. Mao, and Z. Wang, “P 2-vit: Power-of-two post-training quantization and acceleration for fully quantized vision trans-former,” IEEE Transactions on Very Large Scale Integration Systems (TVLSI) , 2024. [45] Y. Li, X. Dong, and W. Wang, “Additive powers-of-two quantization: An efficient non-uniform discretization for neural networks,” in Proceedings of the International Conference on Learning Representations (ICLR) ,2020. [46] H. Yao, P. Li, J. Cao, X. Liu, C. Xie, and B. Wang, “Rapq: Rescuing accuracy for power-of-two low-bit post-training quantization,” in Pro-ceedings of the International Joint Conference on Artificial Intelligence (IJCAI) , 2022, pp. 1573–1579. [47] D. Przewlocka-Rus, S. S. Sarwar, H. E. Sumbul, Y. Li, and B. De Salvo, “Power-of-two quantization for low bitwidth and hardware compliant neural networks,” arXiv preprint arXiv:2203.05025 (arXiv) , 2022. [48] Z. Yao, R. Yazdani Aminabadi, M. Zhang, X. Wu, C. Li, and Y. He, “Zeroquant: Efficient and affordable post-training quantization for large-scale transformers,” Advances in Neural Information Processing Systems (NeurIPS) , vol. 35, pp. 27 168–27 183, 2022. [49] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Llm.int8(): 8-bit matrix multiplication for transformers at scale,” Advances in Neural Information Processing Systems (NeurIPS) , vol. 35, pp. 30 318–30 332, 2022. [50] R. Sarkar, H. Liang, Z. Fan, Z. Wang, and C. Hao, “Edge-moe: Memory-efficient multi-task vision transformer architecture with task-level sparsity via mixture-of-experts,” in Proceedings of the IEEE/ACM International Conference on Computer Aided Design (ICCAD) , 2023, pp. 01–09. [51] Y. Umuroglu, N. J. Fraser, G. Gambardella, M. Blott, P. Leong, M. Jahre, and K. Vissers, “Finn: A framework for fast, scalable binarized neural network inference,” in Proceedings of the ACM/SIGDA International Symposium on Field-Programmable Gate Arrays (ISFPGA) , 2017, pp. 65–74. [52] E. Kabir, M. A. Kabir, A. R. Downey, J. D. Bakos, D. Andrews, and M. Huang, “Famous: Flexible accelerator for the attention mechanism of transformer on ultrascale+ fpgas,” in Proceedings of the International Conference on Field Programmable Technology (ICFPT) , 2024, pp. 1–2. [53] G. Li, S. Ye, C. Chen, Y. Wang, F. Yang, T. Cao, C. Liu, M. M. S. Aly, and M. Yang, “Lut-dla: Lookup table as efficient extreme low-bit deep learning accelerator,” in Proceedings of the IEEE International Sym-posium on High Performance Computer Architecture (HPCA) . IEEE, 2025, pp. 671–684. [54] G. Park, H. Kwon, J. Kim, J. Bae, B. Park, D. Lee, and Y. Lee, “Figlut: An energy-efficient accelerator design for fp-int gemm using look-up tables,” in Proceedings of the IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2025, pp. 1098– 1111. [55] G. Park, B. Park, M. Kim, S. Lee, J. Kim, B. Kwon, S. J. Kwon, B. Kim, Y. Lee, and D. Lee, “Lut-gemm: Quantized matrix multiplication based on luts for efficient inference in large-scale generative language models,” in Proceedings of the International Conference on Learning Represen-tations (ICLR) , 2022. [56] G. E. Blelloch, “Prefix sums and their applications,” 1990. 
+
+10

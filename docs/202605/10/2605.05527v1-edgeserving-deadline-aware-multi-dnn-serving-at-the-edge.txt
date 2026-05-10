@@ -1,0 +1,634 @@
+Title: EdgeServing: Deadline-Aware Multi-DNN Serving at the Edge
+
+URL Source: https://arxiv.org/pdf/2605.05527v1
+
+Published Time: Fri, 08 May 2026 00:21:36 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# EdgeServing : Deadline-Aware Multi-DNN Serving at the Edge 
+
+Jiahe Cao ∗, Xiaomeng Li ∗, Qiang Liu ∗, Tao Han †, Ning Zhang ‡, Weisong Shi §∗ University of Nebraska-Lincoln, † New Jersey Institute of Technology,  
+
+> ‡
+
+University of Windsor, § University of Delaware,  
+
+> ∗
+
+{jcao10, xli88, qiang.liu }@nebraska.edu, † tao.han@njit.edu, ‡ ning.zhang@uwindsor.ca, § weisong@udel.edu 
+
+Abstract —As edge computing expands, serving multiple deep neural network (DNN) models on a single shared GPU has be-come a common yet challenging scenario, where each scheduling decision affects the tail latency of all concurrent queues. Existing schedulers rely on local heuristics and fail to capture this global impact, while GPU spatial-sharing approaches sacrifice latency predictability. In this paper, we propose EdgeServing, a deadline-aware multi-DNN serving system for edge devices. EdgeServing adopts time-division GPU sharing with early-exit inference for high inference predictability, and introduces a stability score to quantify how each candidate scheduling decision impacts the future queue status. At runtime, it cohesively selects the model, exit point, and batch size to minimize predicted system-wide SLO impact. Experimental results on multiple hardware platforms show that EdgeServing consistently outperforms representative baselines in both SLO violation ratio and P95 latency, enabled by early-exit mechanism, which expands the scheduling action space under tight latency constraints. 
+
+Index Terms —Multi-DNN Serving, Deadline-Aware Schedul-ing, Edge Computing 
+
+I. I NTRODUCTION 
+
+Deep neural networks (DNNs) are increasingly deployed on edge devices for latency-sensitive tasks such as autonomous driving, augmented reality, and real-time video analytics [1]. Unlike cloud data centers with abundant GPU resources, edge servers typically operate with a single GPU that must serve multiple DNN models concurrently [2], e.g., object detection, lane segmentation, and traffic sign classification. In multi-DNN serving systems, GPU resources can be shared either spatial-division or time-division. Spatial-division sharing (e.g., GPU multi-process service or kernel-level co-location [3], [4]) allows concurrent execution with high re-source utilization. But it introduces unpredictable latency due to blackbox contention for shared caches, memory bandwidth, and compute units in GPUs, which makes it difficult to guarantee tail latency targets. In contrast, time-division sharing (models run in exclusive serial mode) can achieve determin-istic and reproducible inference latency [5]. Consequently, its resource utilization may be degraded when single and batch models cannot saturate the available GPU resources. Extensive prior works have tackled multi-DNN serving problems from a wide range of perspectives. Simple heuristics such as longest-queue-first and round-robin make scheduling decisions based solely on local queue state without consid-ering their system-wide impact [5]. Cloud-oriented serving systems (e.g., Clockwork [5], INFaaS [6]) rely on cross-machine routing or abundant GPU resources to isolate models, which are unavailable on single-GPU edge devices. Moreover, Clockwork proactively rejects requests predicted to miss their service-level objective (SLO) deadlines [5], and Symphony [7] drops requests under overload when its deferred batching cannot keep pace with arrivals. Kernel-level schedulers such as Orion [3] and Paella [4] enable fine-grained spatial-division GPU sharing but target datacenter-class hardware and do not provide the latency predictability required for SLO-aware scheduling at the edge. Overall, multi-DNN serving at the edge remains challenging given diverse hardware platforms, soft-ware runtimes, system architectures, and time-varying traffic. Early-exit mechanisms [8] augment intermediate layers with lightweight exit heads and enable inference to termi-nate before executing the full model. Prior work on early exit has extensively studied the accuracy-latency trade-off, but predominantly in single -model settings [8]–[10]. Existing methods make per-input exit decisions using runtime criteria such as confidence or entropy thresholds [8], [11], [12], prediction consistency across successive classifiers [13], and learned gating policies [14]. Apparate [12] extends early exit to single-model ML serving by releasing sufficiently confident intermediate predictions for latency reduction while allowing execution to continue to the final layer so that the full-model output can be used for continual accuracy monitoring and online adaptation. However, these solutions target workload-level latency service level objectives (SLOs) rather than per-request deadline guarantees, and thus cannot ensure that each inference meets its deadline in multi-DNN serving systems. In this paper, we propose EdgeServing , a deadline-aware multi-DNN inference serving system at the edge. To meet stringent tail latency requirements, EdgeServing adopts time division GPU sharing and dynamically balances throughput, latency, and accuracy through adaptive early exit at runtime. The key insight is that before committing to serve a model, the scheduler will predict the resulting status across all queues, and then select the model whose service causes the least system-wide SLO damage. Specifically, EdgeServing intro-duces a new online scheduler that cohesively determines which service queue to serve, what batch size to use, and which early-exit points to choose at runtime, based on the offline profiling measurements. In particular, we introduce a new stability score in the online scheduler to quantify the overall backlog severity across all queues. By comparing stability scores of each candidate scheduling decision, scheduler evaluates the decisions’ impacts on system and chooses the most stable deci-sion. We evaluate EdgeServing on diverse hardware platforms with multiple DNN models, and experimental results show that EdgeServing consistently outperforms existing scheduling baselines in SLO compliance, tail latency, and scalability across diverse workload configurations. 
+
+> arXiv:2605.05527v1 [cs.DC] 7 May 2026
+
+The main contributions are summarized as  
+
+> •
+
+We propose EdgeServing, a new deadline-aware multi-DNN serving system for edge devices by adopting the time-division GPU sharing approach.  
+
+> •
+
+We design an online scheduler that cohesively optimizes model selection, early-exit point, and batch size at run-time, based on offline profile measurements.  
+
+> •
+
+We design a stability score that evaluates the stability of the current service queues. It enables the scheduler to compare the predictive impact of candidate scheduling decisions.  
+
+> •
+
+We conduct extensive experiments on diverse hardware platforms and multiple DNN models. Results show EdgeServing consistently outperforms existing baselines across diverse workloads and configurations. II. B ACKGROUND AND MOTIVATION 
+
+GPU Resource Sharing. When multiple DNN models must be served on a single GPU, the system faces a fundamental resource sharing challenge. NVIDIA MPS [15] allows multiple processes to submit CUDA kernels concurrently, and shares streaming multiprocessors (SMs) through spatial partitioning. NVIDIA MIG partitions the GPU into dedicated instances with fixed resources, which eliminates contention but may underutilize hardware when request rates are low and bursty, a common scenario in edge serving. When neither MPS nor MIG is available, the GPU driver falls back to time-slicing, which multiplexes processes via context switches between quanta. The resulting overhead varies with the number of co-running processes, their memory footprints, and driver-internal scheduling, and cannot be reliably profiled in advance. 
+
+Early-Exit Mechanism. Standard DNN inference incurs a fixed computational cost because all layers must be executed for every input. Early-exit networks introduce intermediate classifier heads and allow inference to terminate at a selected exit point. This mechanism exposes multiple operating points, where shallower exits provide lower latency but coarser pre-dictions, and deeper exits provide higher accuracy. Most prior studies investigate early exit from the perspective of per-model inference optimization and determine the exit point at runtime 
+
+through input-dependent criteria, rather than how these exit choices interact with queueing dynamics and deadline satis-faction when multiple DNNs share the same GPU. Because the exit decision is coupled to each individual input and chosen at runtime, it is opaque to the system scheduler, which cannot proactively select an exit point to optimize system-wide objectives such as SLO satisfaction across multiple models. 
+
+Challenge 1: Unpredictable Latency Under Concurrent GPU Execution. Concurrent GPU execution generally intro-duces latency variance from SM contention, cache thrashing, and context switching, which makes per-inference latency difficult to predict. Accurate latency prediction is essential for SLO-aware scheduling. Without it, the scheduler cannot reliably determine whether a given model-exit-batch combi-nation will meet the deadline. In this paper, we therefore adopt a time-division sharing strategy, i.e., at any given time, the GPU serves a single model batch in exclusive mode. GPU Runtime Online Scheduler     
+
+> Stability Score
+> Offline Profiler
+> Model Accuracy Latency
+> Early -Exit Batch Size Model
+> Task Deadline
+> SM SM
+> SM SM
+> SM SM
+> DNN Models
+> Early -Exit Points
+> Profiling
+> Inference
+> Decision
+> Service Queue
+> Fig. 1. System overview of EdgeServing.
+
+This ensures deterministic inference latency, which can be accurately characterized through offline profiling. 
+
+Challenge 2: System-Wide Queue Coupling under Time-Division GPU Sharing. Under time-division sharing, when the GPU is allocated to one model, the request queues of all other models continue to accumulate. Existing scheduling policies (e.g., longest-queue-first) that neglect this system-wide coupling can rapidly trigger SLO violations. An early-exit mechanism introduces an additional decision dimension. Selecting a shallower exit point reduces per-request GPU service time, shortens the interval during which other mod-els are blocked, and consequently lowers their accumulated queueing delay. Accordingly, the scheduler should jointly optimize model choice, exit depth, and batch size at each decision round, explicitly accounting for system-wide queue coupling induced by each action. III. S YSTEM OVERVIEW 
+
+In Fig. 1, we show the overall architecture of EdgeServing, which includes service queues, the offline profiler, the online scheduler, and the GPU runtime. 
+
+Service Queue. The system serves M early-exit DNN models on a single GPU. Each model is backed by a dedicated first-in-first-out (FIFO) queue that buffers incoming inference requests. Requests arrive continuously and are enqueued re-gardless of the GPU’s current state. 
+
+Offline Profiler. Before deployment, the offline profiler benchmarks every combination of model, exit point, and batch size on the target GPU. For each combination, it records the percentile inference latency (e.g., P95) over repeated runs. The resulting profile table is loaded into the scheduler’s memory at startup and remains fixed during serving. By running inference in time-division mode during profiling, latency measurements are deterministic and reproducible, and enable the scheduler to make accurate latency predictions at runtime. Details and results of the profiling procedure are presented in Section IV. 
+
+Online Scheduler. The scheduler is the decision-making core of the system which runs on the CPU. At each scheduling step, it inspects the current state of all queues and consults the profile table to evaluate candidate scheduling actions. For each candidate model, it determines the appropriate exit point and batch size, then computes a stability score that predicts the system-wide impact of serving that model on all other queues’ queuing time. The model with the lowest stability score is selected, and a batch of tasks from the corresponding queues is sent to the GPU executor. Comparing to simple heuristics (e.g., longest-queue-first), the scheduler explicitly accounts for cross-model contention before committing to a decision. The algorithmic details are presented in Section V. 
+
+GPU Runtime. The GPU operates in time-division mode, i.e., it processes one batch at a time and is fully occupied for the duration of that inference. We will not dispatch other models to the GPU until the current batch completes. This time-division GPU sharing ensures that actual inference latency matches the profiled values, and enables the scheduler to make reliable predictions. The EdgeServing system operates in two phases: 
+
+Offline Profiling Phase. Before the system goes online, the profiler exhaustively measures inference latency for every model-exit-batch combination on the target GPU. The profile table is generated once per hardware-model configuration and reused across all serving sessions. 
+
+Online Serving Phase. Once deployed, the system enters a continuous serving loop: 1) Scheduling. The scheduler reads the current queue states (queue lengths and per-task queuing time), queries the profile table, and selects the best model-exit-batch com-bination. 2) Execution. The selected batch is dispatched to the GPU, which runs the chosen model at the chosen exit point in time-division mode. During GPU execution, no schedul-ing occurs, but all queues continue to accept newly arriving requests. 3) Completion and Repeating. Once the last batch infer-ence is completed by the GPU executor, the scheduler immediately begins the next round based on the updated queue states. IV. M ODEL SETUP AND OFFLINE PROFILING 
+
+As described in Section III, the offline profiler benchmarks inference latency and accuracy before deployment to provide the scheduler with accurate latency and accuracy estimates. This section first describes the early-exit architecture and the profiling procedure, then interprets the latency and accuracy results across all model, exit point, and batch size. 
+
+A. Early-Exit Architecture 
+
+Without loss of generality, we use the ResNet family (ResNet50, ResNet101, ResNet152) as representative back-bone models in this paper. Note that, EdgeServing is model-agnostic and readily applies to other DNNs that support intermediate exit points (e.g., VGG, DenseNet, MobileNet). Specifically, we augment the standard ResNet architecture with early-exit classifiers to enable flexible latency-accuracy trade-offs at serving time. The ResNet family (ResNet50, ResNet101, ResNet152) follows a common backbone struc-ture: an initial stem (conv1, batch normalization, ReLU, max pooling) followed by four residual stages ( layer1 –layer4 ), each consisting of stacked Bottleneck blocks. We attach a lightweight exit head after each of the first three residual stages ( layer1 , layer2 , layer3 ), yielding three early-exit points in addition to the original network output ( final ), which follows layer4 , global average pooling, and the fully 1 2 3 4 5 6 7 8 9 10                     
+
+> Batch Size
+> 5
+> 10
+> 15
+> 20
+> Average Latency (ms)  layer1
+> layer2
+> layer3
+> final
+> ResNet50
+> ResNet101
+> ResNet152
+> Fig. 2. Profiled average inference latency vs. batch size for all models and exit points on RTX 3080. TABLE I MODEL ACCURACY (%) AT EACH EARLY -EXIT POINT ON CIFAR-100. Model layer1 layer2 layer3 final ResNet50 7.6 12.1 30.8 74.4 ResNet101 7.4 14.5 54.3 77.9 ResNet152 7.3 17.2 47.4 78.0
+
+connected classifier. Each exit head consists of an adaptive average pooling layer followed by a single fully connected layer that maps the stage’s output feature channels to the number of target classes. When inference exits at a given point, only the backbone, included layers and target exit head are executed on the GPU, and the corresponding exit head produces the final classification output. 
+
+B. Profiling Procedure 
+
+EdgeServing conducts an offline latency profile for every com-bination of model m ∈ { ResNet50, ResNet101, ResNet152 },exit point e ∈ { layer1 , layer2 , layer3 , final }, and batch size B ∈ { 1, . . . , 10 }. Let L(m, e, B ) denote the profiled inference latency for configuration (m, e, B ) on the target GPU. For each configuration, we run inference for hundreds of repetitions and record the average latency, form a 120-cell table (3 models × 4 exits × 10 batch sizes) that is loaded into memory at scheduler startup. Profiles remain fixed during serving and re-profiling is only required when the GPU or model changes. We observe that these inference latencies are stable across repeated runs (coefficient of variation < 3% ), which indicates the offline profiles reliably predict runtime inference latency on these platforms. 
+
+C. Profiling Results 
+
+To guide the online scheduler, we first characterize the profiled average latency across models, exits, and batch sizes. Fig. 2 summarizes the results and highlights three trends. First, latency increases with batch size for all models and exits, but the increase is modest at small batches (when GPU cores are underutilized) and becomes more pronounced as the batch approaches GPU capacity. Overall, increasing batch size from 1 to 10 increases average latency by only about 2–
+
+3×, rather than 10 ×. Second, deeper exits incur substantially higher latency. The final exit of ResNet152 is roughly 6– 8× slower than its layer1 exit at the same batch size, which confirms that early-exiting provides a meaningful latency reduction. Third, three ResNet variants show a clear ordering (ResNet50 < ResNet101 < ResNet152) and the gap widens at the final exit, where depth differences are greatest. These profiles feed directly into two components of the scheduler (Section V). For exit-point selection, the scheduler queries the profile to find the deepest exit e∗ satisfying 
+
+wmax + L(m, e, B ) ≤ τ in order to ensure the chosen inference fits within the remaining SLO budget. For stability score, the scheduler uses the same profile to predict how scheduling model m will extend the queuing time of every other queue, thereby accounting for cross-model contention before committing to a decision. 
+
+D. Accuracy 
+
+To better analyze the exit points performance and scheduler trade off on latency and accuracy, we measure accuracy for each model and exit point at the same time. Table I summarizes the accuracy of different models and each exit points. The reported accuracies are obtained under our training configu-ration without extensive hyperparameter tuning (i.e., may not be optimal). Note that, EdgeServing can work with any given accuracy data under different early-exit points without any further modification. V. S CHEDULER DESIGN 
+
+This section formalizes the system model and scheduling problem, then presents the online scheduler. 
+
+A. System Model 
+
+We consider M early-exit DNN models sharing a single GPU, each backed by a FIFO queue Qm. Each model m ∈ M =
+
+{1, . . . , M } has E exit points {e1, e 2, . . . , e E } ordered from shallowest to deepest. The profile table L(m, e, B ) provides the percentile inference latency for model m at exit e with batch size B, obtained through offline profiling (Section IV). The GPU operates in exclusive single-model mode, i.e., it processes one batch at a time, and serving model m at exit 
+
+e with batch size B monopolizes the GPU, during which all other queues wait. At each scheduling round (i.e., when the previous batch inference completes), the scheduler jointly selects the model m, exit point e, and batch size B and dispatch corresponding batch tasks to GPU for inference. 
+
+B. Problem Formulation 
+
+Let wm,i denote the current queuing time of task i at the service queue Qm at the current scheduling time (i.e., time elapsed since its arrival). Assuming task i at model m is served at exit e with batch size B, its total latency is 
+
+Tm,i = wm,i + tm,i , (1) where tm,i is its actual inference latency. A task violates the SLO if Ti > τ , where τ is the latency deadline. Here, over a serving window, we define the aggregated SLO violation ratio as 
+
+V = |{ i : Ti > τ }| /N total , (2) where Ntotal is the total number of completed tasks. The accuracy is directly determined by the exit point e,since earlier exits use shallower sub-networks with lower representational capacity, while the throughput is governed by the model m, the exit point e, and the batch size B, as different models vary in computational complexity and earlier exits reduce the per-inference cost. Our scheduling goal is two-fold: 1) minimize V over the serving horizon and 2) maximize the model throughput and accuracy. The difficulty mainly lies in the coupling of service queues, where each scheduling decision changes all other queue states and also affects all subsequent decisions. Since the future request arrivals are unknown, it is difficult, if not impossible, to derive an exact global optimum. 
+
+C. Proposed Solution 
+
+Here, we introduce the proposed online scheduler to address the aforementioned problem. Fig. 3 shows the workflow of the online scheduler based on a one-step greedy strategy. First, we introduce a new metric ( stability score ) to quantify the stability of all service queues according to the current queue status, e.g., queuing time and total latency requirement of tasks. Second, we evaluate the impact of combinational model-exit-batch decisions and predict the queue status in the next scheduling round. Third, we calculate the stability score based on predictive queue status under candidate decisions and select the decision to minimize the stability score in the next scheduling round. 
+
+Stability Score. To quantify the urgency of a task i (i.e., approaching the task’s deadline) in queue Qm, we use an exponential activation function with normalization as 
+
+f (wm,i ) = min(exp( wm,i /τ − 1) , C ) . (3) Here, we adopt the exponential form because task urgency grows nonlinearly as queuing time approaches the SLO dead-line. A task at w = 0 .9τ has much less remaining slack than one at w = 0 .5τ , and this difference should be reflected super-linearly in the score to incentivize the scheduler to avoid pushing near-deadline tasks further. We use the normalization 
+
+w/τ − 1 because: it equals 0 at w = τ for any SLO threshold, so f (τ ) = exp(0) = 1 and provides a consistent scale across different SLO settings. The clip at C prevents tasks already far beyond the SLO (e.g., w > τ (1 + ln 10) ≈ 3.3τ ) from dom-inating the score. Such tasks have already violated the SLO and cannot be rescued by the current scheduling decision, so capping their weight avoids neglecting the remaining queues. Hence, without loss of generality, we define the stability score for all model queues as the sum of urgency of all tasks among all queues, which is 
+
+S = X
+
+> m∈M
+
+X
+
+> i∈Qm
+
+f (wm,i ) . (4) 
+
+Batch and Exit Selection. To better search the model-exit-batch decision (m, e, B ), the scheduler first loops over all non-empty queues Qm, m ∈ M . Then, for each queue 
+
+Qm, it optimizes batch size B and exit point e to maximize the throughput B/L (m, e, B ) and accuracy, subject to the SLO constraint that no task in the selected batch violates the deadline. We will use the offline profiling measurement to approximate the actual inference latency, under different decisions. First, we observe that, large batch always benefit to throughput in Fig. 2. Hence, we determine the optimal batch size B∗ as 
+
+B∗ = min( |Qm|, B max ), (5) where |Qm| is the current length of the queue Qm and Bmax is Deadline -Aware                                
+
+> Model Selection
+> Queue Status Prediction Batch and Exit Selection
+> Model 1
+> Model m
+> Model M
+> 𝐵 =min (𝑄 𝑚 ,𝐵 𝑚𝑎𝑥 )
+> First Queue
+> Time
+> Exit e
+> Exit e+1
+> 𝜏
+> Queue time
+> Exit 1
+> …
+> Exit 1
+> Exit e
+> Exit E
+> Batch 1 Batch 2 Batch b Batch B
+> Inference
+> time
+> Available
+> time
+> 𝑓 𝑓 𝑓
+> 𝑓 N/A N/A
+> 𝑓 𝑓
+> Model 1
+> Model m
+> Model M
+> 𝐵
+> Queue time+ 𝐿 (𝑚 ,𝑒 ,𝐵 )
+> Ƹ
+> 𝑡
+> 𝑆 𝑚 =𝑆 𝑚 ,𝑒 ,𝐵 =σ𝑓
+> 𝑚 ∗,𝑒 ∗,𝐵 ∗=argmin 𝑆 𝑚 Fig. 3. Scheduler workflow of EdgeServing.
+
+the maximum allowed batch size. Second, we denote wm, max 
+
+as the maximum queue time among all queue times in Qm.Given the optimal batch size B∗, we further formulate the subproblem of determining the early-exit point as 
+
+e∗ = arg max  
+
+> e∈E
+
+e s.t. wm, max + L(m, e, B ∗) ≤ τ. (6) Here, satisfying the constraint wm, max + L(m, e, B ∗) ≤ τ
+
+will guarantee that no task will violate its SLO after the GPU completes the chosen inference. As a result, we can efficiently solve the above problem by linearly searching all the candidate early-exit points. Overall, we can derive the optimal (e∗, B ∗)
+
+for each queue Qm.
+
+Queue Status Prediction. Next, we predict the queue states for the next scheduling round under the assumption that the model queue Qm is selected with optimal early-exit point and batch size (e∗, B ∗). Because future task arrivals are unknown, they are excluded from the prediction. Based on the predicted inference time L(m, e ∗, B ∗), the queuing time w of all tasks is updated as follows.  
+
+> •
+
+In Qm, the B∗ tasks being served are removed from consideration (they will complete).  
+
+> •
+
+For each remaining task in Qm (positions B +1, . . . , |Qm|), if any, their queuing time is increased by 
+
+L(m, e ∗, B ∗). 
+
+> •
+
+For all tasks in other queues Qm′ (m′̸ = m), their queuing time is increased by L(m, e ∗, B ∗), since they cannot be served until the current batch is completed. 
+
+Deadline-Aware Model Selection. With the above predic-tive queue status, we will calculate the stability score for all possible model queues Qm, m ∈ M . Finally, the scheduler selects the optimal model queue by 
+
+m∗ = arg min  
+
+> m∈M
+
+Sm, (7) where Sm is calculated according to Eq. 4. It should be noted the B chosen tasks in Qm are excluded when calculating Sm
+
+because they are removed from queues. Since we derived the optimal early-exit point and batch size (e∗, B ∗) for each model queue, we then obtain the final model-exit-batch decision 
+
+(m∗, e ∗, B ∗).
+
+D. The Algorithm 
+
+We summarize the online scheduling in Algorithm 1. At each round, the scheduler (i) computes the current queuing time of each queued task, (ii) evaluates each non-empty model queue as a candidate by setting B = min( |Qm|, B max ) and selecting the deepest feasible exit e via profile lookup while not violating SLO, and (iii) computes the stability score Sm by 
+
+Algorithm 1 Online Scheduling 
+
+Input: Model set M; FIFO queues {Qm}m∈M ; latency pro-file table L(m, e, B ); SLO deadline τ ; Bmax 
+
+Output: Scheduling decision (m∗, e ∗, B ∗) 
+
+> 1:
+
+Calculate the current queuing time of all tasks wm,i , ∀m, i  
+
+> 2:
+
+for each m ∈ M with |Qm| > 0 do  
+
+> 3:
+
+Sm ← 0 
+
+> 4:
+
+B, e ← BatchExitSelect (m) 
+
+> 5:
+
+QueueStatusP redict (Q) 
+
+> 6:
+
+Sm ← Deadline -AwareM odelSelect (Q) 
+
+> 7:
+
+end for  
+
+> 8:
+
+m∗ ← arg min  
+
+> m:|Qm|>0
+
+Sm 
+
+> 9:
+
+e∗ ← em∗ , B∗ ← Bm∗ 
+
+> 10:
+
+return (m∗, e ∗, B ∗)
+
+summing the activated predicted queuing time of all remaining pending tasks, under the hypothetical choice of the serving model queue m. Finally, it selects the model with the minimum stability score and dispatches the corresponding batch tasks with exit e to GPU. VI. E XPERIMENTAL EVALUATION 
+
+We evaluate the proposed scheduler through a series of experi-ments on several GPU platforms, and compare it with multiple baseline scheduling policies across various configurations. 
+
+A. Experimental Setup 
+
+Hardware and Models. By default, we conduct experiments using an NVIDIA RTX 3080 as the primary evaluation hard-ware. For the cross-platform study in Section VI-G, we addi-tionally deploy the scheduler on a GTX 1650 and an NVIDIA Jetson Orin Nano, and re-collect latency profiles independently on each device. To ensure reproducible latency measurements, GPU core and memory clock frequencies are locked to their maximum allowed values on all platforms before profiling and during experiments. We deploy three early-exit ResNet variants (ResNet50, ResNet101, and ResNet152) trained on CIFAR-100 with early-exit classifiers attached at four points: 
+
+layer1 , layer2 , layer3 , and final .
+
+Traffic Model. We model the arrivals to each service queue as independent Poisson point processes. Request latency is measured in wall-clock time from task arrival to inference completion. Each request randomly selects data from CIFAR-100 test batch. The arrival rates follow the ratio λ50 : λ101 :
+
+λ152 = 3 : 2 : 1 , which reflects the common scenario where lighter models receive heavier traffic. On the RTX 3080, we sweep λ152 from 20 to 240 req/s. Traffic ranges for other platforms are adjusted to match each device’s throughput capacity and are specified in Section VI-G. 
+
+System Parameters. The default SLO threshold is τ =50 ms (RTX 3080 and GTX 1650), while the Jetson experi-ments use τ = 100 ms to reflect its higher inference latency and lower throughput. The scheduler uses the P95 latency from pre-computed latency profiles for exit-point selection. The maximum batch size is 10 per model. Each experiment runs for 20 seconds, excludes the first 100 tasks as warmup. 
+
+Baselines. We compare our scheduler against the following scheduling policies 1: 
+
+> •
+
+All-Final : A non-adaptive full-inference baseline that selects the longest queue (LQF), dequeues up to Bmax =10 tasks, and always executes them at the deepest exit (final ).  
+
+> •
+
+All-Early : A non-adaptive minimum-latency baseline that selects the longest queue (LQF), dequeues up to 
+
+Bmax = 10 tasks, and always executes them at the shallowest exit ( layer1 ).  
+
+> •
+
+Symphony [7]: The current state-of-the-art SLO-aware scheduler, which delays dispatching each model’s batch until the oldest queued request approaches its SLO dead-line, thereby maximizing batch size for throughput but scheduling each model queue independently. 
+
+B. Baseline Comparison 
+
+Fig. 4 reports the P95 total latency (left axis) and SLO violation ratio (right axis) for all schedulers. At low traffic, All-Final and our scheduler achieve similar P95 latency ( ∼28 ms), since EdgeServing can use full-depth inference when sufficient slack is available (Fig. 5). As traffic increases, All-Final degrades sharply beyond λ152 ≈ 140 req/s, because full-network inference can no longer keep up with arrivals, leading to rapid queue buildup and escalating tail latency. In contrast, our scheduler mitigates overload by switching to earlier exits when needed, and keeps P95 latency around 44–46 ms even at 
+
+λ152 ≥ 180 req/s. All-Early achieves the lowest latency ( ∼2– 3 ms) but at very low accuracy (7.4%). Symphony maintains a higher P95 latency of roughly 60 ms and exhibits increasing SLO violations at higher loads, consistent with deferred batch-ing overhead. The violation ratio further confirms these trends that All-Final reaches 15.19% at λ152 = 160 req/s, whereas our scheduler remains below 1% across all tested intensities. Fig. 5 illustrates the adaptive exit-selection behavior. At low traffic intensity, the scheduler mostly chooses the deepest exit, whereas at higher traffic it gradually shifts toward shallower exits to meet tighter latency constraints. This trend confirms that the profile-based policy adapts exit decisions to the available latency budget. 
+
+C. Accuracy and Latency Scalability 
+
+We measure system accuracy as follows. For each completed task we record the exit point used, look up the corresponding per-exit accuracy from Table I, and average over all tasks in the experiment window. This metric reflects the effective                          
+
+> 1Here, other systems like Clockwork [5] and REEF [16] are not included as direct baselines, because they are generally orthogonal to our solution. 20 40 60 80 100 120 140 160 180 200 220 240
+> Traffic Intensity (req/s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> P95 Total Latency (ms)
+> All-Early
+> All-Final
+> Ours
+> Symphony
+> P95 Latency
+> SLO Violation Ratio
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> SLO Violation Ratio
+> Fig. 4. P95 latency and SLO violation ratio vs. traffic intensity for schedulers. 20 40 60 80 100 120 140 160 180 200 220 240
+> Traffic Intensity (req/s)
+> layer1
+> layer2
+> layer3
+> final
+> Avg Early-Exit Depth
+> All-Early
+> All-Final
+> Ours
+> Symphony
+> Fig. 5. Average early-exit depth vs. traffic intensity.
+
+accuracy delivered by the system under a given traffic intensity and scheduling policy and captures the accuracy cost of using shallower exits when the SLO budget is tight. Since inference requests are drawn i.i.d. from the CIFAR-100 test set, the per-exit top-1 accuracy in Table I is an unbiased estimator of the expected accuracy for any individual request at that exit. Thus, the lookup-based average is a statistically reliable proxy for directly measuring per-request prediction quality. Fig. 6 shows the accuracy and P95 latency Pareto curve traced by the scheduler as traffic intensity varies. At λ152 = 20 
+
+req/s, the scheduler achieves 76.75% average accuracy with 27.47 ms P95 latency, with the primarily final exit. As traffic increases to λ152 = 100 req/s, accuracy gracefully degrades to 72.64% while P95 latency rises to 40.24 ms. At high traffic ( λ152 ≥ 180 req/s), the scheduler shifts to shallower exits, with accuracy settling to 60.38% and P95 latency plateauing at 44.46 ms which remains below the 50 ms SLO. This demonstrates that the scheduler smoothly navigates the accuracy and latency trade-off space rather than experiencing abrupt degradation. 
+
+D. Exit Point Configuration 
+
+We study how the choice of available exit points af-fects scheduler performance by testing four configurations: 
+
+layer1+final , layer2+final , layer3+final , and 
+
+all_exits (layer1+layer2+layer3+final ). Fig. 7 shows the results. layer3+final suffers a dramatic in-crease in P95 latency (over 60 ms) and violation ratio at 
+
+λ152 = 200 req/s, because layer3 is not fast enough to rescue tasks approaching the SLO deadline when the queue is deep. layer2+final shows moderate degradation at high traffic, as layer2 provides only a partial latency reduction compared to the final exit. In contrast, layer1+final 
+
+remains stable below 50 ms across all tested traffic intensities, which demonstrates that the availability of a very fast fall-0.55 0.60 0.65 0.70 0.75 
+
+> Average Accuracy
+> 27.5
+> 30.0
+> 32.5
+> 35.0
+> 37.5
+> 40.0
+> 42.5
+> 45.0
+> P95 Latency (ms)
+> =20
+> =40
+> =60
+> =80
+> =100
+> =120
+> =140 =160
+> =180
+> =200 =220
+> =240
+
+Fig. 6. Accuracy vs. P95 latency for the scheduler at different traffic intensities. 40 80 120 160 200  
+
+> Traffic Intensity (req/s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> P95 Total Latency (ms)
+> layer1+final
+> layer2+final
+> layer3+final
+> all exits
+> P95 Latency
+> SLO Violation Ratio
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> SLO Violation Ratio
+
+Fig. 7. Impact of exit point configuration on latency and SLO violation ratio. 
+
+back exit ( layer1 ) is critical for SLO compliance. Notably, 
+
+all_exits performs comparably to layer1+final , and confirms that once a sufficiently shallow exit is available, adding intermediate options provides marginal benefit. 
+
+E. SLO Threshold Sensitivity 
+
+We evaluate the scheduler under six SLO thresholds: 20, 30, 40, 50, 60, and 70 ms. Fig. 8 presents the results. The P95 latency scales proportionally with the SLO thresh-old. With a tight SLO of 20 ms, the scheduler aggressively uses shallow exits and keeps P95 latency at approximately 19 ms even at λ152 = 200 req/s. With a relaxed SLO of 70 ms, the scheduler uses deeper exits and P95 latency reaches 60 ms at high traffic. Notably, the P95 latency remains below the SLO threshold for each configuration at low-to-moderate traffic, which shows effective SLO compliance. The SLO violation ratio (right axis in Fig.8) further confirms the adaptive behavior. This result is consistent with the exit-selection trend shown earlier in Fig.5, in which tighter latency targets drive the scheduler toward shallower exits, whereas looser SLO targets permit more frequent use of deeper exits. Together, these findings indicate that the scheduler adjusts its operating point according to the target SLO. 
+
+F. Model Combination 
+
+We evaluate the scheduler under six different model de-ployment configurations to test its robustness to model het-erogeneity. The configurations range from homogeneous de-ployments (3 ×ResNet50, 3×ResNet101, 3×ResNet152) to heterogeneous combinations. Unlike the baseline experiments where arrival rates follow a 3:2:1 ratio, here all three model queues receive equal traffic ( λ50 : λ101 : λ152 = 1 : 1 : 1 ) so 40 80 120 160 200  
+
+> Traffic Intensity (req/s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> P95 Total Latency (ms)
+> SLO=20.0ms
+> SLO=30.0ms
+> SLO=40.0ms
+> SLO=50.0ms
+> SLO=60.0ms
+> SLO=70.0ms
+> SLO=20.0ms
+> SLO=30.0ms
+> SLO=40.0ms
+> SLO=50.0ms
+> SLO=60.0ms
+> SLO=70.0ms
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> SLO Violation Ratio
+> P95 Latency
+> SLO Violation Ratio
+
+Fig. 8. Impact of SLO threshold on P95 latency and SLO violation ratio. 1×R50 + 1×R101 + 1×R152      
+
+> 1×R101 + 2×R152
+> 2×R101 + 1×R152
+> 3×R152
+> 3×R101
+> 3×R50
+> 1×R50 + 1×R101 + 1×R152
+> 1×R101 + 2×R152
+> 2×R101 + 1×R152
+> 3×R152
+> 3×R101
+> 3×R50
+> 40 80 120 160 200
+> Traffic Intensity (req/s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> P95 Total Latency (ms)
+> P95 Latency
+> SLO Violation Ratio
+> 0.000
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> 0.030
+> SLO Violation Ratio
+
+Fig. 9. Impact of model combination on P95 latency and SLO violation ratio. 
+
+that the effect of model heterogeneity is not confounded by asymmetric load. Fig. 9 shows the results. The 3 ×ResNet50 configuration achieves the lowest P95 latency and near-zero violation ratios, as ResNet50 has the smallest computational cost. The 3 ×ResNet101 configuration shows moderate P95 latency with low violations. In contrast, configurations involving ResNet152 instances exhibit higher latency due to the heavier computational demands. The heterogeneous baseline configuration (1 ×ResNet50 + 1×ResNet101 + 1×ResNet152) achieves competitive per-formance, with P95 latency between 31–42 ms and viola-tion ratios below 0.5% across all tested traffic intensities. These results suggest that the scheduler can accommodate heterogeneous model costs while maintaining good latency performance and low violation rates. This demonstrates that the scheduler effectively balances workload across models of different computational costs by predicting and minimizing cross-model contention. 
+
+G. Cross-Platform Generalization 
+
+To assess the scheduler’s generalizability beyond high-end edge GPUs, we deploy the same algorithm on two additional platforms, a GTX 1650Super and an NVIDIA Jetson Orin Nano. Latency profiles are re-collected on each platform. Fig. 10 shows the accuracy and P95 latency trade-off for all three platforms. As shown in Fig. 10, on the RTX 3080 the scheduler maintains high accuracy (55–77%) with P95 latency well within the 50 ms SLO. On the GTX 1650, higher per-inference latencies shrink the feasible deep-exit region, so the scheduler retreats to shallower exits earlier. At λ152 = 240 req/s accuracy drops to ∼9% because even layer1 cannot keep up with the arrival rate. On the Jetson Orin Nano ( τ = 100 ms), the scheduler achieves ∼75% accuracy at low traffic but degrades to ∼20% as the platform saturates, with P95 latency reaching 77–105 ms. In both weaker platforms, the accuracy drop reflects hardware throughput limits rather than scheduling deficiency and the scheduler correctly selects the best available exit but cannot compensate when GPU capacity is exceeded. Across all three platforms, the scheduler exhibits the same qualitative behavior (deep exits at low traffic, progressive shallowing under load) with no algorithmic modification, only re-collected latency profiles. 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8  
+
+> Average Accuracy
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> P95 Latency (ms)
+> =10
+> =240
+> =20
+> =240
+> =1
+> =50
+> GTX 1650
+> RTX 3080
+> Jetson Orin Nano
+> Fig. 10. Accuracy and latency trade-off under different hardware.
+
+H. Ablation Study: Core Design Components 
+
+To quantify the contribution of each design component, we compare the full scheduler against four ablated variants:  
+
+> •
+
+Early-Exit+LQF : retains profile-based exit selection but replaces deadline-aware model scoring with longest-queue-first (LQF), which always selects the model with the most queued tasks. This isolates the contribution of 
+
+deadline-aware model selection against a simple queue-length heuristic.  
+
+> •
+
+Early-Exit+EDF : retains profile-based exit selection but replaces deadline-aware model scoring with earliest-deadline-first (EDF), which always selects the model whose oldest queued task has the least remaining SLO slack. This isolates the contribution of deadline-aware model selection against a simpler deadline-priority rule.  
+
+> •
+
+All-Final+Deadline-Aware : retains deadline-aware model scoring but disables early exit, always executing at the final exit. This isolates the contribution of 
+
+early-exit adaptation . 
+
+> •
+
+Ours+bs=1 : retains both early exit and deadline-aware scoring but fixes batch size to 1, which disables dynamic batching. It isolates the contribution of dynamic batching .Specifically, Fig. 11 shows P95 latency and SLO violation ratio for all variants. 
+
+Effect of Deadline-Aware Model Selection. At low traffic, all three model-selection strategies (LQF, EDF, stability score) converge to similar choices and perform comparably. As traffic grows, the gap separates at λ152 = 120 req/s, our scheduler achieves 42.22 ms P95 latency versus 44.02 ms for Early-Exit+EDF and 46.01 ms for Early-Exit+LQF. At 
+
+λ152 = 240 req/s, Early-Exit+EDF reaches a 1.89% violation ratio and Early-Exit+LQF reaches 2.99%, while our sched-20 40 60 80 100 120 140 160 180 200 220 240   
+
+> Traffic Intensity (req/s)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> P95 Total Latency (ms)
+> Ours
+> Early-Exit+LQF
+> Early-Exit+EDF
+> All-Final+Deadline-Aware
+> Ours+bs=1
+> P95 Latency
+> SLO Violation Ratio
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> SLO Violation Ratio
+> Fig. 11. P95 latency and SLO violation ratio for ablation study.
+
+uler remains below 1%. Early-Exit+EDF outperforms Early-Exit+LQF because deadline priority avoids the starvation that LQF can cause. However, it still falls short of our scheduler because EDF selects based on individual task urgency without predicting the system-wide impact of serving that model on other queues. The stability score accounts for this cross-model contention and allows the scheduler to avoid decisions that globally degrade queuing time even when no single queue appears urgent. 
+
+Effect of Early-Exit Adaptation. All-Final+Deadline-Aware performs similarly to our scheduler at low traffic, where full-inference latency still fits within the SLO. Similar to All-Final, the gap widens as traffic increases. The inability to reduce per-request inference time causes queue backlogs. Beyond the saturation point, P95 latency and violation ratio rise sharply at λ152 = 120 req/s and explode at λ152 = 160 
+
+req/s. This confirms that early-exit adaptation is the primary mechanism sustaining SLO compliance under load. It also shows deadline-aware scoring alone is insufficient without a fast fallback exit path. 
+
+Effect of Dynamic Batching. Ours+bs=1 incurs higher P95 latency and violation ratios than the full scheduler across all traffic intensities, as single-task execution underutilizes GPU parallelism and reduces throughput. Lower throughput causes queues to deepen faster and makes deadline-aware predictions less effective at preventing SLO violations under high load. Together, all three components are necessary. Early-exit adaptation provides the latency headroom to meet the SLO, deadline-aware model selection minimizes cross-model con-tention, and dynamic batching maximizes GPU utilization to sustain throughput. VII. R ELATED WORK 
+
+A. DNN Inference Serving Systems 
+
+Cloud-oriented serving frameworks such as Clipper [17], Ten-sorFlow Serving [18], and NVIDIA Triton [19] provide dy-namic batching and model management but assume abundant, largely independent GPU resources. Clockwork [5] and IN-FaaS [6] improve predictability and model selection via cross-machine routing, which is unavailable on single-GPU edge devices. At the kernel level, Orion [3] and Paella [4] enable fine-grained spatial GPU sharing through CUDA interception and compiler co-design, but target datacenter-class hardware and operate at a fundamentally different granularity from our request-level scheduling. None of these systems exploit intra-model early exits as a scheduling dimension. 
+
+B. Early-Exit Networks 
+
+Early-exit mechanisms attach auxiliary classifiers at inter-mediate layers, allowing inference to terminate early to trade accuracy for latency. Existing exit criteria fall into three broad categories. (i) Confidence or entropy thresholds: BranchyNet [11] and Shallow-Deep Networks [8] gate each sample by its prediction confidence or entropy, as well as extensions to edge settings and modern architectures [9], [10]. (ii) Prediction consistency: Patience [13] triggers an exit when consecutive internal classifiers produce unchanged predictions. (iii) Learned gating modules: MuE [14] employs a lightweight decision module at each exit for input-adaptive exiting. These works primarily focus on per-request accuracy latency trade-offs under single model scenarios, without addressing system level scheduling when multiple early-exit models share a single accelerator. 
+
+C. SLO-Aware Scheduling 
+
+Prior SLO-aware serving systems aim to meet latency targets via batching and adaptive model configuration. Symphony [7] performs deadline-driven batching to improve throughput un-der latency constraints, while systems such as Proteus [20] and Cocktail [21] adapt model configurations/variants to sat-isfy SLOs. REEF [16] explores GPU scheduling mechanisms (e.g., preemption) for real-time inference. However, these approaches generally treat models in isolation or focus on model-level variant selection, and do not explicitly account for system-wide model contention when multiple model queues share a single GPU, nor do they leverage intra-model early-exit points as a scheduling degree of freedom. VIII. C ONCLUSION 
+
+We presented a new deadline-aware multi-DNN serving sys-tem on edge devices. By cohesively optimizing model se-lection, early-exit point, and batch size at each scheduling round, our proposed system predicts and minimizes system-wide SLO impact, which achieves low violation ratios and robust performance across diverse hardware platforms, traffic conditions, and system configurations. ACKNOWLEDGMENT 
+
+This work is partially supported by the US National Science Foundation under Grant No. 2321699 and No. 2426481. REFERENCES [1] Z. Zhou, X. Chen, E. Li, L. Zeng, K. Luo, and J. Zhang, “Edge intelligence: Paving the last mile of artificial intelligence with edge computing,” Proceedings of the IEEE , vol. 107, no. 8, pp. 1738–1762, 2019. [2] F. Liu, G. Tang, Y. Li, Z. Cai, X. Zhang, and T. Zhou, “A survey on edge computing systems and tools,” Proceedings of the IEEE , vol. 107, no. 8, pp. 1537–1562, 2019. [3] F. Strati, X. Ma, and A. Klimovic, “Orion: Interference-aware, fine-grained gpu sharing for ml applications,” in Proceedings of the Nine-teenth European Conference on Computer Systems , 2024, pp. 1075– 1092. [4] K. K. W. Ng, H. M. Demoulin, and V. Liu, “Paella: Low-latency model serving with software-defined gpu scheduling,” in Proceedings of the 29th Symposium on Operating Systems Principles , ser. SOSP ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 595–610. [Online]. Available: https://doi.org/10.1145/3600006.3613163 [5] A. Gujarati, R. Karimi, S. Alzayat, W. Hao, A. Kaufmann, Y. Vigfusson, and J. Mace, “Serving DNNs like clockwork: Performance predictability from the bottom up,” in 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) .USENIX Association, Nov. 2020, pp. 443–462. [Online]. Available: https://www.usenix.org/conference/osdi20/presentation/gujarati [6] F. Romero, Q. Li, N. J. Yadwadkar, and C. Kozyrakis, “INFaaS: Automated model-less inference serving,” in 2021 USENIX Annual Technical Conference (USENIX ATC 21) .USENIX Association, Jul. 2021, pp. 397–411. [Online]. Available: https://www.usenix.org/conference/atc21/presentation/romero [7] L. Chen, W. Deng, A. Canumalla, Y. Xin, D. Zhuo, M. Philipose, and A. Krishnamurthy, “Symphony: Optimized dnn model serving using deferred batch scheduling,” 2024. [Online]. Available: https://arxiv.org/abs/2308.07470 [8] Y. Kaya, S. Hong, and T. Dumitras, “Shallow-deep networks: Understanding and mitigating network overthinking,” 2019. [Online]. Available: https://arxiv.org/abs/1810.07052 [9] S. Laskaridis, S. I. Venieris, M. Almeida, I. Leontiadis, and N. D. Lane, “Spinn: synergistic progressive inference of neural networks over device and cloud,” in Proceedings of the 26th Annual International Conference on Mobile Computing and Networking , ser. MobiCom ’20. New York, NY, USA: Association for Computing Machinery, 2020. [Online]. Available: https://doi.org/10.1145/3372224.3419194 [10] T. Tambe, C. Hooper, L. Pentecost, T. Jia, E.-Y. Yang, M. Donato, V. Sanh, P. N. Whatmough, A. M. Rush, D. Brooks, and G.-Y. Wei, “Edgebert: Sentence-level energy optimizations for latency-aware multi-task nlp inference,” 2021. [Online]. Available: https://arxiv.org/abs/2011.14203 [11] S. Teerapittayanon, B. McDanel, and H. T. Kung, “Branchynet: Fast inference via early exiting from deep neural networks,” 2017. [Online]. Available: https://arxiv.org/abs/1709.01686 [12] Y. Dai, R. Pan, A. Iyer, K. Li, and R. Netravali, “Apparate: Rethinking early exits to tame latency-throughput tensions in ml serving,” in 
+
+Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles , 2024, pp. 607–623. [13] W. Zhou, C. Xu, T. Ge, J. McAuley, K. Xu, and F. Wei, “Bert loses patience: Fast and robust inference with early exit,” 2020. [Online]. Available: https://arxiv.org/abs/2006.04152 [14] S. Tang, Y. Wang, Z. Kong, T. Zhang, Y. Li, C. Ding, Y. Wang, Y. Liang, and D. Xu, “You need multiple exiting: Dynamic early exiting for accelerating unified vision language model,” 2023. [Online]. Available: https://arxiv.org/abs/2211.11152 [15] NVIDIA, “NVIDIA Multi-Process Service (MPS),” https://docs.nvidia.com/deploy/mps/index.html, 2024. [16] M. Han, R. Chen, W. Shen, H. Zhang, J. Yang, and H. Chen, “Real-time, work-conserving gpu scheduling for concurrent dnn inference,” ACM Trans. Comput. Syst. , vol. 44, no. 1, Nov. 2025. [Online]. Available: https://doi.org/10.1145/3768622 [17] D. Crankshaw, X. Wang, G. Zhou, M. J. Franklin, J. E. Gonzalez, and I. Stoica, “Clipper: A low-latency online prediction serving system,” in 
+
+14th USENIX Symposium on Networked Systems Design and Implemen-tation (NSDI 17) , 2017, pp. 613–627. [18] C. Olston, N. Fiedel, K. Gorovoy, J. Harmsen, L. Lao, F. Li, V. Rajashekhar, S. Ramesh, and J. Soyke, “Tensorflow-serving: Flexible, high-performance ml serving,” 2017. [Online]. Available: https://arxiv.org/abs/1712.06139 [19] NVIDIA, “NVIDIA Triton Inference Server,” https://developer.nvidia.com/triton-inference-server, 2024. [20] S. Ahmad, H. Guan, B. D. Friedman, T. Williams, R. K. Sitaraman, and T. Woo, “Proteus: A high-throughput inference-serving system with accuracy scaling,” in Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2024, pp. 318–334. [21] J. R. Gunasekaran, C. S. Mishra, P. Thinakaran, B. Sharma, M. T. Kandemir, and C. R. Das, “Cocktail: A multidimensional optimization for model serving in cloud,” in 19th USENIX Symposium on Networked Systems Design and Implementation (NSDI 22) . Renton, WA: USENIX Association, Apr. 2022, pp. 1041–1057. [Online]. Available: https://www.usenix.org/conference/nsdi22/presentation/gunasekaran
