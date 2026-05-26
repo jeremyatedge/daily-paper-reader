@@ -1,0 +1,1579 @@
+Title: LLMForge: Multi-Backend Hardware-Aware Neural Architecture Search with Infinite-Head Attention for Edge Language Models
+
+URL Source: https://arxiv.org/pdf/2605.17653v1
+
+Published Time: Tue, 19 May 2026 01:38:39 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# LLMForge: Multi-Backend Hardware-Aware Neural Architecture Search with Infinite-Head Attention for Edge Language Models 
+
+Xinting Jiang 1, Junyi Luo 1, Ruichen Qi 1
+
+Kauna Lei 2, Ben Laurie 3, Gregory Kielian 3, Mehdi Saligane 11Brown University 2University of Michigan 3Google Research 
+
+Abstract 
+
+Sub-billion-parameter Transformer language models are increasingly deployed on edge devices, where the privacy, latency, and operating-cost advantages of on-device inference are constrained by tight memory-bandwidth, energy, and thermal budgets that make architectural choice and accelerator-specific cost central to ef-ficient inference. We present LLMForge , a hardware-aware neural architecture search (NAS) framework whose three composable contributions together make edge-LM architecture search hardware-conditioned, since different substrates im-pose different hardware cost bottlenecks. Infinite-Head Attention (IHA) decou-ples the number of query heads, KV groups, and per-head query/key and value dimensions, expanding the feasible per-layer attention configuration space by 
+
+∼ 400 × over grouped-query attention within our search-space ranges. Forge-Former , an encoder-based surrogate for ranking architectural candidates, outper-forms MLP and random-forest baselines. Forge-DSE , an NSGA-II-based design-space-exploration engine, pairs Forge-Former with a multi-backend hardware cost model spanning GPUs, systolic accelerators, and ring-dataflow edge accelerators. Across four different hardware substrates, the searches converge to visibly dif-ferent architectures whose shapes track each substrate’s cost bottleneck. On the multi-chip ring substrate, our co-search returns three 300M-scale deployment-aware variants on the Pareto front. Each is re-trained on FineWeb-Edu-10BT under matched recipe against SmolLM2-360M and Qwen-0.5B architecture base-lines. The accurate variant has the lowest validation loss 2.798 and competitive benchmark performance with fewer parameters, the energy-optimized variant low-ers energy per token by 40% , and the latency-optimized variant lowers TTFT and TPOT by 43% .
+
+1 Introduction 
+
+Transformer-based language models [29] now power a wide range of edge workloads, from on-device translation [21] to real-time speech recognition [32, 17]. On-device deployment is attractive for privacy, reliability, latency, and operating cost, yet recent mobile-inference studies show that on-device LLM execution is memory-bound and energy-limited under tight thermal budgets [16], a regime in which autoregressive decoding repeatedly incurs expensive weight and KV-cache memory traffic. Post-training compression techniques such as quantization and pruning reduce these costs incrementally but leave the underlying architectural degrees of freedom unexplored. What architectural choices lead to edge efficiency under restrained parameter and resource budgets remains an open question. Heuristic studies have surfaced layer-shape design rules at sub-billion scale, but a systematic study of the joint design space is still limited. Hardware-aware neural archi-tecture search (NAS) for Transformers, surveyed in §2, offers a natural path, yet existing pipelines 
+
+> Preprint.
+> arXiv:2605.17653v1 [cs.LG] 17 May 2026
+
+tend to leave three pieces of the search loop loose. First, the attention parameterizations commonly carried over from prior NAS work fix the per-head dimension and tie key/value capacity, leaving the per-layer attention shape mostly determined by a single head-count choice. Second, the evaluation backend is the search-cost bottleneck, since training each candidate from scratch is computationally expensive. Third, hardware cost is often modeled as a single accelerator class or through coarse proxies such as parameter count or KV-cache size, which can mask the substrate-dependent re-ranking of candidates. We present LLMForge , a hardware-aware NAS framework whose three composable contributions plug into a single NSGA-II [8] loop. 
+
+1. Infinite-Head Attention (IHA). IHA treats the attention shape parameters nh, nkv , dqk , dv as independent per-layer variables, removing the divisibility and Q/K–V coupling constraints of multi-head attention. Under the ranges in Table 3, this expands the feasible attention configuration space from 27 under grouped-query attention to 11 ,250 under IHA, a ∼ 400 × per-layer expansion, as detailed in §3.1. 
+
+2. Forge-Former. Forge-Former is a Transformer-encoder accuracy surrogate that reaches Spear-man ρ = 0 .75 and Kendall τ = 0 .58 on the IHA test split, 1.4 to 2.5× above MLP and random-forest baselines, enabling NSGA-II selection at a fraction of per-candidate train-from-scratch cost, as detailed in §3.2. 
+
+3. Forge-DSE. Forge-DSE is an NSGA-II design-space-exploration engine that pairs Forge-Former with a multi-backend cost model across GPUs, systolic accelerators, and ring-dataflow edge accelerators, and can optionally co-evolve the surrogate during search, as detailed in §3.3. Across four different hardware substrates, Forge-DSE produces substrate-conditioned Pareto fronts that re-shape per-layer width and depth to each substrate’s cost bottleneck. On the rDXE substrate, joint architecture-and-chip co-search returns a deployment-aware family that lowers validation loss, en-ergy per token, and latency below the SmolLM2-360M baseline at fewer parameters. 
+
+2 Related Work 
+
+Heterogeneous edge Transformer architectures. Reducing inference cost at edge scale has mo-tivated design space exploration of edge-scale language model architectures. Within standard at-tention, multi-query attention (MQA) [23] shares a single K/V projection across query heads, and grouped-query attention (GQA) [2] interpolates between MQA and multi-head attention (MHA) through nkv K/V groups. Multi-head latent attention (MLA) [9] instead compresses K/V through a shared low-rank latent, decoupling key/value capacity from the per-head dimension but fixing the latent dimension as a global hyperparameter. Beyond standard attention, Falcon-H1 [35] cou-ples Transformer attention with state-space mixers in a parallel hybrid head, and Jet-Nemotron [12] introduces JetBlock, a linear-attention block with input-conditioned dynamic convolutions and gat-ing, both replacing the attention primitive itself. Composer [1] keeps standard attention and MLP primitives but searches over their per-layer interleaving via Bayesian optimization, discovering non-uniform attention-to-MLP ratios. At the layer-shape level, MobileLLM [18] and OpenELM [19] val-idate that thinner-deeper backbones and progressively allocated widths matter at sub-billion scale. Infinite-Head Attention (IHA) relaxes these MHA constraints, broadening the per-layer attention design space. Our framework pairs IHA with joint search over per-layer parameterization and layer depth. 
+
+Hardware-aware NAS. Hardware-aware NAS for Transformers has been pursued via a range of search methods and hardware-cost models. HAT [30] pairs an evolutionary search over a weight-sharing supernet with per-device latency lookup tables to find Transformer architectures with low device-specific inference latency. TransCODE [28] co-optimizes Transformer architecture and ASIC accelerator design via Bayesian active learning, treating the substrate as part of the search rather than a deployment target. STAR [27] runs an evolutionary search over a hybrid genome but proxies hardware cost with parameter count and KV-cache size in place of analytical cost models. HW-GPT-Bench [24] releases a benchmark of per-device latency and energy surrogates for a fixed GPT-2-style decoder-only architecture space across multiple GPU and CPU targets. LLMForge dif-fers from this line by pairing a broadened per-layer attention search space with a multi-backend 2cost model and an encoder-based accuracy surrogate, producing substrate-conditioned Pareto fronts rather than a single architecture per search. 
+
+3 Method 
+
+LLMForge runs a multi-objective evolutionary search over IHA-parameterized Transformer archi-tectures. Forge-Former predicts each candidate’s validation loss at a fraction of train-from-scratch cost, a pluggable hardware backend reports deployment cost, and an optional surrogate-refinement event keeps Forge-Former aligned with the evolving population. Figure 1 summarizes this pipeline. We detail each in turn: IHA in §3.1, Forge-Former in §3.2, and Forge-DSE in §3.3. 
+
+Figure 1: Forge-DSE pipeline. Top: the four-stage outer loop with co-evolving Forge-Former feed-back. Bottom: zoom of the first three stages, (i) encoding, (ii) offspring generation, and (iii) fitness evaluation. 
+
+Figure 2: Infinite-Head Attention (IHA). nh, nkv , dqk , dv vary independently per layer; head outputs are concatenated and projected back to dmodel .
+
+3.1 Infinite-Head Attention (IHA) 
+
+Multi-head attention couples attention-related shape parameters through two constraints: the divisi-bility constraint dmodel = nh · dh and the Q/K–V coupling dh = dqk = dv . Under tight parameter 3budgets, these constraints are restrictive: increasing the head count forces a smaller per-head capac-ity, entangling head count with expressivity per head, and tying dv to dqk couples value-side and query/key-side capacity even though the output projection back to dmodel does not require it. IHA relaxes both MHA constraints by treating nh, nkv , dqk , and dv as independent per-layer pa-rameters, as shown in Figure 2. The only alignment requirement it preserves is the GQA group-ing condition nkv | nh. Attention is computed over nkv K/V groups, each serving R = nh/n kv 
+
+query heads under the standard grouped-query mapping g : [1 , n h] → [1 , n kv ] given by g(h) = 1 + ⌊(h−1) /R ⌋ [2]. Decoupling these four shape parameters substantially expands the per-layer attention configuration count. Under the example per-layer ranges of Appendix A, the feasible attention configuration count per layer grows from 27 under the GQA divisibility and coupling constraints to 11 ,250 under IHA, an expansion of ∼ 400 ×.
+
+3.2 Forge-Former: Encoder-Based Architecture Surrogate 
+
+Figure 3: Forge-Former architecture Forge-Former is a learned surrogate ˆy : A → R>0
+
+that maps an IHA-parameterized architecture x ∈ A 
+
+to its predicted validation loss. Figure 3 illustrates the Forge-Former architecture. Each architecture x
+
+is encoded as a sequence of L layer tokens, where each token concatenates the layer’s IHA parame-ters. Each scalar field is lifted to Forge-Former’s model dimension by its own linear layer, and the per-layer token embedding is the sum of these per-field vectors plus a learned positional embedding over layer index. Variable depth is handled by padding to L with a per-sequence mask that excludes inac-tive layers from attention and from the pooled rep-resentation. A pre-LN Transformer encoder over the layer-token sequence captures within-layer field interactions through its feedforward sublayers and cross-layer interactions through self-attention, and a masked mean over active tokens feeds a linear re-gression head that outputs ˆy(x).We train Forge-Former end-to-end with an L1 re-gression objective on over 2k random sampled IHA architectures labeled with their validation loss under the protocol of Appendix B. Ranking and regression metrics on the held-out test split are reported in §4, and encoder hyperparameters and the optimizer are listed in Appendix C. 
+
+3.3 Forge-DSE: Multi-Backend Design-Space-Exploration Engine 
+
+Forge-DSE is the multi-objective design-space-exploration engine of LLMForge. It runs an evo-lutionary search loop over IHA-parameterized architectures, with software evaluation by Forge-Former or by training each candidate from scratch, paired with hardware cost from a selected back-end. Using Forge-Former restricts the search to the standard IHA design space of Appendix A that its training corpus covers, while training from scratch supports any IHA design space, including ones shaped around a seed architecture for tight-constraint backends such as the rDXE ring. §3.3.1 de-scribes the search loop and the optional surrogate co-evolution. §3.3.2 describes the three hardware cost backends. 
+
+3.3.1 Search Loop with Co-Evolving Forge-Former 
+
+Forge-DSE evolves populations of IHA-parameterized architectures via custom mutation operators paired with NSGA-II–style non-dominated sorting and crowding-distance survival [8], under the procedure summarized in Figure 1, with full pseudocode in Algorithm 3 of Appendix F.1. Each 4Figure 4: Ring-dataflow co-search pipeline used by Backend C. Left: per-layer resource profile (WMEM, KV$, MACs). Middle: multi-resource balanced packing finds a partition and shared DXE configuration. Right: rDXE simulation engine (ring-execution + single-DXE models) returns TTFT, TPOT, and energy per token. candidate is encoded as a global configuration plus per-layer settings. Parents are selected by binary tournament, recombined via single-point crossover, and mutated via four operators applied sequen-tially: deletion (flips a layer’s gating mask), duplication (copies a preceding layer to reuse partially optimized structure), rotation/reflection (permutes layer order), and numerical perturbation of per-layer parameters. The feasibility repair step of §3.1 is applied to each offspring. If Forge-Former is used, each offspring is evaluated by Forge-Former for predicted validation loss ˆy(x) with MC-dropout uncertainty σ(x) from nmc stochastic forward passes, and by the selected hardware backend for hardware cost. The combined parent–offspring pool undergoes non-dominated-sorting survival with feasibility preference and crowding-distance diversity. When co-evolution is enabled, every K generations the loop fires a surrogate-refinement event that keeps Forge-Former aligned with the evolving population. The event picks informative samples from the current population, real-trains them under the protocol of Appendix B, and fine-tunes Forge-Former from its frozen baseline checkpoint on the accumulated label buffer blended with the original training corpus as experience replay. This co-evolution is intended to correct distribution shift as the search concentrates on regions the static training corpus undersamples. 
+
+3.3.2 Hardware Cost Backends 
+
+Each backend implements the interface HW( x, W) → (energy per token , TTFT , TPOT) , map-ping an IHA architecture x under a fixed prefill +decode workload W to token-level cost. Forge-DSE provides three backends: a measured GPU (Backend A), Timeloop-modeled substrates (Backend B), and a multi-chip ring-dataflow simulator (Backend C). Backends B and C are analytical and share a per-operator pipeline: a workload analyzer decomposes each layer into primitive operators, and a backend-specific mapper returns per-operator latency and energy that are aggregated to token-level metrics. 
+
+Backend A: ZEUS-measured GPU cost. On a local NVIDIA A100, ZEUS [33] measures energy per token, TTFT, and TPOT end-to-end under W, supplying measured cost as the GPU-substrate reference. 
+
+Backend B: Timeloop-modeled substrates. Timeloop [20] maps each primitive operator onto a target accelerator specification. We instantiate four substrates: a Gemmini-style systolic array [11], an Eyeriss-style row-stationary dataflow [5], a FLAT-style fused-attention dataflow [15] and a single-chip decoder-execution (DXE) accelerator [25] which serves as the per-chip building block of the ring backend below. 
+
+Backend C: Ring-dataflow edge accelerator. Backend C realizes the rDXE design of concurrent silicon-validated work [25], extending the single-chip DXE substrate of Backend B to a ring of multiple DXE chips that pipeline tokens across stages with stationary weights. The backend exposes a three-stage co-search pipeline (Figure 4). (i) Each IHA layer is profiled for weight-memory, on-chip KV-cache, and MAC count. (ii) For each chip configuration in the swept chip-template grid of Appendix E.3, a balanced packing routine assigns layers contiguously to ring stages, combining the greedy contiguous partition algorithm described in Appendix 2 with a binary search over a scalar per-5Table 1: Surrogate accuracy on held-out test splits, mean ± std across 5 random seeds. MLP is HW-GPT-Bench’s Net baseline [24] (one-hot encoded on gpt_l , retrained on IHA fields); RF is a random forest fit on the same train rows. MAE@5% is mean absolute error restricted to the true top-5% of test (Pareto fidelity); k@X% is the smallest k such that the predicted top-k contains all true-top-X%. Best per row in bold .
+
+IHA ( ntest =411 ) HW-GPT-Bench gpt_l (ntest =3000 )
+
+Forge-Former MLP RF Forge-Former MLP 
+
+MAE 0.213 ± 0.011 0.483 ± 0.025 0.424 ± 0.024 0.064 ± 0.007 0.042 ± 0.025 
+
+MAE@5% 0.057 ± 0.020 0.268 ± 0.044 0.255 ± 0.019 0.027 ± 0.015 0.038 ± 0.018 
+
+Spearman ρ 0.754 ± 0.022 0.345 ± 0.019 0.538 ± 0.026 0.998 ± 0.001 0.999 ± 0.000 
+
+Kendall τ 0.582 ± 0.016 0.235 ± 0.015 0.378 ± 0.021 0.966 ± 0.010 0.980 ± 0.004 
+
+k@1% 96 .8 ± 32 .0 198 .2 ± 86 .3 131 .8 ± 23 .4 54 .4 ± 30 .0 50 .2 ± 11 .8
+
+k@5% 261 .8 ± 80 .2 360 .6 ± 41 .2 348 .4 ± 50 .1 221 .8 ± 27 .8 302 .2 ± 86 .4kNN MAE = 0.420       
+
+> (a) Raw features
+> kNN MAE =0.442
+> (b) RF proximity
+> kNN MAE =0.457
+> (c) MLP penultimate
+> kNN MAE =0.218
+> (d) Forge-Former (ours)
+> 3.0
+> 3.5
+> 4.0
+> 4.5
+> 5.0
+> val_loss
+
+Figure 5: t-SNE projections of held-out architecture embeddings, colored by validation loss. Each panel reports kNN val-loss MAE; lower values indicate that geometric proximity better reflects performance similarity. stage decode-ops budget that minimises the longest-stage decode latency. (iii) An rDXE simulation engine composes a ring-execution and a single-DXE model to return energy per token, TTFT, and TPOT. All three metrics serve as Backend-C search objectives and are reported for Pareto-front architectures in §4. The full substrate specification is detailed in Tao et al. [25]. 
+
+4 Results and Analysis 
+
+We conducted two sets of LLMForge experiments. First, Forge-Former drives the search across four hardware substrates, reported in §4.2. Second, every candidate is trained from scratch and the search co-optimises architecture together with the rDXE ring chip configuration, reported in §4.3. One is seeded from SmolLM2-135M for the ∼100M tier and the other one is from SmolLM2-360M for the 
+
+∼300M tier. Forge-Former validation appears in §4.1, with a search-recipe ablation in §4.2. 
+
+4.1 Forge-Former Validation 
+
+We validate Forge-Former on HW-GPT-Bench’s released dataset [24], which tests the recipe at parity with their Net surrogate on a fixed decoder-only space, and on our IHA dataset (over 2k pairs labeled under Appendix B). Primary metrics are ranking fidelity (Kendall-τ , Spearman-ρ) and top-X%recovery ( k@X%); MAE is reported for completeness. On HW-GPT-Bench’s gpt_l split, Forge-Former ties the Net baseline on global rank correlation while leading on MAE@5% and k@5%. On the IHA dataset, Forge-Former leads on every metric, reaching Spearman ρ = 0 .75 and Kendall τ = 0 .58 , and lowering MAE@5% by ∼ 5× relative to both baselines (Table 1). The encoder’s inter-layer self-attention gives Forge-Former an inductive bias for cross-layer interactions that a flat MLP on concatenated fields lacks. In the t-SNE analysis shown in Figure 5, the Forge-Former yields the lowest kNN MAE of 0.218 and pulls the high-loss tail into a tight cluster rather than diffusing it through the embedding. 6400 600 800 1000 1200 1400                           
+
+> E/tok (mJ)
+> 2.50
+> 2.55
+> 2.60
+> 2.65
+> 2.70
+> 2.75
+> 2.80
+> Validation loss
+> A100 (ZEUS)
+> TPOT (ms)
+> 4.9 14.1 23.2
+> SmolLM2-135M
+> val -7%
+> Etok -63%
+> TTFT -59%
+> TPOT -63%
+> 12
+> 18
+> 24
+> 30
+> TTFT (ms)
+> 12345
+> E/tok (mJ)
+> 2.50
+> 2.55
+> 2.60
+> 2.65
+> 2.70
+> 2.75
+> 2.80
+> Validation loss
+> Gemmini
+> TPOT (ms)
+> 8.9 21.0 33.2
+> SmolLM2-135M
+> val -7%
+> Etok -16%
+> TTFT -24%
+> TPOT -16%
+> 30
+> 40
+> 50
+> 60
+> TTFT (ms)
+> 1.0 1.5 2.0 2.5 3.0 3.5
+> E/tok (mJ)
+> 2.50
+> 2.55
+> 2.60
+> 2.65
+> 2.70
+> 2.75
+> 2.80
+> Validation loss
+> Eyeriss
+> TPOT (ms)
+> 8.7 17.7 26.6
+> SmolLM2-135M
+> val -7%
+> Etok -22%
+> TTFT -21%
+> TPOT -22%
+> 80
+> 120
+> 160
+> TTFT (ms)
+> 1.0 1.5 2.0 2.5 3.0 3.5
+> E/tok (mJ)
+> 2.50
+> 2.55
+> 2.60
+> 2.65
+> 2.70
+> 2.75
+> 2.80
+> Validation loss
+> FLAT
+> TPOT (ms)
+> 1.2 2.5 3.8
+> SmolLM2-135M
+> val -5%
+> Etok -41%
+> TTFT -32%
+> TPOT -41%
+> 6
+> 9
+> 12
+> 15
+> TTFT (ms)
+
+Figure 6: Pareto fronts on the four Forge-Former-driven substrates. Each panel shows the archi-tectures that lie on the Pareto front of the four search objectives. Marker colour encodes TTFT, marker size encodes TPOT, and the open star marks the SmolLM2-135M baseline measured on each substrate. The full search scatter plots, including all generations and the surrogate co-evolution trajectories, are shown in Appendix D. 
+
+4.2 Surrogate-Driven Multi-Backend Search 
+
+This subsection covers the four Forge-Former-driven searches over the standard IHA design space. Each search runs NSGA-II with Forge-Former and periodic surrogate refinement on one substrate from §3.3.2, namely the ZEUS-measured A100 GPU and the three Timeloop-modeled systolic sub-strates Gemmini, Eyeriss, and FLAT. Figure 6 highlights one Pareto-front pick per substrate that strictly dominates the SmolLM2-135M anchor on all four objectives. Across the four substrates, reductions vs the anchor range from 5% 
+
+to 7% on validation loss, 16% to 63% on energy per token, 21% to 59% on TTFT, and 16% to 
+
+63% on TPOT. Per-substrate breakdowns appear in Appendix D and per-layer pick configurations in Appendix G.2. 0 8 16 24 32 40 
+
+NSGA-II generation 
+
+0.80 
+
+0.88 
+
+0.96 
+
+1.04 
+
+> Hypervolume (mean  ±1  )
+
+NSGA + IHA 
+
+Random + IHA 
+
+NSGA + GQA 
+
+Figure 7: Search-recipe ablation. Hyper-volume in (val. loss , model size ) vs gener-ation, mean ±1σ over seeds. 
+
+Substrate-conditioned architectural fingerprints. 
+
+As shown in Figure 8, the four substrates pull NSGA-II toward visibly different architectures, and the di-vergences track each substrate’s hardware bottleneck. ZEUS on the A100 has bandwidth-rich memory and dense GEMM units, so per-layer cost is nearly uni-form, and the search responds with flat MLP width and the widest attention heads of the four. Eyeriss and Gemmini are spatial dataflows whose decode cost is dominated by KV-cache reads, which scale linearly with depth, nkv , and dv . The search responds by collapsing nkv into aggressive grouped-query atten-tion and compensating with wider MLP capacity, since MLP weights are reusable across tokens while KV must be reloaded per token. FLAT is flexible enough to shrink every dimension evenly, producing the smallest model with shallow depth and narrow heads. Although individual architectures across substrates can land at similar parameter counts, the depth profiles of the four substrates differ in shape. Hardware-aware co-search therefore reshapes the per-layer width and depth profile, not just the total parameter count. 
+
+Search-recipe ablation. We isolate the contribution of each recipe ingredient by varying one at a time (Figure 7). NSGA + IHA is the recipe of §4.2, Random + IHA replaces NSGA-II’s directed offspring with uniform sampling, and NSGA + GQA restricts the search to the GQA-feasible subset of IHA. NSGA + IHA reaches a final hypervolume of 1.05 against 0.97 for Random + IHA and 1.02 
+
+for NSGA + GQA, isolating 0.08 of lift from directed search and 0.03 from IHA’s expansion beyond GQA. 
+
+4.3 rDXE Co-Search and Scaled Validation 
+
+Figure 9 shows the joint architecture-and-chip Pareto fronts at both seed scales. We retrain five Pareto-front picks, two at ∼100M and three at ∼300M, on FineWeb-Edu-10BT [22] for 13 .1Btokens under a recipe matched to architecture-matched re-trainings of SmolLM2-135M, Pythia-70.00 0.25 0.50 0.75 1.00 
+
+relative depth ℓ/L
+
+> 5
+> 10
+> 15
+
+nh    
+
+> 0.00 0.25 0.50 0.75 1.00
+
+relative depth ℓ/L
+
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+
+nkv     
+
+> 0.00 0.25 0.50 0.75 1.00
+
+relative depth ℓ/L
+
+> 100
+> 200
+> 300
+> 400
+
+dqk     
+
+> 0.00 0.25 0.50 0.75 1.00
+
+relative depth ℓ/L
+
+> 100
+> 200
+> 300
+> 400
+> 500
+
+dv    
+
+> 0.00 0.25 0.50 0.75 1.00
+
+relative depth ℓ/L
+
+> 1000
+> 2000
+> 3000
+> 4000
+
+dmlp            
+
+> ZEUS / GPU (ntop = 50 )Gemmini / systolic (ntop = 50 )Eyeriss / row-stat (ntop = 50 )FLAT / fused (ntop = 50 )
+
+Figure 8: Layer-wise architectural fingerprints of the top-50 non-dominated architectures per sub-strate. Solid lines are per-grid means across the 50-architecture pool, and shaded bands cover ±1
+
+standard deviation across the pool. Active-layer field values are interpolated onto a common relative-depth grid, and layers whose attention variant is identity are masked from the attention-related fields. 20 40 60          
+
+> E/tok ( J)
+> 2.82
+> 2.88
+> 2.94
+> 3.00
+> Validation loss
+> 1234
+> TTFT (ms)
+> 2.82
+> 2.88
+> 2.94
+> 3.00
+> Validation loss
+> 123
+> TPOT (ms)
+> 2.82
+> 2.88
+> 2.94
+> 3.00
+> Validation loss
+> 0
+> 10
+> 20
+> 30
+> 40
+> Generation
+> 2.80 2.88 2.96
+> Validation loss
+> 0.8
+> 1.6
+> 2.4
+> 3.2
+> 4.0
+> TTFT (ms)
+> Final Pareto Front
+> E/tok ( J)
+> 10.9
+> 18.7
+> 26.6
+> SmolLM2-135M
+> 0.40
+> 0.48
+> 0.56
+> TPOT (ms)
+
+(a) rDXE seeded with SmolLM2-135M. 60 90 120 150           
+
+> E/tok ( J)
+> 2.64
+> 2.72
+> 2.80
+> 2.88
+> Validation loss
+> 1.5 3.0 4.5 6.0
+> TTFT (ms)
+> 2.64
+> 2.72
+> 2.80
+> 2.88
+> Validation loss
+> 1.5 3.0 4.5
+> TPOT (ms)
+> 2.64
+> 2.72
+> 2.80
+> 2.88
+> Validation loss
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> Generation
+> 2.64 2.72 2.80 2.88
+> Validation loss
+> 1.5
+> 3.0
+> 4.5
+> 6.0
+> TTFT (ms)
+> Final Pareto Front
+> E/tok ( J)
+> 42.5
+> 80.4
+> 118
+> SmolLM2-360M
+> 1.5
+> 3.0
+> 4.5
+> TPOT (ms)
+
+(b) rDXE seeded with SmolLM2-360M. 
+
+Figure 9: rDXE multi-chip ring substrate, NSGA-II evaluation with training from scratch at two seed scales. Energies are reported in μJ. In the upper panel, TTFT is on the y-axis and TPOT in fill colour to surface the prefill-dominated regime at the smaller scale. Otherwise the layout matches the substrate panels of Appendix D. 160M, SmolLM2-360M, and Qwen-0.5B [26], with each model evaluated on its co-searched chip configuration (Table 2, per-pick details in Appendix G.2). Table 2: Scaled-training validation on FineWeb-Edu-10BT [22] ( 13 .1B tokens). All models were pretrained from scratch under an identical recipe. ARC-Easy and ARC-Challenge [7], BoolQ [6], HellaSwag [34], and SciQ [31] are zero-shot. Hardware metrics, energy per token ( Etok ), time-to-first-token (TTFT), and time-per-output-token (TPOT) are evaluated on the rDXE multi-chip ring substrate at prefill 256 / decode 256. Best per metric per tier in bold .
+
+SW eval HW eval 
+
+Tier Model Params (M) val_loss ↓ ARC-E ↑ ARC-C ↑ BoolQ ↑ HS ↑ SciQ ↑ Etok (μJ) ↓ TTFT (ms) ↓ TPOT (ms) ↓∼100M SmolLM2-135M 135 3.010 40.00 27.76 58.81 31.32 68.90 56.6 4.00 3.21 Pythia-160M 160 3.044 37.02 23.41 56.06 29.99 69.70 55.4 2.68 1.70 
+
+LLMForge-Acc-123M 123 3.003 40.18 23.08 57.13 31.43 68.20 17.9 1.24 0.48 
+
+LLMForge-Compact-106M 106 3.037 38.95 23.41 47.65 30.34 70.70 14.3 1.13 0.38 
+
+∼300M SmolLM2-360M 362 2.831 43.86 28.43 61.13 36.22 72.10 143.0 6.71 5.65 Qwen-0.5B 402 2.821 41.93 25.75 54.95 36.37 71.60 135.6 7.07 4.08 
+
+LLMForge-Acc-347M 347 2.798 41.75 26.76 57.43 36.95 74.70 124.8 6.40 5.46 
+
+LLMForge-Eco-294M 294 2.833 43.51 28.43 56.79 36.33 71.10 84.9 5.38 4.74 
+
+LLMForge-Fast-365M 365 3.162 40.88 27.42 60.92 36.50 71.90 149.6 3.80 3.22 
+
+In the ∼100M tier, LLMForge-Acc-123M tops both baselines on validation loss and HellaSwag at fewer parameters and ∼ 3× lower rDXE energy per token, while LLMForge-Compact-106M trades 0.034 in validation loss for ∼ 4× lower energy and the lowest TTFT and TPOT in the tier. In the ∼300M tier, LLMForge-Acc-347M reaches the lowest validation loss and highest HellaSwag 8and SciQ at fewer parameters than SmolLM2-360M and Qwen-0.5B, with energy per token 13% be-low SmolLM2-360M. LLMForge-Eco-294M and LLMForge-Fast-365M trade validation-loss head-room for 40% lower energy and 43% lower TTFT and TPOT respectively against the same anchor. SmolLM2 baselines retain leads on ARC-Challenge and BoolQ at both scales, the multi-choice question-answering cluster where canonical baselines tend to hold their ground. Together, the LLM-Forge picks form a deployment-aware set of architecture-and-chip configuration pairs rather than a single best model. 
+
+5 Conclusion 
+
+We presented LLMForge, a hardware-aware NAS framework for edge Transformer language mod-els that composes three contributions into a single NSGA-II loop. Infinite-Head Attention (IHA) treats head count, KV groups, and query/key and value dimensions as independent per-layer vari-ables, broadening the per-layer attention design space by ∼ 400 × over grouped-query attention under the ranges of Table 3. Forge-Former is an encoder-based accuracy surrogate that ranks IHA candidates with notably higher rank-correlation fidelity than flat MLP and tree-based baselines. Forge-DSE plugs Forge-Former into a multi-backend cost model spanning a ZEUS-measured A100 GPU, Timeloop-modeled Gemmini, Eyeriss, and FLAT systolic accelerators, and a multi-chip ring-dataflow rDXE accelerator [25], with optional surrogate co-evolution during search. On GPU, Gemmini, Eyeriss, and FLAT substrates, Forge-DSE converges to distinct Pareto-front ar-chitectures that consistently outperform the SmolLM2-135M baseline, with Pareto-front shapes that reflect each substrate’s specific cost bottleneck. On the multi-chip ring substrate, our co-search identifies three deployment-aware 300M-scale Pareto variants, each retrained on FineWeb-Edu-10BT under a matched recipe against SmolLM2-360M and Qwen-0.5B architecture baselines: an accuracy-oriented variant with the lowest validation loss of 2.798 and competitive benchmark per-formance using fewer parameters, an energy-optimized variant that reduces energy per token by 
+
+40% , and a latency-optimized variant that reduces TTFT and TPOT by 43% .
+
+Limitations. Forge-Former is trained on the IHA design space of Appendix A and reliably ranks only architectures within that support. Predictions for designs outside the training corpus, such as alternative attention primitives or shape ranges beyond Table 3, would require retraining the surro-gate on a matching labeled set. All searches reported here target sub-billion-parameter architectures at ≤ 500 M, where per-architecture pretraining is tractable within our compute budget. Extending the recipe to billion-parameter scale is the natural next step, with the main hurdle being the cost of producing a Forge-Former training corpus at that scale. 9References 
+
+[1] Bilge Acun, Prasoon Sinha, Newsha Ardalani, Sangmin Bae, Alicia Golden, Chien-Yu Lin, Meghana Madhyastha, Fei Sun, Neeraja J. Yadwadkar, and Carole-Jean Wu. Composer: A search framework for hybrid neural architecture design. arXiv preprint arXiv:2510.00379 ,2025. URL https://arxiv.org/abs/2510.00379 .[2] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Lan-guage Processing , 2023. URL https://arxiv.org/abs/2305.13245 .[3] Loubna Ben Allal, Anton Lozhkov, Elie Bakouch, Gabriel Martín Blázquez, Guilherme Penedo, Lewis Tunstall, Andrés Marafioti, Hynek Kydlíˇ cek, Agustín Piqueres Lajarín, Vaib-hav Srivastav, Joshua Lochner, Caleb Fahlgren, Xuan-Son Nguyen, Clémentine Fourrier, Ben Burtenshaw, Hugo Larcher, Haojun Zhao, Cyril Zakka, Mathieu Morlon, Colin Raffel, Le-andro von Werra, and Thomas Wolf. Smollm2: When smol goes big – data-centric train-ing of a small language model. arXiv preprint arXiv:2502.02737 , 2025. URL https: //arxiv.org/abs/2502.02737 .[4] Stella Biderman, Hailey Schoelkopf, Quentin Anthony, Herbie Bradley, Kyle O’Brien, Eric Hallahan, Mohammad Aflah Khan, Shivanshu Purohit, USVSN Sai Prashanth, Edward Raff, Aviya Skowron, Lintang Sutawika, and Oskar van der Wal. Pythia: A suite for analyzing large language models across training and scaling. In Proceedings of the 40th International Conference on Machine Learning (ICML) , 2023. URL https://arxiv.org/abs/2304. 01373 .[5] Yu-Hsin Chen, Tien-Ju Yang, Joel Emer, and Vivienne Sze. Eyeriss v2: A flexible accelerator for emerging deep neural networks on mobile devices. IEEE Journal on Emerging and Selected Topics in Circuits and Systems , 9(2):292–308, 2019. URL https://arxiv.org/abs/1807. 07928 .[6] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. BoolQ: Exploring the surprising difficulty of natural yes/no questions. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics (NAACL-HLT) , 2019. URL https://arxiv.org/abs/1905. 10044 .[7] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 , 2018. URL https://arxiv.org/abs/1803. 05457 .[8] K. Deb, A. Pratap, S. Agarwal, and T. Meyarivan. A fast and elitist multiobjective genetic algorithm: Nsga-ii. IEEE Transactions on Evolutionary Computation , 6(2):182–197, 2002. doi: 10.1109/4235.996017. [9] DeepSeek-AI, Aixin Liu, Bei Feng, Bin Wang, et al. DeepSeek-V2: A strong, economical, and efficient mixture-of-experts language model. arXiv preprint arXiv:2405.04434 , 2024. URL 
+
+https://arxiv.org/abs/2405.04434 .[10] Leo Gao, Stella Biderman, Sid Black, Laurence Golding, Travis Hoppe, Charles Foster, Jason Phang, Horace He, Anish Thite, Noa Nabeshima, Shawn Presser, and Connor Leahy. The pile: An 800gb dataset of diverse text for language modeling. arXiv preprint arXiv:2101.00027 ,2020. URL https://arxiv.org/abs/2101.00027 .[11] Hasan Genc, Seah Kim, Alon Amid, Ameer Haj-Ali, Vighnesh Iyer, Pranav Prakash, Jerry Zhao, Daniel Grubb, Harrison Liew, Howard Mao, Albert Ou, Colin Schmidt, Samuel Steffl, John Wright, Ion Stoica, Jonathan Ragan-Kelley, Krste Asanovic, Borivoje Nikolic, and Yakun Sophia Shao. Gemmini: Enabling systematic deep-learning architecture evaluation via full-stack integration. In Proceedings of the 58th ACM/IEEE Design Automation Con-ference (DAC) , 2021. doi: 10.1109/DAC18074.2021.9586236. URL https://arxiv.org/ abs/1911.09925 .10 [12] Yuxian Gu, Qinghao Hu, Shang Yang, Haocheng Xi, Junyu Chen, Song Han, and Han Cai. Jet-nemotron: Efficient language model with post neural architecture search. arXiv preprint arXiv:2508.15884 , 2025. URL https://arxiv.org/abs/2508.15884 .[13] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katherine Millican, George van den Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich Elsen, Jack W. Rae, Oriol Vinyals, and Laurent Sifre. An empirical analysis of compute-optimal large language model train-ing. In Advances in Neural Information Processing Systems 35 (NeurIPS) , 2022. URL 
+
+https://arxiv.org/abs/2203.15556 .[14] Jean Kaddour. The minipile challenge for data-efficient language models. arXiv preprint arXiv:2304.08442 , 2023. URL https://arxiv.org/abs/2304.08442 .[15] Sheng-Chun Kao, Suvinay Subramanian, Gaurav Agrawal, Amir Yazdanbakhsh, and Tushar Krishna. FLAT: An optimized dataflow for mitigating attention bottlenecks. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , pages 295–310, 2023. doi: 10.1145/3575693.3575747. [16] Stefanos Laskaridis, Kleomenis Katevas, Lorenzo Minto, and Hamed Haddadi. MELTing point: Mobile evaluation of language transformers. In Proceedings of the 30th Annual Inter-national Conference on Mobile Computing and Networking (MobiCom) , pages 890–907, 2024. doi: 10.1145/3636534.3690668. [17] Siddique Latif, Aun Zaidi, Heriberto Cuayahuitl, Fahad Shamshad, Moazzam Shoukat, and Junaid Qadir. Transformers in speech processing: A survey. arXiv preprint arXiv:2303.11607 ,2023. [18] Zechun Liu, Changsheng Zhao, Forrest Iandola, Chen Lai, Yuandong Tian, Igor Fedorov, Yun-yang Xiong, Ernie Chang, Yangyang Shi, Raghuraman Krishnamoorthi, Liangzhen Lai, and Vikas Chandra. Mobilellm: Optimizing sub-billion parameter language models for on-device use cases. In Proceedings of the 41st International Conference on Machine Learning (ICML) ,2024. URL https://arxiv.org/abs/2402.14905 .[19] Sachin Mehta, Mohammad Hossein Sekhavat, Qingqing Cao, Maxwell Horton, Yanzi Jin, Chenfan Sun, Iman Mirzadeh, Mahyar Najibi, Dmitry Belenko, Peter Zatloukal, and Moham-mad Rastegari. Openelm: An efficient language model family with open training and inference framework. arXiv preprint arXiv:2404.14619 , 2024. URL https://arxiv.org/abs/2404. 14619 .[20] Angshuman Parashar, Priyanka Raina, Yakun Sophia Shao, Yu-Hsin Chen, Victor A. Ying, Anurag Mukkara, Rangharajan Venkatesan, Brucek Khailany, Stephen W. Keckler, and Joel Emer. Timeloop: A systematic approach to dnn accelerator evaluation. In 2019 IEEE Interna-tional Symposium on Performance Analysis of Systems and Software (ISPASS) , pages 304–315, 2019. doi: 10.1109/ISPASS.2019.00042. [21] Hishan Parry, Lei Xun, Amin Sabet, Jia Bi, Jonathon S. Hare, and Geoff V. Merrett. Dynamic transformer for efficient machine translation on embedded devices. In Proceedings of the 2021 ACM/IEEE Workshop on Machine Learning for CAD (MLCAD) , pages 1–6, 2021. doi: 10.1109/MLCAD52597.2021.9531281. [22] Guilherme Penedo, Hynek Kydlíˇ cek, Loubna Ben Allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The fineweb datasets: Decanting the web for the finest text data at scale. In Advances in Neural Information Processing Systems 37 (Datasets and Benchmarks Track) , 2024. URL https://arxiv.org/abs/2406.17557 .[23] Noam Shazeer. Fast transformer decoding: One write-head is all you need. arXiv preprint arXiv:1911.02150 , 2019. URL https://arxiv.org/abs/1911.02150 .[24] Rhea Sanjay Sukthanker, Arber Zela, Benedikt Staffler, Aaron Klein, Lennart Purucker, Joerg K. H. Franke, and Frank Hutter. Hw-gpt-bench: Hardware-aware architecture benchmark for language models. In Advances in Neural Information Processing Systems 37 (Datasets and Benchmarks Track) , 2024. URL https://arxiv.org/abs/2405.10299 .11 [25] Guanchen Tao, Junyi Luo, Shiwei Liu, Gregory Kielian, Kauna Lei, Qirui Zhang, Dennis Sylvester, and Mehdi Saligane. An 11.16 μj/token edge SLM decoder accelerator with scal-able ring-based configuration for token-level pipelining in 16 nm FinFET. In IEEE Custom Integrated Circuits Conference (CICC) , 2026. [26] Qwen Team. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. URL https: //arxiv.org/abs/2412.15115 .[27] Armin W. Thomas, Rom N. Parnichkun, Alexander Amini, Stefano Massaroli, and Michael Poli. STAR: Synthesis of tailored architectures. In International Conference on Learning Representations (ICLR) , 2025. URL https://openreview.net/forum?id=HsHxSN23rM .[28] Shikhar Tuli and Niraj K. Jha. Transcode: Co-design of transformers and accelerators for efficient training and inference. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , 42(12):4817–4830, 2023. doi: 10.1109/TCAD.2023.3283443. [29] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural In-formation Processing Systems 30 (NeurIPS 2017) , pages 5998–6008, 2017. URL https: //arxiv.org/abs/1706.03762 .[30] Hanrui Wang, Zhanghao Wu, Zhijian Liu, Han Cai, Ligeng Zhu, Chuang Gan, and Song Han. HAT: Hardware-aware transformers for efficient natural language processing. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics , 2020. URL 
+
+https://arxiv.org/abs/2005.14187 .[31] Johannes Welbl, Nelson F. Liu, and Matt Gardner. Crowdsourcing multiple choice science questions. In Proceedings of the 3rd Workshop on Noisy User-generated Text (W-NUT) , pages 94–106, 2017. URL https://arxiv.org/abs/1707.06209 .[32] Mingbin Xu, Alex Jin, Sicheng Wang, Mu Su, Tim Ng, Henry Mason, Shiyi Han, Zhi-hong Lei, Yaqiao Deng, Zhen Huang, and Mahesh Krishnamoorthy. Conformer-based speech recognition on extreme edge-computing devices. In Proceedings of the 2024 Con-ference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 6: Industry Track) , pages 131–139, 2024. doi: 10.18653/v1/2024.naacl-industry.12. [33] Jie You, Jae-Won Chung, and Mosharaf Chowdhury. Zeus: Understanding and optimizing GPU energy consumption of DNN training. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI) , pages 119–139, 2023. URL https://www. usenix.org/conference/nsdi23/presentation/you .[34] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL) , 2019. URL https://arxiv.org/abs/ 1905.07830 .[35] Jingwei Zuo, Maksim Velikanov, Ilyas Chahed, Younes Belkada, et al. Falcon-h1: A fam-ily of hybrid-head language models redefining efficiency and performance. arXiv preprint arXiv:2507.22448 , 2025. URL https://arxiv.org/abs/2507.22448 .
+
+Appendix A Search Space Specification 
+
+Table 3 lists the global and per-layer fields of the IHA-parameterized search space referenced in §3.1. The example domain values shown are those used by the searches reported in §4. 
+
+Configuration-count expansion. For dmodel =768 and nh ∈ [1 , 16] , GQA imposes nh | dmodel ,
+
+nkv | nh, and dqk =dv =dmodel /n h, admitting 27 configurations. IHA replaces the divisibility and coupling constraints with independent dqk , d v ∈ { 64 , 96 , . . . , 512 }, admitting 50 ×15 ×15 = 11 ,250 
+
+configurations, the ∼ 400 × per-layer expansion cited in §3.1. 12 Table 3: LLMForge design space example under IHA. Global fields are shared across layers; per-layer fields are independent. 
+
+Scope Description Symbol Domain 
+
+Global Embedding dimension dmodel 768 Block size T 1024 Max number of layers L 40 Layer Layer gating  
+
+> 0: pruned, 1: active
+
+mask ℓ {0, 1}
+
+Attention gating  
+
+> 0: identity, 1: active
+
+attn ℓ {0, 1}
+
+Number of query heads nℓh [1 , 16] 
+
+Number of KV groups nℓkv [1 , 16] 
+
+Query/key dimension dℓqk [64 : 32 : 512] †
+
+Value dimension dℓv [64 : 32 : 512] †
+
+MLP width dℓmlp [512 : 256 : 4096] †         
+
+> †Ranges [a: ∆ : b]denote values from ato bin steps of ∆.
+
+B Software Evaluation Protocol 
+
+Each architecture used to generate ground-truth validation loss labels for Forge-Former training, and each architecture real-trained during a Forge-DSE surrogate-refinement event or post-hoc Pareto-front validation, is pretrained from scratch on MiniPile [14], a 1.6B-token subset of The Pile [10], under a fixed token budget of 655M tokens on a single H100 GPU with AdamW, learning rate 
+
+1×10 −3, 100-step warmup, sequence length 512, batch size 128, and bfloat16 mixed precision. The token budget is held fixed across all architectures so that validation loss differences reflect archi-tectural choices rather than training-time variation. The budget is below the Chinchilla compute-optimal point [13] and is chosen to keep per-architecture training tractable at the scale of Forge-Former’s training corpus. We report validation loss at the end of this fixed budget. 
+
+C Forge-Former Surrogate 
+
+C.1 Architecture and training Architecture. Forge-Former is a small Transformer encoder over the packed sequence of an archi-tecture’s active layers. Each active layer is represented by a 9-dimensional feature vector consisting of the seven per-layer fields (nh, n kv , d qk , d v , d mlp , mask , attn ) and two global fields (dmodel , T )
+
+broadcast across positions, lifted to the encoder hidden dimension by a per-field linear projection 
+
+ϕF : R → Rdenc , F ∈ { 1, . . . , 9}. The token at position p is zp = PE( p) + P9  
+
+> F=1
+
+ϕF (xp,F ), where 
+
+PE is a learned absolute positional embedding indexed by the packed position p ∈ { 0, . . . , L max −
+
+1} with Lmax = 40 , the IHA layer-mask cardinality. We do not use any relative or sinusoidal positional encoding. The encoder is a stack of Lenc = 4 pre-LayerNorm blocks of width denc = 64 , with henc = 4 
+
+self-attention heads at per-head dimension denc /h enc = 16 , GELU activations, FFN expansion factor rffn = 4 for an FFN hidden width of 256 , and dropout pdrop = 0 .2 applied to attention weights and FFN outputs. Predictions are obtained by masked mean pooling over non-padding positions followed by a single linear head Rdenc → R, yielding a scalar ˆy(x) interpreted as predicted validation loss. A 1-layer per-field lift rather than a deeper MLP suffices for two reasons. The inputs are normalized scalars in [0 , 1] for which a single linear projection is sufficient, and the encoder’s first attention block already mixes fields across the per-position embedding sum. The full model has 
+
+203 ,713 parameters. 
+
+Training corpus. Forge-Former is trained on Ntrain = 1 ,642 IHA-parameterized architectures drawn uniformly at random from the search space defined in Table 3, each labeled with validation loss produced under the pretraining protocol of Appendix B. We use an 80 /20 train/test split at the architecture level, with Ntest = 411 and Ntotal = 2 ,053 after dropping rows with non-finite validation loss. The test split is held out for the ranking and regression evaluation reported in §4.1. 13 Per-field min/max normalization statistics are computed on the training split only and broadcast to test. 
+
+Optimization. We minimize the L1 loss L1(ˆ y, y ) = |ˆy − y|, chosen over MSE for its robustness to heavy-tailed residuals near the feasibility boundary of the IHA search space, using AdamW with learning rate η = 1 × 10 −4, weight decay 0, and batch size 32 . We run for 200 epochs with seed 
+
+100 and report the best test-L1 checkpoint. 
+
+C.2 Co-evolution protocol 
+
+The co-evolving variant of Forge-Former periodically refines the surrogate during NSGA-II by real-training informative samples drawn from the live population and refitting the surrogate against the resulting labels. This subsection details the cadence, acquisition function, fine-tuning recipe, and observed wall-clock overhead. 
+
+Refinement cadence and acquisition budget. The surrogate is refit every K = 5 NSGA genera-tions. At each refinement event, n = 8 unevaluated architectures are dispatched to the cluster trainer, and each is trained from scratch on MiniPile under the protocol of Appendix B. Per-architecture wall time is between 1.5 and 2 hours on a single H100, with the eight architectures fanned out across an 8-host pool in parallel. A 40-generation run thus produces 8 × 8 = 64 acquisitions in total. 
+
+Uncertainty estimate. At each refinement event, predictive uncertainty σ(x) is obtained from 
+
+nmc = 10 MC-dropout forward passes through the surrogate, with encoder dropout left active dur-ing inference. The same nmc samples produce the predictive mean μ(x). Outside the acquisition step the surrogate runs in deterministic evaluation mode. 
+
+Exploit/explore acquisition. Each event’s batch of n = 8 is split half-and-half between exploitation and exploration. The four exploit picks are the architectures with the lowest μ(x) on the first non-dominated front of the current population, and the four explore picks are the architectures with the highest σ(x) on the remainder of the population. 
+
+Fine-tuning recipe. Each refinement event re-loads the original frozen Forge-Former checkpoint 
+
+ˆy0 rather than sequentially fine-tuning from prior refits, so that later refits do not compound earlier label noise. Fine-tuning runs for 10 epochs with AdamW at learning rate 1 × 10 −4 and batch size 
+
+32 . Each mini-batch interleaves samples at the replay ratio ρ = 5 .0, drawing five rows from the 
+
+2,053 -row Forge-Former training corpus per one row from the cumulative real-trained buffer. The buffer grows from 8 architectures at event 1 to 64 at event 8. The refitted surrogate is hot-swapped into the live evaluator at the start of the next NSGA generation. 
+
+D Full Search Scatter Plots (Surrogate Co-Evolving) 
+
+Figure 10 expands the per-substrate Pareto-front summary of §4.2 into the full search scatter plots, showing every architecture evaluated by Forge-DSE under the surrogate-co-evolving recipe of §3.3.1. For each of the four hardware substrates, the figure displays three pairwise NSGA-II projec-tions of validation loss against Etok , TTFT, and TPOT, coloured by generation index, alongside the final-generation Pareto front. The trajectory from early-generation populations (dark) to converged Pareto fronts (light) shows where the surrogate’s exploration concentrated each search and how the co-evolution refinement events shifted the population toward the substrate-specific deployment re-gion. 
+
+E Hardware Backend Details 
+
+E.1 ZEUS GPU measurement Setup. All ZEUS measurements run on a single NVIDIA A100-SXM4-40GB with driver 550 .90 .07 
+
+and CUDA 12 .4, paired with PyTorch 2.6.0 and ZEUS 0.15 .1. The energy counter source is NVML’s nvmlDeviceGetTotalEnergyConsumption , sampled at the start and end of each mea-surement window via ZeusMonitor.begin_window and end_window . The monitor is constructed with sync_execution_with="torch" and approx_instant_energy=True . NVML updates this counter at a ∼10 ms cadence, so when a window is shorter than the update period the monitor 14 600 1200 1800 2400 
+
+E/tok (mJ)   
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 15 30 45
+
+TTFT (ms)   
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 20 40 60
+
+TPOT (ms)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 0
+> 10
+> 20
+> 30
+> 40
+> Generation
+> 2.50 2.75 3.00 3.25
+
+Validation loss 
+
+> 5
+> 10
+> 15
+> 20
+> TPOT (ms)
+> Final Pareto Front
+> E/tok (mJ)
+> 248
+> 474
+> 700
+> SmolLM2-135M
+> 10
+> 12
+> 14
+> TTFT (ms)
+
+(a) ZEUS A100 GPU. 1.5 3.0 4.5 6.0 
+
+E/tok (mJ)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 20 40 60 80
+
+TTFT (ms)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 816 24 32
+
+TPOT (ms)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 0
+> 10
+> 20
+> 30
+> 40
+> Generation
+> 2.50 2.75 3.00 3.25
+
+Validation loss 
+
+> 8
+> 16
+> 24
+> 32
+> TPOT (ms)
+> Final Pareto Front
+> E/tok (mJ)
+> 0.812
+> 2.83
+> 4.86
+> SmolLM2-135M
+> 30
+> 45
+> 60
+> TTFT (ms)
+
+(b) Gemmini systolic array (Timeloop). 2 4 6 8
+
+E/tok (mJ)  
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 150 300
+
+TTFT (ms)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 15 30 45 60
+
+TPOT (ms)    
+
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 0
+> 10
+> 20
+> 30
+> 40
+> Generation
+> 2.50 2.75 3.00 3.25
+
+Validation loss 
+
+> 10
+> 15
+> 20
+> 25
+> TPOT (ms)
+> Final Pareto Front
+> E/tok (mJ)
+> 0.893
+> 2.35
+> 3.8
+> SmolLM2-135M
+> 50
+> 100
+> 150
+> 200
+> TTFT (ms)
+
+(c) Eyeriss (Timeloop). 2.5 5.0 7.5 
+
+E/tok (mJ)   
+
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 15 30 45
+
+TTFT (ms)   
+
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 369
+
+TPOT (ms)    
+
+> 2.75
+> 3.00
+> 3.25
+> Validation loss
+> 0
+> 10
+> 20
+> 30
+> 40
+> Generation
+> 2.50 2.75 3.00 3.25
+
+Validation loss 
+
+> 1
+> 2
+> 3
+> 4
+> 5
+> TPOT (ms)
+> Final Pareto Front
+> E/tok (mJ)
+> 0.875
+> 2.6
+> 4.33
+> SmolLM2-135M
+> 10
+> 15
+> 20
+> TTFT (ms)
+
+(d) FLAT (Timeloop). 
+
+Figure 10: Full search scatter plots for the four Forge-Former + co-evolution runs. Each row shows three pairwise NSGA-II projections of validation loss vs. Etok , TTFT, and TPOT (coloured by generation), and the final-generation Pareto front (rightmost panel) with TTFT in fill colour and 
+
+Etok in marker size. falls back to instantaneous-power × wall-clock-time integration rather than reporting zero energy. Workload W is fixed across all GPU-substrate measurements at prefill length Lp = 256 followed by decode length Ld = 256 tokens in bf16 , using a production-style KV-cached single-query SDPA decode loop rather than the stock recomputing generate() call. Each architecture is built with random weights, warmed up for one full prefill +decode pass, and then measured over n = 3 repeti-tions. We report the per-repetition median as the headline value used in NSGA-II. 
+
+Standard error on the SmolLM2-360M anchor. To bound the per-architecture noise we addition-ally execute N = 10 independent measurements of the SmolLM2-360M anchor, a 362 M-parameter 
+
+32 -layer architecture at dmodel = 960 , under the same workload with each run consisting of one warmup pass and one timed window. Table 4 reports the per-metric mean, standard error of the mean, and relative standard error. Per-token metrics are reproducible to under 0.3% relative stan-dard error, while TTFT carries the largest jitter at ∼3%, dominated by CUDA-graph capture and NVML synchronization overhead at the start of the prefill window. 15 Table 4: ZEUS measurement variability on the SmolLM2-360M anchor over N =10 independent runs. 
+
+Metric Mean Std. err. Rel. SE 
+
+TTFT 28 .72 ms ±0.88 ms 3.05% 
+
+TPOT 24 .18 ms ±0.05 ms 0.19% 
+
+Power 62 .0 W ±0.09 W 0.14% 
+
+Etok 1.500 mJ ±0.004 mJ 0.25% 
+
+E.2 Timeloop-based backend 
+
+Backend B in §3.3.2 instantiates four hardware templates through Timeloop’s analytical cost model: Gemmini, Eyeriss, FLAT, and the single-chip DXE building block of the multi-chip rDXE backend of Appendix E.3. All four templates assume the same 16 nm technology library and an LPDDR4 off-chip DRAM, and differ in PE-array dimensions, on-chip SRAM hierarchy, and dataflow style. Table 5 summarizes their headline parameters. Table 5: Timeloop-based hardware templates used as Backend B. Sizes are read from the substrate YAML configs in nsga_search/hw_eval/arch/ . “MAC precision” lists multiplier and accumu-lator widths.                             
+
+> Gemmini Eyeriss FLAT Single-chip DXE
+> PE array 16 ×16 14 ×12 32 ×32 8×16 ×16
+> MAC count 256 168 1024 2048
+> MAC precision (b) 8/32 8/16 8/16 8/16
+> On-chip SRAM 768 KB ∼200 KB 200 KB 4MB Dataflow weight-stationary row-stationary flexible weight-stationary
+
+Gemmini. A 16 × 16 INT8 systolic array with a 512 KB scratchpad holding inputs and weights, a 
+
+256 KB output accumulator, and per-PE single-entry registers. The mapper is constrained to weight-stationary or output-stationary execution. 
+
+Eyeriss. A 14 × 12 PE array implementing the row-stationary dataflow. Each PE owns three register files for inputs, weights, and partial sums of 24 , 384 , and 32 bytes respectively, and a 128 KB shared global buffer keeps inputs and outputs while weights bypass directly to the PEs. 
+
+FLAT. A 32 × 32 PE array with a single 200 KB global buffer that simultaneously keeps inputs, weights, and outputs. This shared-residency layout is what enables on-chip fusion of attention’s 
+
+QK and P V matmuls. The mapper is left flexible across weight-, input-, and output-stationary mappings. 
+
+Single-chip DXE. The per-chip building block of the multi-chip rDXE backend in Appendix E.3, not a standalone substrate. The compute hierarchy is 8 DXT tiles, each holding 16 cores with 16 
+
+INT8 multipliers, for a total of 2048 MACs. On-chip storage totals 4 MB, split as 24 KB of weight memory plus 8 KB of KV-cache storage per core, 512 B of head-local input buffer per DXT, and a 
+
+512 B chip-level global input buffer. The dataflow is weight-stationary with weights preloaded once at boot, so DRAM is inactive during decode. 
+
+E.3 rDXE multi-chip ring substrate 
+
+Backend C in §3.3.2 models a token-level pipeline of homogeneous DXE chips connected in a ring, each chip an instance of the single-chip DXE template of Appendix E.2. For each candidate model, Backend C exhaustively explores a chip-template parameter grid, partitions the model layer sequence across the smallest number of chip instances that fits weights, KV cache, and scratchpad, simulates token-level pipelined inference on the ring, and returns the Pareto-non-dominated subset of (TTFT , TPOT , E tok , A total ) results, where Atotal is the sum of per-chip silicon areas. 
+
+Chip-template parameter grid. For each candidate model, Backend C sweeps a 3 × 3 × 5 = 45 -configuration grid over three parameters, namely MACs per VAC core nMAC ∈ { 16 , 32 , 64 }, weight memory per core wcore ∈ { 24 , 48 , 96 , 192 , 384 } KB, and a maximum ring depth nmax  
+
+> chips
+
+∈ { 8, 16 , 32 }
+
+that bounds the layer-to-stage partitioner. The remaining chip-template knobs are not swept directly. 16 The DXT-tile count nDXT per chip and the VAC core count nVAC per tile are derived per pick by the WMEM-packing routine described below, which factors the required core count into a power-of-2 split with nVAC ≥ nDXT . KV-cache per core kcore is held at the chip-template default of 8 KB throughout this study. Per-chip area is approximated as a linear function of total on-chip SRAM capacity, anchored to the single-chip DXE reference template. 
+
+Per-architecture evaluation flow. For each candidate model, Backend C executes the following five steps. 1. Layer profiling. Each active layer ℓ is profiled for (wℓ, κ ℓ, o ℓ, a ℓ), namely weight bytes, KV bytes per token, decode ops, and peak activation bytes, via hw_packer.profile_model .2. Chip-config feasibility. Each of the 45 chip configs is passed to the balanced contiguous packing routine of step 3, which returns ∅ when no valid partition exists for the given chip template. Infeasible configs are skipped, leaving a viable subset for ring simulation. 3. Balanced contiguous packing. For each viable chip config, Algorithm 1 assigns layers to a mini-mal number of contiguous chip stages while minimizing the longest-stage decode latency. 4. Ring simulation. The resulting ring is simulated by the rDXE token-level pipelined simulator under the prefill +decode workload of Table 6, returning TTFT, TPOT, and energy per token. 5. Pareto filtering. The chip-config results are jointly Pareto-filtered on (TTFT , TPOT , E tok , A total )
+
+and the top-K non-dominated (model , chip-config ) pairs are returned, with K = 3 by default. The retained pairs feed back into the NSGA-II Pareto selection of §3.3.1. A model with no feasible chip config is assigned infinite hardware metrics and is dominated out of the next generation. 
+
+Balanced contiguous packing. Algorithm 1 binary-searches over the maximum allowed per-chip decode-ops budget B to find the smallest budget that admits a feasible contiguous partition. The inner feasibility test is the greedy contiguous partitioner of Algorithm 2, which scans layers in order, extending the current stage while WMEM, KV, scratchpad, and ops budgets all hold and sealing the stage off otherwise. The optimum B minimizes the longest-stage decode time, the bottleneck of token-level pipelined throughput. 
+
+Algorithm 1 BALANCED CONTIGUOUS PACK : minimize longest-stage decode time over contiguous partitions. 
+
+Input: Layer costs L = [ ℓ1, . . . , ℓ N ], chip spec C, max context T .
+
+Output: Partition P⋆, or ∅ if infeasible.  
+
+> 1:
+
+if any single ℓi violates C then  
+
+> 2:
+
+return ∅ 
+
+> 3:
+
+end if  
+
+> 4:
+
+Bmin ← max i ℓi.o ; Bmax ← P 
+
+> i
+
+ℓi.o ; P⋆ ← ∅ 
+
+> 5:
+
+while Bmin ≤ Bmax do  
+
+> 6:
+
+B ← ⌊ (Bmin + Bmax )/2⌋ 
+
+> 7:
+
+P ← GREEDY CONTIGUOUS PARTITION (L, C, T, B ) 
+
+> 8:
+
+if P̸ = ∅ then  
+
+> 9:
+
+P⋆ ← P ; Bmax ← B − 1 
+
+> 10:
+
+else  
+
+> 11:
+
+Bmin ← B + 1  
+
+> 12:
+
+end if  
+
+> 13:
+
+end while  
+
+> 14:
+
+return P⋆
+
+F Forge-DSE Search 
+
+F.1 Algorithm pseudocode 
+
+Algorithm 3 formalizes the Forge-DSE search procedure described in §3.3.1. The pseudocode cov-ers the full NSGA-II generation loop, the mutation–crossover–repair pipeline applied to each off-spring, and the optional surrogate-refinement event that fine-tunes Forge-Former when K > 0.17 Algorithm 2 GREEDY CONTIGUOUS PARTITION : inner feasibility check used by Algorithm 1. 
+
+Input: Layers L = [ℓ1, . . . , ℓ N ] with per-layer costs (ℓ.w, ℓ.κ, ℓ.o, ℓ.a ) for weight bytes, KV bytes/token, decode ops, and peak activation bytes; chip C = ( W, K, A, T ) for weight mem, KV cache, scratchpad, and max context; stage budget B.
+
+Output: Contiguous partition P, or ∅ if infeasible.  
+
+> 1:
+
+P ← [ ] ; S ← [ ] ; (w, k, o ) ← (0 , 0, 0)  
+
+> 2:
+
+for i = 1 to N do  
+
+> 3:
+
+ℓ ← L [i]; ∆k ← ℓ.κ · T 
+
+> 4:
+
+if ℓ.w > W or ∆k > K or ℓ.o > B or ℓ.a > A then  
+
+> 5:
+
+return ∅ // layer alone exceeds chip  
+
+> 6:
+
+end if  
+
+> 7:
+
+if w + ℓ.w ≤ W and k + ∆ k ≤ K and o + ℓ.o ≤ B then  
+
+> 8:
+
+append ℓ to S; (w, k, o ) ← (w + ℓ.w, k + ∆ k, o + ℓ.o ) 
+
+> 9:
+
+else  
+
+> 10:
+
+append S to P; S ← [ℓ]; (w, k, o ) ← (ℓ.w, ∆k, ℓ.o ) 
+
+> 11:
+
+end if  
+
+> 12:
+
+end for  
+
+> 13:
+
+if S̸ = [ ] then  
+
+> 14:
+
+append S to P 
+
+> 15:
+
+end if  
+
+> 16:
+
+return P
+
+F.2 Per-experiment NSGA-II configurations 
+
+Table 6 reports the NSGA-II settings for each of the five searches presented in §4. The four Forge-Former driven searches (ZEUS, Gemmini, Eyeriss, FLAT) share the same surrogate-with-co-evolution recipe and differ only in the hardware backend used to evaluate latency and energy. The rDXE search instead trains every evaluated candidate from scratch and runs at a smaller per-evaluation budget under tighter feasibility gates that keep the population on the SmolLM2-360M scale. Table 6: Per-experiment NSGA-II configuration for the five searches in §4. The four Forge-Former-driven runs share the surrogate, co-evolution cadence, and budget, and differ only in the HW back-end (top rows). The rDXE search uses training-from-scratch evaluation and tighter feasibility con-straints.                                             
+
+> Forge-Former + co-evolution Real training Setting ZEUS Gemmini Eyeriss FLAT rDXE
+> HW backend ZEUS (A100) Timeloop Timeloop Timeloop rDXE simulator Substrate n/a gemmini eyeriss flat_edge multi-chip ring Population size 24 24 24 24 24 Offspring size 48 48 48 48 12 Generations 40 40 40 40 20 Crossover / mutation rate 0.6 / 0.3 0.6 / 0.3 Co-evolution cadence (batch) every 5 gens (8 archs / refit) n/a Prefill / decode (tokens) 256 / 256 512 / 256 Objectives (all ↓)val. loss, TTFT, TPOT, Etok
+> Val. loss constraint <3.8<3.5
+
+G Experimental Details 
+
+G.1 Baseline reproduction Baseline architectures. The four baselines reported in Table 2, namely SmolLM2-135M, SmolLM2-360M, Pythia-160M, and Qwen-0.5B, are pretrained from scratch under the same recipe as the LLMForge candidates rather than loaded from upstream checkpoints. We adopt each model’s published architecture, specifically per-layer hidden width, depth, attention heads, GQA ratios, activation, norm placement, and positional encoding, but 18 Algorithm 3 Forge-DSE: NSGA-II search with optional co-evolving Forge-Former surrogate ( K=0 
+
+disables refinement). 
+
+Input: Search space A, objective set F , constraint set B, Forge-Former ˆy(·) with frozen baseline ˆy0, HW backend HW( ·, W) with fixed workload W, population size N , offspring size λ, generations G, crossover rate pc, mutation rate pm, refinement cadence K (K=0 disables co-evolution), refinement batch b, MC-dropout passes nmc , original training corpus D0 with old:new replay ratio ρ
+
+Output: Pareto archive P of all non-dominated feasible architectures encountered during search  
+
+> 1:
+
+Initialize P (0) ⊂ A , |P (0) | = N ; evaluate F and B for all x ∈ P (0) using ˆy(x) and HW( x, W) 
+
+> 2:
+
+P ← ∅ ; D ← ∅ // Pareto archive; co-evolution label buffer (grown in place across events)  
+
+> 3:
+
+ˆy ← ˆy0 // mutable working surrogate; ˆy0 stays frozen as the refit anchor  
+
+> 4:
+
+for t = 0 to G − 1 do  
+
+> 5:
+
+M (t) ← TOURNAMENT SELECT (P (t)) 
+
+> 6:
+
+Q(t) ← ∅  
+
+> 7:
+
+while |Q(t)| < λ do  
+
+> 8:
+
+Sample p1, p 2 ∈ M (t) 
+
+> 9:
+
+c ← CROSSOVER (p1, p 2) w.p. pc, else c ← p1 
+
+> 10:
+
+c ← MUTATE (c) w.p. pm 
+
+> 11:
+
+Q(t) ← Q(t) ∪ { REPAIR (c)} 
+
+> 12:
+
+end while  
+
+> 13:
+
+Evaluate F and B for x ∈ Q(t) using ˆy(x) and HW( x, W) // ˆy reflects any refinement applied in prior events  
+
+> 14:
+
+R(t) ← P (t) ∪ Q(t) 
+
+> 15:
+
+P (t+1) ← SURVIVAL (R(t), N ) // NSGA-II constraint-dominance + crowding distance [8]  
+
+> 16:
+
+P ← UPDATE PARETO SET (P, R (t)
+
+> feas
+
+) // R(t)
+
+> feas
+
+: feasible subset of R(t) under B 
+
+> 17:
+
+if K > 0 and t > 0 and t mod K = 0 then  
+
+> 18:
+
+// surrogate-refinement event (skip t=0 : no offspring yet)  
+
+> 19:
+
+(μ, σ ) ← MCD ROPOUT (ˆ y, P (t+1) , n mc ) // per-x arrays from nmc stochastic forwards  
+
+> 20:
+
+F ← FAST NON DOMINATED SORT (P (t+1) )[0] // first front under (F, B ) 
+
+> 21:
+
+bexp ← min( ⌊b/ 2⌋, |F| ) // exploitation quota, capped by front size  
+
+> 22:
+
+Eexploit ← top bexp of F by ascending μ // lowest predicted validation loss  
+
+> 23:
+
+Eexplore ← top min( b − bexp , |P (t+1) \ F| ) of P (t+1) \ F by descending σ 
+
+> 24:
+
+E ← Eexploit ∪ Eexplore  
+
+> 25:
+
+L ← { (x, REAL TRAIN (x)) : x ∈ E} // protocol of Appendix B  
+
+> 26:
+
+D ← D ∪ { (x, y ) ∈ L : y finite } // drop NaN/inf labels  
+
+> 27:
+
+ˆy ← FINE TUNE (ˆ y0, D, D0, ρ ) // refit on D ∪ D 0 sampled at ρ:1 old:new  
+
+> 28:
+
+end if  
+
+> 29:
+
+end for  
+
+> 30:
+
+return P
+
+instantiate it with our shared 50 ,257 -token GPT-2 BPE tokenizer rather than the origi-nal. Training from scratch on FineWeb-Edu sample-10BT [22] under our shared recipe removes tokenizer, training-corpus, and training-compute confounders relative to the up-stream checkpoints. The architecture references are HuggingFaceTB/SmolLM2-135M [3], 
+
+HuggingFaceTB/SmolLM2-360M [3], EleutherAI/pythia-160m [4], and 
+
+Qwen/Qwen2.5-0.5B [26]. Architecture YAML configs for each baseline are released alongside this paper at fineweb_baselines/config/standard_baselines.yaml .
+
+Training recipe. All entries in Table 2, baselines and LLMForge picks alike, are trained from ran-dom initialization with identical hyperparameters. We use AdamW with β1 = 0 .9, β2 = 0 .99 ,weight decay 0.1, and ϵ = 10 −8. The learning rate follows a cosine schedule from 3 × 10 −4 to 
+
+3 × 10 −5 over 100 ,000 iterations with 2,000 linear warmup steps, and global L2 gradient clipping is applied at 1.0 with no dropout. Each optimizer step processes 64 sequences of 1,024 tokens at 
+
+2 gradient-accumulation steps, totalling 131 ,072 tokens per step and ≈ 13 .1 B tokens over the full schedule. Training runs in bfloat16 mixed precision with torch.compile , and gradient checkpoint-ing is enabled for all models above 100 M parameters. The tokenizer is the GPT-2 BPE tiktoken 
+
+build with 50 ,257 vocabulary entries, and the dataset is FineWeb-Edu sample-10BT with a held-out validation slice used for the val_loss column. Each run executes on a single NVIDIA H100 80 GB GPU. 
+
+Evaluation. Zero-shot benchmark accuracies are computed with our custom evaluation harness us-ing length-normalized log-likelihood scoring. For each multiple-choice example with continuations 19 Table 7: Ring chip configurations selected by the rDXE chip-Pareto inner loop for every model in Table 2. nMAC is MACs per VAC core and wcore is per-core weight memory, both swept directly along with the ring-depth cap nmax  
+
+> chips
+
+∈ { 8, 16 , 32 } described in Appendix E.3. nchips is the realised ring depth, bounded above by nmax 
+
+> chips
+
+. nDXT × nVAC is derived per pick by the WMEM-packing routine, factoring the required core count into a power-of-2 split with nVAC ≥ nDXT. kcore is held at the chip-template default of 8 KB per core throughout this study.                                                     
+
+> Model nMAC wcore (KB) nDXT ×nVAC kcore (KB) nchips
+> SmolLM2-135M 16 24 16 ×32 88Pythia-160M 16 24 32 ×32 84
+> LLMForge-Acc-123M 16 24 16 ×16 87
+> LLMForge-Compact-106M 16 24 16 ×16 85SmolLM2-360M 16 48 32 ×32 87Qwen-0.5B 16 96 16 ×32 86
+> LLMForge-Acc-347M 16 24 32 ×32 811
+> LLMForge-Eco-294M 16 24 32 ×32 87
+> LLMForge-Fast-365M 16 24 32 ×64 87
+
+c1, . . . , c K and shared context x, the predicted continuation is 
+
+ˆc = arg max 
+
+> k
+
+1
+
+|ck|
+
+X
+
+> t
+
+log pθ
+
+
+
+c(t) 
+
+> k
+
+| x, c (<t )
+
+> k
+
+
+
+.
+
+All evaluations use a block size of 1,024 , matching training, and run in bfloat16. 
+
+G.2 Pareto-front architecture and chip configurations 
+
+Figure 11 shows per-layer IHA parameterizations of the architectures highlighted in Figure 6, one Pareto-front pick per Forge-Former-driven substrate. The five LLMForge picks reported in Table 2 are shown in Figures 12 and 13. Each panel encodes nh, nkv , dqk , dv , and dmlp across active layers, with pruned slots removed. Cell colour shows the value normalised to its field domain, and red frames mark identity-attention layers, where the attention block is bypassed. 
+
+H Reproducibility, Compute, and Broader Impact 
+
+H.1 Compute disclosure 
+
+All training runs in this work execute on NVIDIA H100 GPUs. 
+
+Train-from-scratch runs. Each per-architecture train-from-scratch run, used for Forge-Former label generation, surrogate-refinement events, and post-hoc Pareto-front pre-validation, executes 
+
+20 ,000 iterations on MiniPile under the protocol of Appendix B on a single H100. 
+
+Pareto-front validation pretraining. Pareto-front candidates selected for the scaled validation in §4.3 are pretrained on FineWeb-Edu-10BT for 100 ,000 iterations on a single H100 each. 
+
+NSGA-II searches. Inside an NSGA-II run, the eight candidate trainings produced at each surrogate-refinement event are dispatched to an 8-host H100 pool and run in parallel. Each re-finement event therefore completes in one per-architecture wall time rather than eight. 
+
+H.2 Datasets, code, and weights 
+
+All datasets used in this work, namely MiniPile [14], FineWeb-Edu-10BT [22], HellaSwag [34], and ARC-E [7], are publicly available on HuggingFace under permissive research-use licenses. Code, Forge-Former weights, and the per-substrate Pareto-front architecture configurations are released at the anonymized supplementary URL https://anonymous.4open.science/r/llmforge_ code-6838/llmforge .20 0 5 10 15 20 21 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.558 Etok 695.97 mJ TTFT 15.56 ms TPOT 10.90 ms 210 M params dmodel = 768 Lact = 22 
+
+ZEUS A100 GPU Picked Model 
+
+16 12 12 6 6 12 12 4 12 
+
+8 4 6 6 6 4 6 4 12 
+
+128 128 160 416 416 256 256 384 64 
+
+480 352 96 448 480 64 96 224 96 
+
+2048 3584 4096 3840 3584 3584 3328 3584 2816 1024 1024 1024 1536 1536 1536 1536 3328 2048 1280 1280 2048 2048 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 13 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.574 Etok 2535.2 μJ TTFT 51.75 ms TPOT 17.24 ms 125 M params dmodel = 768 Lact = 14 
+
+Gemmini Picked Model 
+
+12 12 12 8 16 
+
+6 6 6 8 8
+
+192 192 192 96 128 
+
+160 160 160 192 320 
+
+2560 2560 2560 1792 1792 1792 1792 768 768 768 3072 2304 2304 1024 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 15 20 25 27 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.559 Etok 3530.6 μJ TTFT 198.42 ms TPOT 26.64 ms 179 M params dmodel = 768 Lact = 28 
+
+Eyeriss Picked Model 
+
+16 12 12 12 12 8 8
+
+8 6 6 6 6 1 1
+
+128 160 160 160 160 224 224 
+
+224 128 128 96 160 416 416 
+
+768 3584 3584 3584 3584 2560 2560 2560 2560 2560 2560 2560 1024 1280 1280 1280 512 768 512 768 768 768 768 768 1536 768 768 768 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 12 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.580 Etok 3189.0 μJ TTFT 17.73 ms TPOT 3.83 ms 158 M params dmodel = 768 Lact = 13 
+
+FLAT Picked Model 
+
+12 12 16 8 16 
+
+4 6 2 8 2
+
+448 160 224 416 160 
+
+512 320 64 320 416 
+
+3072 2560 4096 3584 768 2048 2816 2560 3328 1536 2560 2304 3328 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) Figure 11: Per-substrate Pareto-front picks corresponding to the highlighted points in Figure 6: ZEUS A100 GPU, Gemmini, Eyeriss, and FLAT (top to bottom). 
+
+H.3 Broader impact 
+
+LLMForge is a hardware-aware neural architecture search framework rather than a new pretrained model. Its contributions are methodological, namely the IHA attention parameterization, the Forge-Former surrogate, and the Forge-DSE multi-backend search engine. The architectures it discovers at sub-billion-parameter scale yield modest energy and latency reductions on the substrates we report, which primarily benefits the operating cost and carbon profile of repeated edge inference rather than enabling new model capabilities. We do not see any risk specific to this work beyond those already shared by small edge-deployed language models, namely downstream misuse without server-side moderation and biases inherited from public web-text pretraining corpora. 21 0 5 10 15 20 24 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 3.003 123 M params dmodel = 576 Lact = 25 
+
+LLMForge-Acc-123M 
+
+8 8 8 4 8 8 8 6 8 8 8 8 4 8 8 8 8
+
+2 2 4 2 2 2 1 2 2 2 2 2 1 4 2 2 2
+
+64 96 64 64 64 64 160 96 64 32 64 64 96 64 32 32 32 
+
+96 64 32 64 64 64 64 128 64 64 64 32 96 64 96 96 96 
+
+1024 3584 3584 2560 1536 1536 1536 1536 1536 1024 1536 2048 1024 1536 2048 2048 3072 1536 1536 2048 2048 2048 2048 1536 1536 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 15 19 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 3.037 106 M params dmodel = 576 Lact = 20 
+
+LLMForge-Compact-106M 
+
+4 8 4 8 8 8 9 9 4 4 8 8 8 8 8 8 8
+
+4 4 4 1 2 1 1 1 4 2 2 2 2 2 2 2 2
+
+160 96 64 160 64 128 160 160 32 96 32 64 64 64 64 64 64 
+
+64 64 64 64 64 96 96 96 32 32 64 32 96 32 32 96 96 
+
+1024 3584 2560 1536 1024 1536 1024 1536 1536 2560 2560 1024 1536 2560 2048 1536 1536 1536 2048 2048 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) Figure 12: ∼100M-tier picks from Table 2: LLMForge-Acc-123M (top, val. loss leader) and 
+
+LLMForge-Compact-106M (bottom, lowest energy per token, TTFT, and TPOT). 0 5 10 15 20 25 30 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.798 347 M params dmodel = 960 Lact = 31 
+
+LLMForge-Acc-347M 
+
+15 15 15 12 15 15 15 12 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 12 15 15 15 15 
+
+5 5 5 4 5 3 5 4 5 5 5 5 5 5 5 5 5 5 5 5 3 3 5 3 5 5 5 5
+
+64 64 96 64 64 32 64 96 32 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 
+
+64 64 64 64 64 64 64 64 64 96 64 64 64 128 128 64 64 64 64 64 64 64 64 64 32 64 64 64 
+
+2048 3584 2560 2560 3072 2560 2560 2560 2560 2560 2560 2560 2560 2048 2048 3072 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 15 20 25 26 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 2.833 294 M params dmodel = 960 Lact = 27 
+
+LLMForge-Eco-294M 
+
+15 15 15 12 15 15 15 12 15 15 15 15 15 12 15 8 4 8 8 15 12 15 15 
+
+5 5 5 4 5 3 5 4 5 5 5 5 5 4 5 2 4 4 4 5 3 5 5
+
+64 64 96 64 64 32 64 96 32 64 64 32 64 64 64 64 64 64 64 64 64 64 64 
+
+64 64 64 64 64 64 64 64 64 64 64 128 64 64 32 64 64 64 64 32 64 32 64 
+
+1024 3584 2560 2560 3072 2560 2048 2560 2560 2560 2560 2560 2048 2048 3072 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 2560 3072 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 0 5 10 15 20 25 30 31 
+
+active-layer position (front → back, pruned slots removed) 
+
+nh
+
+nkv 
+
+dqk 
+
+dv
+
+dmlp 
+
+val. loss 3.162 365 M params dmodel = 1088 Lact = 32 
+
+LLMForge-Fast-365M 
+
+8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 4 8 8 8 8
+
+4 4 4 4 4 4 4 4 4 4 2 2 4 4 4 4 2 2 4 4 2 4 4 4 4
+
+96 64 32 32 32 64 64 64 64 64 64 64 64 64 64 64 64 64 96 64 64 64 64 64 96 
+
+64 64 64 64 64 64 64 64 64 64 64 64 96 64 64 64 64 64 64 64 64 64 64 32 64 
+
+2560 2560 2560 2560 2560 2560 2560 2560 2048 2560 3072 2560 3072 2560 2560 2560 3072 2560 2560 2560 2560 2560 2560 2048 2560 3072 2560 2560 2560 3072 2048 2560 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> normalized to field domain
+
+identity-attention layer (attention bypassed) 
+
+Figure 13: ∼300M-tier picks from Table 2: LLMForge-Acc-347M (top, val. loss leader), 
+
+LLMForge-Eco-294M (middle, lowest energy per token), and LLMForge-Fast-365M (bottom, lowest TTFT and TPOT). 22

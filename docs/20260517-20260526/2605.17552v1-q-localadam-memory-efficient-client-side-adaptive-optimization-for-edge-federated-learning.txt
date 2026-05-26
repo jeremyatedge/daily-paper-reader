@@ -1,0 +1,1307 @@
+Title: Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning
+
+URL Source: https://arxiv.org/pdf/2605.17552v1
+
+Published Time: Tue, 19 May 2026 01:48:33 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning 
+
+# Vedant Waykole 
+
+IISER Bhopal India waykole22@iiserb.ac.in 
+
+# Haroon R Lone 
+
+IISER Bhopal India haroon@iiserb.ac.in 
+
+## Abstract 
+
+Federated learning on edge devices must cope with non-IID client data and tight memory budgets. Adaptive optimizers like Adam stabilize training under data heterogeneity but require storing full-precision momentum and variance states, often tripling client mem-ory overhead. This limits deployable model sizes and concurrent federated jobs on resource-constrained devices. We empirically observe that momentum and variance in feder-ated Adam exhibit fundamentally different statistical properties: momentum values are symmetric and bounded, while variance spans eight orders of magnitude with log-normal structure. Moti-vated by this asymmetry, we propose Q-LocalAdam , which applies distribution-aware 8-bit quantization block-wise linear encoding for momentum and log-space encoding for variance while keeping model parameters in full precision. Across CIFAR-10 and CIFAR-100 under varying data heterogene-ity ( 𝛼 ∈ { 0.1, 0.5, 1.0, IID }), Q-LocalAdam achieves 3.37 × optimizer memory reduction with no accuracy loss under moderate hetero-geneity and significant improvements under extreme heterogeneity (e.g., +5.74pp on CIFAR-100, 𝛼 = 0.1). Multi-seed validation con-firms statistical significance ( 𝑝 < 0.01 ). In contrast, naive uniform quantization degrades to random performance, demonstrating that distribution-aware design is essential. Q-LocalAdam enables larger models and more concurrent workloads on memory-constrained edge devices without modifying the federated protocol. Our imple-mentation is publicly available at https://anonymous.4open.science/ r/Q-LocalAdam-F782. 
+
+## Keywords 
+
+Federated Learning, Quantization, Adaptive Optimization, Memory Efficiency, Non-IID Data 
+
+## 1 Introduction 
+
+Federated learning (FL) enables collaborative model training on data that remain distributed across edge devices such as smartphones, IoT boards, embedded GPUs, and medical imaging workstations without requiring centralized data collection for privacy, legal, or bandwidth reasons [ 7, 15 , 22 ]. Compared to conventional central-ized learning, FL must cope with fundamental challenges arising from statistical heterogeneity and partial participation, as clients typically hold highly unbalanced non-IID data and only a subset participates in each training round [ 14 , 16 , 32 ]. Such heterogeneity is known to slow convergence and degrade model quality when using simple aggregation methods such as FedAvg [14, 15]. Adaptive optimizers such as FedAdam, FedYogi, and FedAdaGrad were proposed to mitigate these issues by maintaining exponential moving averages of aggregated gradients (momentum, 𝑚 ) and their squared values (variance, 𝑣 ) during model updates [ 24 ]. In many empirical studies [ 24 ], these methods yield more stable and faster convergence under heterogeneous client sampling compared to FedAvg [ 15 ]. However, they introduce a substantial memory cost: for a model with 𝑁 parameters, the optimizer maintains two addi-tional 𝑁 -dimensional tensors for momentum and variance, typically stored in 32-bit floating point. As a result, optimizer states alone require 2𝑁 × 4 = 8𝑁 bytes comparable to the model parameters themselves ( 𝑁 × 4 = 4𝑁 bytes). In cross-device FL, where edge devices perform multi-epoch local training on their heterogeneous data, each client must maintain its own optimizer states during training [27]. This client-side deploy-ment pattern is increasingly common in mobile federated learning, medical edge computing, and IoT applications [ 7 , 15 , 22 , 31 ]. In these settings, adaptive optimization on clients introduces severe memory pressure. For example, our CIFAR-100 experiments use a ResNet-18 variant with approximately 11M parameters: 
+
+• Model parameters: 11 𝑀 × 4 bytes = 44.9 MB 
+
+• Optimizer states (FP32): 11 𝑀 × 8 bytes = 89.8 MB 
+
+• Total client memory: 134.7 MB Throughout this paper, we use optimizer memory to refer specif-ically to the memory footprint of the momentum and variance buffers maintained by adaptive optimizers, excluding model param-eters and gradients. This 3 × memory overhead becomes problematic on resource-constrained edge devices with limited RAM (typically 1–8 GB), where the optimizer footprint directly limits the maxi-mum model size trainable on fixed hardware, reduces the number of concurrent federated jobs on edge servers, and constrains device participation rates in large-scale cross-device deployments. One natural question is whether these optimizer states can be maintained on the server, as in the original FedAdam formula-tion [ 24 ]. In server-side adaptive FL, the server applies Adam up-dates to aggregated pseudo-gradients, allowing clients to store only model parameters. While this design is memory-efficient, client-side adaptive optimization is increasingly common in practical deployments [ 10 , 28 ]. When clients perform multiple local epochs, using Adam during local updates improves convergence on hetero-geneous data, whereas server-side methods apply adaptive updates only after aggregation. Moreover, decentralized and peer-to-peer FL systems [ 21 , 23 ] and multi-task federated learning settings [ 18 ]lack a centralized global objective, making server-side optimization infeasible. In this client-side framework, each device maintains momentum and variance states throughout local training, incurring substantial memory overhead. Although we follow standard practice by using a shared learning rate across clients [ 15 , 24 ], the optimizer states adapt independently to each client’s data distribution through local  
+
+> arXiv:2605.17552v1 [cs.LG] 17 May 2026 Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone
+
+gradient statistics. Our goal is therefore not to replace server-side adaptive methods, but to make client-side adaptive optimization practical in settings where it is already required. This motivates the following question: Can we substantially reduce client-side optimizer memory without sacrificing robustness under non-IID data? 
+
+To address this question, we begin by empirically analyzing the distributions of optimizer states in federated training (Figure 3 in Appendix A.2). Using experiments on CIFAR-10 and CIFAR-100, we observe a pronounced asymmetry between momentum and variance. Momentum values remain bounded and approximately symmetric, making them well-suited for linear quantization. In contrast, variance values span more than eight orders of magnitude and exhibit a log-normal structure, rendering uniform quantization ineffective. This analysis suggests that optimizer states with fundamentally different statistical properties should not share the same compres-sion scheme. Guided by this principle, we propose Q-LocalAdam ,a memory-efficient variant of FedAdam that applies distribution-aware quantization to optimizer states while keeping model parame-ters in full precision. Specifically, Q-LocalAdam employs block-wise linear quantization for momentum and block-wise log-space quan-tization for variance. Optimizer states are dequantized on the fly during local updates and requantized for storage, preserving the federated protocol and communication pattern. We compare Q-LocalAdam against two baselines: Vanilla Clien-tAdam [27 ], which stores optimizer states in FP32, and Naive-INT8 [ 4], which applies uniform quantization to both states. Across CIFAR-10 and CIFAR-100 under varying degrees of data heterogene-ity, Q-LocalAdam achieves up to a 3.37 × reduction in optimizer memory with no accuracy loss under moderate heterogeneity, and yields substantial improvements under extreme heterogeneity (e.g., +5.74pp on CIFAR-100 at 𝛼 = 0.1). 
+
+## 1.1 Contributions 
+
+To our knowledge, this work presents the first systematic study of optimizer-state quantization for adaptive federated optimizers under non-IID client distributions. Our main contributions are as follows: 
+
+Empirical characterization of optimizer states. We conduct a detailed empirical analysis of optimizer-state distributions in feder-ated Adam and reveal a pronounced asymmetry: variance exhibits approximately log-normal behavior spanning 7–8 orders of magni-tude ( 10 −12 to 10 −3), whereas momentum remains bounded (approx-imately ±0.1) and follows a near-Gaussian distribution (Figures 3, 4). We further show that naive uniform quantization collapses to near-random performance (1.0% on CIFAR-100 at 𝛼 = 0.1), highlighting the necessity of distribution-aware design. 
+
+Q-LocalAdam: Memory-efficient client-side optimization. We propose Q-LocalAdam, a memory-efficient client-side adaptive op-timizer that applies 8-bit block-wise linear quantization to momen-tum and log-space quantization to variance. Q-LocalAdam achieves up to a 3.37 × reduction in optimizer memory (89.82 MB → 26.67 MB on CIFAR-100) while preserving 𝑂 (𝑁 ) computational complexity. 
+
+Comprehensive evaluation under data heterogeneity. We con-duct extensive experiments on CIFAR-10 and CIFAR-100 under het-erogeneous partitions ( 𝛼 ∈ { 0.1, 0.5, 1.0, IID }). Across settings, Q-LocalAdam matches or exceeds FP32 accuracy, and under extreme heterogeneity ( 𝛼 = 0.1), it improves performance by +5.74pp on CIFAR-100 (61.47% vs. 55.73%, 𝑝 < 0.01 ). Ablation studies confirm that both quantization schemes are necessary: partial quantization achieves only 1.5–1.8× compression with degraded accuracy. 
+
+Open-source implementation. To facilitate reproducibility and further research on memory-constrained federated learning, we release a complete implementation of Q-LocalAdam, including train-ing scripts and hyperparameter configurations at https://anonymous. 4open.science/r/Q-LocalAdam-F782. 
+
+## 2 Related Work 
+
+Adaptive optimization in federated learning. FedAvg [ 15 ] per-forms simple averaging of client model updates but struggles with heterogeneous data distributions. Server-side adaptive methods such as FedAdam, FedYogi, and FedAdaGrad [ 24 ] apply momentum-based optimizers to aggregated pseudo-gradients, improving con-vergence under non-IID conditions [ 9]. Recent client-side adaptive approaches like FedCAda [ 27 ] maintain optimizer states on clients during local training to better handle local data heterogeneity, but still require full-precision storage, incurring 3 × memory overhead relative to model parameters. Our work builds on FedAdam and addresses this bottleneck by enabling memory-efficient client-side adaptive optimization through distribution-aware quantization. 
+
+Low-precision optimization. Quantized training has been ex-tensively studied in centralized settings. Dettmers et al. [ 4 ] propose 8-bit Adam using block-wise dynamic quantization for momen-tum and variance, achieving near-lossless compression on standard benchmarks. Their method applies uniform linear quantization to both optimizer states, assuming IID data and stable gradient distri-butions typical of centralized training. However, federated learning introduces additional challenges: client updates are computed on heterogeneous local data, and optimizer states may exhibit very different statistical properties [ 13 ]. We find that naive application of uniform quantization to both momentum and variance fails cata-strophically under data heterogeneity collapsing to 11.5% and 1.0% accuracy on CIFAR-10 and CIFAR-100 at 𝛼 = 0.1, respectively (near-random performance). This motivates our asymmetric design: linear quantization for symmetric momentum and log-space quantization for heavy-tailed variance spanning eight orders of magnitude. 
+
+Communication efficiency in federated learning. Extensive work has explored gradient compression via quantization [ 1 , 2], sparsification, and low-rank factorization [ 5, 6] to reduce commu-nication costs in FL. SignSGD and ternary quantization methods achieve extreme compression for gradient transmission [ 8 ]. While complementary, these methods do not address client-side optimizer memory, which becomes the primary bottleneck when deploying adaptive methods on edge devices. Q-LocalAdam is orthogonal to communication compression and can be combined with existing techniques. 
+
+Quantization for federated learning. Recent work has ex-plored quantization in FL contexts, primarily for communication efficiency. FedHQ [ 34 ] applies hybrid runtime quantization to model Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+updates during transmission, adaptively selecting quantization lev-els based on network conditions. FedPAQ [ 25 ] focuses on peri-odic averaging with quantization to reduce communication rounds. FedQCS [ 20 ] integrates non-uniform quantization, sparsification, and random projection to minimize communication overhead dur-ing gradient transmission.. These methods compress communica-tion payloads but do not address optimizer state memory on clients. To our knowledge, Q-LocalAdam is the first work to systematically study distribution-aware quantization of client-side optimizer states under non-IID federated settings, targeting the memory bottleneck rather than communication. 
+
+Memory-efficient federated learning. Various strategies have been explored to reduce the memory footprint in FL, including model pruning [ 17 ], knowledge distillation [ 11 ], and selective pa-rameter updates [ 26 ]. While techniques like split learning and model partitioning distribute computation across devices, they of-ten introduce significant communication overhead [ 19 , 29 , 30 , 33 ]. Furthermore, while these model compression approaches primar-ily focus on reducing the size of model weights, they still require full-precision optimizer states when employing adaptive methods, which remains a primary bottleneck for memory-constrained de-vices. Q-LocalAdam directly targets this optimizer memory, mak-ing it complementary to existing compression techniques: together, they enable the deployment of larger models with adaptive opti-mization on resource-limited edge hardware. 
+
+## 3 Method 3.1 Client-Side Adaptive Optimization 
+
+We consider a federated learning setting with 𝐾 clients aimed at minimizing the global objective 𝑓 (𝜃 ) = Í𝐾 𝑘 =1 𝑝 𝑘 𝑓 𝑘 (𝜃 ). Unlike server-side adaptive methods such as FedAdam [ 24 ], we employ client-side Adam updates during local training, where the momentum 𝑚 𝑘 and variance 𝑣 𝑘 are reinitialized at each communication round (Vanilla-ClientAdam [ 27 ]). For a model with 𝑁 parameters, these optimizer states require 8𝑁 bytes in FP32 precision, effectively doubling the memory footprint compared to the model weights. This overhead poses a significant barrier for deployment on resource-limited edge devices. A comprehensive background on federated optimization is provided in Appendix A.1. 
+
+## 3.2 Block-wise Quantization 
+
+Motivation from empirical analysis. Preliminary analysis of optimizer states in federated Adam training reveals stark distribu-tional asymmetry: momentum exhibits symmetric, bounded behav-ior ( ±0.1), while variance spans 7–8 orders of magnitude ( 10 −12 to 
+
+10 −3) with approximately log-normal structure (see Appendix A.2 for full characterization). This motivates distribution-aware quanti-zation rather than uniform schemes. We compress 𝑚 and 𝑣 using block-wise quantization: each tensor is partitioned into fixed-size blocks, and each block is quantized independently using 8 bits. 
+
+Notation: For block-wise quantization with block size 𝐵 :                                              
+
+> Symbol Description
+> 𝑚 (𝑏 ),𝑣 (𝑏 )𝑏 -th block of momentum and variance tensors
+> min (𝑏 ),max (𝑏 )Minimum and maximum values within block 𝑏 𝑟 (𝑏 )Range of block 𝑏 =max (𝑏 )−min (𝑏 )
+> 𝑞 (𝑏 )∈ [ 0,255 ]Quantized INT8 values for block 𝑏 ℓ(𝑏 )Log-transformed values of block 𝑏 ℓ(𝑏 )
+> min ,ℓ(𝑏 )
+> max Minimum and maximum log-values in block 𝑏 𝑟 (𝑏 )
+> ℓRange of log-values = ℓ(𝑏 )
+> max −ℓ(𝑏 )
+> min
+> 𝑞 (𝑏 )
+> ℓ∈ [ 0,255 ]Quantized log-space values for block 𝑏
+> ˜𝑚 (𝑏 ),˜𝑣 (𝑏 )Dequantized momentum and variance values
+
+Linear quantization (for momentum 𝑚 ). Momentum values are approximately symmetric and bounded. For a block of size 𝐵 ,we compute:  
+
+> (𝑏 )
+
+min = min (𝑚 (𝑏 ) ), (𝑏 )
+
+max = max (𝑚 (𝑏 ) ), (1) 
+
+𝑟 (𝑏 ) = (𝑏 )
+
+max − (𝑏 )
+
+min , (2) 
+
+𝑞 (𝑏 ) =
+
+𝑚 (𝑏 ) − min (𝑏 )
+
+𝑟 (𝑏 ) · 255 
+
+
+
+∈ [ 0, 255 ]. (3) Dequantization reconstructs: 
+
+˜𝑚 (𝑏 ) = 𝑞 (𝑏 )
+
+255 · 𝑟 (𝑏 ) + (𝑏 )
+
+min . (4) 
+
+Log-space quantization (for variance 𝑣 ). Variance values span multiple orders of magnitude and are always positive. We quantize 
+
+log (𝑣 + 𝜖 ) instead of 𝑣 directly. Log-space quantization maintains constant relative precision across magnitudes, unlike prefix-based methods which suffer bit starvation at small values (see Appen-dix A.3 for detailed comparison): 
+
+ℓ (𝑏 ) = log (𝑣 (𝑏 ) + 𝜖 ), (5) 
+
+ℓ (𝑏 ) 
+
+> min
+
+= min (ℓ (𝑏 ) ), ℓ (𝑏 ) 
+
+> max
+
+= max (ℓ (𝑏 ) ), (6) 
+
+𝑟 (𝑏 ) 
+
+> ℓ
+
+= ℓ (𝑏 ) 
+
+> max
+
+− ℓ (𝑏 )
+
+> min
+
+, (7) 
+
+𝑞 (𝑏 ) 
+
+> ℓ
+
+=
+
+$ ℓ (𝑏 ) − ℓ (𝑏 )
+
+> min
+
+𝑟 (𝑏 )
+
+> ℓ
+
+· 255 
+
+%
+
+∈ [ 0, 255 ]. (8) Dequantization reconstructs: 
+
+˜𝑣 (𝑏 ) = exp 𝑞 (𝑏 )
+
+> ℓ
+
+255 · 𝑟 (𝑏 ) 
+
+> ℓ
+
++ ℓ (𝑏 )
+
+> min
+
+!
+
+− 𝜖. (9) 
+
+Memory layout. Each block stores 𝐵 INT8 values (1 byte each) + 2 FP32 scalars (min, max) totaling 8 bytes of metadata. For 𝐵 =
+
+64 , each block requires 72 bytes total (64 INT8 values + 8 bytes metadata), compared to 256 bytes for FP32 ( 64 × 4 bytes), yielding a compression ratio of approximately 3.56 × per block. Across the entire optimizer state, accounting for padding and alignment, we measure an empirical compression ratio of 3.37 × (from 89.82 MB to 26.67 MB for CIFAR-100). 
+
+## 3.3 Q-LocalAdam Algorithm 
+
+Algorithm 1 presents Q-LocalAdam. Unlike standard FedAdam [ 24 ], which maintains adaptive optimizer states on the server across rounds, our implementation applies quantized Adam optimization 
+
+locally on each client with state reinitialization at the beginning of Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+Algorithm 1 Q-LocalAdam: Quantized Client-Side Adam with FedAvg Aggregation  
+
+> 1:
+
+Notation: 𝜃 𝑡 denotes the global model at round 𝑡 , and 𝜃 𝑘 denotes the local model maintained by client 𝑘 . 
+
+> 2:
+
+Input: Initial model 𝜃 0, learning rate 𝜂 , momentum parameters 𝛽 1, 𝛽 2,local epochs 𝐸 , block size 𝐵 , number of rounds 𝑇 , epsilon 𝜖 = 10 −8 
+
+> 3:
+
+for round 𝑡 = 1, 2, . . . ,𝑇 do  
+
+> 4:
+
+Server selects subset of clients S𝑡 and broadcasts 𝜃 𝑡 to all clients  
+
+> 5:
+
+for each client 𝑘 ∈ S 𝑡 in parallel do  
+
+> 6:
+
+𝜃 𝑘 ← 𝜃 𝑡 {Download global model}  
+
+> 7:
+
+Initialize: 𝑚 𝑘 ← 0, 𝑣 𝑘 ← 0 (quantized), step ← 0 
+
+> 8:
+
+for local epoch 𝑒 = 1 to 𝐸 do  
+
+> 9:
+
+for mini-batch B ⊂ D 𝑘 do  
+
+> 10:
+
+𝑔 𝑘 ← ∇ 𝜃 𝑘 𝐿 (𝜃 𝑘 ; B) {Compute local gradient}  
+
+> 11:
+
+step ← step + 1 
+
+> 12: 13:
+
+// Dequantize previous states to FP32  
+
+> 14:
+
+𝑚 ← Dequantize (𝑚 𝑘 , linear , 𝐵 ) {Eq. 4}  
+
+> 15:
+
+𝑣 ← Dequantize (𝑣 𝑘 , log-space , 𝐵 ) {Eq. 9}  
+
+> 16: 17:
+
+// Update optimizer states in FP32  
+
+> 18:
+
+𝑚 ← 𝛽 1𝑚 + ( 1 − 𝛽 1 )𝑔 𝑘  
+
+> 19:
+
+𝑣 ← 𝛽 2𝑣 + ( 1 − 𝛽 2 )𝑔 2 
+
+> 𝑘
+
+{Element-wise square}  
+
+> 20: 21:
+
+// Quantize updated states back to INT8 for storage  
+
+> 22:
+
+𝑚 𝑘 ← Quantize (𝑚, linear , 𝐵 ) {Eq. 3}  
+
+> 23:
+
+𝑣 𝑘 ← Quantize (𝑣, log-space , 𝐵 ) {Eq. 8}  
+
+> 24: 25:
+
+// Bias correction and parameter update (using FP32 values)  
+
+> 26:
+
+ˆ𝑚 ← 𝑚 /( 1 − 𝛽 step  
+
+> 1
+
+) 
+
+> 27:
+
+ˆ𝑣 ← 𝑣 /( 1 − 𝛽 step  
+
+> 2
+
+) 
+
+> 28:
+
+𝜃 𝑘 ← 𝜃 𝑘 − 𝜂 · ˆ𝑚 ⊘ ( √ ˆ𝑣 + 𝜖 ) {⊘ = element-wise division}  
+
+> 29:
+
+end for  
+
+> 30:
+
+end for  
+
+> 31:
+
+Client 𝑘 sends 𝜃 𝑘 back to server  
+
+> 32:
+
+end for  
+
+> 33:
+
+Server aggregates: 𝜃 𝑡 +1 ← Í𝑘 ∈S 𝑡      
+
+> |D 𝑘 |
+> Í𝑗 ∈S 𝑡 |D 𝑗 |
+
+𝜃 𝑘 {Weighted averag-ing}  
+
+> 34:
+
+end for  
+
+> 35:
+
+Return: 𝜃 𝑇 
+
+each federated round. This design choice isolates the memory im-pact of quantization from long-horizon optimizer accumulation ef-fects, allowing controlled comparison across quantization schemes. Key differences from server-side FedAdam: 
+
+• Clients run Adam with quantized states; server performs weighted averaging 
+
+• Optimizer states ( 𝑚, 𝑣 ) are reinitialized each round (line 6) 
+
+• Quantization reduces client-side memory, not server memory 
+
+Quantization and numerical precision. Within each local train-ing step, optimizer states from the previous iteration are dequan-tized into FP32 (Algorithm 1, lines 14-15), updated using standard Adam equations (lines 18-19), then immediately quantized for stor-age before the next iteration (lines 22–23). Bias correction and parameter updates (lines 26–28) operate on the full-precision val-ues before quantization, ensuring numerical precision in the actual model update while minimizing memory footprint by storing states in INT8 between iterations. 
+
+Table 1: Data heterogeneity across clients under different Dirichlet concentration parameters ( 𝛼 ). Dominant class % indicates the average fraction of samples belonging to the most frequent class in each client (averaged across 10 clients). Lower 𝛼 values induce stronger heterogeneity. Dataset 𝛼 Avg Dom. % Sample Std 1 Heterogeneity                                   
+
+> CIFAR-10 0.1 65.7% 3,204 Extreme 0.5 42.6% 2,101 High 1.0 26.8% 936 Moderate IID 10.6% 0Balanced CIFAR-100 0.1 10.4% 1,309 Extreme 0.5 5.5% 410 High 1.0 4.5% 455 Moderate IID 1.4% 0Balanced
+> *Note:Sample standard deviations do not monotonically decrease with 𝛼 due to stochastic Dirichlet sampling; with 10 clients, random variation can produce outliers (e.g., 𝛼 =1.0with std=455 vs. 𝛼 =0.5with std=410 for CIFAR-100).
+
+## 4 Experimental Setup 
+
+Datasets. We evaluate on CIFAR-10 and CIFAR-100 (50,000 train-ing and 10,000 test images; 32 × 32 resolution), standard bench-marks for federated learning under data heterogeneity [ 15 , 24 ]. These datasets enable controlled evaluation of non-IID robustness while remaining computationally feasible for comprehensive ab-lation studies. Training data is partitioned across 10 clients using Dirichlet distribution with concentration parameter 𝛼 , where lower 
+
+𝛼 induces stronger heterogeneity. For CIFAR-10, 𝛼 = 0.1 represents extreme heterogeneity with highly skewed class distributions (aver-age dominant class percentage 65.7%, with some clients exceeding 96%), 𝛼 = 0.5 yields high heterogeneity (42.6%), 𝛼 = 1.0 yields mod-erate heterogeneity (26.8%), while IID distributes data uniformly (10.6% per class). For CIFAR-100, the same 𝛼 values produce lower dominant class percentages (10.4%, 5.5%, 4.5%, and 1.4% respec-tively) due to the larger number of classes. We evaluate across 
+
+𝛼 ∈ { 0.1, 0.5, 1.0, IID } to systematically stress-test optimizer ro-bustness under varying heterogeneity levels. Detailed per-client data distributions are provided in Appendix B and summarized in Table 1. 
+
+Model and training. We use ResNet-18 with width adapted to task complexity ( 6.3M parameters for CIFAR-10, 11M for CIFAR-100). To mimic realistic transfer learning pipelines on edge devices, we upsample inputs from 32 × 32 to 224 × 224 , matching production workflows where models expect high-resolution inputs compati-ble with pre-trained backbones. This configuration stress-tests Q-LocalAdam under realistic memory pressure where optimizer states compete with large activation maps ( 224 ×224 vs. 32 ×32 )—precisely where our 3.37 × reduction matters most. Training runs for 120 federated rounds with full client partici-pation (5 clients per round). Each client performs 2 local epochs with batch size 64. We use Vanilla-ClientAdam (FP32) with 𝛽 1 = 0.9,
+
+𝛽 2 = 0.999 , 𝜖 = 10 −8, and learning rate 𝜂 = 10 −3. Optimizer states (𝑚 , 𝑣 ) are reinitialized each round (Algorithm 1, line 6), following cross-device FL conventions. Model parameters are aggregated via weighted averaging (FedAvg). Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+Quantization Details. 1. Memory layout: For a parameter tensor with 𝑁 elements and block size 𝐵 , we partition it into ⌈𝑁 /𝐵 ⌉ blocks. Each block stores 𝐵 INT8 quantized values (1 byte each) and 2 FP32 scalars (min and max, or their log-space equivalents for variance), totaling (𝐵 + 8) bytes per block. For 𝐵 = 64 , this yields 72 bytes per block versus 256 bytes in FP32, a theoretical compression of 3.56 ×
+
+per block. 
+
+2. Padding: If 𝑁 is not divisible by 𝐵 , the last block is zero-padded to size 𝐵 . Padding indices are tracked and ignored during dequanti-zation. All reported memory measurements include both metadata and padding overhead. 
+
+3. Epsilon for numerical stability. We use 𝜖 = 10 −8 in the log-space quantizer (Equation 9) to handle near-zero variance values. This prevents log (0) errors while introducing negligible bias ( ∼ 10 −8). 
+
+Implementation Details. All main experiments use a fixed random seed of 42. We perform multi-seed validation with 3 seeds (42, 123, 456) on representative settings (CIFAR-10 𝛼 =0.5, CIFAR-100 𝛼 =0.1), reporting mean ± standard deviation with two-sample 𝑡 -tests in Table 5. We enable cuDNN benchmarking for efficiency, producing stable results with variance <0.5pp across runs. 
+
+Baselines and Ablations. 
+
+• Vanilla-ClientAdam (FP32) [27 ]: Full-precision baseline with 32-bit 𝑚 and 𝑣 .
+
+• Q-LocalAdam : Block-wise linear quantization for 𝑚 , log-space for 𝑣 (𝐵 = 64 )
+
+• Naive INT8 : Uniform linear 8-bit quantization for both 𝑚 
+
+and 𝑣 using the same block-wise scheme (Eqs. 1–4), inspired by [4] 
+
+• Momentum-only : Quantize only 𝑚 (linear), keep 𝑣 in FP32 (ablation) 
+
+• Variance-only : Quantize only 𝑣 (log-space), keep 𝑚 in FP32 (ablation) We evaluate the impact of block sizes ( 𝐵 ∈ 32 , 64 , 128 ) and learn-ing rates ( 𝜂 ∈ 5 × 10 −4, 10 −3) for Q-LocalAdam. 
+
+Metrics. We report best test accuracy (maximum across 120 rounds), final test accuracy (round 120), and optimizer memory (measured on client 0 after round 1, including quantization meta-data). 
+
+## 5 Results and Discussion 
+
+Table 2 presents our core results on CIFAR-10 and CIFAR-100 un-der extreme data heterogeneity ( 𝛼 = 0.1). Q-LocalAdam achieves 81.91% on CIFAR-10 and 61.47% on CIFAR-100, exceeding Vanilla-ClientAdam (FP32) (81.67% and 55.73%) while reducing optimizer memory by 3.37 ×.
+
+Memory reduction. Q-LocalAdam uses 14.95 MB on CIFAR-10 (vs. 50.35 MB FP32) and 26.67 MB on CIFAR-100 (vs. 89.82 MB FP32), achieving 3.37 × reduction by compressing optimizer states (𝑚 and 𝑣 ) to 8 bits while keeping model parameters in full precision. The slight overhead versus theoretical 4× compression arises from storing per-block min/max scalars ( 12% overhead for 𝐵 = 64 ). 
+
+Accuracy preservation or improvement. Q-LocalAdam improves over FP32 on both datasets. On CIFAR-10 at 𝛼 = 0.1, Q-LocalAdam 
+
+Table 2: Extreme non-IID ( 𝛼 = 0.1) performance: Q-LocalAdam improves over FP32 by +0.24pp (CIFAR-10) and +5.74pp (CIFAR-100) with 3.37 × less optimizer memory.                
+
+> Dataset Method Acc (%) Mem (MB) CIFAR-10 Vanilla-ClientAdam (FP32) 81.67 50.35
+> Q-LocalAdam (Ours) 81.91 14.95
+> Naive INT8 11.50 14.95 CIFAR-100 Vanilla-ClientAdam (FP32) 55.73 89.82
+> Q-LocalAdam (Ours) 61.47 26.67
+> Naive INT8 1.00 26.67
+
+achieves 81.91% vs. 81.67% (+0.24pp). On CIFAR-100, the improve-ment is more pronounced: 61.47% vs. 55.73% (+5.74pp). This sub-stantial gain suggests that quantization acts as an effective implicit regularizer under extreme non-IID conditions. We hypothesize that log-space quantization’s multiplicative error bounds prevent sec-ond moment overflow on minority-class examples, which FP32’s unbounded variance accumulation fails to handle. 
+
+Naive INT8 collapses. Naive INT8 achieves the same memory usage as Q-LocalAdam but catastrophically fails, collapsing to near-random performance: 11.50% on CIFAR-10 (10% random baseline) and 1.00% on CIFAR-100 (1% random baseline). This validates our core claim: uniform linear 8-bit encoding for both momentum and variance is fundamentally unstable. Linear quantization allocates most of its 256 levels to the sparse tail of the variance distribution, losing precision where most values lie. 
+
+## 5.1 Convergence and Robustness Analysis 
+
+Figures 1 and 2 present convergence curves for all methods across both datasets. 
+
+Convergence under extreme heterogeneity. On CIFAR-10 with 𝛼 =
+
+0.1 (Figure 1, left), Q-LocalAdam (red) converges identically to Vanilla-ClientAdam (FP32) (blue), with both reaching peak accuracy around 81-82% and maintaining stable performance through round 120. The overlapping curves demonstrate that 8-bit quantization introduces negligible optimization overhead. In contrast, Naive INT8 (orange dotted) collapses immediately to 10% accuracy and never recovers. On CIFAR-100 (Figure 2), Q-LocalAdam (green) consistently out-performs FP32 (blue) from round 30 onward, achieving 61.47% vs. 55.73% best accuracy (+5.74pp). This improvement emerges gradu-ally, suggesting that log-space quantization provides mild regular-ization that prevents overfitting to local client distributions under extreme heterogeneity. Naive INT8 (orange) remains at exactly 1.00% accuracy (random guessing on 100 classes, shown as orange dashed line). 
+
+Robustness across heterogeneity levels. Tables 3 and 4 evaluate Q-LocalAdam across four data distributions: IID, mild ( 𝛼 = 1.0), moderate ( 𝛼 = 0.5), and extreme ( 𝛼 = 0.1) heterogeneity. On CIFAR-10, both methods improve monotonically as data becomes more IID-like: from 81-82% at 𝛼 = 0.1 to 88-89% under IID. Q-LocalAdam matches FP32 under IID conditions (-0.31pp) but outperforms at all Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+Figure 1: CIFAR-10 convergence and robustness. Left: Main comparison under extreme heterogeneity ( 𝛼 = 0.1). Q-LocalAdam (red) matches Vanilla-ClientAdam (FP32) (blue) convergence, while Naive INT8 (orange dotted) collapses to 10% random guessing. Right: Q-LocalAdam robustness across heterogeneity levels. Performance improves as data becomes more IID-like (𝛼 = 0.1 → 0.5 → 1.0), with stable convergence at all levels. 
+
+Figure 2: CIFAR-100 convergence analysis. Q-LocalAdam with log-space quantization (green) outperforms Vanilla-ClientAdam (FP32) (blue) by +5.74 percentage points under extreme heterogeneity ( 𝛼 = 0.1). Naive INT8 with linear quan-tization (orange dotted) remains at 1.00% random guessing (orange dashed baseline) throughout all 120 rounds, confirm-ing that linear quantization fundamentally destabilizes adap-tive optimization. Table 3: CIFAR-10 robustness across heterogeneity levels. Q-LocalAdam matches or exceeds FP32 at moderate to extreme heterogeneity settings (+0.10pp to +0.24pp) with 3.37 × less memory.                      
+
+> 𝛼 Accuracy (%) Memory (MB) FP32 Q-LocalAdam FP32 Q-LocalAdam IID 89.09 88.78 50.35 14.95 1.0 88.25 88.35 50.35 14.95 0.5 87.33 87.44 50.35 14.95 0.1 81.67 81.91 50.35 14.95
+
+heterogeneous settings, with gaps ranging from +0.10pp ( 𝛼 = 1.0)to +0.24pp ( 𝛼 = 0.1). 
+
+Table 4: CIFAR-100 robustness across heterogeneity levels. Q-LocalAdam outperforms FP32 at all settings (+0.72pp to +5.74pp) with 3.37 × less memory.                      
+
+> 𝛼 Accuracy (%) Memory (MB) FP32 Q-LocalAdam FP32 Q-LocalAdam IID 62.24 62.97 89.82 26.67 1.0 62.69 63.41 89.82 26.67 0.5 60.95 63.10 89.82 26.67 0.1 55.73 61.47 89.82 26.67
+
+On CIFAR-100, the pattern is more pronounced. At extreme het-erogeneity ( 𝛼 = 0.1), Q-LocalAdam significantly outperforms FP32 (61.47% vs. 55.73%, +5.74pp). At 𝛼 = 0.5, Q-LocalAdam maintains +2.15pp advantage, and at 𝛼 = 1.0 achieves +0.72pp improvement. Under IID conditions, Q-LocalAdam achieves 62.97% vs. 62.24% (+0.73pp). Q-LocalAdam maintains 3.37 × memory reduction (14.95 MB vs. 50.35 MB on CIFAR-10; 26.67 MB vs. 89.82 MB on CIFAR-100) across all conditions. The +5.74pp improvement on CIFAR-100 at 𝛼 = 0.1 suggests that quantization acts as an implicit regularizer under extreme non-IID conditions. We hypothesize two mechanisms: (1) log-space quantiza-tion introduces multiplicative rather than additive error in variance estimates, preventing unbounded accumulation on minority-class examples, and (2) per-round optimizer state reinitialization (Algo-rithm 1, line 5) prevents overfitting to early-round client distribu-tions. 
+
+Necessity of log-space quantization. The consistent failure of Naive INT8 across both datasets (11.50% on CIFAR-10, 1.00% on CIFAR-100) confirms that log-space quantization is essential. Lin-ear quantization crushes small variance values into a single bin, causing the denominator in 𝜃 ← 𝜃 − 𝜂𝑚 /( √𝑣 + 𝜖 ) to lose precision. The resulting update steps become effectively random, explaining why Naive INT8 never exceeds random guessing even after 120 rounds. In contrast, Q-LocalAdam’s log-space encoding preserves variance precision across orders of magnitude. Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+## 5.2 Ablation and Sensitivity Analysis 
+
+5.2.1 Component Ablation. We validate that quantizing both mo-mentum and variance is necessary by comparing Q-LocalAdam against Momentum-only (8-bit 𝑚 , FP32 𝑣 ) and Variance-only (FP32 
+
+𝑚 , 8-bit 𝑣 ) (Table 10 in Appendix B.6.1). On CIFAR-100 at 𝛼 = 0.1,full Q-LocalAdam achieves 61.47% accuracy with 26.67 MB memory (3.37 × reduction), while Momentum-only reaches 52.49% (58.24 MB, 1.54 × reduction) and Variance-only achieves 61.10% (58.24 MB). Q-LocalAdam dominates both ablations with less than half the mem-ory while matching or exceeding accuracy. On CIFAR-10, partial quantization performs comparably (82.48% for Momentum-only vs. 81.91% full), but achieves only 1.54 × compression versus 3.37 ×
+
+for full quantization. This confirms that both distribution-matched quantization schemes are essential for optimal accuracy-memory trade-offs (see Appendix B.6.1 for detailed convergence analysis). 
+
+5.2.2 Block Size Sensitivity. We evaluate block sizes 𝐵 ∈ { 32 , 64 , 128 }
+
+on both datasets at 𝛼 = 0.1. On CIFAR-10, all sizes achieve similar accuracy (81.91%–82.46%, 0.55pp variation). On CIFAR-100, 𝐵 = 64 
+
+achieves the best accuracy (61.47%), compared to 𝐵 = 32 (60.71%) and 𝐵 = 128 (60.93%). The narrow 0.76pp range across all block sizes suggests robustness to this hyperparameter. Memory varies from 30.88 MB ( 𝐵 = 32 ) to 24.56 MB ( 𝐵 = 128 ) on CIFAR-100. We select 𝐵 = 64 as the default for its balance of accuracy and memory efficiency. See Table 11 and Appendix B.6.2 for complete results. 
+
+5.2.3 Learning Rate Robustness. Q-LocalAdam maintains robust performance across learning rates. On CIFAR-100 at 𝛼 = 0.1, 𝜂 =
+
+10 −3 achieves 61.47% and 𝜂 = 5 × 10 −4 achieves 61.82%, show-ing that the lower learning rate actually performs slightly better (+0.35pp). On CIFAR-10, both rates achieve nearly identical per-formance (81.91% vs. 81.79%, 0.12pp gap). This confirms that Q-LocalAdam works with standard federated learning hyperparame-ters without careful tuning (Appendix B.6.3). 
+
+Task complexity and robustness. Across all ablations, CIFAR-10 demonstrates greater robustness: momentum-only quantization performs competitively (82.48% vs. 81.91%), block size variation induces minimal change (0.55pp range), and learning rate sensitivity is negligible (0.12pp). CIFAR-100 shows slightly wider variation (0.76pp for block size), suggesting that complex multi-class tasks benefit from but do not strictly require fine-tuned quantization settings. This motivates task-adaptive quantization strategies for future work. 
+
+## 5.3 Why Log-Space Quantization is Stable for Second Moments 
+
+A natural concern is whether repeatedly quantizing and dequantiz-ing the variance buffer 𝑣 introduces systematic bias or instability, particularly under non-IID data distributions. We provide an infor-mal analysis showing that log-space quantization is well-suited to the variance update in Vanilla-ClientAdam. 
+
+Variance enters the update multiplicatively. In the Adam update, variance 𝑣 appears in the denominator after taking its square root: 
+
+𝜃 ← 𝜃 − 𝜂 ˆ𝑚 
+
+√ˆ𝑣 + 𝜖 .
+
+Because 𝑣 appears inside a square root, its role is inherently scale-preserving : doubling all entries of 𝑣 simply rescales the effective learning rate by a constant factor. This suggests that relative preci-sion in 𝑣 is more important than absolute precision, which is exactly what log-space quantization provides. 
+
+Log-space preserves relative scale. Storing 𝑣 in log-space means we quantize log (𝑣 +𝜖 ) rather than 𝑣 directly. The quantization error becomes multiplicative after dequantization: 
+
+˜𝑣 = 𝑣 · ( 1 + 𝛿 ),
+
+where 𝛿 is bounded by the quantization grid spacing. Because vari-ance values in Vanilla-ClientAdam (FP32) span multiple orders of magnitude, a uniform linear quantizer would allocate most of its dy-namic range to large values and severely under-represent small val-ues. Log-space quantization distributes precision uniformly across scales, ensuring that both large and small variance entries retain sufficient fidelity. 
+
+EMA smooths quantization noise. The variance update is an ex-ponential moving average with momentum 𝛽 2 (typically 0.999 ): 
+
+𝑣 𝑡 = 𝛽 2𝑣 𝑡 −1 + ( 1 − 𝛽 2)𝑔 2 
+
+> 𝑡
+
+.
+
+Each quantization cycle introduces a small multiplicative perturba-tion, but the EMA operation smooths these perturbations over many rounds. In our experiments across 120 federated rounds, we observe no systematic drift in test accuracy compared to full-precision Vanilla-ClientAdam , suggesting that the cumulative quantization error remains bounded. 
+
+Empirical validation. Our convergence plots (Section 4) show that Q-LocalAdam matches or slightly improves upon Vanilla-ClientAdam (FP32) on both CIFAR-10 and CIFAR-100 under strong non-IID conditions ( 𝛼 = 0.1), while the naive INT8 baseline (which uses linear quantization for variance) collapses to near-random accuracy. This empirically confirms that log-space quantization is stable for federated adaptive optimization. 
+
+## 5.4 Multi-Seed Reproducibility 
+
+To validate the robustness of our findings to random factors (initial-ization, data partitioning, stochastic gradient sampling), we perform experiments with 3 independent random seeds (42, 123, 456) on representative heterogeneity settings. We select different 𝛼 values for each dataset: CIFAR-10 at 𝛼 = 0.5 (moderate heterogeneity) and CIFAR-100 at 𝛼 = 0.1 (extreme heterogeneity). 
+
+Rationale for different 𝛼 values: Heterogeneity severity depends on both the Dirichlet parameter 𝛼 and the number of classes. With only 10 classes, CIFAR-10 at 𝛼 = 0.1 becomes pathologically het-erogeneous many clients receive samples from only 1-2 classes, making the task unrepresentative of realistic federated scenarios. In contrast, CIFAR-100’s 100 classes naturally distribute samples more evenly even at 𝛼 = 0.1, allowing us to stress-test robustness under extreme non-IID conditions. We choose 𝛼 = 0.5 for CIFAR-10 to evaluate moderate heterogeneity while avoiding degenerate cases, and 𝛼 = 0.1 for CIFAR-100 to evaluate the most challenging setting. 
+
+Key observations: Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+Table 5: Multi-seed validation over 3 independent random seeds. CIFAR-10 uses 𝛼 = 0.5 (moderate) to avoid pathological splits; CIFAR-100 uses 𝛼 = 0.1 (extreme) to stress-test robust-ness.                             
+
+> Dataset Method Acc (%) 𝑝 Mem (MB)
+> CIFAR-10
+> 𝛼 =0.5 FP32 86.93 ±0.73 –50.35 Q-LocalAdam 87.04 ±0.24 0.78 14.95 Naive INT8 85.86 ±1.08 –14.95 CIFAR-100
+> 𝛼 =0.1 FP32 54.99 ±1.28 –89.82 Q-LocalAdam 61.40 ±0.82 0.005 ∗∗ 26.67 Naive INT8 12.74 ±4.75 –26.67
+> ∗∗ 𝑝 <0.01 (two-sample 𝑡 -test). Naive INT8: 85.86% at 𝛼 =0.5 but 11.50% at 𝛼 =0.1 (Table 2).
+
+Naive quantization is heterogeneity-dependent. The stark contrast in naive INT8 performance between CIFAR-10 𝛼 = 0.5 (85.86%, only 
+
+−1.2% vs FP32) and CIFAR-100 𝛼 = 0.1 (12.74%, −76 .8% vs FP32) demonstrates that naive quantization only works under benign conditions. This contrasts with Table 2 where naive INT8 fails cata-strophically on both datasets at 𝛼 = 0.1 (11.50% on CIFAR-10, 1.00% on CIFAR-100). At 𝛼 = 0.5, gradient magnitudes remain bounded and naive quantization survives; at 𝛼 = 0.1, extreme gradient vari-ance causes collapse. In contrast, Q-LocalAdam provides consistent robustness across all heterogeneity levels: it matches FP32 at 𝛼 = 0.5
+
+(CIFAR-10: +0.11% , p=0.78) and significantly outperforms at 𝛼 = 0.1
+
+(CIFAR-100: +6.41% , p=0.005). 
+
+Low variance indicates stable training. Q-LocalAdam exhibits consistently lower standard deviation than FP32 on both datasets (0.24% vs 0.73% on CIFAR-10, 0.82% vs 1.28% on CIFAR-100), suggest-ing that quantization provides mild regularization that stabilizes convergence across different initializations. 
+
+Statistical significance reveals heterogeneity-dependent effects. On CIFAR-10 ( 𝛼 = 0.5), the p-value of 0.78 confirms that Q-LocalAdam and FP32 are statistically equivalent quantization introduces no accuracy penalty. On CIFAR-100 ( 𝛼 = 0.1), 𝑝 = 0.005 indicates high statistical significance: there is < 0.5% probability that the 6.41pp improvement occurred by chance. This suggests that adap-tive quantization becomes beneficial specifically when client drift is severe. 
+
+Naive quantization shows extreme instability. Naive INT8 on CIFAR-100 exhibits extreme variance ( 𝜎 = 4.75% , 6× higher than Q-LocalAdam), with accuracy ranging from 10.0% to 18.23% across seeds. This reflects sensitivity to random data partitioning: dif-ferent Dirichlet splits create different gradient distributions, and naive linear quantization clips extreme values inconsistently. Q-LocalAdam’s adaptive scale factors mitigate this sensitivity. These multi-seed results confirm that our main findings (Ta-bles 2–4) generalize robustly across random variations, with Q-LocalAdam maintaining 3.37 × memory reduction while matching or improving accuracy with high statistical confidence. 
+
+## 5.5 Scalability Analysis 
+
+Asymptotic memory complexity. For a model with 𝑁 param-eters, FedAdam requires 8𝑁 bytes (2 states × 4 bytes each). Q-LocalAdam preserves 𝑂 (𝑁 ) scaling while reducing the constant to 
+
+Table 6: Projected optimizer memory scaling with 3.56 × com-pression.                
+
+> Params FP32 (MB) Q-LocalAdam (MB) Reduction
+> 10M 76.3 21.5 3.56 ×
+> 100M 762.9 214.6 3.56 ×
+> 1B 7,629 2,146 3.56 ×
+> 10B 76,294 21,458 3.56 ×
+
+approximately 2.25 𝑁 bytes 2:Memory Q-LocalAdam = 2𝑁 + 16 𝑁 𝐵 bytes ≈ 2.25 𝑁 bytes (for 𝐵 = 64 )The metadata overhead (per-block min/max scalars) is ≈ 11 .1% of total memory. Table 6 confirms constant compression across model sizes, making Q-LocalAdam directly applicable to billion-parameter models. 
+
+Block-wise parallelism. Quantization operates independently on fixed-size blocks with no cross-parameter dependencies. The min/max reductions per block (Equations 12–15) map naturally to parallel primitives, enabling efficient multi-GPU execution. 
+
+Independence from client count. Q-LocalAdam’s memory footprint depends only on model size 𝑁 , not client count. Each client stores ≈ 2.25 𝑁 bytes regardless of deployment scale (5 or 10,000 clients), while the server maintains only the global model (≈ 4𝑁 bytes). This makes Q-LocalAdam suitable for internet-scale federated learning with dynamic client participation. 
+
+## 6 Conclusion 
+
+We presented Q-LocalAdam, a memory-efficient federated opti-mizer achieving 3.37 × memory reduction through distribution-aware quantization. Empirical analysis reveals momentum’s sym-metric bounded distribution versus variance’s 8+ order-of-magnitude log-normal structure, motivating our asymmetric design: block-wise linear quantization for momentum and log-space quantization for variance. Experiments on CIFAR-10/100 under varying heterogeneity ( 𝛼 ∈{0.1, 0.5, 1.0, IID }) show Q-LocalAdam matches or exceeds FP32 ac-curacy with 3.37 × memory reduction. On CIFAR-100 at 𝛼 = 0.1, Q-LocalAdam achieves 61.47% versus 55.73% for FP32 (+5.74pp). Naive uniform quantization collapses to 1.00%, confirming distribution-awareness is essential. Multi-seed experiments validate both quanti-zation schemes are necessary, with Q-LocalAdam exhibiting lower variance than FP32. 
+
+Limitations and future work. Our evaluation uses ResNet with 5 clients. Future work includes extending Q-LocalAdam to larger-scale federated benchmarks and transformer-based models, exploring lower-bit and mixed-precision quantization, developing adaptive per-layer block sizing strategies, and establishing theoret-ical convergence guarantees under quantization noise. 
+
+Broader impact. Q-LocalAdam enables larger models on memory-constrained edge devices without protocol changes. Complemen-tary to model compression and gradient quantization, it reduces   
+
+> 2The empirical 3.37 ×compression on CIFAR models (Tables 2–4) differs from the theoretical 3.56 ×due to model-specific parameter counts and alignment overhead.
+
+Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+memory barriers to federated learning participation, advancing inclusive and scalable privacy-preserving ML. 
+
+## References 
+
+[1] Dan Alistarh, Demjan Grubic, Jerry Li, Ryota Tomioka, and Milan Vojnovic. 2017. QSGD: Communication-efficient SGD via gradient quantization and encoding. 
+
+Advances in Neural Information Processing Systems 30 (2017). [2] Debraj Basu, Deepesh Data, Can Karakus, and Suhas Diggavi. 2019. Qsparse-local-SGD: Distributed SGD with quantization, sparsification and local computations. 
+
+Advances in Neural Information Processing Systems 32 (2019). [3] Hong-You Chen and Wei-Lun Chao. 2020. Fedbe: Making bayesian model ensem-ble applicable to federated learning. arXiv preprint arXiv:2009.01974 (2020). [4] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer. 2021. 8-bit optimizers via block-wise quantization. arXiv preprint arXiv:2110.02861 (2021). [5] Nam Hamer, Mehryar Mohri, and Ananda Theertha Suresh. 2023. FedPara: Low-rank hadamard product for communication-efficient federated learning. In 
+
+International Conference on Learning Representations .[6] Nam Hyeon-Woo, Moon Ye-Bin, and Tae-Hyun Oh. 2021. Fedpara: Low-rank hadamard product for communication-efficient federated learning. arXiv preprint arXiv:2108.06098 (2021). [7] Ahmed Imteaj, Urmish Thakker, Shiqiang Wang, Jian Li, and M Hadi Amini. 2021. A survey on federated learning for resource-constrained IoT devices. IEEE Internet of Things Journal 9, 1 (2021), 1–24. [8] Richeng Jin, Yufan Huang, Xiaofan He, Huaiyu Dai, and Tianfu Wu. 2020. Stochastic-sign SGD for federated learning with theoretical guarantees. arXiv preprint arXiv:2002.10940 (2020). [9] Sai Praneeth Karimireddy, Satyen Kale, Mehryar Mohri, Sashank Reddi, Sebastian Stich, and Ananda Theertha Suresh. 2020. SCAFFOLD: Stochastic controlled averaging for federated learning. Proceedings of ICML (2020), 5132–5143. [10] Majid Kundroo and Taehong Kim. 2023. Efficient federated learning with adap-tive client-side hyper-parameter optimization. In 2023 IEEE 43rd international conference on distributed computing systems (ICDCS) . IEEE, 973–974. [11] Daliang Li and Junpu Wang. 2019. Fedmd: Heterogenous federated learning via model distillation. arXiv preprint arXiv:1910.03581 (2019). [12] Qinbin Li, Yiqun Diao, Quan Chen, and Bingsheng He. 2022. Federated learning on non-iid data silos: An experimental study. In 2022 IEEE 38th international conference on data engineering (ICDE) . IEEE, 965–978. [13] Tian Li, Anit Kumar Sahu, Ameet Talwalkar, and Virginia Smith. 2020. Federated learning: Challenges, methods, and future directions. IEEE signal processing magazine 37, 3 (2020), 50–60. [14] Tian Li, Anit Kumar Sahu, Manzil Zaheer, Maziar Sanjabi, Ameet Talwalkar, and Virginia Smith. 2020. Federated optimization in heterogeneous networks. 
+
+Proceedings of MLSys (2020). [15] Brendan McMahan, Eider Moore, Daniel Ramage, Seth Hampson, and Blaise Aguera y Arcas. 2017. Communication-efficient learning of deep net-works from decentralized data. Proceedings of AISTATS (2017). [16] Matias Mendieta, Taojiannan Yang, Pu Wang, Minwoo Lee, Zhengming Ding, and Chen Chen. 2022. Local learning matters: Rethinking data heterogeneity in federated learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 8397–8406. [17] Jeffrey Mills, Jia Hu, and Geyong Min. 2021. Communication-efficient federated learning via knowledge distillation. Nature Communications 12, 1 (2021), 2032. [18] Jed Mills, Jia Hu, and Geyong Min. 2021. Multi-task federated learning for personalised deep neural networks in edge computing. IEEE Transactions on Parallel and Distributed Systems 33, 3 (2021), 630–641. [19] Yujia Mu and Cong Shen. 2025. Federated split learning with improved commu-nication and storage efficiency. IEEE Transactions on Mobile Computing (2025). [20] Yongjeong Oh, Namyoon Lee, Yo-Seb Jeon, and H Vincent Poor. 2022. Communication-efficient federated learning via quantized compressed sensing. 
+
+IEEE Transactions on Wireless Communications 22, 2 (2022), 1087–1100. [21] Alexandre Pacheco, Sébastien De Vos, Andreagiovanni Reina, Marco Dorigo, and Volker Strobel. 2024. Securing Federated Learning in Robot Swarms using Blockchain Technology. In International Symposium on Distributed Autonomous Robotic Systems . Springer, 473–488. [22] Bjarne Pfitzner, Nico Steckhan, and Bert Arnrich. 2021. Federated learning in a medical context: a systematic literature review. ACM Transactions on Internet Technology (TOIT) 21, 2 (2021), 1–31. [23] Youyang Qu, Md Palash Uddin, Chenquan Gan, Yong Xiang, Longxiang Gao, and John Yearwood. 2022. Blockchain-enabled federated learning: A survey. Comput. Surveys 55, 4 (2022), 1–35. [24] Sashank Reddi, Zachary Charles, Manzil Zaheer, Zachary Garrett, Keith Rush, Jakub Konečn` y, Sanjiv Kumar, and H Brendan McMahan. 2021. Adaptive feder-ated optimization. Proceedings of ICLR (2021). [25] Amirhossein Reisizadeh, Aryan Mokhtari, Hamed Hassani, Ali Jadbabaie, and Ramtin Pedarsani. 2020. FedPAQ: A communication-efficient federated learning method with periodic averaging and quantization. In International Conference on Artificial Intelligence and Statistics . PMLR, 2021–2031. [26] Rishub Tamirisa, Chulin Xie, Wenxuan Bao, Andy Zhou, Ron Arel, and Aviv Shamsian. 2024. Fedselect: Personalized federated learning with customized selection of parameters for fine-tuning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 23985–23994. [27] Haibo Tang, Junyi Yang, Sheng Zhou, Yuanming Shi, and Zhisheng Niu. 2024. FedCAda: Adaptive Client-Side Optimization for Accelerated and Stable Federated Learning. In IEEE International Conference on Communications .[28] Zeyi Tao, Jindi Wu, and Qun Li. 2023. Preconditioned Federated Learning. arXiv preprint arXiv:2309.11378 (2023). [29] Chandra Thapa, Pathum Chamikara Mahawaga Arachchige, Seyit Camtepe, and Lichao Sun. 2022. Splitfed: When federated learning meets split learning. In 
+
+Proceedings of the AAAI conference on artificial intelligence , Vol. 36. 8485–8493. [30] Praneeth Vepakomma, Otkrist Gupta, Tristan Swedish, and Ramesh Raskar. 2018. Split learning for health: Distributed deep learning without sharing raw patient data. arXiv preprint arXiv:1812.00564 (2018). [31] Yu Xianjia, Jorge Peña Queralta, Jukka Heikkonen, and Tomi Westerlund. 2021. Federated learning in robotic and autonomous systems. Procedia Computer Science 191 (2021), 135–142. [32] Mang Ye, Xiuwen Fang, Bo Du, Pong C Yuen, and Dacheng Tao. 2023. Hetero-geneous federated learning: State-of-the-art and research challenges. Comput. Surveys 56, 3 (2023), 1–44. [33] Weishan Zhang, Tao Zhou, Qinghua Lu, Yong Yuan, Amr Tolba, and Wael Said. 2024. FedSL: A communication-efficient federated learning with split layer aggregation. IEEE Internet of Things Journal 11, 9 (2024), 15587–15601. [34] Zhuochen Zhang, Xuefei Liu, Yuanchun Wang, and Yunxin Liu. 2025. FedHQ: Hybrid Runtime Quantization for Federated Learning. arXiv preprint arXiv:2505.11982 (2025). Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+## A Appendix A.1 Federated Learning and FedAdam Background 
+
+We consider the standard federated learning setup with 𝐾 clients and a central server. Each client 𝑘 holds a local dataset D𝑘 , and the goal is to minimize the global loss: 
+
+min  
+
+> 𝜃
+
+𝑓 (𝜃 ) =
+
+> 𝐾
+
+∑︁ 
+
+> 𝑘 =1
+
+𝑝 𝑘 𝑓 𝑘 (𝜃 ),
+
+where 𝑓 𝑘 (𝜃 ) = E(𝑥,𝑦 )∼D 𝑘 [𝐿 (𝜃 ; 𝑥, 𝑦 )] and 𝑝 𝑘 = |D 𝑘 |/ Í𝑗 |D 𝑗 |.FedAdam [ 24 ] maintains server-side momentum 𝑚 and variance 
+
+𝑣 estimates, updated via: 
+
+Δ𝑡 = 1
+
+𝐾 
+
+> 𝐾
+
+∑︁ 
+
+> 𝑘 =1
+
+(𝜃 𝑘 𝑡 − 𝜃 𝑡 ), (10) 
+
+𝑚 𝑡 = 𝛽 1𝑚 𝑡 −1 + ( 1 − 𝛽 1)Δ𝑡 , (11) 
+
+𝑣 𝑡 = 𝛽 2𝑣 𝑡 −1 + ( 1 − 𝛽 2)Δ2 
+
+> 𝑡
+
+, (12) 
+
+𝜃 𝑡 +1 = 𝜃 𝑡 − 𝜂 𝑚 𝑡 
+
+√𝑣 𝑡 + 𝜖 , (13) where 𝛽 1, 𝛽 2 are momentum parameters (typically 0.9, 0.999 ), 𝜂 is the learning rate, and 𝜖 is a small constant for numerical stability. For a model with 𝑁 parameters, storing 𝑚 and 𝑣 in FP32 requires 
+
+2𝑁 × 4 bytes, often comparable to the model itself. 
+
+Client-side adaptation. In this work, we apply the Adam up-date rule on clients during local training, rather than maintaining server-side optimizer states as in the original FedAdam formula-tion. Each client maintains momentum 𝑚 𝑘 and variance 𝑣 𝑘 during its local epochs, but these states are reinitialized at the start of each federated round (Algorithm 1, line 5). The server performs only weighted averaging (FedAvg) of client model parameters. This design choice targets client memory constraints the primary bot-tleneck in resource-limited edge devices while maintaining the adaptive optimization benefits of FedAdam during local training. 
+
+## A.2 Empirical Analysis of Optimizer State Distributions 
+
+To motivate our quantization design, we characterize the statistical properties of Vanilla-ClientAdam optimizer states. We train ResNet-18 variants on CIFAR-10 (6.3M parameters) and CIFAR-100 (11M parameters) for 50 gradient steps with batch size 64, then extract all momentum and variance values across all layers. Figures 3 and 4 show the distributions for CIFAR-10 and CIFAR-100, respectively. On linear scale (top left in each figure), variance distributions are extremely right-skewed, with most values concen-trated near zero and a long tail extending to large values. On log scale (top right), the distributions appear approximately Gaussian, spanning roughly 7–8 orders of magnitude from 10 −12 to 10 −3. The minimum-to-maximum ratio is approximately 10 7 for both datasets, meaning a uniform linear 8-bit quantizer with 256 levels would allocate most of its dynamic range to the sparse tail, crushing small values into a single quantization bin and losing critical precision. In contrast, momentum values (bottom row) remain within a moderate range and exhibit approximately symmetric, bounded 0 2 4 6               
+
+> 1e 4
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Frequency
+> 1e6 Variance ( v)
+> 10 864
+> 0
+> 50000
+> 100000
+> 150000
+> 200000
+> 250000
+> 300000
+> 350000
+> log 10 Variance
+> 0.02 0.00 0.02 0.04
+> Value
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Frequency
+> 1e6 Momentum ( m)
+> 0.04 0.02 0.00 0.02 0.04
+> Value
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 1e6 Momentum (Zoom)
+
+Figure 3: CIFAR-10 optimizer state distributions after 50 training steps. Top: Variance ( 𝑣 ) on linear (left) and log 10 
+
+(right) scales. Bottom: Momentum ( 𝑚 ) on full scale (left) . 0 2 4 6 8                
+
+> 1e−4
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Frequency
+> 1e6 Variance ( v)
+> −10 −8 −6 −4
+> 0
+> 50000
+> 100000
+> 150000
+> 200000
+> 250000
+> 300000
+> log 10 Variance
+> −0.02 −0.01 0.00 0.01 0.02 0.03
+> Value
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Frequency
+> 1e6 Momentum ( m)
+> −0.04 −0.02 0.00 0.02 0.04
+> Value
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 1e6 Momentum (Zoom)
+
+Figure 4: CIFAR-100 optimizer state distributions after 50 training steps. Layout identical to Figure 3. The asymmetry between variance (7–8 orders of magnitude) and momentum (±0.1) is consistent across both datasets. 
+
+behavior suitable for linear quantization. For both datasets, mo-mentum values lie almost entirely within [− 0.1, +0.1], with 95% of values concentrated within ±0.05 (bottom right panels show zoomed view). The distributions are approximately Gaussian and Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+centered near zero, indicating that momentum has no skewness or heavy tails. This stark difference in statistical structure motivates our asym-metric design principle: optimizer states with fundamentally different distributions should not share the same quantization scheme . We ap-ply linear quantization to momentum (symmetric, bounded) and log-space quantization to variance (log-normal, spanning orders of magnitude). This design is consistent across both CIFAR-10 and CIFAR-100, despite their different model sizes and class counts. 
+
+## A.3 Quantization Precision Analysis 
+
+A critical challenge in federated learning optimization is the com-pression of the optimizer’s second moment (variance), which typi-cally exhibits a heavy-tailed distribution spanning many orders of magnitude (e.g., 10 −7 to 10 1). To validate our choice of log-space quantization, we compared its representational fidelity against a prefix-based dynamic quantization baseline. 
+
+A.3.1 Simulation Setup. We generated a synthetic dataset of 𝑁 =
+
+3000 values following a log-uniform distribution to mimic the skewed variance states observed in non-IID federated training. The data range was set from 10 −7 to 10 0. We compared two 8-bit quan-tization schemes: 
+
+• Log-space Quantization (Ours): Direct mapping of values to a logarithmic grid. 
+
+• Prefix-Based Dynamic Tree (Dettmers): We simulate a prefix-based dynamic tree quantization scheme that cap-tures the key characteristic of Dettmers-style methods [ 4]namely, magnitude-dependent mantissa allocation due to unary exponent prefixes. 
+
+A.3.2 Results and Discussion. The empirical results, visualized in Figure 5, demonstrate a fundamental trade-off in quantization structure. For variance tensors with heavy-tailed distributions, log-space quantization consistently yields lower relative error across magnitudes compared to prefix-based dynamic tree schemes, which suffer from bit starvation at small values. 
+
+• Log-space (Ours): 1.58% 
+
+• Dynamic Tree Baseline: 78 .23% 
+
+A prefix-based encoding forces a trade-off: to represent small numbers, the encoding must use a long unary prefix, drastically reducing the bits available for the mantissa. Our log-space approach decouples scale from resolution, ensuring that relative precision remains invariant to signal magnitude. 
+
+## B Data Distribution Details B.1 Dirichlet Partitioning Methodology 
+
+We employ Dirichlet distribution to simulate realistic non-IID data partitions in federated learning. For a dataset with 𝐾 classes and 
+
+𝑁 clients, samples of class 𝑘 are allocated to clients according to proportions p𝑘 ∼ Dir (𝛼, . . . , 𝛼 ), where 𝛼 is the concentration pa-rameter. Lower 𝛼 values produce more skewed distributions: 𝛼 → 0
+
+results in each client receiving samples from only one class (com-plete pathological non-IID), while 𝛼 → ∞ approaches uniform IID distribution. This partitioning strategy is widely adopted in federated learning literature [ 3, 12 ] as it captures real-world data 
+
+Figure 5: Comparison of relative quantization error between log-space quantization (ours) and a simulated prefix-based dynamic tree baseline. The baseline suffers from bit starva-tion at small magnitudes ( < 10 −2), while our method main-tains constant relative error across the full dynamic range. 
+
+heterogeneity where different clients naturally collect data from non-uniform distributions. 
+
+## B.2 Heterogeneity Quantification 
+
+Table 7 summarizes the degree of heterogeneity across different 𝛼 
+
+values using two key metrics: 
+
+Average Dominant Class Percentage: Measures data concen-tration by computing the fraction of samples belonging to the most frequent class in each client, averaged across all clients. For CIFAR-10, this metric ranges from 10.6% (IID, uniform across 10 classes) to 65.7% ( 𝛼 = 0.1, extreme skew). Under 𝛼 = 0.1, some clients ex-hibit over 90% concentration in a single class (e.g., Client 5 with 96.7% ships, Client 7 with 93.6% automobiles), simulating scenarios where edge devices collect highly specialized data analogous to a smartphone primarily photographing pets or a hospital system predominantly imaging specific pathologies. For CIFAR-100, the same 𝛼 value produces lower percentages (10.4% at 𝛼 = 0.1) due to class dilution across 100 categories, but relative heterogeneity remains significant.We classify heterogeneity based on the ratio to uniform baseline: CIFAR-100’s 10.4% (10 × baseline) is labeled “Extreme” similar to CIFAR-10’s 65.7% (6.5 × baseline), as both rep-resent severe class imbalance relative to their respective uniform distributions. 
+
+Sample Standard Deviation: Quantifies imbalance in dataset sizes across clients. CIFAR-10 with 𝛼 = 0.1 shows extreme variance (std=3,204), with clients holding between 1,040 and 9,826 samples nearly 9.5 × difference. This asymmetry mirrors real federated sce-narios where clients have vastly different data volumes (e.g., active vs. inactive users). IID partitioning yields zero variance with exactly 5,000 samples per client, serving as our controlled baseline. 
+
+## B.3 Per-Client Distribution Analysis 
+
+Tables 8 and 9 provide exhaustive per-client breakdowns for all 𝛼 
+
+configurations. Key observations: Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+Table 7: Data heterogeneity summary across clients. Ratio indicates dominant class concentration relative to a uniform distribution ( 1/𝐾 ).                                      
+
+> Dataset 𝛼 Avg. Dom. % Ratio Sample Std. Heterogeneity
+> CIFAR-10 0.1 65.7% 6.6 ×3,204 Extreme 0.5 42.6% 4.3 ×2,101 High 1.0 26.8% 2.7 ×936 Moderate IID 10.6% 1.1 ×0Balanced CIFAR-100 0.1 10.4% 10.4 ×1,309 Extreme 0.5 5.5% 5.5 ×410 High 1.0 4.5% 4.5 ×455* Moderate IID 1.4% 1.4 ×0Balanced
+
+*Note: Sample standard deviations do not monotonically decrease with 
+
+𝛼 due to stochastic Dirichlet sampling. With finite clients, random variation can produce minor fluctuations (e.g., 455 vs. 410). CIFAR-10 Extreme Non-IID ( 𝛼 = 0.1): Client specialization is highly pronounced. Client 5 becomes a near-specialist in ships (96.7% of its 4,481 samples), while Client 7 focuses on automobiles (93.6% of 1,590 samples). Clients 3 and 4 both specialize in airplanes but with vastly different data volumes (1,749 vs. 4,467 samples, ex-hibiting 85.5% and 77.9% concentration respectively). Such extreme partitions test whether optimizers can converge when local client objectives diverge significantly from the global optimum a critical challenge in federated learning where local gradients may point in conflicting directions. 
+
+CIFAR-100 Extreme Non-IID ( 𝛼 = 0.1): Despite 100 classes, het-erogeneity manifests differently than CIFAR-10. Dominant class percentages appear lower (avg 10.4%) due to class dilution, but rela-tive concentration is equally extreme 10.4% represents 10 × oversam-pling compared to the 1% uniform baseline, comparable in severity to CIFAR-10’s 65.7% (6.5 × the 10% baseline). Client 4 exhibits 18.4% in a single class (class 29), representing 18 × oversampling compared to the uniform 1% baseline. This demonstrates that heterogeneity persists even in fine-grained classification tasks, though its impact on optimizer dynamics differs from coarse-grained scenarios. 
+
+Sample Imbalance Impact: At 𝛼 = 0.1, small clients (e.g., CIFAR-10 Client 9 with 1,040 samples) perform significantly fewer local SGD updates per round than large clients (e.g., Client 8 with 9,826 samples). With 2 local epochs and batch size 64, Client 9 performs 
+
+≈33 gradient steps per round while Client 8 performs ≈307 steps nearly 9.5 × difference. This asymmetry introduces optimization challenges: quantized optimizers must maintain stable momentum and variance estimates despite drastically different update frequen-cies across clients. 
+
+Client Sampling Statistics: Over 120 federated rounds with 5 clients randomly selected per round (without replacement), selec-tion frequency remains approximately balanced: mean 60.0 selec-tions per client with standard deviation 6.3 (ranging from 50 to 74 across clients). This ensures all clients contribute equally to global model updates over time, regardless of their local data size or het-erogeneity level. Random sampling prevents systematic bias while maintaining statistical efficiency. 
+
+## B.4 Visual Analysis 
+
+Figures 6 and 7 visualize data distributions via heatmaps. The left column shows dominant class percentage for each client, while the right column shows total sample count (scaled by 100 for visualiza-tion). Color intensity (yellow to red) represents magnitude: darker red indicates higher concentration or more samples. The stark contrast between 𝛼 = 0.1 and IID regimes is visually ev-ident. Under extreme heterogeneity ( 𝛼 = 0.1), the heatmap exhibits highly non-uniform patterns with several clients showing deep red cells (90%+ concentration for CIFAR-10), indicating pathological data skew. Conversely, IID partitioning produces homogeneous color patterns across all clients, confirming balanced distribution. Intermediate 𝛼 values (0.5, 1.0) show gradual transitions from ex-treme to minimal heterogeneity, enabling systematic evaluation of optimizer robustness across the full spectrum of data heterogeneity. 
+
+## B.5 Implications for Optimizer Design 
+
+These distribution characteristics have critical implications for quantized optimizer design: 
+
+Momentum Stability: Under extreme heterogeneity, clients receive highly skewed gradients (e.g., Client 5 seeing 96.7% ship images). Quantized momentum estimates must maintain sufficient precision to capture these non-IID gradient patterns without cata-strophic error accumulation across rounds. 
+
+Variance Handling: Variance terms in Adam-family optimizers exhibit exponential decay ( 𝛽 2 = 0.999 ), leading to very small values after initial rounds. Linear INT8 quantization fails to represent these small values accurately (as shown in our Naive-INT8 baseline). Our log-space quantization addresses this by preserving relative precision across orders of magnitude. 
+
+Asymmetric Update Budgets: The 9.5 × difference in sample counts (1,040 vs. 9,826) means different clients contribute vastly different gradient signal per round. Quantization error must not disproportionately harm small clients, which already have limited data for local optimization. These challenges motivate our Q-LocalAdam design, which ad-dresses heterogeneity via specialized quantizers while maintaining 4× memory efficiency. 
+
+## B.6 Additional Ablation Studies 
+
+B.6.1 Component Ablation: Detailed Analysis. To validate that quantizing both momentum and variance is necessary, we com-pare Q-LocalAdam against two variants on CIFAR-100 with 𝛼 = 0.1:(1) Momentum-only quantizes 𝑚 to 8-bit while keeping 𝑣 in FP32, and (2) Variance-only quantizes 𝑣 to 8-bit while keeping 𝑚 in FP32 (Table 10). 
+
+CIFAR-100 Results. Figure 8 (right panel) shows convergence curves for all variants. Momentum-only achieves 52.49% best accu-racy with 58.24 MB optimizer memory (1.54 × reduction). Variance-only reaches 61.10% with 58.24 MB memory. Full Q-LocalAdam achieves 61.47% accuracy with only 26.67 MB memory (3.37 × reduc-tion), demonstrating that quantizing both states with distribution-matched schemes is essential to reach the Pareto frontier. Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+The results confirm our hypothesis from the empirical distribu-tion analysis: momentum and variance have fundamentally differ-ent statistical structures and require different quantization schemes. Variance-only performs well because log-space quantization cor-rectly handles the heavy-tailed distribution spanning 8 orders of magnitude, while linear quantization of momentum alone fails to address the variance precision bottleneck, leading to the 9pp accu-racy drop (52.49% vs. 61.47%). 
+
+CIFAR-10 Results. On CIFAR-10 (Figure 8, left panel), the pattern differs significantly: quantizing only momentum achieves 82.48%, slightly exceeding the full Q-LocalAdam (81.91%). This suggests that CIFAR-10’s simpler 10-class structure is less sensitive to mo-mentum quantization errors. The bounded, symmetric momentum distribution ( ±0.1) combined with smaller gradient magnitudes in the easier task means that linear quantization preserves sufficient precision even when variance remains in full precision. However, memory analysis reveals that partial quantization achieves only 1.54 × compression (32.65 MB) versus Q-LocalAdam’s 3.37 × (14.95 MB), confirming that quantizing both states is essential for maximizing memory reduction regardless of task complexity. 
+
+Cross-Dataset Analysis. The divergent behavior of momentum-only quantization across datasets (82.48% on CIFAR-10 vs. 52.49% on CIFAR-100) highlights that task complexity significantly impacts quantization sensitivity. However, the consistent 3.37 × memory ad-vantage of full quantization (both 𝑚 and 𝑣 ) holds across all settings, making it the preferred choice for practical deployment. This dataset-dependent sensitivity suggests that for extremely simple tasks, practitioners might consider momentum-only quanti-zation as a lightweight alternative when memory constraints are less severe. However, for production deployments targeting diverse workloads, full quantization provides consistent benefits without task-specific tuning. 
+
+B.6.2 Block Size Ablation: Complete Results. We ablate block sizes 
+
+{32 , 64 , 128 } for Q-LocalAdam under extreme heterogeneity ( 𝛼 =
+
+0.1) on both CIFAR-10 and CIFAR-100. 
+
+CIFAR-100 Results. Table 11 shows that best test accuracy re-mains stable across block sizes (60.71%–61.47%), varying by less than 0.8pp. However, final accuracy at round 120 shows more sen-sitivity: 𝐵 = 128 achieves only 55.97% final accuracy compared to 59.96% for 𝐵 = 64 (4pp drop), suggesting that excessively large blocks may reduce quantization precision during later training stages when optimizer states have converged to smaller magni-tudes. This late-stage divergence does not affect peak performance (best accuracy varies by only 0.54pp), but indicates potential insta-bility in maintaining convergence. Optimizer memory decreases from 30.88 MB ( 𝐵 = 32 ) to 24.56 MB ( 𝐵 = 128 ), following the expected trend of reduced per-block metadata overhead. Each block stores 𝐵 INT8 values (1 byte each) plus 2 FP32 scalars (min, max) for 8 bytes metadata. For 𝐵 = 32 ,metadata represents 25.0% of quantized data; for 𝐵 = 64 , 12.5%; for 
+
+𝐵 = 128 , 6.25%. We select 𝐵 = 64 as the default across all experiments, balancing peak accuracy (61.47%, highest among all block sizes) and memory reduction (26.67 MB). Figure 9 (right panel) visualizes convergence curves for all three block sizes on CIFAR-100. 
+
+CIFAR-10 Results. Figure 9 (left panel) shows convergence curves for all three block sizes on CIFAR-10. In contrast to CIFAR-100, all block sizes achieve nearly identical performance: best accuracy varies by only 0.55pp (81.91% to 82.46%), and final accuracy remains stable (0.48pp variation) without the 4pp final accuracy collapse observed at 𝐵 = 128 on CIFAR-100. This demonstrates that task com-plexity significantly impacts quantization sensitivity: the simpler 10-class structure is more robust to coarser quantization granularity, while the 100-class task requires finer-grained blocks to maintain stable late-stage convergence. Optimizer memory follows the expected trend: 17.31 MB ( 𝐵 = 32 ), 14.95 MB ( 𝐵 = 64 ), and 13.77 MB ( 𝐵 = 128 ), with metadata represent-ing 25.0%, 12.5%, and 6.25% of the quantized data size, respectively. Larger blocks amortize the fixed 8-byte per-block overhead more efficiently. 
+
+Design Principle: Block Size and Task Complexity. The contrast between CIFAR-10 (0.55pp best accuracy variation, stable final ac-curacy) and CIFAR-100 (0.76pp best accuracy variation, 4pp final accuracy drop at 𝐵 = 128 ) reveals that block size primarily affects convergence stability rather than peak performance. Both datasets achieve similar peak accuracies across block sizes, but CIFAR-100 exhibits late-stage divergence with large blocks. This suggests: block size should be chosen to balance peak performance and convergence stability , with finer blocks preferred for complex tasks to avoid late-stage instability. The mechanism behind this sensitivity likely relates to the num-ber of distinct gradient patterns the optimizer must track. With 100 classes, variance values across different parameter groups ex-hibit more heterogeneity, requiring finer-grained quantization to preserve distinctions during late-stage refinement. With 10 classes, gradient patterns are more uniform, tolerating coarser quantization bins without stability issues. 
+
+B.6.3 Learning Rate Sensitivity: Detailed Analysis. We evaluate Q-LocalAdam’s sensitivity to learning rate on both datasets with 
+
+𝛼 = 0.1.
+
+CIFAR-100 Results. Figure 10 (right panel) compares 𝜂 = 10 −3
+
+(default) and 𝜂 = 5 × 10 −4. Both settings achieve similar best accu-racy (61.47% vs. 61.82%, 0.35pp difference), with the lower learning rate achieving slightly higher peak performance. Final accuracy shows more divergence (59.96% vs. 58.09%, 1.87pp), suggesting that the lower learning rate converges more slowly but reaches a com-parable peak. This confirms that Q-LocalAdam does not require careful learning rate tuning and works robustly with standard hy-perparameters from the federated learning literature. 
+
+Note on baseline hyperparameters: We did not exhaustively tune Vanilla-ClientAdam (FP32) hyperparameters; it is possible that lower learning rates or adjusted 𝛽 1, 𝛽 2 could improve FP32 per-formance, though the +5.74pp gap at 𝛼 = 0.1 suggests quantization provides substantial regularization benefits beyond hyperparameter effects. 
+
+CIFAR-10 Results. Figure 10 (left panel) shows even stronger learning rate robustness on CIFAR-10. The two learning rates pro-duce nearly identical convergence curves, with best accuracy differ-ing by only 0.12pp (81.91% vs. 81.79%). This negligible gap demon-strates that Q-LocalAdam works reliably with standard FedAdam Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone 
+
+learning rates without task-specific tuning. The overlapping curves across all 120 rounds confirm stable convergence at both learning rates. 
+
+Learning Rate Sensitivity and Task Complexity. Both datasets ex-hibit negligible learning rate sensitivity in terms of best accuracy: 0.12pp gap on CIFAR-10 and 0.35pp on CIFAR-100 (with the lower rate performing slightly better). This robustness suggests that Q-LocalAdam can be deployed with default settings (lr= 10 −3, 𝐵 = 64 )for typical federated vision tasks without extensive hyperparameter search. The similar peak performance across learning rates indi-cates that quantization does not amplify sensitivity to this critical hyperparameter. 
+
+Summary: Task Complexity and Quantization Robustness. Across all ablation studies, CIFAR-10 demonstrates substantially greater robustness to quantization hyperparameters than CIFAR-100: 
+
+• Momentum-only quantization remains viable (82.48% versus 52.49%) 
+
+• Block size variation induces minimal change (0.55pp versus 0.76pp range in best accuracy, with stable final accuracy on CIFAR-10 but 4pp final accuracy drop on CIFAR-100 at 
+
+𝐵 = 128 )
+
+• Learning rate sensitivity is minimal on both datasets (0.12pp on CIFAR-10, 0.35pp on CIFAR-100) Together, these results suggest a general principle: quantization hyperparameter selection should scale with task complexity . Sim-pler tasks tolerate coarser settings (larger blocks, partial quantiza-tion), while harder tasks require more conservative choices (smaller blocks, full quantization) to maintain convergence stability. This ob-servation motivates task-adaptive quantization strategies for future work, where block size and quantization scheme could be selected automatically based on dataset statistics or early-stage training metrics. 
+
+Table 8: Detailed per-client data distribution for CIFAR-10 across all 𝛼 values. Each row shows a client’s total sam-ple count and dominant class statistics. Class labels: 0=Air-plane, 1=Automobile, 2=Bird, 3=Cat, 4=Deer, 5=Dog, 6=Frog, 7=Horse, 8=Ship, 9=Truck. 
+
+𝛼 Client Samples Dominant Class Dominant % 
+
+0.1 C0 9,348 3 (Cat) 37.3% C1 8,295 4 (Deer) 54.9% C2 4,053 2 (Bird) 62.6% C3 1,749 0 (Airplane) 85.5% C4 4,467 0 (Airplane) 77.9% C5 4,481 8 (Ship) 96.7% C6 5,120 5 (Dog) 60.6% C7 1,590 1 (Automobile) 93.6% C8 9,826 1 (Automobile) 30.9% C9 1,040 5 (Dog) 57.2% 0.5 C0 3,597 9 (Truck) 40.6% C1 5,700 4 (Deer) 53.7% C2 2,874 1 (Automobile) 38.7% C3 2,850 0 (Airplane) 44.4% C4 6,509 0 (Airplane) 33.0% C5 4,079 3 (Cat) 58.9% C6 7,929 7 (Horse) 42.9% C7 4,040 1 (Automobile) 57.0% C8 3,663 6 (Frog) 30.5% C9 8,708 8 (Ship) 25.9% 1.0 C0 4,401 5 (Dog) 34.1% C1 5,072 7 (Horse) 25.5% C2 6,755 4 (Deer) 31.9% C3 4,019 8 (Ship) 24.3% C4 4,482 1 (Automobile) 25.6% C5 6,003 6 (Frog) 26.7% C6 5,474 9 (Truck) 21.7% C7 3,783 0 (Airplane) 23.7% C8 4,481 0 (Airplane) 29.1% C9 5,483 3 (Cat) 25.8% IID C0 5,000 2 (Bird) 10.5% C1 5,000 9 (Truck) 10.8% C2 5,000 5 (Dog) 10.6% C3 5,000 9 (Truck) 10.4% C4 5,000 1 (Automobile) 10.6% C5 5,000 4 (Deer) 10.6% C6 5,000 6 (Frog) 10.6% C7 5,000 4 (Deer) 10.7% C8 5,000 6 (Frog) 10.6% C9 5,000 7 (Horse) 10.7% Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+Table 9: Detailed per-client data distribution for CIFAR-100 across all 𝛼 values. With 100 classes, dominant class percent-ages are naturally lower than CIFAR-10, yet relative hetero-geneity patterns remain consistent. Only dominant class IDs are shown (no text labels due to space constraints).                                                                                                                             
+
+> 𝛼 Client Samples Dominant Class Dominant %
+> 0.1 C0 4,151 71 11.4% C1 4,562 86 10.1% C2 6,051 98.2% C3 5,384 49.2% C4 2,653 29 18.4% C5 5,819 34 8.3% C6 5,003 69.7% C7 6,424 98 7.7% C8 6,425 94 7.3% C9 3,255 77 13.5% 0.5 C0 5,309 84 6.1% C1 4,680 65 5.7% C2 5,158 85 5.5% C3 4,047 86.8% C4 4,663 12 5.2% C5 5,107 55 5.2% C6 5,122 24.7% C7 4,875 25 6.5% C8 5,049 93 4.6% C9 5,503 37 4.8% 1.0 C0 5,899 71 3.7% C1 4,658 90 4.4% C2 4,636 79 3.4% C3 4,685 11 4.4% C4 4,334 31 5.3% C5 4,906 17 5.7% C6 5,267 18 6.5% C7 5,336 64 3.7% C8 5,079 57 2.9% C9 4,701 92 5.5% IID C0 5,000 18 1.3% C1 5,000 42 1.3% C2 5,000 60 1.3% C3 5,000 10 1.6% C4 5,000 19 1.4% C5 5,000 34 1.3% C6 5,000 48 1.2% C7 5,000 96 1.3% C8 5,000 13 1.3% C9 5,000 64 1.5%
+
+Table 10: Component ablation at 𝛼 = 0.1. Quantizing both momentum and variance is necessary for optimal accuracy-memory trade-offs. 
+
+Dataset Method Acc (%) Mem (MB) CIFAR-10 Vanilla-ClientAdam (FP32) 81.67 50.35 Q-LocalAdam (Both) 81.91 14.95 
+
+Momentum-only 82.48 32.65 Variance-only 82.27 32.65 CIFAR-100 Vanilla-ClientAdam (FP32) 55.73 89.82 Q-LocalAdam (Both) 61.47 26.67 
+
+Momentum-only 52.49 58.24 Variance-only 61.10 58.24 Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+nan 0
+
+95.4 87 
+
+66.5 483 
+
+45.7 1169 
+
+nan 0
+
+47.8 467 
+
+55.7 526 
+
+100.0 1
+
+nan 0
+
+49.1 47267 
+
+α = 0.1 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+47.3 1305 
+
+45.2 115 
+
+33.0 957 
+
+58.0 3008 
+
+29.8 39216 
+
+15.9 69 
+
+29.7 232 
+
+35.0 586 
+
+31.9 3072 
+
+41.0 1440 
+
+α = 0.5 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+35.2 2526 
+
+22.6 3816 
+
+22.0 164 
+
+20.9 3132 
+
+48.5 1913 
+
+36.0 3196 
+
+24.9 1027 
+
+26.5 17818 
+
+20.5 7253 
+
+32.0 9155 
+
+α = 1.0 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+10.0 5000 
+
+α = IID Figure 6: CIFAR-10 data distribution heatmap across 10 clients for varying 𝛼 values. Each subplot shows two columns: (left) dominant class percentage per client, (right) total sam-ple count scaled by 100. Darker red indicates higher values. Under 𝛼 = 0.1, several clients exhibit deep red in the domi-nant class column, indicating 90%+ concentration in single classes (Client 5: 96.7%, Client 7: 93.6%). Conference’17, July 2017, Washington, DC, USA Vedant Waykole and Haroon R Lone Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+28.6 14 
+
+100.0 1
+
+nan 0
+
+27.5 5212 
+
+100.0 1
+
+33.3 3
+
+24.1 37756 
+
+18.1 7000 
+
+nan 0
+
+15.4 13 
+
+α = 0.1 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+9.6 8777 
+
+5.5 2197 
+
+7.8 32538 
+
+8.3 2278 
+
+5.5 1907 
+
+5.6 248 
+
+10.1 348 
+
+5.5 110 
+
+11.4 1314 
+
+6.0 283 
+
+α = 0.5 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+5.4 5043 
+
+6.6 18586 
+
+5.5 6224 
+
+5.4 4263 
+
+4.4 137 
+
+5.5 3078 
+
+4.0 2051 
+
+9.2 7947 
+
+4.8 1347 
+
+6.9 1324 
+
+α = 1.0 
+
+Dominant 
+
+Class % 
+
+Total 
+
+Samples 
+
+C0 
+
+C1 
+
+C2 
+
+C3 
+
+C4 
+
+C5 
+
+C6 
+
+C7 
+
+C8 
+
+C9 
+
+> Client ID
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+1.0 5000 
+
+α = IID 
+
+Figure 7: CIFAR-100 data distribution heatmap across 10 clients for varying 𝛼 values. Despite 100 classes (vs. 10 in CIFAR-10), heterogeneity patterns mirror CIFAR-10: 𝛼 = 0.1
+
+shows non-uniform distributions while IID achieves balance. Dominant class percentages are lower due to class dilution, but relative concentration remains significant (e.g., Client 4 at 18.4% represents 18 × oversampling compared to 1% uniform baseline). Table 11: Block size ablation on CIFAR-10 and CIFAR-100 with 𝛼 = 0.1. Best accuracy remains stable across block sizes (0.55–0.76pp variation); 𝐵 = 64 balances memory and perfor-mance.                       
+
+> Dataset Block Size (B) Best Acc (%) Final Acc (%) Opt Mem (MB)
+> CIFAR-10
+> 32 82.46 81.87 17.31
+> 64 81.91 81.91 14.95
+> 128 82.26 81.43 13.77 CIFAR-100
+> 32 60.71 60.56 30.88
+> 64 61.47 59.96 26.67
+> 128 60.93 55.97 24.56
+
+Table 12: Learning rate sensitivity comparison across datasets (best accuracies). 
+
+Dataset Learning Rate Best Acc (%) Δ Acc 
+
+CIFAR-10 𝜂 = 10 −3 (default) 81.91 –
+
+𝜂 = 5 × 10 −4 81.79 −0.12 pp CIFAR-100 𝜂 = 10 −3 (default) 61.47 –
+
+𝜂 = 5 × 10 −4 61.82 +0.35 pp Q-LocalAdam: Memory-Efficient Client-Side Adaptive Optimization for Edge Federated Learning Conference’17, July 2017, Washington, DC, USA 
+
+Figure 8: Component ablation at 𝛼 = 0.1. Left: CIFAR-10. Quantizing only momentum achieves competitive accuracy (82.48%), but quantizing both states is essential for maximum memory reduction (3.37 × vs. 1.54 ×). Right: CIFAR-100. Quantizing only momentum or only variance provides partial benefits, but full Q-LocalAdam achieves the best accuracy with lowest memory. 
+
+Figure 9: Block size ablation at 𝛼 = 0.1. Left: CIFAR-10. All three block sizes converge stably with best accuracy within 0.55pp (81.91%–82.46%), demonstrating robustness to quantization granularity on simpler tasks. Right: CIFAR-100. All block sizes reach similar best accuracy (0.76pp range), but 𝐵 = 128 exhibits late-stage instability with 4pp final accuracy drop. 
+
+Figure 10: Learning rate sensitivity at 𝛼 = 0.1. Left: CIFAR-10. Q-LocalAdam achieves nearly identical best accuracy with lr=1e-3 (81.91%) and lr=5e-4 (81.79%), differing by only 0.12pp. Right: CIFAR-100. Both learning rates achieve similar best accuracy (61.47% vs. 61.82%), demonstrating robustness to hyperparameter choice.

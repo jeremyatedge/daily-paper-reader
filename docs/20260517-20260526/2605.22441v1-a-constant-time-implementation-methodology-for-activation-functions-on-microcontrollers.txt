@@ -1,0 +1,822 @@
+Title: A Constant-Time Implementation Methodology for Activation Functions on Microcontrollers
+
+URL Source: https://arxiv.org/pdf/2605.22441v1
+
+Published Time: Fri, 22 May 2026 01:07:37 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+> 1
+
+# A Constant-Time Implementation Methodology for Activation Functions on Microcontrollers 
+
+Andrii Tyvodar, Andreas Rechberger, Dirmanto Jap, Shivam Bhasin, Bernhard Jungk, Jakub Breier, and Xiaolu Hou 
+
+Abstract —Embedded neural-network inference can leak infor-mation through timing side channels, including leakage caused by the evaluation of activation functions. This work proposes a constant-time implementation methodology for activation func-tions on embedded microcontrollers and validates it on ReLU, sigmoid, tanh, GELU, and Swish on an ARM Cortex-M4 plat-form. The proposed methodology combines branchless selection, fixed-cost Padé-based approximation, dummy arithmetic where needed, and cycle alignment to obtain timing-regular activation-function implementations. As motivation, we also evaluate adesynchronization-based countermeasure and show that it re-mains vulnerable to a template-based timing attack. Experimen-tal results show that the resulting protected implementations achieve identical cycle counts for all tested inputs, including 88 
+
+cycles in the three-function setting and 108 cycles in the five-function setting. At the same time, the numerical-error analysis indicates that the approximated nonlinear functions retain high accuracy. These results suggest that the proposed methodology provides a practical basis for constructing side-channel-resistant activation functions in embedded inference. 
+
+Index Terms —constant-time implementation, activation func-tions, microcontrollers, timing side-channels, embedded machine learning 
+
+I. I NTRODUCTION 
+
+Deep neural networks (DNNs) are increasingly deployed on embedded and edge platforms, where inference must be executed under strict constraints on latency, memory usage, and energy consumption. In such settings, software imple-mentations are often optimized at a low level in order to achieve practical performance on microcontrollers and other resource-constrained devices. Prior work has studied neural-network deployment through hardware/software co-exploration [1], timing-constrained implementation [2], and timing-aware scheduling of DNN workloads [3]. At the same time, these implementations may expose side-channel leakage, including timing-dependent behavior that can reveal informa-tion about the internal computation [4]. Recent work has shown that neural-network implementa-tions are vulnerable to side-channel analysis, enabling re-               
+
+> A. Tyvodar and X. Hou are with the Faculty of Informatics and Information Technologies, Slovak University of Technology in Bratislava, Bratislava, Slovakia (e-mail: xtyvodar@stuba.sk; xiaolu.hou@stuba.sk). X. Hou is also with the State Key Laboratory of Blockchain and Data Security, Zhejiang University, Hangzhou, China. A. Rechberger is an independent researcher, (e-mail: an-dreas@rechberger.li). D. Jap and S. Bhasin are with Temasek Laboratories, Nanyang Technolog-ical University, Singapore (e-mail: djap@ntu.edu.sg; sbhasin@ntu.edu.sg). B. Jungk is with the Faculty of Computer Science, Albstadt-Sigmaringen University, Albstadt, Germany (e-mail: jungk@hs-albsig.de). J. Breier is with TTControl GmbH, Vienna, Austria (e-mail: jbreier@jbreier.com).
+
+verse engineering of model architectures and extraction of information about intermediate computations and processed inputs [5]–[7]. In particular, activation functions have been identified as a source of distinguishable leakage, since different nonlinearities and different input regions may exhibit charac-teristic execution patterns [5], [8]. This is especially relevant in embedded inference, where timing observations may be accessible to an attacker and where even seemingly simple implementation choices can affect side-channel behavior. A recent direction for mitigating such leakage is to apply hiding-oriented countermeasures, such as desynchronization, in which random delays are introduced in order to obscure the timing pattern of activation-function evaluation [9]. Such techniques can make the leakage harder to interpret, but they do not remove the underlying input-dependent timing behavior itself. This raises the question of whether a stronger mitigation can be achieved by redesigning activation-function implementations so that their execution time no longer depends on the processed input. In this work, we propose a constant-time implementation methodology for activation functions and instantiate it on five widely used examples: ReLU, sigmoid, tanh , Gaussian Error Linear Unit (GELU) [10], and Swish [11]. The proposed methodology combines branchless, masking-based selection, cycle-aligned implementation techniques, and, for nonlinear activations, Padé-type rational approximation in order to con-struct implementations whose execution time is independent of the input value. In contrast to prior work that uses ap-proximation primarily for efficiency, here the approximation also serves as a component of the side-channel countermeasure itself. The overview of the proposed approach, along with the threat model and the experimental results is provided in Fig. 1. The contributions of this work are as follows:  
+
+> •
+
+We propose a constant-time implementation methodology for activation functions on embedded microcontrollers, based on branchless, masking-based selection, fixed-cost Padé approximation based computation, and cycle align-ment.  
+
+> •
+
+We instantiate this methodology on ReLU, sigmoid, tanh ,GELU, and Swish, using a shared rational approximation for the nonlinear components.  
+
+> •
+
+We show, for ReLU, sigmoid, and tanh , that adesynchronization-based countermeasure can still be at-tacked using a template-based timing analysis.  
+
+> •
+
+We demonstrate experimentally that the protected imple-mentations exhibit identical cycle counts for all tested inputs, including a five-function evaluation over the ex-
+
+> arXiv:2605.22441v1 [cs.CR] 21 May 2026 2
+
+tended interval [−500 , 500] in which all protected imple-mentations execute in 108 clock cycles.  
+
+> •
+
+We evaluate the resulting trade-offs in execution time and numerical accuracy. The remainder of this paper is organized as follows. Sec-tion II introduces the considered threat model. Section III reviews the most relevant prior work. Section IV presents the proposed constant-time implementation methodology and its instantiation on the considered activation functions. Section V describes the experimental setup. Section VI presents the experimental results, Section VII discusses their implications and limitations, and Section VIII concludes the paper. II. T HREAT MODEL 
+
+We consider an attacker who targets embedded neural-network inference implemented on a microcontroller. The attacker is assumed to be able to observe the execution time of activation-function evaluations, either directly through local interaction or indirectly through repeated timing measurements of the device. In the profiled setting considered in this work, the attacker may additionally collect reference measurements from known activation functions to build statistical models and use them to classify unknown observations. The attacker’s objective is to exploit timing leakage to distinguish activation functions and, more generally, to infer information about the internal behavior of the neural-network implementation. This information can support higher-level goals such as model analysis, reverse engineering, or the identification of sensitive computation patterns. The goal of the proposed methodology is therefore to sup-press timing leakage in activation-function execution, rather than merely obscure it through randomization or desynchro-nization. III. B ACKGROUND AND RELATED WORK 
+
+This section reviews prior work most relevant to the present study. Section III-A summarizes side-channel attacks on neural-network implementations, with emphasis on leakage from activation functions. Section III-B discusses counter-measures against timing-based side-channel attacks, including hiding-oriented approaches. Section III-C then positions the present work with respect to constant-time implementation techniques, while Section III-D reviews approximation-based activation-function implementations for embedded inference. 
+
+A. Side-Channel Analysis Attacks on Neural-Network Imple-mentations 
+
+Side-channel analysis (SCA) attacks on neural-network implementations have received increasing attention in recent years. Prior work has shown that physical leakages such as electromagnetic emanations, power consumption, and timing behavior can reveal information about model architectures, secret parameters, and confidential input data [5]–[7], [12], [13]. Among the components of neural-network inference, activation functions have been identified as a particularly informative source of leakage. [8] demonstrated that activation functions exhibit distinct EM emanation patterns and can be distinguished accordingly. [5] showed that the activation type can be inferred from execution-time behavior. More generally, timing-based side-channel attacks exploit input-dependent execution latency to infer sensitive infor-mation about the target system. In the context of machine learning, such attacks have been shown to reveal information about inputs, classes, and model behavior [14], [15]. 
+
+B. Desynchronization and Hiding-Based Countermeasures Against SCA Attacks 
+
+Compared with the growing literature on side-channel at-tacks against neural-network inference, work on dedicated countermeasures against timing-based SCA attacks remains relatively limited. To the best of our knowledge, the only existing countermeasure against timing side-channel attacks on activation functions was proposed by [9]. In this work, the authors studied a desynchronization-based countermeasure for activation-function implementations, in which random delays are inserted so that the timing dependence on both the input and the activation type becomes harder to exploit. This line of work falls into the broad concept of hiding-based counter-measures against SCA. More broadly, hiding-based countermeasures [16] such as random delay insertion, jitter, and operation shuffling are well established in side-channel protection for embedded systems, but mostly against power/EM-based SCA attacks. [17] proposed to shuffle multiplication computations for each neuron to counter correlation power analysis. [18] uses ring-oscillator-based fine-grained noise generation together with an algorithm-level obfuscation step to protect FPGA DNN accel-erators against power SCAs. [19] uses random permutation of loop-iteration execution order in hardware to obfuscate the EM signature of NN inference on a RISC-V core. Section VI-B shows that template-based attacks [20] re-main effective against the evaluated desynchronization-style countermeasure. In contrast to hiding-oriented approaches, the present work explores a constant-time design strategy for activation functions, with the aim of eliminating input-dependent timing variation at the implementation level. The proposed approach is therefore complementary to prior work on desynchronization-based defenses and can be viewed as a more direct mitigation of timing leakage in activation-function evaluation. 
+
+C. Constant-Time Implementation as a Countermeasure 
+
+Constant-time implementation is a well-established counter-measure against timing side-channel attacks on cryptographic implementations [21], where the objective is to ensure that the execution path and runtime do not depend on secret or sensitive data. In contrast to hiding-based approaches such as random delays or desynchronization, constant-time de-sign aims to suppress the leakage source itself by avoiding data-dependent branches, memory accesses, and other input-dependent execution effects. Despite its importance in secure software design, the constant-time paradigm has received comparatively little at-tention in the context of neural-network inference. The present 3Embedded Inference  
+
+> Target: ARM Cortex-M4
+> Timing Vulnerability
+> Activation functions leak input-dependent timing data
+> Prior Defenses Fail
+> Desynchronization defeated by template attacks
+> 1. Problem & Threat Model
+> Pad´ e Rational Approx.
+> Fixed-cost arithmetic sequence for nonlinear activations
+> Branchless Control Flow
+> Logical masking & OR reduction to eliminate branch latency
+> Masking-Based Saturation
+> Error-balancing thresholds
+> Cycle Alignment
+> Dummy arithmetic where needed with limited padding
+> 2. Constant-Time Methodology
+> Execution Speedup
+> Approximations run faster than standard math libraries
+> Timing Security
+> 100% input-independent (Aligned at 88 cy-cles / 108 cycles)
+> Numerical Accuracy
+> High fidelity retained (Negligible MSE)
+> 3. Validation & Results
+> Motivation Evaluation
+
+Fig. 1: Summary of the threat model, proposed methodology, and experimental results. Timing leakage in embedded activation-function evaluation is mitigated using a combination of masking-based selection, Padé approximation, fixed-cost dummy arithmetic, and limited cycle-alignment padding. This supports uniform execution latency for both nonlinear and piecewise-linear activation functions while maintaining low approximation error for the nonlinear functions. work adopts the constant-time perspective specifically for activation functions. In this setting, the goal is not only to flatten the timing profile empirically, but to provide a general implementation methodology by which activation functions can be constructed so that the executed instruction sequence is independent of the input value. 
+
+D. Approximation of Activation Functions for Embedded In-ference 
+
+Approximation of nonlinear activation functions is a com-mon technique for reducing the computational cost of neural-network inference on resource-constrained platforms. In par-ticular, functions such as sigmoid and tanh are often replaced by polynomial, rational, or piecewise approximations in order to avoid the expense of direct evaluation through standard transcendental functions [22]–[24]. Prior work has primarily studied such approximations from the perspective of computa-tional efficiency and numerical accuracy in embedded and low-power inference settings. In this literature, the main objective is typically to reduce execution time, code complexity, or resource usage while preserving acceptable approximation quality. The present work is related to this line of research in that it also employs a compact approximation of nonlinear activation functions. However, the goal here is different: the approxima-tion is used not only to improve efficiency, but also to enable constant-time execution. The shared rational approximation adopted in this work supports a fixed sequence of arithmetic operations together with branchless saturation logic, making it suitable for timing-regular software implementation on the target microcontroller. In this sense, the approximation is part of a broader constant-time implementation methodology rather than merely a means of accelerating inference. IV. C ONSTANT -T IME IMPLEMENTATION METHODOLOGY 
+
+This section presents the proposed constant-time implemen-tation methodology for activation functions. The objective is to provide a reusable construction principle by which activation functions can be implemented with input-independent execu-tion behavior while maintaining acceptable numerical accuracy for inference-oriented workloads. Section IV-A first defines the activation functions considered in this work and distinguishes the reference functions from their protected approximated im-plementations. Section IV-B then introduces the constant-time design strategy based on branchless, masking-based selection. Sections IV-C–IV-E describe the shared Rtanh -based approx-imation, masking-based saturation, and saturation-threshold selection. Finally, Sections IV-F and IV-G discuss the special treatment of ReLU and the implementation measures used to preserve the intended timing-regular behavior after compila-tion. 
+
+A. Activation Functions Considered 
+
+This work considers five activation functions commonly used in neural-network inference: ReLU, sigmoid, tanh ,GELU, and Swish. Their standard mathematical definitions are summarized here in order to distinguish the reference functions from the protected approximated implementations introduced later. The rectified linear unit is defined as 
+
+ReLU( x) = max(0 , x ). (1) The sigmoid function is defined as 
+
+S(x) = 11 + e−x . (2) The hyperbolic tangent is defined as 
+
+tanh( x) = ex − e−x
+
+ex + e−x . (3) The Gaussian Error Linear Unit is defined as 
+
+GELU( x) = xΦ( x) = x
+
+2
+
+
+
+1 + erf 
+
+ x
+
+√2
+
+ 
+
+, (4) 4
+
+where Φ( ·) denotes the cumulative distribution function of the standard normal distribution. The Swish activation is defined as 
+
+Swish β (x) = xS (βx ). (5) In this work, we use the common choice β = 1 , so that 
+
+Swish( x) = xS (x). (6) 
+
+B. Constant-Time Design Strategy 
+
+A central principle of the proposed methodology is that the execution path must not depend on the input value. Conventional activation-function implementations may contain data-dependent branches, early exits in saturation regions, or piecewise approximations with input-dependent interval selec-tion, all of which can introduce observable timing differences. A simplified example of such runtime dependence can be illustrated using the ReLU function. A conventional imple-mentation either leaves the value unchanged or replaces it with zero. This operation typically consists of two funda-mental steps: first, a comparison operation creates a Boolean value, and second, a conditional branch selects the instruction sequence to execute based on that result. The latter can contribute to runtime dependence. Due to cache or flash-prefetch effects, the branch instruction itself may differ in timing depending on whether the branch is taken or not. In ad-dition, the two branch paths may contain different instruction sequences. In the ReLU example, one path may assign zero to a variable, while the other may leave the value unchanged. To avoid these effects, each protected activation function is evaluated using a fixed-cost sequence of operations. For conditionally selecting one out of two values, several strategies exist. For floating-point values, a possible coding is shown in listing 1. The implementation derives a 32-bit all-zero or all-one mask from the comparison result and applies this mask to the IEEE-754 bit representations of the two candidate values, followed by a bit-wise OR combination. As this is a sequence identical for any input value, this prevents the control flow impact, effectively implementing a branch-less conditional. The executed instruction sequence remains identical across different input values, making the approximation well suited to constant-time execution.                      
+
+> f l o a t c t _ s e l e c t _ f 3 2 ( f l o a t a , f l o a t b , u i n t 3 2 _ t mask ) {u i n t 3 2 _ t ua =s t d : : b i t _ c a s t < u i n t 3 2 _ t >( a ) ; u i n t 3 2 _ t ub =s t d : : b i t _ c a s t < u i n t 3 2 _ t >( b ) ; u i n t 3 2 _ t u r ; u r =( ua & ~mask ) |( ub & mask ) ;
+> r e t u r n s t d : : b i t _ c a s t < f l o a t >( u r ) ; }
+
+Listing 1: Branchless conditional select for 32-bit floating-point values. In the present work, this methodology is instantiated on ReLU, sigmoid, tanh , GELU, and Swish, but its components are not limited to these five cases. Although the ReLU implementation uses the conventional ternary expression return (x > 0) ? x : 0 , this ex-pression was compiled into a timing-regular IT-instruction-based sequence on the target platform. In contrast, applying the same vanilla conditional-selection style to the saturation paths of the nonlinear functions did not result in timing-regular behavior in our experiments. Therefore, for sigmoid, 
+
+tanh , GELU, and Swish, we used an explicit bit-mask-based selection to avoid relying on compiler-dependent behavior regarding conditional expressions. This methodology can be implemented in a high-level language (C or C++) without resorting to inline assembly. Implementing any function in a high-level language with the goal of achieving constant timing is subject to the effects of compiler optimization. As such, careful testing is required. However, assembly implementations also suffer from similar effects, caused by microarchitectural details, such as memory alignment, cache effects, or branch prediction, which also affect the timing. Hence, a one to one mapping from assembly instructions to cycles is no longer a trivial task. For this work, it was assumed that using C++ provides more benefits than additional burden. The nonlinear implementations, namely sigmoid, tanh ,GELU, and Swish, were verified to retain their intended branchless structure under the tested optimized builds ( -O1 ,
+
+-O2 , and -O3 ), when using the explicit bit-mask-based se-lection. For ReLU, the conventional ternary expression was retained, since the generated code for the optimized build, used in the measurements, was timing-regular on the target platform as shown in listing 3. A debug build ( -O0 ) is unsuitable because its debug-oriented code generation does not reliably preserve side-channel-resistant binaries. In a larger project, compiler optimizations must be chosen carefully to retain this structure. In particular, whole-program link-time optimization may break the intended branchless form. The methodology is evaluated for finite floating-point in-puts in the specified experimental domains. Special IEEE-754 values such as NaNs and infinities are outside the considered input model. 
+
+C. Approximation Component of the Methodology 
+
+For nonlinear activation functions, the proposed method-ology employs a Padé-type rational approximation [25] as a fixed-cost computational component. In the present instantia-tion, this approximation is defined for tanh as 
+
+Rtanh (x) = x · P (x2)
+
+Q(x2) , (7) where P (·) and Q(·) are low-degree polynomials in x2.Specifically, tanh is approximated as 
+
+tanh( x) ≈ Rtanh (x) = x
+
+1 + 539 x2 + 2715 x4 + 1135135 x6
+
+1 + 613 x2 + 10 429 x4 + 419305 x6
+
+.
+
+This form requires only a fixed sequence of additions, multipli-cations, and one division, without data-dependent loop bounds or input-dependent interval selection. In addition, the use of x25
+
+preserves odd symmetry, which is consistent with the behavior of tanh( x).The same Rtanh -based computation is then reused to con-struct the other nonlinear activation functions considered in this work. For sigmoid, denoted by S, we use the standard identity 
+
+S(x) = 12
+
+
+
+1 + tanh 
+
+ x
+
+2
+
+ 
+
+,
+
+which yields the approximation 
+
+S(x) ≈ 12 + 12 Rtanh 
+
+ x
+
+2
+
+
+
+. (8) Swish is defined in this implementation as 
+
+Swish( x) = x · S(x),
+
+corresponding to the common choice β = 1 . Using Equa-tion (8), the protected Swish implementation is therefore based on 
+
+Swish( x) ≈ x
+
+ 12 + 12 Rtanh 
+
+ x
+
+2
+
+
+
+. (9) For GELU, we use the common tanh -based approximation 
+
+GELU( x) ≈ x
+
+2 1 + tanh 
+
+r 2
+
+π
+
+ x + 0 .044715 x3!! 
+
+.
+
+Replacing tanh with Rtanh gives the implementation form 
+
+GELU( x) ≈ x
+
+2 1 + Rtanh 
+
+r 2
+
+π
+
+ x + 0 .044715 x3!! 
+
+.
+
+(10) Equations (7)–(10) provide fixed-operation-count arithmetic expressions for the nonlinear activations. The saturation logic described in Section IV-D is then applied without data-dependent control flow in order to preserve timing-regular execution outside the approximation region. 
+
+D. Masking-Based Saturation in the Proposed Methodology 
+
+Within the proposed methodology, fixed-cost Rtanh -based computation is combined with explicit saturation in order to obtain well-behaved numerical properties while preserving timing-regular execution. For large-magnitude finite inputs, the nonlinear activation functions approach simple limiting forms: 
+
+tanh( x) approaches ±1, sigmoid approaches either 0 or 1, and both GELU and Swish approach 0 for large negative inputs and x for large positive inputs. The implementation therefore uses saturation outside the selected approximation intervals. To preserve constant-time behavior, this saturation is im-plemented without conventional branching. Instead, the ap-proximation result and the saturated output candidates are represented in arithmetic form, and the final output is selected using the masking-based selection strategy described in Sec-tion IV-B. When required, the input passed to the Rtanh -based computation is also clamped to the selected approximation interval using the same masking-based strategy. This avoids evaluating the rational approximation unnecessarily far outside the interval in which its result can be selected, while preserving timing-regular execution. Accordingly, the implemented tanh approximation can be described conceptually as 
+
+tanh( x) ≈
+
+(
+
+Rtanh (x), |x| ≤ τtanh ,
+
+sign( x), |x| > τ tanh , (11) where sign( x) ∈ {− 1, 1} for the saturated cases. Similarly, the implemented sigmoid approximation is 
+
+S(x) ≈
+
+
+
+12 + 12 Rtanh 
+
+ x
+
+2
+
+
+
+, |x| ≤ τS ,
+
+1, x > τ S ,
+
+0, x < −τS .
+
+(12) For compactness, define 
+
+zG(x) = 
+
+r 2
+
+π
+
+ x + 0 .044715 x3 .
+
+The implemented GELU approximation can then be described conceptually as 
+
+GELU( x) ≈
+
+
+
+0, x < −τGELU ,x
+
+2 (1 + Rtanh (zG(x))) , |x| ≤ τGELU ,x, x > τ GELU .
+
+(13) Likewise, the implemented Swish approximation is 
+
+Swish( x) ≈
+
+
+
+0, x < −τSwish ,x
+
+ 12 + 12 Rtanh 
+
+ x
+
+2
+
+
+
+, |x| ≤ τSwish ,x, x > τ Swish .
+
+(14) Equations (11)–(14) describe the numerical behavior of the protected implementations. In the actual implementation, case selection is not realized through data-dependent branches; instead, the corresponding approximation and saturation can-didates are selected using masking-based selection over their bit-level representations. Thus, whether the input lies inside or outside the approximation interval does not introduce input-dependent control flow. 
+
+E. Selection of Saturation Thresholds 
+
+The saturation thresholds were chosen to balance the ap-proximation error of the Rtanh -based computation with the error introduced by saturation near the saturation thresholds. For tanh , by odd symmetry, it is sufficient to consider the positive saturation threshold. According to Equation (11), two error contributions are relevant near x = τtanh . The first is the approximation error of the rational function, 
+
+eR(x) = | tanh( x) − Rtanh (x)|,
+
+while the second is the error introduced by positive saturation, 
+
+esat (x) = 1 − tanh( x).
+
+The threshold τtanh was selected by balancing these two errors. If the threshold is too small, saturation is applied prematurely and the saturation error dominates; if it is too large, the rational approximation is used too far into the 6
+
+near-saturated tail and the approximation error dominates. Accordingly, the threshold was chosen such that 
+
+| tanh( τtanh ) − Rtanh (τtanh )| = 1 − tanh( τtanh ).
+
+Solving this equation numerically yields 
+
+τtanh ≈ 4.97 .
+
+The negative saturation threshold follows by symmetry. The sigmoid threshold is obtained using the same balancing criterion on the positive saturation side. We require 
+
+11 + e−τS −
+
+ 12 + 12 Rtanh 
+
+ τS
+
+2
+
+
+
+= 1 − 11 + e−τS .
+
+Using the identity 
+
+11 + e−x = 12 + 12 tanh 
+
+ x
+
+2
+
+
+
+,
+
+this condition simplifies to 
+
+tanh 
+
+ τS
+
+2
+
+
+
+− Rtanh 
+
+ τS
+
+2
+
+
+
+= 1 − tanh 
+
+ τS
+
+2
+
+
+
+.
+
+This is the same equation as for tanh , evaluated at τS /2.Therefore, 
+
+τS = 2 τtanh ≈ 9.94 .
+
+The negative sigmoid threshold follows from the symmetry relation S(−x) = 1 − S(x).For GELU and Swish, the thresholds were selected empiri-cally using the same balancing intuition: the threshold should be large enough to avoid premature saturation, but small enough to prevent the Rtanh -based computation from being used unnecessarily far into saturated or asymptotic regions. In the evaluated implementation, we use 
+
+τGELU = 3 .6 and τSwish = 8 .
+
+For GELU, inputs below −τGELU are saturated to zero, while inputs above τGELU are saturated to the linear output x. For Swish, inputs below −τSwish are saturated to zero, while inputs above τSwish are saturated to x, matching the limiting behavior of xS (x).
+
+F. Instantiation on ReLU 
+
+The proposed methodology also applies to simple activation functions such as ReLU, even though they do not require nonlinear approximation. ReLU is a special case as it does not require dedicated computation as such, its usual imple-mentation, 
+
+ReLU( x) = max(0 , x ),
+
+is often compiled into a short and highly efficient instruc-tion sequence that differs substantially from the computation required for the other activation functions. Listings 2 and 3 demonstrate this aspect. There is no concrete computation involved, other than a compare ( vcmpe.f32 ). On these few lines of code, the conditional operation (replace value with zero) itself translates into an it, vmovlt.f32 pair on any optimization level. Even -O0 . While that does not rely on conditional branch instructions, and as such exhibits constant time behavior, its computational profile does differ signifi-cantly from those operations actually performing arithmetic instructions.            
+
+> f l o a t ReLU ( f l o a t x ) {
+> r e t u r n ( x >0 . 0 f ) ?x:0 . 0 f ; }
+
+Listing 2: Naive ReLU implementation in C++.                 
+
+> ReLU ( f l o a t ) : v l d r . 3 2 s15 , . L 1 3 @ tmp117 , v c m p e . f 3 2 s0 , s 15 @ x , vmrs APSR_nzcv , FPSCR i t l t @v m o v l t . f 3 2 s0 , s 15 @, , tmp117
+> bx l r @. L 1 3 : . w o r d 0
+
+Listing 3: Emitted ARM assembly for listing 2 at -O3 .As a result, directly comparing such an implementation with the approximated nonlinear activations would not provide a meaningful basis for constant-time evaluation across the set of functions considered in this work. In the present instantiation, this was addressed by aug-menting the ReLU computation with a dummy arithmetic component derived from the same Rtanh -based computation used for the nonlinear activations. This additional computation does not affect the final ReLU result, but it helps align the computational structure and execution cost with the more complex activation functions. Only limited NOP padding was used for fine-grained cycle alignment where necessary. This design choice avoids relying exclusively on long sequences of NOP instructions, which would provide little resemblance to realistic computation and could produce arti-ficial side-channel characteristics. Instead, the implementation preserves a more representative arithmetic profile while still achieving identical timing behavior. 
+
+G. Implementation Considerations 
+
+Several additional measures were taken to preserve the intended constant-time behavior after compilation. First, Rtanh 
+
+was isolated as a dedicated function in order to control compiler optimization effects: function-scope optimizations are applied or suppressed depending on whether the function is inlined. Second, synchronization barriers and compiler fences were used around the measurement points to reduce the risk of instruction reordering during benchmarking. Additionally, the generated assembly code for these basic building blocks has been inspected to verify that the intended branchless structure was preserved by the compiler and that no unintended input-dependent optimizations were introduced. Overall, the proposed methodology combines fixed-cost approximation, masking-based saturation logic, masking-based selection, and cycle-alignment techniques to realize activation functions with input-independent execution time on the target embedded platform. V. E XPERIMENTAL SETUP 
+
+This section presents the experimental framework used to evaluate the proposed constant-time implementation method-ology as instantiated on the considered activation functions. 7
+
+Section V-A describes the hardware and software platform, Section V-B details the cycle-accurate timing methodology and benchmarking procedure, and Section V-C defines the evaluated input intervals together with the performance and numerical-accuracy metrics used in the subsequent analysis. 
+
+A. Hardware and Software Platform 
+
+All experiments were performed on an STM32F411E-DISCO development board equipped with an ARM Cortex-M4 microcontroller. The processor clock was configured to operate at 84 MHz using the internal HSI oscillator and PLL-based clock multiplication. The firmware was implemented in C++ using the GNU++14 language standard (-std=gnu++14 ) and developed with the STM32 HAL framework. The protected activation func-tions and benchmarking routines were implemented manually, without relying on external machine-learning libraries. The unprotected nonlinear baselines used standard single-precision mathematical operations where appropriate. The project was compiled in STM32CubeIDE using the GNU Arm Embed-ded Toolchain ( arm-none-eabi-g++ ) with optimization enabled. All activation functions were implemented using single-precision floating-point arithmetic (float ). The Cortex-M4 hardware floating-point unit (FPU) was enabled, and the project was compiled for the FPv4-SP-D16 floating-point architecture using the hardware floating-point ABI (-mfloat-abi=hard ). The program code was executed from flash memory. Al-though the Cortex-M4 does not employ a conventional cache hierarchy, flash prefetch and wait-state effects may still have a minor influence on instruction timing. The implementation used in this work is publicly available at https://github.com/ andrewtyv/activation_timing. 
+
+B. Measurement Methodology 
+
+Execution time was measured using the Data Watchpoint and Trace (DWT) cycle counter, which provides cycle-level timing on the target platform. For each measurement, asynchronization barrier was executed before sampling the start value of the DWT cycle counter. The timed region then included the activation-function call, assignment of the result to a volatile sink variable, and a post-execution synchronization barrier. Loop control, input generation, and storage of the recorded cycle count were outside the timed region. For the grid-based timing benchmarks, each activation func-tion was evaluated independently. The three-function setting used the interval [−8, 8] with a step size of 0.01 , whereas the extended five-function setting used the interval [−500 , 500] 
+
+with a step size of 1.0. In both settings, every input value was evaluated five times, and all recorded timing results were retained for analysis without aggregation. For each benchmark run, one activation function was se-lected as the measured function, and the same measurement loop was executed for all inputs and repetitions. The reported results for different activation functions were obtained from separate runs using the same measurement procedure. A warm-up execution was performed before the measure-ment loop in order to reduce the impact of initial flash-access effects. To improve the reliability and reproducibility of the measurements, interrupts were disabled during benchmarking. In addition, compiler and hardware barriers were placed around the measured region to limit instruction reordering effects. In particular, atomic_signal_fence , __DSB ,and __ISB were used to constrain compiler and processor reordering. 
+
+C. Input Range and Evaluation Metrics 
+
+Two input intervals were used in the evaluation. The interval 
+
+[−8, 8] was used for the timing and desynchronization exper-iments in the three-function setting consisting of ReLU, sig-moid, and tanh , and for the numerical-accuracy evaluation of the approximated sigmoid and tanh implementations. The ex-tended interval [−500 , 500] was used to evaluate the constant-time behavior and numerical accuracy of the extended five-function setting consisting of ReLU, sigmoid, tanh , GELU, and Swish. This extended range was chosen to stress the saturated or asymptotic regions of the nonlinear functions and to test whether timing regularity is preserved well beyond the saturation thresholds. A sampling step of 0.01 was used for the interval [−8, 8] ,while a step of 1.0 was used for the extended interval 
+
+[−500 , 500] . These sampling steps provide a fine-grained view of timing behavior near the nonlinear and saturation-threshold regions in the three-function setting, and a broad view of timing regularity over the extended range. For the timing experiments, the primary quantity recorded was the number of CPU cycles per activation-function call. For presentation purposes, these measurements were converted to execution time by dividing the measured cycle count by the processor clock frequency of 84 × 10 6 Hz . Presenting the results in time units facilitates comparison of timing charac-teristics across different activation-function implementations and makes the observed input-independent behavior easier to interpret. As a secondary criterion, the numerical accuracy of the protected nonlinear activation functions was evaluated against the corresponding reference implementations: the standard sigmoid, tanh and GELU functions, as well as Swish with 
+
+β = 1 .Approximation quality was quantified using mean squared error (MSE), root mean squared error (RMSE), and maximum absolute error over the sampled input grid used for the corresponding accuracy experiment. ReLU was excluded from the error tables because it is exact by construction. Together, these metrics characterize the timing regularity and numerical accuracy of the protected implementations. VI. R ESULTS 
+
+This section evaluates the proposed methodology in four steps. Section VI-A first establishes the timing-leakage baseline by analyzing the unprotected ReLU, sigmoid, 8
+
+and tanh implementations. Section VI-B then examines a desynchronization-based hiding countermeasure and shows that, despite visually obscuring the timing traces, it remains vulnerable to a profiled template-based timing attack. Sec-tion VI-C evaluates the proposed constant-time implemen-tations in the three-function setting, including both timing regularity and numerical accuracy over the interval [−8, 8] .Finally, Section VI-D extends the evaluation to GELU and Swish over the wider interval [−500 , 500] , demonstrating that the proposed methodology generalizes to an extended five-function setting. −8 −6 −4 −2 0 2 4 6 8
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> ×10 −6
+> Input
+> Time (s)
+> ReLU
+> sigmoid
+> tanh
+
+Fig. 2: Execution time as a function of input for the unpro-tected activation-function implementations. The timing profiles are clearly distinguishable across functions, and sigmoid and 
+
+tanh exhibit visible input-dependent timing variation. 
+
+A. Timing Leakage in Unprotected Activation Functions 
+
+Figure 2 shows the timing behavior of the unprotected im-plementations. Clear differences can be observed both across activation functions and, for the nonlinear activations, across input values. ReLU exhibits the lowest execution time and re-mains close to 12 cycles ( 0.143 μs) over the evaluated domain, whereas the unprotected sigmoid and tanh implementations require substantially longer execution times, approximately 
+
+221 cycles ( 2.63 μs) and 403 cycles ( 4.80 μs), respectively. In addition, sigmoid and tanh show visible timing variations in the central input region, producing activation-specific timing signatures that can be distinguished from one another. These observations establish a clear timing-leakage baseline for the unprotected implementations and are consistent with previ-ously reported timing side-channel leakage in neural-network computations [5], [9]. 
+
+B. Template-Based Attack on Desynchronized Implementa-tions 
+
+Having established that the unprotected implementations exhibit distinguishable timing behavior, we next examine whether hiding this behavior through desynchronization is sufficient to prevent activation-function identification from timing measurements. For this purpose, we implemented a desynchronization-style countermeasure inspired by [9], in −8 −6 −4 −2 0 2 4 6 8
+
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> ×10 −6
+> Input
+> Time (s)
+> ReLU
+> sigmoid
+> tanh
+
+Fig. 3: Execution time after applying the desynchronization-based countermeasure [9]. The original timing patterns are no longer distinguishable by visual inspection. which a nonnegative random delay, sampled from the distri-bution used in the experiment, is added to each activation-function evaluation to obscure the original timing pattern. The execution time of the unprotected ReLU, sigmoid, and 
+
+tanh implementations was first recorded for 8,000 random inputs in the interval [−8, 8] for each activation function. Based on these measurements, the parameters of the added delay were selected so that the resulting timing behavior becomes visibly desynchronized across the three activation functions. The resulting execution times are shown in Figure 3. After randomization, the original timing structure is visually obscured, and the three activation functions can no longer be reliably distinguished by inspection alone. To evaluate whether this protection can be bypassed, we adopt a profiled template-based attack, following the standard methodology commonly used in power and electromagnetic side-channel analysis of cryptographic implementations [20, Section 4.3]. For each class c ∈ {ReLU , sigmoid , tanh },we collected Nprof = 10 ,000 profiling measurements. Each measurement consisted of the execution time of the desyn-chronized activation-function implementation for a random input from the evaluated domain. From these measurements, a univariate Gaussian template was estimated for each class: 
+
+μc = 1
+
+Nprof 
+
+> Nprof
+
+X
+
+> i=1
+
+t(c) 
+
+> i
+
+, σ2 
+
+> c
+
+= 1
+
+Nprof − 1
+
+> Nprof
+
+X
+
+> i=1
+
+
+
+t(c) 
+
+> i
+
+− μc
+
+2
+
+,
+
+where t(c) 
+
+> i
+
+denotes the i-th measured execution time for class 
+
+c.The resulting template parameters were 
+
+(μReLU , σ 2ReLU ) = (9 .964 μs, 20 .346 μs2),
+
+(μsigmoid , σ 2sigmoid ) = (12 .380 μs, 20 .575 μs2),
+
+(μtanh , σ 2tanh ) = (14 .520 μs, 20 .645 μs2).
+
+During the attack phase, the true activation function was fixed but unknown to the attacker. Let t1, t 2, . . . , t n denote the execution times obtained for n random inputs in the interval 
+
+[−8, 8] . Following standard template-based attack methodol-ogy [20, Section 4.3], and assuming independence between 9500 1000 2000 3000 4000 5000  
+
+> −25
+> −20
+> −15
+> −10
+> −5
+> ×10 3
+> Number of random inputs n
+> Λn(ReLU)
+> ReLU
+> Sigmoid
+> Tanh
+
+(a) True activation: ReLU 500 1000 2000 3000 4000 5000   
+
+> −20
+> −15
+> −10
+> −5
+> ×10 3
+> Number of random inputs n
+> Λn(Sigmoid)
+> ReLU
+> Sigmoid
+> Tanh
+
+(b) True activation: sigmoid 500 1000 2000 3000 4000 5000  
+
+> −25
+> −20
+> −15
+> −10
+> −5
+> ×10 3
+> Number of random inputs n
+> Λn(tanh)
+> ReLU
+> Sigmoid
+> Tanh
+
+(c) True activation: tanh 
+
+Fig. 4: Evolution of the accumulated class scores under the template-based attack for the three possible true activation functions. In each panel, the true activation function is fixed, while the three curves correspond to the competing activation-function hypotheses. measurements, the likelihood of class c after n observations is given by 
+
+Ln(c) = 
+
+> n
+
+Y
+
+> i=1
+
+1
+
+p2πσ 2
+
+> c
+
+exp 
+
+
+
+− (ti − μc)2
+
+2σ2
+
+> c
+
+
+
+.
+
+Equivalently, and more conveniently for numerical evaluation, the accumulated class score can be written as 
+
+Λn(c) = −
+
+> n
+
+X
+
+> i=1
+
+
+
+ln σ2 
+
+> c
+
++ (ti − μc)2
+
+σ2
+
+> c
+
+
+
+,
+
+where the common additive term involving ln(2 π) is omitted and the common positive factor 1/2 is absorbed into the score scaling, since neither affects the comparison between classes. As the number of observations increases, the score associated with the correct class is expected to separate progressively from the competing hypotheses. The attack results are shown in Figure 4, which plots the evolution of the accumulated class scores as the number of measurements increases, with each of the three activation functions considered in turn as the true class. In all three cases, the score of the correct class separates from the competing hypotheses after approximately 2,000 measurements. These results show that desynchronization can obscure the timing pattern of individual measurements, but it does not eliminate the class-dependent statistical structure of the execution-time distributions. As additional measurements are collected, the correct activation function becomes increasingly favored under the corresponding template, enabling a pro-filed adversary to identify the activation class with growing confidence. This directly motivates the constant-time design proposed in this work, whose objective is to remove the input-dependent timing behavior itself rather than merely randomize its temporal position. 
+
+C. Constant-Time Evaluation of ReLU, Sigmoid, and tanh 
+
+Next, we evaluate the proposed constant-time implementa-tions in the three-function setting consisting of ReLU, sigmoid, and tanh . The evaluation considers timing regularity for all three functions and numerical accuracy for the two approxi-mated nonlinear functions over the interval [−8, 8] .The protected implementations shown in Figure 5 exhibit flat timing profiles throughout the evaluated input range. For ReLU, sigmoid, and tanh , the measured execution time remains constant at 1.048 μs, corresponding to 88 clock cycles. No input-dependent timing variation is observable in the indi-vidual plots, and the relative comparison in Figure 5(d) shows that the three protected implementations are fully aligned in execution time. These results confirm that the proposed 10 
+
+methodology suppresses the timing leakage present in the unprotected baseline for the considered activation functions. 
+
+a) Numerical accuracy.: In addition to timing behavior, we evaluated the numerical accuracy of the approximated sigmoid and tanh implementations over the interval [−8, 8] by comparison with the corresponding reference implementations. Since the ReLU implementation is exact by construction, approximation error was assessed only for sigmoid and tanh .TABLE I: Numerical accuracy of the approximated activation functions over the input interval [−8, 8] .                     
+
+> Activation MSE RMSE Max. abs. error Sigmoid 2.93 ×10 −12 1.71 ×10 −67.51 ×10 −6
+> tanh 6.14 ×10 −10 2.48 ×10 −59.59 ×10 −5
+
+Table I summarizes the obtained error metrics. The sigmoid approximation achieved very high accuracy, with an MSE of 
+
+2.93 × 10 −12 , an RMSE of 1.71 × 10 −6, and a maximum absolute error of 7.51 × 10 −6. The tanh approximation exhib-ited slightly larger deviation, with an MSE of 6.14 × 10 −10 ,an RMSE of 2.48 × 10 −5, and a maximum absolute error of 
+
+9.59 × 10 −5.Figure 6 shows the absolute error as a function of the input value. For sigmoid, the error remains very small over the full evaluated domain and increases only slightly toward the interval boundaries. For tanh , the largest error occurs around the saturation thresholds ±τtanh , where the implementation switches from a rational approximation to saturated output values. Away from the saturation thresholds, the error rapidly decreases and remains negligible. Overall, both approximations remain close to the corre-sponding reference functions in the evaluated domain. 
+
+b) Execution-Time Cost: Applying the proposed method-ology introduces different execution-time effects depending on the activation function. For ReLU, the protected implementa-tion is slower than the unprotected baseline, increasing from approximately 12 cycles ( 0.143 μs) to 88 cycles ( 1.048 μs). This increase is expected, since the original ReLU computation is extremely simple, whereas the protected implementation was intentionally augmented to match the fixed computational structure required for timing alignment. By contrast, the protected sigmoid and tanh implemen-tations are faster than their unprotected counterparts. In the evaluated interval [−8, 8] , the unprotected sigmoid is executed in approximately 221 cycles ( 2.63 μs), whereas the protected version requires only 88 cycles (1.048 μs). Similarly, the unprotected tanh runs in approximately 403 cycles ( 4.80 μs), while the protected implementation also requires 88 cycles (1.048 μs). This reduction is explained by the use of fixed-cost rational approximations (Equations 7 and 8) in place of standard-library exponential computations, which are more expensive on the target platform. 
+
+D. Extended Constant-Time Evaluation Across Five Activation Functions 
+
+To further evaluate the generality of the proposed method-ology, we extended the set of protected implementations to include GELU and Swish, in addition to ReLU, sigmoid, and 
+
+tanh .The extended evaluation was performed over the input interval [−500 , 500] . Across this range, all five protected activation functions exhibited identical execution latency of 
+
+108 clock cycles, corresponding to approximately 1.286 μs at the 84 MHz clock frequency of the target platform. Figure 7 shows that the timing profiles of ReLU, sigmoid, tanh , GELU, and Swish are fully aligned throughout the extended input range. This result indicates that the proposed masking-based se-lection, fixed-cost Padé approximation, and cycle-alignment strategy can be applied consistently beyond the original set of activation functions. 
+
+a) Numerical accuracy.: The numerical accuracy of the extended protected implementations was also evaluated over the interval [−500 , 500] . Since ReLU remains exact by con-struction, Table II reports the error metrics only for the four nonlinear activation functions. Figure 8 shows the absolute error as a function of the input value for the four nonlinear protected activation functions. TABLE II: Numerical accuracy of the protected nonlinear activation functions over the input interval [−500 , 500] .                                       
+
+> Activation MSE RMSE Max. abs. error Sigmoid 5.78 ×10 −12 2.40 ×10 −64.54 ×10 −5
+> tanh 1.72 ×10 −11 4.15 ×10 −69.08 ×10 −5
+> GELU 4.45 ×10 −10 2.11 ×10 −54.17 ×10 −4
+> Swish 2.96 ×10 −95.44 ×10 −51.11 ×10 −3
+
+The error is highly localized: away from the saturation thresholds, the curves remain essentially flat and close to zero in the extended interval [−500 , 500] . This behavior is espe-cially visible for sigmoid and tanh , whose errors become neg-ligible over the extended range because both functions reach their saturated regions over most of the evaluated domain. Consequently, although the evaluation interval is substantially larger than the original interval [−8, 8] , the aggregate error metrics for sigmoid and tanh remain very small. GELU exhibits low error, with a maximum absolute error of 4.17 × 10 −4. Although roughly an order of magnitude larger than the sigmoid and tanh maxima, this error remains localized near the saturation threshold and is negligible in most of the evaluated domain. Swish has the largest deviation among the evaluated nonlinear functions, reaching a maximum absolute error of 1.11 × 10 −3. This is expected because Swish multiplies the sigmoid component by the input value 
+
+x, so small approximation or saturation errors in the sigmoid component can be amplified around the saturation thresholds. Nevertheless, the Swish error is still confined to a narrow input region, while the error remains negligible over the vast majority of the extended domain. Overall, the timing and accuracy results show that the contribution of the present work is not limited to ReLU, sigmoid, and tanh , but extends to a broader methodology for constructing constant-time activation functions on embedded platforms. 
+
+b) Execution-Time Cost: The extended set of implemen-tations increases the common protected latency from 88 cycles 11 −8 −6 −4 −2 0 2 4 6 8
+
+> 0.9
+> 1
+> 1.1
+> 1.2
+> ×10 −6
+> Input
+> Time (s)
+> ReLU
+
+(a) ReLU −8 −6 −4 −2 0 2 4 6 8 
+
+> 0.9
+> 1
+> 1.1
+> 1.2
+> ×10 −6
+> Input
+> Time (s)
+> sigmoid
+
+(b) sigmoid −8 −6 −4 −2 0 2 4 6 8
+
+> 0.9
+> 1
+> 1.1
+> 1.2
+> ×10 −6
+> Input
+> Time (s)
+> tanh
+
+(c) tanh −8 −6 −4 −2 0 2 4 6 8 
+
+> 0.9
+> 1
+> 1.1
+> 1.2
+> ×10 −6
+> Input
+> Time (s)
+> ReLU
+> sigmoid
+> tanh
+
+(d) relative comparison 
+
+Fig. 5: Execution time as a function of input for the protected activation-function implementations: (a) ReLU, (b) sigmoid, (c) 
+
+tanh , and (d) relative comparison. All three implementations exhibit constant execution time over the evaluated input range and are fully aligned at 88 cycles ( 1.048 μs). −8 −6 −4 −2 0 2 4 6 8
+
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1
+> ·10 −4
+> Input
+> Absolute error
+> sigmoid
+> tanh
+
+Fig. 6: Absolute error of the approximated sigmoid and tanh 
+
+functions over the evaluated input interval. in the three-function setting to 108 cycles in the extended five-function setting, corresponding to approximately 1.286 μs
+
+at 84 MHz. This increase reflects the additional fixed-cost arithmetic and cycle alignment required to support GELU and Swish within a common execution budget. Table III summa-rizes the execution-time statistics of the original unprotected implementations used for this comparison. To put this cost into context, the original unprotected imple-−500 −400 −300 −200 −100 0 100 200 300 400 500 
+
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> 1.5
+> ×10 −6
+> Input
+> Time (s)
+> ReLU
+> sigmoid
+> tanh
+> GELU
+> Swish
+
+Fig. 7: Execution time as a function of input for the extended set of protected activation-function implementations over the interval [−500 , 500] . ReLU, sigmoid, tanh , GELU, and Swish all exhibit identical execution latency of 108 cycles, corre-sponding to approximately 1.286 μs at 84 MHz. mentations in the five-function setting exhibited substantially different execution-time characteristics. Over 5005 measure-ments per function, the unprotected ReLU implementation executed in 9 cycles ( 0.107 μs), while the unprotected sigmoid, 
+
+tanh , GELU, and Swish implementations had mean execution times of 161 cycles ( 1.921 μs), 157 cycles ( 1.871 μs), 103 
+
+cycles ( 1.232 μs), and 174 cycles ( 2.076 μs), respectively. Thus, the protected implementation introduces a substantial 12 −500 −400 −300 −200 −100 0 100 200 300 400 500 
+
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1
+> ·10 −3
+> Input
+> Absolute error
+> sigmoid
+> tanh
+> gelu
+> swish
+
+Fig. 8: Absolute error of the protected sigmoid, tanh , GELU, and Swish implementations over the extended input interval 
+
+[−500 , 500] . The errors are concentrated around the saturation thresholds, while they remain negligible over almost the entire evaluated range. TABLE III: Execution-time statistics of the original unpro-tected activation-function implementations in the five-function setting, reported in μs.                              
+
+> Activation Min. Mean Median Std. Max. ReLU 0.107 0.107 0.107 0.000 0.107
+> Sigmoid 1.440 1.921 1.893 0.273 2.524 tanh 1.452 1.871 1.905 0.214 2.679
+> GELU 1.143 1.232 1.167 0.540 5.988
+> Swish 1.595 2.076 2.048 0.273 2.798
+
+overhead for ReLU, increasing its latency from 9 cycles (0.107 μs) to 108 cycles ( 1.286 μs). This is expected, because ReLU is inherently much simpler than the nonlinear activa-tions and must be augmented with dummy arithmetic to align its timing with the common protected execution budget. In contrast, the protected implementations are faster on average than the original sigmoid, tanh , and Swish implementations, reducing their mean execution times by approximately 33 .1% ,
+
+31 .3% , and 38 .1% , respectively. For GELU, the protected latency is only slightly higher than the original mean latency, increasing from 103 cycles ( 1.232 μs) to 108 cycles ( 1.286 μs), while also removing the large timing spread observed in the unprotected implementation, whose maximum measured latency reached 503 cycles ( 5.988 μs). Overall, the extended protected implementation trades the extremely low cost of ReLU for a fixed, input-independent execution budget shared by all five activation functions. From the perspective of embedded inference, the resulting 108 -cycle (1.286 μs) latency remains modest, while simultaneously elim-inating the activation-dependent and input-dependent timing variation observed in the original implementations. VII. D ISCUSSION 
+
+A. Security Implications 
+
+Activation-function leakage has already been shown to support reverse engineering and model analysis [5], [6]. In this light, protecting activation functions against timing side-channel attacks is particularly relevant for privacy-sensitive and security-critical edge deployments, where inference is executed locally on microcontrollers and timing information may be observable to an attacker. Representative examples include wearable and medical sensing devices, as well as other edge-AI systems deployed in adversarial or untrusted environments, where model behavior, structure, or processed inputs may carry security or privacy value [26], [27]. At the same time, constant-time activations represent only one element of a side-channel-resistant inference pipeline. Other parts of the implementation may still introduce ex-ploitable leakage if they are not designed with similar care. The proposed approach should therefore be viewed as abuilding block toward more comprehensive secure embedded inference rather than as a complete countermeasure on its own. 
+
+B. Limitations and Future Work 
+
+In the considered setting, the selected rational approxima-tion and saturation thresholds provide a practical compromise between timing regularity, computational cost, and numerical precision. However, portability should be interpreted with care, since exact cycle counts and timing-regular code generation may still depend on the target architecture, compiler, and optimization settings. In addition, the main focus of this work is timing leak-age. Other side channels, such as power consumption or electromagnetic emanations, were not studied in the same depth. Finally, the analysis was performed at the level of individual activation functions rather than complete neural-network inference. Future work should therefore extend the study to additional hardware platforms, additional activation families, and end-to-end network implementations. More broadly, the results indicate that the contribution of this work lies not only in the specific protected implemen-tations of ReLU, sigmoid, tanh , GELU, and Swish, but in the underlying implementation methodology that combines fixed-cost Padé-based approximation, masking-based selec-tion, dummy arithmetic where needed, and cycle alignment for activation-function evaluation. VIII. C ONCLUSION 
+
+This work proposed a constant-time implementation methodology for activation functions on embedded microcon-trollers and validated it on ReLU, sigmoid, tanh , GELU, and Swish for embedded neural-network inference on a Cortex-M4 platform. The results showed that unprotected activation functions exhibit distinguishable timing behavior, and that desynchronization-based hiding alone does not fully prevent statistical discrimination under a template-based attack. To address this problem, we proposed a methodology based on masking-based selection, cycle alignment, and, for nonlinear activations, a shared rational approximation. Experimental evaluation demonstrated that the resulting protected implementations achieve identical cycle counts for all tested inputs, including a common latency of 108 cycles for all five activation functions. At the same time, the numerical-accuracy results showed that the approximations remain ac-curate over the considered input ranges, with sigmoid and 13 
+
+tanh errors becoming negligible over most of the considered interval and GELU and Swish retaining low error localized around the saturation thresholds. Overall, the proposed methodology shows that side-channel-aware activation-function design can be achieved in practice with modest implementation cost and low numerical error, making it a promising building block for more secure em-bedded neural-network inference. ACKNOWLEDGMENT 
+
+This work was supported by the Open Research Fund of The State Key Laboratory of Blockchain and Data Security (Grant number: A2566), Zhejiang University. The authors used ChatGPT (OpenAI) and Claude (An-thropic) for language polishing and editorial assistance. All generated suggestions were reviewed, revised where necessary, and verified by the authors, who take full responsibility for the final content. REFERENCES [1] W. Jiang, L. Yang, E. H.-M. Sha, Q. Zhuge, S. Gu, S. Dasgupta, Y. Shi, and J. Hu, “Hardware/software co-exploration of neural architectures,” 
+
+IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 39, no. 12, pp. 4805–4815, 2020. [2] W. Jiang, E. H.-M. Sha, Q. Zhuge, L. Yang, X. Chen, and J. Hu, “Heterogeneous fpga-based cost-optimal design for timing-constrained cnns,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 37, no. 11, pp. 2542–2554, 2018. [3] D. Kang, S. Lee, C.-H. Hong, J. Lee, and H. Baek, “Batch-mot: Batch-enabled real-time scheduling for multiobject tracking tasks,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 43, no. 11, pp. 3539–3550, 2024. [4] L. Batina, S. Bhasin, J. Breier, X. Hou, and D. Jap, “On implementation-level security of edge-based machine learning models,” in Security and Artificial Intelligence: A Crossdisciplinary Approach . Springer, 2022, pp. 335–359. [5] L. Batina, S. Bhasin, D. Jap, and S. Picek, “ {CSI }{ NN }: Reverse engineering of neural network architectures through electromagnetic side channel,” in 28th USENIX Security Symposium (USENIX Security 19) ,2019, pp. 515–532. [6] P. Horváth, D. Lauret, Z. Liu, and L. Batina, “Sok: Neural network extraction through physical side channels,” in USENIX Security Sympo-sium , 2024. [7] S. Maji, U. Banerjee, and A. P. Chandrakasan, “Leaky nets: Recovering embedded neural network models and inputs through simple power and timing side-channels—attacks and defenses,” IEEE Internet of Things Journal , vol. 8, no. 15, pp. 12 079–12 092, 2021. [8] G. Takatoi, T. Sugawara, K. Sakiyama, and Y. Li, “Simple electromag-netic analysis against activation functions of deep neural networks,” in International Conference on Applied Cryptography and Network Security . Springer, 2020, pp. 181–197. [9] J. Breier, D. Jap, X. Hou, and S. Bhasin, “A desynchronization-based countermeasure against side-channel analysis of neural networks,” in 
+
+International Symposium on Cyber Security, Cryptology, and Machine Learning . Springer, 2023, pp. 296–306. [10] D. Hendrycks and K. Gimpel, “Gaussian error linear units (gelus),” arXiv preprint arXiv:1606.08415 , 2016. [11] P. Ramachandran, B. Zoph, and Q. V. Le, “Searching for activation functions,” arXiv preprint arXiv:1710.05941 , 2017. [12] H. Yu, H. Ma, K. Yang, Y. Zhao, and Y. Jin, “Deepem: Deep neural networks model recovery through em side-channel information leakage,” in 2020 IEEE International Symposium on Hardware Oriented Security and Trust (HOST) . IEEE, 2020, pp. 209–218. [13] L. Wu, L. Wu, and X. Zhang, “Catch the star: Weight recovery attack using side-channel star map against dnn accelerator,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , 2025. [14] S. Shukla, M. Alam, S. Bhattacharya, P. Mitra, and D. Mukhopadhyay, ““whispering mlaas”: Exploiting timing channels to compromise user privacy in deep neural networks,” IACR Transactions on Cryptographic Hardware and Embedded Systems , pp. 587–613, 2023. [15] A. Akinsanya and T. Brennan, “Timing channels in adaptive neural networks.” in NDSS , 2024. [16] S. Mangard, E. Oswald, and T. Popp, Power analysis attacks: Revealing the secrets of smart cards . Springer, 2007. [17] L. Puškáˇ c, M. Benoviˇ c, J. Breier, and X. Hou, “Make shuffling great again: A side-channel-resistant fisher–yates algorithm for protecting neural networks,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , 2025. [18] X. Yan, C. H. Chang, and T. Zhang, “Defense against ml-based power side-channel attacks on dnn accelerators with adversarial attacks,” arXiv preprint arXiv:2312.04035 , 2023. [19] N. Narkthong and X. Xu, “Permutev: A performant side-channel-resistant risc-v core securing edge ai inference,” arXiv preprint arXiv:2512.18132 , 2025. [20] X. Hou and J. Breier, Cryptography and Embedded Systems Security .Springer, 2024. [21] J. B. Almeida, M. Barbosa, G. Barthe, F. Dupressoir, and M. Emmi, “Verifying {Constant-Time } implementations,” in 25th USENIX Security Symposium (USENIX Security 16) , 2016, pp. 53–70. [22] D. R. Hush and B. Horne, “Efficient algorithms for function approx-imation with piecewise linear sigmoidal networks,” IEEE transactions on neural networks , vol. 9, no. 6, pp. 1129–1141, 1998. [23] K. Liu, W. Shi, C. Huang, and D. Zeng, “Cost effective tanh activation function circuits based on fast piecewise linear logic,” Microelectronics Journal , vol. 138, p. 105821, 2023. [24] Y. Liu, S. Li, Y. Li, R. Chen, S. Li, J. Yu, and K. Wang, “Dif-lut pro: An automated tool for simple yet scalable approximation of nonlinear activation on fpga,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , 2025. [25] A. George, J. Baker, and P. Graves-Morris, “Padé approximants,” Cam-bridge University Press , p. 746, 1996. [26] A. Rocha, M. Monteiro, C. Mattos, M. Dias, J. Soares, R. Magalhaes, and J. Macedo, “Edge ai for internet of medical things: A literature review,” Computers and Electrical Engineering , vol. 116, p. 109202, 2024. [27] L. Xi, C. Li, M. S. Anari, and K. Rezaee, “Integrating wearable health devices with ai and edge computing for personalized rehabilitation,” 
+
+Journal of Cloud Computing , vol. 14, no. 1, p. 64, 2025.
