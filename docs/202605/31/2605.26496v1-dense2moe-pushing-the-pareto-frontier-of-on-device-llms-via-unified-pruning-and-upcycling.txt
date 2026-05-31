@@ -1,0 +1,640 @@
+Title: Dense2MoE: Pushing the Pareto Frontier of On-Device LLMs via Unified Pruning and Upcycling
+
+URL Source: https://arxiv.org/pdf/2605.26496v1
+
+Published Time: Wed, 27 May 2026 00:33:57 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Dense2MoE: Pushing the Pareto Frontier of On-Device LLMs via Unified Pruning and Upcycling 
+
+Fengfa Li ∗1, Hongjin Ji ∗1,2, Yifeng Ding 1, Lei Ren 1†, Chen Wei 11Li Auto 
+
+> 2
+
+The Chinese University of Hong Kong, Shenzhen 
+
+## Abstract 
+
+The Mixture of Experts (MoE) architecture is highly promising for resource-constrained on-device deployments, yet training these models from scratch incurs prohibitive costs. Current methods attempt to alleviate this by upcycling dense mod-els into MoEs; however, they often introduce parameter redundancy that degrades inference efficiency. Alternatively, standard layer pruning mitigates redundancy but inevitably compromises model accuracy. To resolve this dilemma, we propose 
+
+Dense2MoE , a novel framework that unifies pruning and upcycling through Layer-Fusion UpCycling (LF-UC). Guided by hardware Roofline theory, Dense2MoE systematically overcomes the inference memory wall by pruning bandwidth-heavy attention modules from redundant layers, while repurposing their Multi-Layer Perceptrons (MLPs) into MoE experts. This structural innovation preserves the model’s core capabilities and strictly limits active parameters via selective token routing. With a modest continual pre-training budget, Dense2MoE efficiently con-verts publicly available dense LLMs into on-device-ready MoE models. Extensive experiments demonstrate that Dense2MoE significantly advances the Pareto fron-tier for on-device inference latency versus model accuracy, outperforming dense baselines, state-of-the-art compression, and standard upcycling methods. 
+
+## 1 Introduction 
+
+While large language models have achieved remarkable performance across diverse tasks (Vaswani et al., 2017; Touvron et al., 2023), their deployment in latency-critical and resource-constrained environments—such as autonomous driving and edge AI—remains severely hindered. During the autoregressive decoding phase, dense LLMs are inherently memory-bound according to hardware Roofline theory (Williams et al., 2009). Therefore, simply reducing theoretical FLOPs is insufficient to break the inference memory wall. Establishing a practical, industrial-standard recipe to repurpose these open-source dense LLMs into highly efficient architectures has become an urgent priority. To alleviate deployment bottlenecks, the community has primarily explored two paradigms: model pruning and Mixture-of-Experts (MoE) upcycling. Structured layer pruning (Gromov et al., 2024) effectively curtails serial computation but inevitably sacrifices model accuracy by indiscriminately discarding multi-layer perceptrons (MLPs)—the primary knowledge repositories of LLMs (Meng et al., 2022). Conversely, MoE upcycling (Komatsuzaki et al., 2022) transforms dense models into sparse architectures to scale capacity efficiently. However, early upcycling methods (Komatsuzaki et al., 2022) often suffer from homogeneous expert initialization, necessitating massive continual pre-training to induce specialization. Furthermore, recent sparse repurposing approaches (Sukhbaatar et al., 2024; Gao et al., 2025) predominantly target intra-layer redundancy. By neglecting substantial inter-layer structural overlaps, they fail to fully resolve the memory bandwidth bottlenecks imposed by redundant attention and MLP blocks.  
+
+> ∗Equal contribution. †Corresponding author and project lead. Preprint.
+> arXiv:2605.26496v1 [cs.LG] 26 May 2026
+
+To overcome this fundamental trade-off between inference efficiency and model accuracy, we propose Dense2MoE, a novel framework that seamlessly integrates structured layer pruning and MoE upcycling in a principled and unified manner. We first identify redundant decoder layers through a dual-constraint similarity metric that jointly evaluates layer-wise output similarity and MLP input feature matching. Rather than discarding pruned layers entirely, we physically eliminate their redundant attention modules to substantially reduce memory bandwidth consumption. Crucially, through our novel Layer-Fusion Upcycling (LF-UC) technique, we preserve the pre-trained MLPs from the pruned layers and integrate them as heterogeneous experts into the retained layers. This structural design ensures that the enhanced representational capacity introduces no additional dynamic latency overhead. Furthermore, by initializing experts with heterogeneous pre-trained weights, Dense2MoE requires only a lightweight continual pre-training budget of 225B tokens, consuming less than 1% of the compute required to train a MoE model from scratch. In summary, our key contributions are as follows: • A unified pruning and upcycling framework: We propose Dense2MoE, a unified framework that seamlessly integrates structured layer pruning with MoE upcycling via the LF-UC technique, enabling joint optimization of inference latency and model accuracy for resource constrained on-device LLM deployments. • State-of-the-art Pareto optimality: Evaluated across 9 diverse benchmarks (e.g., MMLU, ARC, code generation), Dense2MoE advances the Pareto frontier of inference latency versus model accuracy. Grounded in hardware Roofline modelling, it outperforms dense baselines, state-of-the-art compression, and standard upcycling methods. • Robust scalability: We validate the versatility of Dense2MoE across varying model scales (0.5B to 7B) and distinct architectural families (Qwen2.5 and LLaMA2), confirming its broad applicability for resource constrained on-device deployments. 
+
+## 2 Related work 
+
+Structured Pruning for LLMs. Model pruning seeks to alleviate inference latency and memory constraints by systematically excising redundant weights. Recent efforts predominantly diverge into two trajectories: layer-wise pruning and fine-grained structural pruning. Layer-wise pruning methods, such as UIDL (Gromov et al., 2024), attempt to drop consecutive redundant decoder layers based on block-similarity metrics. To mitigate the severe performance drop inherent to naive layer removal, subsequent methods like LLM-Streamline (Chen et al., 2024) propose training lightweight surrogate modules (e.g., shallow FFNs) to compensate for the structural loss. Conversely, fine-grained approaches like LLM-Pruner (Ma et al., 2023) selectively remove specific attention heads and FFN filters guided by gradient and activation heuristics. Despite these advancements, existing pruning paradigms fundamentally struggle to preserve a model’s advanced reasoning and coding capabilities. Specifically, gradient-based structural pruning often disrupts the pre-trained manifold, requiring intensive retraining, while layer-wise methods indiscriminately discard deep MLP modules alongside redundant attention mechanisms. Given that MLPs function as the primary knowledge repositories within Transformers (Meng et al., 2022), replacing them with shallow surrogate modules (as in LLM-Streamline) or discarding them entirely (as in UIDL) results in a permanent, unrecoverable loss of representational capacity. Dense2MoE diverges from this destructive paradigm: it physically prunes only the attention bottlenecks to strictly reduce memory bandwidth consumption, while strategically preserving and recycling the rich, pre-trained MLPs. 
+
+MoE Upcycling and Architecture Repurposing. MoE upcycling (Shazeer et al., 2017a; Ko-matsuzaki et al., 2022) presents a compelling alternative to static pruning by expanding dense feed-forward networks into sparse, independent experts. This allows for increased model capacity without a commensurate linear increase in dynamic computational overhead. However, conven-tional upcycling methodologies—which typically initialize experts by directly duplicating native MLPs—suffer from severe representation collapse. Overcoming this homogeneous initialization necessitates massive continual pre-training to induce expert specialization, which directly contradicts the objective of low-cost model repurposing. Furthermore, recent state-of-the-art sparse repurposing approaches, such as ToMoE (Gao et al., 2025), primarily focus on exploiting intra-layer dimensional redundancy within individual MLP modules. 2By neglecting the macro-level inter-layer structural redundancy inherent in deep Transformers, these approaches fail to address the predominant KV-cache loading overhead caused by redundant attention layers during autoregressive decoding. Dense2MoE overcomes these fundamental limitations by utilizing the preserved MLPs from structurally pruned layers as naturally heterogeneous experts. This Layer-Fusion Upcycling (LF-UC) strategy simultaneously eliminates attention-driven memory bottlenecks and bypasses the exorbitant training costs required for expert specialization. 
+
+## 3 Method 
+
+Dense2MoE adopts a prune-and-expand approach to repurpose dense models into Mixture-of-Experts (MoE) architectures, aiming to reduce active parameters and accelerate inference without compro-mising performance. As illustrated in Figure 1, our method can be summarized into three key stages: (1) Inter-layer Similarity Analysis ((a)): We identify structural redundancy by localizing adjacent layers that exhibit high cosine similarity in both decoder outputs and MLP inputs. (2) LF-UC ((b) and (c)): For a set of identified redundant layers, we retain the first block as the base. We completely prune the attention modules of subsequent layers to reduce compute, and aggregate their MLPs into the base block as distinct experts. Simultaneously, a dynamic token-level router is introduced to selectively dispatch tokens to these upcycled experts or bypass them entirely via residual paths, structurally enabling faster inference. (3) Continual Pre-Training: Following the architectural modifications, we conduct a continual pre-training phase to optimize the routing mechanism, align the newly fused experts, and fully recover the model’s capabilities. Throughout the subsequent formulations, layer indices are consistently denoted by superscripts and token dimensions by subscripts (a comprehensive notation guide is provided in Table 4 in Appendix A). 
+
+Figure 1: Overview of Dense2MoE. (a) Similarity analysis: Identifying structural redundancy via decoder output and MLP input similarities. (b) Layer-Fusion Upcycling (LF-UC): Pruning redundant attention modules while fusing their MLPs into retained blocks as MoE experts, preserving capacity with reduced compute. (c) Dynamic token-level routing: During inference, a router dispatches tokens to specific experts or allows them to skip the computational block via residual paths, effectively reducing active parameters and accelerating inference. 
+
+3.1 Preliminary Forward Propagation in LLMs. Modern decoder-only large language models (LLMs) primarily stack transformer blocks along the depth dimension. The inter-layer information transmission relies on residual connections. For the l-th layer, the hidden state x(l) is updated via Multi-Head Attention (MHA) and Multi-Layer Perceptron (MLP) modules: 
+
+x(l+1) = h(l) + MLP (l)(LN (h(l)), θ (l)
+
+> mlp
+
+) (1) where h(l) = x(l) + MHA (l)(LN (x(l)), θ (l)
+
+> mha
+
+) is the intermediate state post-attention, and LN (·)
+
+denotes standard Layer Normalization. 3Crucially, the MLP module, which typically adopts a Gated Linear Unit (GLU) variant in mainstream LLMs, serves as the core repository of learned knowledge reused in our method. The transformation is defined as: MLP (l)(h, θ (l)
+
+> mlp
+
+) = 
+
+
+
+σ
+
+
+
+hW (l)
+
+> up
+
+
+
+⊙
+
+
+
+hW (l)
+
+> gate
+
+ 
+
+W (l) 
+
+> down
+
+(2) where W (l) 
+
+> up
+
+, W (l) 
+
+> gate
+
+∈ Rd×dmid are the up-projection and gate matrices, W (l) 
+
+> down
+
+∈ Rdmid ×d is the down-projection matrix, and σ(·) denotes the SiLU activation. Since the layer’s representational capacity is entirely encoded within these three weight matrices, our approach directly preserves and reallocates them from redundant layers to construct expert modules, avoiding any disruptive structural modifications. 
+
+Mixture-of-Experts (MoE). In sparse MoE architectures, the standard dense MLP block is replaced by a routing network and a set of N independent experts {E1, . . . , E N }. For an input token represen-tation h, a trainable router computes a probability distribution g(h) = Softmax (hW r ), parameterized by routing weights Wr ∈ Rd×N . To ensure inference efficiency, conditional computation is enforced by selecting only the Top-k experts per token.The MoE output is thus the sparsity-weighted sum of these activated experts: MoE (l)(h) = X
+
+> i∈Top-k
+
+gi(h) · E(l) 
+
+> i
+
+(h) (3) Crucially, each expert E(l) 
+
+> i
+
+(·) shares the identical structural parameterization as the dense MLP defined in Eq. (2).To ensure uniform feature distributions for the router and strictly constrain the parameter count, all upcycled experts within the l-th layer share a single, unified Layer Normalization module.This architectural equivalence is the foundational premise enabling Dense2MoE to directly repurpose redundant dense layers into sparsely activated MoE experts. 
+
+3.2 Inter-Layer Similarity Analysis and Hardware-Aware Trade-off 
+
+Analyzing inter-layer similarity is crucial for our pruning-and-expansion framework. Prior approaches typically rely on cosine similarity, which captures directional alignment but is strictly scale-invariant. To ensure activation stability during expert routing, we comprehensively evaluate both directional similarity and absolute scale discrepancy. For a base layer l and a subsequent layer l + n, we compute the sequence-averaged cosine similarities for both the final layer outputs ( yt) and the MLP inputs ( ht) across T tokens: 
+
+sout = 1
+
+T
+
+> T
+
+X
+
+> t=1
+
+scos 
+
+
+
+y(l) 
+
+> t
+
+, y (l+n)
+
+> t
+
+
+
+, smlp = 1
+
+T
+
+> T
+
+X
+
+> t=1
+
+scos 
+
+
+
+h(l) 
+
+> t
+
+, h (l+n)
+
+> t
+
+
+
+. (4) A layer l+n is identified as structurally redundant if it satisfies the directional constraints sout > 1−δ
+
+and smlp > 1 − δ, where δ is a strict similarity threshold. Unlike prior methods that discard redundant blocks entirely (Gromov et al., 2024; Yang et al., 2024), we selectively share attention layers with high smlp (Section 3.3) and retain their MLPs to preserve critical model capacity. However, directly routing to these repurposed MLPs risks activation anomalies if their expected input magnitudes differ significantly. Therefore, we impose a strict feature norm matching constraint: 
+
+∆norm 
+
+
+
+h(l), h (l+n)
+
+= ∥h(l)∥2 − ∥ h(l+n)∥2
+
+∥h(l+n)∥2
+
+< ϵ. (5) This mathematically guarantees that reusing redundant MLPs introduces no extreme scale shifts.As empirically verified in Appendix F.1, omitting this constraint destabilizes the initial training phase, confirming its necessity for numerical consistency.We visualize the distribution of sout and smlp 
+
+across all layers for representative models in Fig. 4 (Appendix F.2), where grid cell colors denote hidden state distances, establishing a strong empirical prior for structural redundancy. 
+
+Mapping Thresholds to Topological Depth. Based on these strictly defined constraints, we formulate a greedy iterative search algorithm (Algorithm 1 in Appendix B) to partition the network into a retained base layer set ( Lkeep ) and a pruned redundant layer set ( Lprune ). Crucially, rather than treating the hyperparameters as isolated variables, this algorithm establishes a discrete mapping function between the constraints and the ultimate pruning depth: m = f (δ, ϵ ). Relaxing the cosine 4similarity threshold ( δ) and the norm error tolerance ( ϵ) acts as a continuous compression valve. This monotonically increases the topological depth of pruning, resulting in a step-wise phase transition in the model’s physical structure (detailed sensitivity analysis provided in Appendix F.3). This mapping yields a set of candidate configurations on the Pareto frontier, necessitating a principled mechanism for optimal depth selection. 
+
+Hardware-Aware Capacity-Efficiency Trade-off. To systematically determine the optimal architec-tural “sweet spot” from these candidate depths, we adopt a hardware-aware trade-off metric inspired by MnasNet (Tan et al., 2019): Reward i = Si ×
+
+ LaT i
+
+LaT base 
+
+w
+
+(6) where Si and LaT i are the candidate’s average score and physical latency, and LaT base serves as the dense baseline’s latency anchor. The exponent w is an empirically determined constant that controls the strictness of the latency penalty. Following the methodological principle of MnasNet, we establish this hyperparameter based on the empirical scaling rule of the specific deployment hardware. An empirical rule for picking w
+
+is to ensure that Pareto-optimal solutions yield similar rewards under different accuracy-latency trade-offs. This mathematically derived exponent enforces a rigorous balance between inference acceleration and capacity degradation. By evaluating all candidate configurations against this metric, we systematically identify and lock the optimal retained depth that achieves the maximum overall reward for subsequent MoE upcycling. 
+
+3.3 Layer Fusion and Upcycling (LF-UC) 
+
+For a retained base layer l∗ and its corresponding n∗ redundant layers, the similarity constraint 
+
+h(l∗+i) ≈ h(l∗) (where i ∈ { 1, . . . , n ∗}) dictates that the sequential Multi-Head Attention (MHA) computations across these blocks are highly repetitive. To exploit this, we mathematically fuse these n∗ + 1 sequential layers into a single MoE layer. We construct an expert pool of N = K + n∗ × M experts by duplicating the native MLP of the base layer K times (base experts) and repurposing the MLPs of the redundant layers M times (supplementary experts). Distinct from prior upcycling methods that partition weights within a single layer, our approach leverages inter-layer structural heterogeneity, treating entire redundant MLPs as distinct, specialized experts. This inter-layer heterogeneity also mitigates the Winner-Takes-All (WTA) routing collapse—wherein a single expert monopolises token dispatch while others remain underutilised—that afflicts homogeneous upcycling baselines (see Appendix F.6). During the forward pass, we bypass the n∗ redundant MHA computations, utilizing h(l∗) as the shared routing input: 
+
+y(l∗+n∗) = h(l∗) + X
+
+> j∈K (h(l∗))
+
+gj
+
+
+
+h(l∗)
+
+· MLP j
+
+
+
+LN mlp 
+
+
+
+h(l∗) 
+
+(7) By sharing the base MHA, this structural fusion formally eliminates n∗ redundant attention oper-ations—significantly mitigating dynamic computational bottlenecks—while fully preserving the pre-trained knowledge embedded across all original MLPs. 
+
+## 4 Experiments 
+
+We validated the Dense2MoE method on models of different scales across two open-source model families (Qwen2.5 (et al., 2024) and Llama2 (Touvron et al., 2023)), and compared it with prevalent model layer pruning and sparse repurposing approaches. For fairness, we constructed a 225B-token dataset with the same composition to compare model performance. All methods were fine-tuned on the dataset, and their performance was validated on benchmarks spanning multiple domains (mathematics, code, reasoning and general knowledge). 
+
+4.1 Setup 
+
+To validate our approach at scales relevant to edge deployment, we conduct experiments on Qwen2.5-0.5B (et al., 2024). To assess generality, we further extend our method to larger and heterogeneous 5model families, including Qwen2.5-1.5B (et al., 2024) and Llama2-7B (Touvron et al., 2023). Unless otherwise specified, we use the following setup: all models are trained via continual pre-training on 225B tokens with a batch size of 40M tokens. We adopt a linear warm-up from 0 to 1 × 10 −4 over the first 360M tokens, followed by cosine decay to 1 × 10 −5.For MoE-specific optimization, we use an auxiliary load-balancing loss (Shazeer et al., 2017b; Fedus et al., 2022) weighted by 1 × 10 −3. We configure the MoE layer with N = 6 experts and top-k
+
+routing with k = 1 (Fedus et al., 2022). We further ablate the effect of varying the number of experts 
+
+N in Section 5.2. 
+
+Evaluation benchmarks. We verified the effectiveness of our method on general knowledge benchmarks including C-Eval (Huang et al., 2023), CMMLU (Li et al., 2023), and MMLU (Hendrycks et al., 2020). To evaluate mathematical and coding capabilities, we utilized GSM8K (Liu et al., 2023), CMath (Wei et al., 2023), HumanEval (Chen et al., 2021)(abbreviated as HEval in tables), and MBPP (Austin et al., 2021). For assessing complex reasoning, we adopted BBH (Suzgun et al., 2022) and ARC-Challenge (Clark et al., 2018). 
+
+Baselines. To comprehensively evaluate Dense2MoE, we benchmark against the original dense seed models and several representative state-of-the-art compression paradigms. These include layer-pruning methods ( UIDL (Gromov et al., 2024); LLM-Streamline (Chen et al., 2024)), fine-grained structural pruning ( LLM-Pruner (Ma et al., 2023)), and conventional MoE Upcycling (Komatsuzaki et al., 2022). Furthermore, we compare against recent advanced sparse repurposing frameworks, specifically LLaMA-MoE (Zhu et al., 2024) and ToMoE (Gao et al., 2025), which focus on partitioning feed-forward networks and exploiting intra-layer dimensional redundancy, respectively. 
+
+Hardware and inference evaluation setup. Considering the target application scenarios of edge-side and embodied AI models, we evaluate the inference efficiency targeting the NVIDIA Jetson Thor-U automotive SoC (Peak FP16 compute πH = 350 TFLOPS, memory bandwidth βH = 273 GB/s). In practical edge deployment, empirical latency measurements are frequently distorted by suboptimal software-level implementations, such as unoptimized MoE routing kernels in current inference engines, which obscure the true architectural efficiency. To conduct a rigorous and hardware-agnostic evaluation, we calculate the theoretical end-to-end physical latency bounds based on the first-principles Roofline model (Sun et al., 2026). Our evaluation workload ( B = 1 , Sin = 1000 , Sout = 50 ) mirrors realistic automotive and embodied AI scenarios, which typically process extensive context to generate concise control commands. Crucially, this end-to-end setting captures Dense2MoE’s dual acceleration: pruning redundant attention significantly reduces FLOPs in the compute-bound prefill phase, while sparse expert routing bypasses the memory wall in the memory-bound decode phase (detailed Roofline analysis in Appendix D). 
+
+4.2 Dataset details 
+
+Our dataset comprises approximately 225B tokens from publicly available, open-source sources, which we meticulously cleaned, normalized, and deduplicated. To better align the Dense2MoE-modified architecture with diverse downstream tasks, we carefully adjusted domain proportions for targeted re-adaptation. Detailed composition and sampling ratios are provided in Table 6 (see Appendix E). 
+
+4.3 Main Results 
+
+As illustrated in Figure 2, sweeping the layer depth under these constraints reveals that retaining 19 layers yields the optimal balance. Compared with the dense baseline and existing alternatives, this optimal Dense2MoE configuration ( L = 19 ) significantly advances the Pareto frontier of benchmark performance versus inference latency.The data points generated by our approach strictly dominate the trade-off space. Most notably, Dense2MoE comprehensively surpasses the original 24-layer Seed Model (Qwen2.5-0.5B, latency:195.87ms, average score:37.53), simultaneously achieving higher benchmark accuracy and substantially lower physical inference time. Beyond theory, empirical test results on the Thor-U SoC ( B = 1 , Sin = 1000 , Sout = 50 ) confirm that our optimal Dense2MoE ( L = 19 ) achieves a total latency of 271.0 ms, dropping significantly 6Figure 2: Pareto frontier of benchmark performance versus physical inference latency on the Thor-U platform. from the seed model’s 307.5 ms. This speedup, achieved without optimized sparse MoE kernels, highlights immense potential for future hardware-level acceleration. To identify the absolute optimal configuration from this frontier, we instantiate the hardware-aware reward metric Eq.( 6) on the target Thor-U platform. On this specific hardware, we empirically observe that doubling the inference latency typically brings about an 11% relative benchmark gain. To satisfy the constant reward constraint ( 2−w = 1 .11 ), we establish the platform-specific penalty exponent as 
+
+w ≈ − 0.15 . Evaluated against this stringent metric, the 19-layer architecture achieves the maximum overall reward (detailed quantitative evaluations are provided in Appendix C). Consequently, we lock this depth ( L = 19 ) as the optimal foundation for our subsequent MoE expansions. Furthermore, when evaluated against recent state-of-the-art (SOTA) pruning and MoE upcycling methods, Dense2MoE consistently establishes a superior efficiency envelope. While traditional prun-ing and existing sparse repurposing approaches (such as ToMoE and Llama-MoE) successfully reduce physical inference latency, they suffer from severe capacity collapse,particularly catastrophic degrada-tion in complex reasoning and coding tasks. As shown in Table 1, these baselines fail to preserve the seed model’s reasoning capabilities, often falling significantly below the original dense performance. In contrast, the Dense2MoE Pareto frontier demonstrates robust representational retention. This systematic improvement confirms that our Layer-Fusion Upcycling effectively eliminates redun-dant memory-bound attention operations without destroying pre-trained knowledge.Consequently, Dense2MoE achieves faster inference by minimizing active parameters (0.42B) and substantially surpasses the original dense model’s average score, all while remaining strictly within edge memory capacity limits (total parameters ≈ 1.66 B).This provides a highly competitive and flexible continuum of models optimal for latency-critical edge deployment. Table 1: Performance–efficiency trade-off across benchmarks.                                                                                           
+
+> Method Act.Param. Latency(ms) Benchmarks Avg. CEVal CMMLU MMLU CMath GSM8K HEval MBPP BBH ARC-C Dense / Pruned Models Qwen2.5-0.5B 0.50B 195.87 53.77 52.06 47.60 30.66 38.59 28.66 29.60 29.85 26.96 37.53 UIDL 0.42B 165.68 43.63 45.28 36.10 30.50 26.54 27.44 21.80 27.50 23.29 31.34 LLM-Pruner 0.42B 165.22 50.01 46.20 40.70 30.00 34.19 10.37 32.80 22.16 26.79 32.58 LLM-Streamline 0.44B 171.72 46.00 43.09 39.10 27.33 23.88 7.90 26.40 17.64 22.78 26.79 Sparse MoE Models ToMoE 0.43B 188.7 49.50 48.05 40.30 32.33 21.53 12.80 19.40 28.12 26.79 30.98 Llama-MoE 0.34B 143.56 42.26 41.15 37.40 25.67 6.82 6.70 6.40 11.14 22.70 22.25 Dense2MoE 0.42B 174.95 62.68 64.10 45.00 45.03 44.67 42.68 43.00 36.63 42.03 47.31 Note: Activated Parameters denote per-token inference cost. MoE models have higher total parameters but maintain comparable activated cost via sparse routing.
+
+7Building upon the Pareto dominance established above, we further dissect the cognitive capabilities of our optimal Dense2MoE configuration against other methods. While the Pareto analysis demonstrates macro-level efficiency, Table 1 provides a granular performance breakdown across nine diverse benchmarks encompassing general knowledge, mathematics, coding, and reasoning. As the detailed results indicate, the superiority of Dense2MoE is consistent across distinct cognitive domains rather than being skewed by a single metric. Notably, after continual pre-training on 225B tokens, the optimal Dense2MoE configuration consistently outperforms competing methods. While activating only 80% of the seed model’s parameters, it yields an absolute average improvement of over 9.78 percentage points compared to the dense baseline. This comprehensive evaluation robustly validates that our structural pruning and layer-fusion mechanism perfectly preserves, and even enhances, the model’s multidimensional reasoning capacity under strict inference constraints. 
+
+Generalization and scalability analysis. To validate the generality and scalability of our method, we extend Dense2MoE to models of different families and sizes, including LLaMA2-7B and Qwen2.5-1.5B. The results are presented in Table 2. After fine-tuning Dense2MoE using only 225B tokens, it outperforms Qwen2.5-1.5B by 3.04 percentage points and LLaMA2-7B by 3.54 percentage points, demonstrating that our model remains effective as model scale increases and can be extended to other open-source model families. Table 2: Performance comparison of different methods across various benchmarks.                                                          
+
+> LLM Model Activated Parameters Benchmarks Avg. CEVAL CMMLU MMLU CMath GSM8K HEval MBPP BBH ARC-C Qwen2.5 Dense 1.5 B 68.72 67.82 61.10 63.99 49.00 35.98 46.00 39.73 64.42 55.19 Ours 1.2 B 72.51 70.5 51.67 55.5 63.31 52.44 53.2 42.73 62.2 58.23
+> Llama2 Dense 7.0 B 30.99 32.75 45.80 16.60 22.83 12.80 21.60 39.36 27.80 27.84 Ours 5.7 B 38.68 39.56 50.8 25.33 26.31 18.29 22.4 34.59 26.45 31.38
+
+## 5 Analysis 
+
+5.1 Effectiveness of Layer-Fusion Upcycling LF-UC achieves the best performance under the edge-latency constraint. As shown in Table 3, Non-Prune+UC scores marginally higher (48.19 vs. 47.31), but its 24-layer depth incurs 207.58 ms latency—19% above the deployment target—rendering it infeasible for edge deployment. At iso-latency (174.95 ms), LF-UC outperforms Prune+UC by 6.56 points, demonstrating that the advantage stems from heterogeneous expert initialisation rather than increased model depth. LF-UC also leads to more balanced expert routing. As shown in Appendix F.6, it reduces the mean dominant-expert load from 48.0% to 45.2% and decreases the number of layers exceeding the 50% threshold from 11 to 9 compared to homogeneous Prune+Upcycling. We attribute this improvement to the source diversity of experts, where initialization from different layers introduces natural specialization and mitigates early-stage routing collapse. Table 3: Ablation on upcycling strategies (UC = Upcycling).                                          
+
+> Method Act.Param. Latency(ms) Benchmarks Avg. C-Eval CMMLU MMLU CMath GSM8K HEval MBPP BBH ARC-C Non-Prune+UC 0.49B 207.58 62.02 60.81 45.6 47.0 51.2 40.73 44.6 39.0 42.78 48.19
+> Prune+UC 0.42B 174.95 59.63 57.45 43.5 43.5 46.55 19.51 41.2 25.89 29.52 40.75 LF-UC (ours) 0.42B 174.95 62.68 64.1 45.0 45.03 44.67 42.68 43.0 36.63 42.03 47.31
+
+5.2 Ablation on Expert Scaling 
+
+Fixing the optimal retained depth at L = 19 , we isolate the impact of scaling the total number of experts ( N ) under top-1 routing. As shown in Figure 3, performance improves sharply from N = 2 
+
+to N = 6 but saturates and fluctuates beyond that point. N = 10 nominally achieves the highest 8score, yet the trajectory is non-monotonic (a dip occurs at N = 8 ) and the net gain over N = 6 is less than 0.2 points. Crucially, while inactive experts incur zero runtime memory-bandwidth cost, each additional expert linearly inflates the static parameter memory (right axis, Figure 3; derivation in Appendix F.5). Scaling from N = 6 to N = 10 expands the model from 3.32 GB to 5.31 GB (BF16), a 60% increase with negligible accuracy return. On automotive edge SoCs (e.g., Jetson Thor-U) with Unified Memory Architecture, this additional 2 GB must be carved from a shared LPDDR budget also used by sensor fusion and motion-planning pipelines, risking system-level memory pressure. We therefore adopt 
+
+N = 6 as the hardware-aware default for Dense2MoE. 
+
+Figure 3: Effect of expert count ( N ) on average score (left axis, blue) and static parameter memory in BF16 (right axis, red), at fixed depth L = 19 .
+
+5.3 Efficiency-Capacity Trade-off in Edge Deployment 
+
+To validate robustness under strict edge-latency budgets ( ∼175 ms), we analyze the training dynamics of the extreme heterogeneous configuration n1k4m2 —where n∗ = 1 redundant layer is fused, utilizing K = 4 base experts and M = 2 supplementary experts. Despite its aggressive compression, 
+
+n1k4m2 seamlessly avoids capacity bottlenecks and routing collapse, demonstrating two critical properties: (1) Zero capacity penalty: It mirrors the convergence trajectory of computationally heavier baselines (e.g., n2k2m2 ), achieving a final Language Modeling Loss of 1.2025. (2) Routing stability: The Load Balancing Loss rapidly stabilizes within a healthy margin (2.0–2.5), explicitly preventing expert starvation. Consequently, these microscopic training dynamics confirm that n1k4m2 maximizes representational power strictly within Roofline latency boundaries (detailed trajectories provided in Appendix F.4). 
+
+## 6 Conclusion 
+
+In this work, we propose Dense2MoE, a unified framework that fundamentally resolves the ac-curacy–latency trade-off for resource-constrained on-device LLMs. Through our Layer-Fusion Upcycling (LF-UC) technique, Dense2MoE physically eliminates redundant attention layers to sub-stantially reduce memory-bound inference latency, while strategically repurposing pruned MLPs as heterogeneous experts to preserve representational capacity. By systematically exploiting inter-layer structural redundancy, Dense2MoE enables joint optimization of inference latency and model accu-racy, advancing the Pareto frontier beyond dense baselines, state-of-the-art compression methods, and standard upcycling approaches across 9 diverse benchmarks. Validated across varying model scales (0.5B to 7B) and diverse architectural families (Qwen2.5 and LLaMA2), Dense2MoE establishes a practical, hardware-aware paradigm for Pareto-optimal LLM deployment in resource-constrained edge AI systems. 9References 
+
+Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, et al. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 , 2021. Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. Xiaodong Chen, Yuxuan Hu, Jing Zhang, Yanling Wang, Cuiping Li, and Hong Chen. Streamlining redundant layers to compress large language models. arXiv preprint arXiv:2403.19135 , 2024. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. Yang et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 23(120):1–39, 2022. Shangqian Gao, Ting Hua, Reza Shirkavand, Chi-Heng Lin, Zheng Tang, Zhengao Li, Longge Yuan, Fangyi Li, Zeyu Zhang, Alireza Ganjdanesh, et al. Tomoe: Converting dense large language models to mixture-of-experts through dynamic structural pruning. arXiv preprint arXiv:2501.15316 , 2025. Andrey Gromov, Kushal Tirumala, Hassan Shapourian, Paolo Glorioso, and Daniel A Roberts. The unreasonable ineffectiveness of the deeper layers. arXiv preprint arXiv:2403.17887 , 2024. Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300 , 2020. Yuzhen Huang, Yuzhuo Bai, Zhihao Zhu, Junlei Zhang, Jinghan Zhang, Tangjun Su, Junteng Liu, Chuancheng Lv, Yikai Zhang, Yao Fu, et al. C-eval: A multi-level multi-discipline chinese evaluation suite for foundation models. Advances in Neural Information Processing Systems , 36: 62991–63010, 2023. Aran Komatsuzaki, Joan Puigcerver, James Lee-Thorp, Carlos Riquelme Ruiz, Basil Mustafa, Joshua Ainslie, Yi Tay, Mostafa Dehghani, and Neil Houlsby. Sparse upcycling: Training mixture-of-experts from dense checkpoints. arXiv preprint arXiv:2212.05055 , 2022. Haonan Li, Yixuan Zhang, Fajri Koto, Yifei Yang, Hai Zhao, Yeyun Gong, Nan Duan, and Timothy Baldwin. Cmmlu: Measuring massive multitask language understanding in chinese. arXiv preprint arXiv:2306.09212 , 2023. Bingbin Liu, Sebastien Bubeck, Ronen Eldan, Janardhan Kulkarni, Yuanzhi Li, Anh Nguyen, Rachel Ward, and Yi Zhang. Tinygsm: achieving> 80% on gsm8k with small language models. arXiv preprint arXiv:2312.09241 , 2023. Xinyin Ma, Gongfan Fang, and Xinchao Wang. Llm-pruner: On the structural pruning of large language models. Advances in neural information processing systems , 36:21702–21720, 2023. Kevin Meng, David Bau, Alex Andonian, and Yonatan Belinkov. Locating and editing factual associations in gpt. Advances in neural information processing systems , 35:17359–17372, 2022. N Shazeer, A Mirhoseini, K Maziarz, A Davis, Q Le, G Hinton, and J Dean. The sparsely-gated mixture-of-experts layer. Outrageously large neural networks , 2, 2017a. Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 , 2017b. 10 Sainbayar Sukhbaatar, Olga Golovneva, Vasu Sharma, Hu Xu, Xi Victoria Lin, Baptiste Rozière, Jacob Kahn, Daniel Li, Wen-tau Yih, Jason Weston, et al. Branch-train-mix: Mixing expert llms into a mixture-of-experts llm. arXiv preprint arXiv:2403.07816 , 2024. Luoyang Sun, Jiwen Jiang, Yifeng Ding, Fengfa Li, Yan Song, Haifeng Zhang, Jian Ying, Lei Ren, Kun Zhan, Wei Chen, et al. Hardware co-design scaling laws via roofline modelling for on-device llms. arXiv preprint arXiv:2602.10377 , 2026. Mirac Suzgun, Nathan Scales, Nathanael Schärli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc V Le, Ed H Chi, Denny Zhou, et al. Challenging big-bench tasks and whether chain-of-thought can solve them. arXiv preprint arXiv:2210.09261 , 2022. Mingxing Tan, Bo Chen, Ruoming Pang, Vijay Vasudevan, Mark Sandler, Andrew Howard, and Quoc V Le. Mnasnet: Platform-aware neural architecture search for mobile. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 2820–2828, 2019. Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. Tianwen Wei, Jian Luan, Wei Liu, Shuang Dong, and Bin Wang. Cmath: Can your language model pass chinese elementary school math test? arXiv preprint arXiv:2306.16636 , 2023. Samuel Williams, Andrew Waterman, and David Patterson. Roofline: an insightful visual performance model for multicore architectures. Communications of the ACM , 52(4):65–76, 2009. Yifei Yang, Zouying Cao, and Hai Zhao. Laco: Large language model pruning via layer collapse. 
+
+arXiv preprint arXiv:2402.11187 , 2024. Tong Zhu, Xiaoye Qu, Daize Dong, Jiacheng Ruan, Jingqi Tong, Conghui He, and Yu Cheng. Llama-moe: Building mixture-of-experts from llama with continual pre-training. In Proceedings of the 2024 conference on empirical methods in natural language processing , pages 15913–15923, 2024. 11 A Core Notation and Definitions 
+
+Table 4: Core notation and strict definitions 
+
+Symbol Strict Definition Dimension / Default Value 
+
+L Total number of Transformer decoder layers in the native dense LLM Positive integer, e.g., 24 for Qwen2.5-0.5B 
+
+l Decoder layer index l ∈ { 1, 2, . . . , L }
+
+T Sequence length of input text (number of tokens) Positive integer, default 2048 
+
+d Transformer hidden dimension (hidden size) Positive integer, e.g., 896 for Qwen2.5-0.5B 
+
+dmid MLP intermediate dimension (feed-forward dim) Positive integer, e.g., 4864 for Qwen2.5-0.5B 
+
+x(l) Input hidden state of the l-th decoder layer Shape T × d, x(1) is word embedding + positional encoding input 
+
+h(l) Input hidden state of the l-th MLP layer (Attention output + residual connection) Shape T × d, core shared variable 
+
+y(l) Final output of the l-th decoder layer Shape T × d, satisfying y(l) = x(l+1) 
+
+θ(l) 
+
+> mha
+
+All weights of the l-th layer Multi-Head Attention (MHA) Including WQ, W K , W V , W O and LN parameters 
+
+θ(l) 
+
+> mlp
+
+All weights of the l-th layer MLP Including gate, up-projection, down-projection matrices and LN parameters 
+
+Wr Routing weight matrix for the MoE layer Shape d × Ngi(h) Routing probability (gating score) assigned to the 
+
+i-th expert for token h
+
+Real value in (0 , 1) , P gi = 1 
+
+E(l) 
+
+> i
+
+The i-th independent expert module in the l-th layer Identical parameterization to θ(l)
+
+> mlp
+
+l∗ Base index of the selected retained layer Positive integer, 1 ≤ l∗ < L n∗ Total number of prunable redundant layers corre-sponding to a single retained layer Positive integer, l∗ + n∗ ≤ LN Total number of experts in the fused MoE layer N = K + n∗ × MK Number of base experts duplicated from the re-tained layer’s native MLP Positive integer 
+
+M Number of supplementary experts duplicated per redundant layer’s MLP Positive integer 
+
+k Number of Top-K activated experts in MoE routing Positive integer, default k = 1 
+
+δ Inter-layer cosine similarity threshold Value in (0 , 1) 
+
+ϵ Inter-layer feature norm relative difference thresh-old Value in (0 , 1) 
+
+τ Routing gating temperature coefficient Value τ > 0, fixed to τ = 1 .0 for infer-ence 
+
+α Load balancing auxiliary loss weight Positive real number, our default value 
+
+α = 0 .001 
+
+m Number of pruning depth for sensitivity analysis Positive real number, m ∈{1, 2, . . . , L }
+
+LaT Roofline theoretical latency Positive real number 12 B Algorithm Details 
+
+Algorithm 1 Global scoring-based redundant block search 
+
+Require: Output similarity matrix Sout ∈ RL×L, MLP similarity matrix Smlp ∈ RL×L, norm relative error matrix ∆norm ∈ RL×L, thresholds δ, ϵ , target continuous block sizes T (e.g., 
+
+{1, 2, 3}), penalty coefficient λ
+
+Ensure: Kept layers Lkeep , pruned layers Lprune , fused block mappings B 
+
+> 1:
+
+Initialize candidate block list C ← ∅ ▷ Phase 1: Exhaustive generation of valid blocks  
+
+> 2:
+
+for l = 1 to L do  
+
+> 3:
+
+for n ∈ T do  
+
+> 4:
+
+if l + n ≤ L and ISVALID BLOCK (Sout , S mlp , ∆norm , l, n, δ, ϵ ) then  
+
+> 5:
+
+Score ← 1
+
+> n
+
+Pnk=1 
+
+h Sout [l,l +k]+ Smlp [l,l +k]2 − λ∆norm [l, l + k]
+
+i 
+
+> 6:
+
+Add tuple (Score, l, n ) to C 
+
+> 7:
+
+end if  
+
+> 8:
+
+end for  
+
+> 9:
+
+end for 
+
+▷ Phase 2: Global non-overlapping optimal matching  
+
+> 10:
+
+Sort C in descending order by Score  
+
+> 11:
+
+Initialize Occupied ← [False ] × L 
+
+> 12:
+
+Initialize B ← ∅ , Lprune ← ∅  
+
+> 13:
+
+for all (Score, l, n ) ∈ C do  
+
+> 14:
+
+if ∀i ∈ [l, l + n], Occupied [i] == False then  
+
+> 15:
+
+Add block mapping (l, {l + 1 , . . . , l + n}) to B 
+
+> 16:
+
+Lprune ← L prune ∪ { l + 1 , . . . , l + n} 
+
+> 17:
+
+Occupied [l . . . l + n] ← True  
+
+> 18:
+
+end if  
+
+> 19:
+
+end for 
+
+▷ Phase 3: Extract retained layers  
+
+> 20:
+
+Lkeep ← { i | i ∈ { 1, . . . , L } ∧ i / ∈ L prune } 
+
+> 21:
+
+return Lkeep , Lprune , B
+
+## C Detailed Quantitative Evaluation of Topological Depth 
+
+Table 5 presents the detailed physical latency, average benchmark score, and the calculated hardware-aware reward for each candidate topological depth. The reward is computed using w ≈ − 0.15 and 
+
+Lbase = 195 .87 ms , with the 19-layer configuration achieving the maximum overall value. Table 5: Detailed capacity-efficiency metrics across varying retained depths. 
+
+Retained Layers ( L) Latency LaT i (ms) Average Score Si Calculated Reward 
+
+13 135.78 29.85 31.54 15 148.84 39.06 40.7 17 161.89 42.76 44 
+
+19 174.95 47.31 48.12 
+
+21 188.00 47.50 47.79 23 201.05 47.93 47.74 13 D Theoretical latency modeling via Roofline framework 
+
+In edge-device deployment, empirical end-to-end latency is often obfuscated by sub-optimal low-level kernel implementations (e.g., unoptimized MoE routing or unaligned memory access in inference engines), which mask the true architectural efficiency. To rigorously and objectively compare our co-designed Dense2MoE against the dense Seed Model , we establish a first-principles theoretical latency model grounded in the hardware Roofline framework. 
+
+Hardware profile and Roofline principle. Under the Roofline model, the execution time T of any computational kernel is bottlenecked by either the hardware’s peak compute throughput πH (FLOPS) or its sustained memory bandwidth βH (Bytes/s). For our target NVIDIA Jetson Thor-U platform, we adopt the official hardware limits: πH = 350 TFLOPS (Tensor Core) and βH = 273 GB/s. The physical latency lower bound is formulated as: 
+
+T = max 
+
+ F
+
+πH
+
+, M
+
+βH
+
+
+
+, (8) where F denotes the total floating-point operations and M denotes the memory traffic volume. 
+
+Phase-wise latency calculation. The total autoregressive inference latency ˆTθ of an l-layer model processing Sin input tokens and generating Sout tokens consists of two distinct phases. 
+
+Prefill phase (compute-bound). Processing Sin tokens in parallel heavily utilizes matrix mul-tiplications, rendering it compute-bound ( F 
+
+> πH
+
+> M 
+
+> βH
+
+). The compute coefficient is defined as 
+
+ξF = 4 + 4 /gqa + 6 r, where r = K × rsingle is the effective FFN expansion ratio ( K is the number of active experts per token). The prefill latency is: 
+
+Tpre = l · Sin d2ξF
+
+πH
+
+. (9) 
+
+Decode phase (memory-bound). Generating tokens step-by-step is strictly memory-bound ( M 
+
+> βH
+
+> 
+
+> F
+> πH
+
+). The latency is dominated by loading static weights and dynamic KV-cache. We define the decode weight traffic coefficient as ξdec  
+
+> W
+
+= 2 + 2 /gqa + 3 r. The decode latency is formulated as: 
+
+Tdec = l · Sout · ξdec  
+
+> W
+
+d2bw + 2 ¯Sdb kv 
+
+> gqa
+
+βH
+
+, (10) where bw = bkv = 2 Bytes (for FP16/BF16), and ¯S = Sin + ( Sout + 1) /2 is the average context length during generation. The total theoretical end-to-end latency is the sum of both phases: 
+
+ˆTθ = Tpre + Tdec . (11) 
+
+Architectural equivalence: Why Dense2MoE is strictly faster. A critical insight from our Roofline formulation is that the total number of experts E does not affect the inference latency. Since Dense2MoE employs a Top-1 routing strategy ( k = 1 ), its effective expansion ratio r is mathemati-cally identical to the dense Seed Model ( r = rsingle ). Consequently, both the compute coefficient ξF
+
+and the decode traffic coefficient ξdec  
+
+> W
+
+are exactly equal for a single Dense2MoE layer and a single Dense layer. The unactivated experts solely consume static memory capacity but incur zero memory bandwidth overhead during forward passes. By upcycling the 24-layer Dense Seed Model into a 19-layer Dense2MoE, we physically eliminate the attention and active MLP memory traffic of 5 layers. According to the derived equations, this depth reduction ( l : 24 → 19 ) strictly guarantees a lower physical latency bound ( ˆTDense2MoE < ˆTSeed ). Therefore, the theoretical latency serves as a fair, hardware-agnostic metric to construct our Pareto frontier, isolating our architectural innovation from the transient inefficiencies of current MoE software kernels. 14 E Dataset composition and preprocessing 
+
+Table 6: Domain data sources and sampling ratios.            
+
+> Domain Dataset Sampling ratio (%) Math OpenWebMath 10.0 Arxiv 12.0 Github 2Code Code 16.2 Synthetic Data 3.8 General knowledge Wikipedia 46.6 COIG 6.8 C4 2.6
+
+## F Ablation studies 
+
+F.1 Necessity of the Feature Norm Constraint ( ϵ)
+
+To empirically validate the necessity of the feature norm constraint ( ϵ) introduced in Section 3.2, we conducted a component-wise ablation during the initial phase of continual pre-training. We compared our standard Dense2MoE layer selection strategy (which enforces both δ and ϵ) against a baseline relying solely on the cosine similarity threshold ( δ). When the norm constraint is omitted, the selection algorithm occasionally fuses layers that possess highly aligned directional features but vastly different activation magnitudes. During dynamic MoE routing, switching between these unconstrained experts introduces abrupt scale shifts into the residual stream. Consequently, in the δ-only setting, we observed pronounced gradient instability and a significantly higher initial training loss (approximately 15% higher spike) during the first 1,000 steps of continual pre-training. In contrast, enforcing our default norm constraint ( ϵ) mathematically bounds these magnitude variations, ensuring that all upcycled experts operate within a mutually compatible numerical range. This mechanism effectively stabilizes the residual stream, enabling smooth and rapid convergence from the very first training step. This confirms that while δ captures semantic redundancy, ϵ acts as a non-negotiable physical guardrail for numerical stability. 
+
+F.2 Inter-Layer Similarity Visualization   
+
+> Qwen2.5-0.5B Qwen2.5-1.5B Llama2-7B Normalized MLP input similarity
+> Normalized inter-layer output similarity
+
+Figure 4: Normalized similarity comparison across different models. 15 Figure 5: Hyperparameter to pruning depth mapping. 
+
+F.3 Sensitivity to pruning depth thresholds 
+
+The mapping m = f (δ, ϵ ) enables systematic control over structural compression. Tighter thresholds preserve more layers, while relaxed thresholds aggressively prune redundant blocks. This discrete phase transition guides our selection of the optimal trade-off point ( m = 5 ) for edge deployment. 
+
+F.4 Training dynamics and efficiency trade-offs 
+
+This section provides the detailed visualizations supporting the efficiency-capacity trade-off discussed in Section 5.3. Figure 6 illustrates the system-level efficiency versus representational capacity, highlighting the optimal positioning of the n1k4m2 configuration. Furthermore, Figures 7 and 8 present the smoothed Language Modeling (LM) loss and Load Balancing (LB) loss trajectories over 6,000 continuous pre-training steps. These curves empirically validate that our extreme asymmetric expert allocation incurs no convergence penalty and effectively prevents routing collapse. 
+
+Figure 6: System-level efficiency versus representational capacity. 16 Figure 7: Comparison of causal LM loss across different expert allocations during the continuous pre-training phase. 
+
+Figure 8: Comparison of load balancing loss across different expert allocations. 
+
+F.5 Static Parameter Memory Derivation 
+
+The static parameter memory (BF16) reported in Figure 3 is computed analytically from the Qwen2.5-0.5B architecture pruned to L = 19 MoE layers: 
+
+M = V d |{z} 
+
+> embed
+
++L
+
+
+
+(nh + 2 nkv )dhd + d2
+
+| {z } 
+
+> attention (Q+K+V+O)
+
++ 2dh
+
+|{z} 
+
+> QK-norm
+
++ 2d|{z} 
+
+> layer norms
+
++ N d |{z} 
+
+> router gate
+
++ 3 N d d ffn 
+
+| {z }
+
+> expert MLPs
+
+
+
++ d (12) where V =151936 , d=896 , nh=14 , nkv =2 , dh=64 , dffn =4864 , and N is the number of experts. Model size in GB equals M × 2/10 9 (BF16, 2 bytes per parameter). The formula counts static weights only; runtime activations and KV cache are excluded as they depend on batch size and sequence length. 
+
+F.6 Winner-Takes-All Routing Analysis 
+
+We compare expert routing dynamics between Prune+Upcycling (homogeneous: all experts copied from one MLP) and Dense2MoE (heterogeneous via LF-UC), both with N =6 , top-1 routing, L=19 ,evaluated on 1,100 held-out samples from five domains (web text, GSM8K, BBH, code, CMMLU). As shown in Figure 9 and Table 7, Dense2MoE consistently exhibits lower load concentration across all metrics. Homogeneous initialisation creates a degenerate router from the start: because all experts 17 are identical copies of the same MLP, any early imbalance in token assignment triggers a rich-get-richer feedback loop—the most-visited expert receives the most gradient updates, becomes marginally better, and attracts yet more tokens—causing a single expert to dominate in 11 layers ( >50% load) and monopolise routing across consecutive layers (panel B). LF-UC breaks this feedback loop by sourcing each expert from a different pre-trained layer: tokens naturally align better with different layer-specific transformations, so the router finds meaningful load-distribution signal from step one and the auxiliary load-balancing loss (Fedus et al., 2022) operates on a non-degenerate initial distribution. Table 7: Winner-Takes-All routing metrics. Lower is better except entropy ( ↑).                   
+
+> Metric Prune+Upcycling Dense2MoE Mean top-expert load 0.480 0.452
+> Layers with top >50% 11 9
+> Layers with top >40% 14 10
+> Mean top / uniform ratio 2.88 ×2.71 ×
+> Mean top −bottom gap 0.406 0.388
+> Mean entropy ( ↑)1.487 1.489
+
+18 Figure 9: Winner-Takes-All analysis: Prune+Upcycling vs. Dense2MoE (LF-UC). (A) Dominant-expert load fraction per layer (dashed: 40%/50% thresholds). (B) Identity of the winning expert per layer (color = expert index E0–E5). (C) Per-layer load difference (Prune+Upcycling − Dense2MoE); blue: Prune+Upcycling more concentrated; orange: Dense2MoE more concentrated. (D) Aggregate WTA metrics; lower is more balanced except entropy. 19
