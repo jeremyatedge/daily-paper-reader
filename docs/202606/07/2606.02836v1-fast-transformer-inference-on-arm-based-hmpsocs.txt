@@ -1,0 +1,384 @@
+Title: Fast Transformer Inference on ARM-Based HMPSoCs
+
+URL Source: https://arxiv.org/pdf/2606.02836v1
+
+Published Time: Wed, 03 Jun 2026 00:11:31 GMT
+
+Number of Pages: 7
+
+Markdown Content:
+# Fast Transformer Inference on ARM-Based HMPSoCs 
+
+Hang Xu 
+
+University of Amsterdam 
+
+Amsterdam, Netherlands h.xu@uva.nl 
+
+Yixian Shen 
+
+University of Amsterdam 
+
+Amsterdam, Netherlands y.shen@uva.nl 
+
+Thanassis Giannetsos 
+
+Ubitech 
+
+Athens, Greece agiannetsos@ubitech.eu 
+
+Anuj Pathania 
+
+University of Amsterdam 
+
+Amsterdam, Netherlands a.pathania@uva.nl 
+
+Abstract —Transformer models have set new performance stan-dards for Machine Learning (ML) tasks. However, their resource-intensive deployment on resource-constrained edge devices for a cloud-free on-chip transformer inference remains challenging. The ARM Compute Library (ARM-CL ) framework provides the lowest latency CNN inference on ARM -based edge devices, but lacks support for transformer inference. In this work, we im-plement several new transformer kernels in ARM-CL to support the transformer natively. Our extended ARM-CL provides three times faster transformer inference compared to state-of-the-art CPU/GPU implementations on an ARM -based embedded board. Furthermore, Heterogeneous Multi-Processor System-on-Chips (HMPSoCs) powering edge devices imbue them with pow-erful embedded CPUs and GPUs. We introduce cooperative CPU-GPU transformer inference, which executes memory-intensive operations on the CPU while utilizing the GPU for highly parallelizable, compute-intensive operations. This cooperative execution, implemented with minimal overhead, further reduces transformer inference latency by up to 15.72% compared to the best single-processor inference on ARM-CL .
+
+Index Terms —Edge Computing, Embedded Systems, Edge AI, Performance analysis, Multicore processing 
+
+I. I NTRODUCTION 
+
+The transformer architectures initially introduced for Nat-ural Language Processing (NLP) tasks have rapidly become the foundation for state-of-the-art performance across Ma-chine Learning (ML) applications, including machine trans-lation [1]–[3], text classification [4], and recently, vision, audio, and video processing [5], [6]. Performing on-chip transformer inference on edge devices offers improved privacy, responsiveness, reliability, and efficiency. However, despite their remarkable functional performance, transformers typi-cally demand billions of floating-point operations and ex-tensive memory bandwidth [7], which makes them unsuit-able for low-latency inference on edge hardware [8]–[10]. Therefore, to integrate transformer-based models seamlessly into daily life, low-latency, on-chip transformer inference is quintessential. Consequently, optimizing hardware utilization to achieve efficient transformer inference remains an active research direction. Heterogeneous Multi-Processor Systems-on-Chip (HMP-SoCs) now underpin most state-of-the-art edge devices [11], [12], integrating inference-capable embedded CPUs and 
+
+This work was supported by the European Commission, under the CASTOR project; Grant Agreement no. 101167904.   
+
+> Embedding
+> Attention Linear SDPA FF
+> Add&Norm
+> 10 0
+> 10 1
+> 10 2
+> Transformer Layers
+> Latency [ms]
+
+CPU GPU Fig. 1. Layer-level inference latency comparison between CPU and GPU for 
+
+BERT-base transformer with token length L = 32 . Measured on Khadas VIM 3 BASIC embedded platform with 12 nm Amlogic A331D HMPSoC. 
+
+GPUs. ARM-based HMPSoCs dominate the mobile platform usage, accounting for the majority of deployments, typically featuring big.Little asymmetric multi-core CPUs paired with 
+
+Mali GPUs. To minimize inference latency, on-chip frame-works must leverage such hardware through custom, hardware-specific kernels. TVM [13], an automated deep learning com-piler, facilitates this by providing graph- and operator-level optimizations across diverse hardware backends. However, it underperforms on ARM -based HMPSoCs. PyTorch [14], the popular inference framework for Nvidia -based HMPSoCs, supports CUDA but does not work with ARM Mali GPUs. In contrast, the developers of the ARM Compute Li-brary (ARM-CL) [15] have tailored it for ARM -based hard-ware, providing highly optimized kernels for operations such as Matrix MULtiplications (MMULs), which are fundamental to transformer models. However, a significant limitation of 
+
+ARM-CL is its lack of support for transformers, such as Bidi-rectional Encoder Representations from Transformers (BERT) and Generative Pre-trained Transformer (GPT), which are more complex than traditional ML architectures like Convo-lutional Neural Networks (CNNs). A transformer architecture comprises several different types of layers. The transformer exhibits performance heterogeneity across the HMPSoC processors, with separate layers showing preferences for distinct processors. Therefore, at a higher level, the framework should exploit the performance heterogeneity in HMPSoC processors – CPU and GPU – cooperatively        
+
+> arXiv:2606.02836v1 [cs.AR] 1 Jun 2026 DAG << InputLayer()
+> << EmbeddingLayer(). CPU()
+> add_encoder_block("layer_0/")
+> add_encoder_block("layer_11/")
+> DAG << LinearLayer(). GPU()
+> << ActivationLayer(). CPU()
+> << OutputLayer()
+
+...           
+
+> Model Description(.cpp)
+> Token E.
+> Add & Norm.
+> Activation
+> Feed Forward Q
+> K
+> V
+> Positional E.
+> Segment E.
+> Embedding Sum
+> Softmax
+> MatMul
+> Scale
+> MatMul
+> Embedding Kernel MHA Linear Kernel SDPA Kernel Layer Norm. Kernel
+> Add & Norm.
+> I am a robot who loves conducting EDA research and TCAD journal.
+> Input
+> Layer Switching
+> transformer.elf
+> Cross-Compilation
+> Output ( Predicted Sentiment :positive )
+> ptr CPU
+> ptr GPU
+> CPU & GPU
+> Shared Memory Space
+> InputLayer
+> CPU / GPU
+> Device Memory Space
+> or
+> ARM  Computing Library
+> direct allocation
+> upscale allocation
+> or or or or or
+> Multi-Target
+> Shared Tensors
+> Single-Target
+> Tensors
+> FF Kernel
+
+Fig. 2. ARM-CL based implementation for CPU-GPU layer-switched transformer inference using BERT-base . Model description outlines the model structure, layer connectivity, and specific computing kernels, which are compiled into a model-specific executable. Shared tensors between the CPU and GPU kernels for layer-switching communication are set up during configuration phase. 
+
+for further latency minimization. While there are works that exploit similar performance heterogeneity for CNNs [16], there is no equivalent work for on-chip transformer inference. The transformer architecture comprises five primary lay-ers: the Embedding, Attention Linear, Scaled Dot-Product Attention (SDPA), Feed Forward (FF), and Add & Nor-malization (Add&Norm) layers. Figure 1 shows that the CPU achieves better latency for the Embedding, SDPA, and Add&Norm layers than the GPU. In particular, the SDPA layer demonstrates a significant latency advantage on the CPU com-pared to the GPU. Conversely, the GPU outperforms the CPU for the Attention Linear and FF layers. This result is unique to embedded CPUs and GPUs [17]. Figure 1 underscores the potential for a hybrid CPU-GPU execution strategy in embed-ded systems, where workloads are distributed based on the computational characteristics of each layer. This distribution leads to more efficient transformer inference across HMPSoCs. 
+
+Our Novel Contributions: We make the following original contributions within the purview of this work.  
+
+> •
+
+We extend the ARM-CL framework using state-of-the-art ML kernels to enable on-chip transformer inference on embedded CPUs and GPUs in ARM -based HMPSoCs.  
+
+> •
+
+We perform a micro-benchmark-based characterization of transformer execution across HMPSoC processors, providing the first quantitative analysis of layer-wise performance heterogeneity.  
+
+> •
+
+We demonstrate a substantial reduction in inference la-tency using CPU-GPU layer switching on a Khadas VIM 3 embedded platform with an Amlogic A331D HMPSoC. 
+
+Open-Source Contributions : The code for the ARM-CL extensions proposed in this work are publicly available at https://github.com/dondavan/fast-transformer-on-acl under 
+
+MIT license. II. R ELATED WORK 
+
+Deploying transformer models on resource-constrained edge devices has drawn increasing attention due to the growing demand for low-latency, high-accuracy ML applications. De-spite their impressive functional performance, transformers introduce significant computational challenges compared to CNNs, being 1.58x to 41x slower in inference on edge [18]. 
+
+Optimizing Transformer Architecture and Model Com-pression. Efforts to improve the efficiency of transformer models include architecture-level optimizations. Researchers have developed MobileBERT [7] and SqueezeBERT [19] to maintain the accuracy of BERT while significantly reducing inference latency and model size. These approaches focus on creating denser, more efficient architectures by introducing specialized neural micro-architectures or using group convo-lution layers, achieving speedups of 4.3x to 5.5x on mobile platforms compared to BERT-base [7], [19]. Furthermore, researchers have also explored compression techniques such as network pruning and quantization [20] to reduce the size of transformers. DistilBERT [21] uses knowledge distillation to reduce model size while preserving 97% of the original performance, resulting in a 60% faster run-time. These meth-ods focus on minimizing model complexity but often face trade-offs in terms of accuracy, especially when deployed in resource-constrained environments. 
+
+Hardware-Specific Optimizations for Inference. Optimiz-ing transformer inference for specific hardware platforms, such as ARM -based HMPSoCs, has garnered significant attention. 
+
+TVM [13] is a widely used automated deep-learning compiler that supports various hardware backends and applies graph-and operator-level optimizations. However, TVM ’s general-purpose approach limits its ability to fully exploit hardware-specific features, such as those in ARM architectures. Addi-tionally, the popular PyTorch [14] framework lacks support for ARM Mali GPUs. Conversely, hardware-specific libraries like ARM-CL [15] provide optimized kernels for matrix multi-plications and convolutions but lack support for the specialized operations required by transformer models, such as self-attention and layer normalization. 
+
+Dynamic Layer-Wise Optimization Approaches. Recent works explore cooperative CPU-GPU CNN inference for 
+
+ARM -based [16], [22] and Nvidia -based [23], [24] embedded platforms. However, the direct applicability of these works to transformer inference in ARM-based platforms remains questionable. Authors of [25] explore parallelizing the compu-tation of transformer inference across ARM-based HMPSoC processors, but limit themselves to CPU cores. Therefore, distributing transformer inference computation across ARM-based HMPSoC processors has not been thoroughly explored. 
+
+Deep Learning Accelerators (DLAs). DLAs are domain-specific hardware platforms such as Neural Processing Units (NPUs), designed with fixed-function units to support deep learning operations. Several prior works have explored running edge inference on DLAs [26], [27]. DLAs provide specialized acceleration for machine learning workloads. How-ever, a major limitation for DLAs is its lack of programma-bility and support for only a limited set of operations required for transformer inference [28]. Consequently, existing work targeting DLAs has largely focused on CNN workloads [22]. III. S INGLE -P ROCESSOR TRANSFORMER INFERENCE 
+
+The current ARM-CL framework supports only CNN infer-ence. Since transformer inference requires additional opera-tions, we have enhanced ARM-CL to provide native support for transformer-based models on HMPSoCs. Our extensions encompass new custom kernels for embedding, Multi-Head Attention (MHA), SDPA, and layer normalization in ARM-CL to enable various transformer layers. As such, these kernels are absent from ARM-CL . Figure 2 uses abstraction to show the on-chip transformer inference using the BERT-base 
+
+transformer enabled by these kernels. The kernel implementation is computationally equivalent to the state-of-the-art approach used in PyTorch [14] on desktop platforms, with optimizations targeting edge devices. It is intended to report state-of-the-art transformer inference per-formance on edge devices. Unlike TVM or ExecuTorch , which compile the model together with supplementary operations into a single runtime executable, ARM-CL provides low-level control over runtime execution. This enables closer adherence to the computation model and facilitates runtime performance analysis with minimized overhead. These kernels leverage NEON intrinsics and Open Com-puting Language (OpenCL) to accelerate execution on the CPU and GPU, respectively. NEON intrinsics enable Single Instruction, Multiple Data (SIMD) execution by utilizing 128-bit registers on the CPU. The GPU hardware architecture and execution model differ fundamentally from those of the CPU. Consequently, GPU kernels employ computation strategies dis-tinct from CPU kernels, such as tiled MMUL. These parallel computation techniques enhance kernel efficiency and enable more effective utilization of the underlying hardware. We use these kernels to port five different transformer archi-tectures to ARM-CL : BERT-base , DistilBERT , MobileBERT ,
+
+SqueezeBERT , and GPT-2 .IV. T RANSFORMER INFERENCE CHARACTERIZATION 
+
+We perform a detailed characterization of on-chip trans-former inference using our ARM-CL extensions on an ARM -based HMPSoC. ARM-CL offers low-level control over the computing workload while introducing minimal supplemen-tary overhead. The characterization uses micro-benchmarking with synthetic multi-size transformer layers to explain the performance heterogeneity of different kernels on various HMPSoC processors, as seen in Figure 1. We analyze, in iso-lation, all five fundamental transformer layers: the Embedding, Attention Linear, SDPA, FF, and Add&Norm layers. The layer runtime characterization is applicable to all transformer-based models, as these layers are common across transformer family. Thus, our layer characterization analysis is model-agnostic. Let L denote the input sequence length in tokens, L varies in value from 1 to an architecture-defined maximum. For example, BERT-base supports sequences up to 512 tokens. Another key parameter is the hidden dimension size, denoted as dmodel , which defines the tensor width and remains constant across all transformer layers. While dmodel and L are the two primary parameters that determine the computational workload, the runtime input sequence length L does not influence model accuracy. BERT-base uses dmodel = 768 
+
+floats. GPT-2 supports sequences of up to 1024 tokens and uses 
+
+dmodel = 768 . Let TCP U and TGP U represent the execution time of a layer on the CPU and GPU, respectively. The ratio 
+
+TCP U/GP U indicates their relative performance; a higher ratio suggests the layer executes faster on the GPU. Figure 3 illustrates the variation in TCP U/GP U per different transformer layers as dmodel increases from 192 to 960 floats and the L ranges from 16 to 512 tokens. The reference line at TCP U/GP U = 1 indicates equal execution time on CPU and GPU. When L ≥ 256 , TCP U/GP U < 1 for all layer types, regardless of the value of dmodel . We will focus only on computational workload analysis with L ≤ 128 in this characterization, where CPU and GPU have comparative advantages in execution. In the rest of the section, we present a more detailed analysis of GPU performance bottlenecks arising from hardware limitations when L ≥ 128 .
+
+Embedding Layers . The Embedding layer reads in a set of pre-trained model weights to map individual input tokens to their corresponding vector representations. This process is predominantly memory-bound, involving extensive memory accesses and minimal computation. As CPUs are optimized for efficient serial operations, they demonstrate superior per-formance on Embedding layers. This observation is consistent across all tested values of L and dmodel .
+
+Attention Linear Layers . The Attention Linear layers consist of three linear transformations applied to Query, Key, and Value tensors using MMULs. Each MMUL operates between an input tensor of shape (dmodel , d model ) and a weight tensor of shape (dmodel , d model ), resulting in a total 192 384 576 768 960 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> TCP U/GP U
+
+L = 16 
+
+192 384 576 768 960 
+
+0
+
+0.5
+
+1
+
+1.5
+
+2
+
+L = 64 
+
+192 384 576 768 960 
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+1.2
+
+L = 128 
+
+192 384 576 768 960 
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+> TCP U/GP U
+
+L = 256 
+
+192 384 576 768 960 
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+dmodel [floats] 
+
+L = 384 
+
+192 384 576 768 960 
+
+0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1
+
+L = 512 
+
+Reference TCP U = TGP U Embedding Attention Linear SDPA FF Add&Norm 
+
+Fig. 3. Exploring TCP U/GP U of model depth dmodel with different token length L. Measured using BERT-base transformer on Khadas VIM 3 BASIC with 12 nm Amlogic A331D HMPSoC. 
+
+of 3 · 2 · L · d2 
+
+> model
+
+FLoating-point Operations (FLOPs) across the three MMULs. Consequently, the computational cost of these MMUL operations scales with both L and dmodel . While GPUs initially outperform CPUs due to their highly parallel execution model and the use of tiled MMULs in GPU kernels, GPU performance degrades significantly as the MMUL size increases. We attribute this degradation primarily to memory access overheads. 
+
+SDPA Layers . The SDPA layer processes Query, Key, and Value tensors through a memory-intensive reshape and permu-tation. Input tensors with shape (L, d model ) are transformed into ( dmodel  
+
+> h
+
+, h, L), followed by compute-intensive MMUL operations. Specifically, two MMULs are performed between the Query and Key heads and the resulting attention scores and Value heads, which have 4 · L 2 · dmodel FLOPs. The MMUL complexity of the SDPA layer is lower than that of the attention linear and FF layers, as its computational complexity scales quadratically with L. In addition, tensor initialization and element-wise addition operations occur in GPT-2. The memory-bound phases favor CPU execution, whereas the MMUL phases benefit from GPU parallelism. Overall, SDPA performance is comparable between the CPU and GPU. 
+
+FF Layers. The FF layer consists of two MMUL oper-ations separated by a memory-intensive activation operation with a relatively small workload. The first MMUL trans-forms the input tensor of shape (L, d model ) into a higher-dimensional space by multiplying it with a weight tensor of shape (dmodel , d f f ), where df f is typically larger than 
+
+dmodel to project learnable space (e.g., df f = 3072 for BERT-base ). After the activation, projected tensor is transform back into dmodel dimension by multiplying with a weight tensor of shape (df f , d model ). In total, the two MMULs require CPU  GPU 
+
+> Accessing
+> Multi-Target
+> Shared Tensor?
+> CPU
+> Device Memory Space
+> GPU
+> Device Memory Space
+> map
+> [False]
+> Direct Read/Write
+> unmap
+> [True]
+> Map access
+> CPU & GPU
+> Shared Memory Space
+> Direct Read/Wirte
+
+Fig. 4. CPU-GPU interactions during multi-processor transformer inference. 
+
+4 · L · dmodel · df f FLOPs. Consequently, the FF layer ben-efits from GPU parallelization. However, similar to Attention Linear layers, these gains diminish as MMUL sizes grow and exceed the GPU’s optimal memory and compute balance. The FF layer has higher MMUL complexity compared to SDPA, but it benefits from fewer memory operations, resulting in greater GPU speedup, as reflected by a higher TCP U/GP U .
+
+Add&Norm Layer. The Add&Norm layer performs element-wise addition followed by layer normalization, both of which involve frequent memory accesses with minimal computation. These accesses make the layer highly memory-bound. Similar to Embedding layers, the CPU consistently outperforms the GPU due to its superior efficiency in handling memory-intensive, low-compute tasks. V. M ULTI -P ROCESSOR TRANSFORMER INFERENCE 
+
+Our characterization in Section IV demonstrates the per-formance heterogeneity of transformer layers across different HMPSoC processors. This observation suggests that we can reduce the transformer inference latency by adopting a CPU-GPU layer-switched execution strategy, assigning each layer to the processor where it runs most efficiently. ARM-CL translates neural architectures into model graphs before scheduling their execution. The authors of [16] applied graph partitioning to divide CNN model graphs into subgraphs, which they assign to different HMPSoC processors. Inter-subgraph communication was handled by inserting Sender 
+
+and Receiver nodes that transferred data via memcpy 
+
+operations. However, transformer architectures introduce addi-tional complexity due to recurrence and residual connections, resulting in a more intricate dataflow graph. We observed excessive recursive memcpy traffic between the Sender and 
+
+Receiver nodes, when applying the method from [16] to layer-switched transformer inference. Mobile HMPSoC architectures, such as Amlogic A331D 
+
+support a shared memory space with the host, enabling the CPU and GPU to exchange data without explicit memcpy 
+
+operations. This work leverages this capability to reduce the communication overhead associated with a cooperative CPU-GPU transformer inference approach. We propose a novel CPU-GPU layer-switched transformer inference, illustrated in Figure 2. Our approach distributes layer computation to the processor that delivers the best per-formance. We use single-target tensors for consecutive layers on the same processor, while we employ multi-target shared tensors at CPU-GPU transitions, as depicted in Figure 4. To address the heterogeneous memory architectures of the CPU and GPU, we adopt an “upscale” approach by promoting CPU tensors to GPU tensors. We allocate shared tensors in a GPU memory region that can be directly accessed by the CPU via 
+
+OpenCL , without explicit memcpy operations. VI. E XPERIMENTAL EVALUATION 
+
+We use a Khadas VIM 3 BASIC board for our evaluations. The board features a 12 nm Amlogic A331D HMPSoC. It contains an ARM big.Little asymmetric multi-core CPU with a quad-core high-performance, high-power ARM Cortex-A73 big CPU cluster running at 2.2 GHz and a dual-core low-performance, low power ARM Cortex-A53 Little CPU cluster running at 1.8 GHz. Given the high-performance emphasis of this work, we only employ the high-performance big CPU. The HMPSoC also contains a quad-core ARM Mali G52 running at 0.8 GHz. The operating system is Ubuntu 22.04.4 with Linux 
+
+kernel v4.9. We use ARM-CL v21.02 with OpenCL 3.0 as the baseline version to perform the extensions. On resource-constrained embedded platforms, available memory is typically limited, with DRAM capacity often re-stricted to 2–4 GB. We evaluated models with varying param-eter sizes and found that BERT-base (approximately 300 MB) runs without issues, whereas deploying BERT-large (approxi-mately 1 GB) resulted in runtime crashes. Furthermore, cache size has a significant impact on runtime performance, and HMPSoC components exhibit distinct architectural charac-teristics. On the evaluated platform, the CPU is equipped with a 2 MB L2 cache, while the GPU has a 128 KB L2 cache. Similar trends are observed across other embedded hardware platforms, where GPUs typically have much smaller        
+
+> BERT-base DistilBERT MobileBERT SqueezeBERT GPT-2
+> 10 2
+> 10 3
+> 10 4
+> Latency [ms]
+> TVM ExecuTorch ARM-CL (Extended)
+
+(a) CPU     
+
+> BERT-base DistilBERT MobileBERT SqueezeBERT GPT-2
+> 10 2
+> 10 3
+> Latency [ms]
+
+(b) GPU  
+
+> Fig. 5. Comparison between inference latency for different frameworks for different transformers.
+
+L2 caches—often only a few kilobytes—compared to CPUs, which usually provide several megabytes of L2 cache. Figure 3 illustrates the impact of memory characteristics on inference latency. We observe that the GPU performance advantage for executing the Attention Linear and FF layers di-minishes for sequence lengths L ≥ 128 . These layers perform matrix MMULs between the input matrix from the previous layer (cached) and the weight matrix stored in DRAM. As ob-served from the graph, in the case of L = 128 , d model = 384 ,the input matrix size is 4 ∗ 128 ∗ 384 = 192 KB, which marks a threshold where larger MMUL workloads reduce cache efficiency and, consequently, increase latency. 
+
+Benchmarks. We use five different transformer architec-tures – BERT-base , DistilBERT , MobileBERT , SqueezeBERT ,and GPT-2 – in this work. Unless stated otherwise, we conduct all experiments using each model’s default hidden dimension ( dmodel ) and a fixed input token length of 32. We implement the BERT-base [29] model from scratch in ARM-CL , which we then use to derive other transformer models. We also added causal attention masking to the SDPA layer for GPT-2. DistilBERT [21] is a knowledge-distilled version of BERT with fewer layers. MobileBERT [7] utilizes a bottleneck design and incorporates three additional feed-forward modules within each encoder, but with a smaller hidden dimension. 
+
+SqueezeBERT [19] retains the same structure as the BERT-base 
+
+but replaces the linear kernels with convolutional kernels. 
+
+Baseline Framework Comparison. Figure 5 compares the transformer inference latency for different transformers on un-modified TVM v0.18 against our extended ARM-CL . Figures 5a and 5b show that our implementation reduces latency for CPU-and GPU-only transformer inference, compared to TVM , on average by 2.34x and 2.23x, respectively. We also compare our extended ARM-CL with ExecuTorch , an edge-inference GPT-2 BERT-base DistilBERT MobileBERT SqueezeBERT 
+
+> 10 2
+> 10 3
+> Latency [ms]
+
+CPU GPU Switch 
+
+Fig. 6. Latency comparison between single- and multi-processor transformer inference for different transformers. 
+
+framework derived from PyTorch [14]. While ExecuTorch 
+
+offers similar performance on the ARM CPU, it lacks support for the ARM GPU. 
+
+Single-vs Multi-Processor Comparison. Figure 6 illus-trates the inference latency for both single- and multi-processor configurations of various transformers using our 
+
+ARM-CL extensions. Within single-processor transformer in-ference using ARM-CL , the GPU outperforms the CPU for 
+
+BERT-base , DistilBERT , and GPT-2 while the CPU outper-forms the GPU for SqueezeBERT and MobileBERT . However, the CPU-GPU layer-switched transformer inference proposed in this work outperforms CPU and GPU for all transformers. Overall, the CPU-GPU layer-switched transformer inference reduces the latency by up to 15.72% and 10.95% on average, compared to the best single-processor inference. This work leverages the layer-wise computational hetero-geneity of transformer models alongside hardware hetero-geneity. Although GPU performance is bottlenecked by cache limitations for larger workloads, it can be improved with larger caches. Evaluated Amlogic A331D uses a 128 KB L2 cache, whereas the underlying Bifrost architecture supports up to 512 KB, leaving room to benefit from layer-switched inference. Furthermore, the principle of assigning computa-tional workloads to the most suitable processor to reduce overall inference latency can be generalized to other embedded HMPSoC platforms. VII. C ONCLUSION 
+
+We present extensions to ARM-CL that support the execu-tion of different transformers on ARM CPUs and GPUs. The extensions provide a several-fold speedup in single-processor transformer inference on an ARM -based platform. We analyze the execution of transformer inference on various HMPSoC processors by utilizing micro-benchmarks. We present com-pelling evidence of performance variability in transformer lay-ers on both embedded CPUs and GPUs, along with thorough reasoning for our findings. We present a case for coopera-tive CPU-GPU layer-switched on-chip low-latency transformer inference, making it feasible through a novel low-overhead implementation in ARM-CL . Our multi-processor approach decreases the inference latency of transformers compared to the single-processor method. REFERENCES [1] D. Bahdanau, K. Cho, and Y. Bengio, “Neural machine translation by jointly learning to align and translate,” arXiv preprint arXiv:1409.0473 ,2014. [2] Y. Shen, Q. Bi, J.-H. Huang, H. Zhu, A. D. Pimentel, and A. Pathania, “Macp: Minimal yet mighty adaptation via hierarchical cosine projec-tion,” in Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2025, pp. 20 602– 20 618. [3] ——, “Ssh: Sparse spectrum adaptation via discrete hartley transfor-mation,” in Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , 2025, pp. 10 400–10 415. [4] S. Garg and G. Ramakrishnan, “Bae: Bert-based adversarial examples for text classification,” arXiv preprint arXiv:2004.01970 , 2020. [5] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and S. Zagoruyko, “End-to-end object detection with transformers,” in 
+
+European conference on computer vision . Springer, 2020, pp. 213– 229. [6] J. Li, S. Zheng, Y. Shen, J.-H. Huang, X. Lu, M. Ni, and Y. Guan, “Keeping the evidence chain: Semantic evidence allocation for training-free token pruning in video temporal grounding,” arXiv preprint arXiv:2603.05663 , 2026. [7] Z. Sun, H. Yu, X. Song, R. Liu, Y. Yang, and D. Zhou, “Mobilebert: a compact task-agnostic bert for resource-limited devices,” arXiv preprint arXiv:2004.02984 , 2020. [8] Y. Shen, J. Xiao, and A. D. Pimentel, “Tcps: a task and cache-aware partitioned scheduler for hard real-time multi-core systems,” in Proceed-ings of the 23rd ACM SIGPLAN/SIGBED International Conference on Languages, Compilers, and Tools for Embedded Systems , 2022, pp. 37– 49. [9] J. Xiao, Y. Shen, and A. D. Pimentel, “Cache interference-aware task partitioning for non-preemptive real-time multi-core systems,” ACM Transactions on Embedded Computing Systems (TECS) , vol. 21, no. 3, pp. 1–28, 2022. [10] Y. Shen, L. Schreuders, A. Pathania, and A. D. Pimentel, “Thermal management for 3d-stacked systems via unified core-memory power reg-ulation,” ACM Transactions on Embedded Computing Systems , vol. 22, no. 5s, pp. 1–26, 2023. [11] E. Aghapour, Y. Shen, D. Sapra, A. Pimentel, and A. Pathania, “Piqi: Partially quantized dnn inference on hmpsocs,” in Proceedings of the 29th ACM/IEEE International Symposium on Low Power Electronics and Design , 2024, pp. 1–6. [12] Y. Shen, C. Shen, J. Deen, G. Floros, A. Pimentel, and A. Pathania, “Active imitation learning for thermal-and kernel-aware lfm inference on 3d s-nuca many-cores,” arXiv preprint arXiv:2604.11948 , 2026. [13] T. Chen, T. Moreau, Z. Jiang, L. Zheng, E. Yan, H. Shen, M. Cowan, L. Wang, Y. Hu, L. Ceze et al. , “ {TVM }: An automated {End-to-End }
+
+optimizing compiler for deep learning,” in 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) , 2018, pp. 578–594. [14] S. Imambi, K. B. Prakash, and G. Kanagachidambaresan, “Pytorch,” 
+
+Programming with TensorFlow: solution for edge computing applica-tions , pp. 87–104, 2021. [15] D. Sun, S. Liu, and J.-L. Gaudiot, “Enabling embedded inference engine with arm compute library: A case study,” arXiv preprint arXiv:1704.03751 , 2017. [16] E. Aghapour, D. Sapra, A. Pimentel, and A. Pathania, “Cpu-gpu layer-switched low latency cnn inference,” in 2022 25th Euromicro Conference on Digital System Design (DSD) . IEEE, 2022, pp. 324–331. [17] F. Al-Ali, T. D. Gamage, H. W. Nanayakkara, F. Mehdipour, and S. K. Ray, “Novel casestudy and benchmarking of alexnet for edge ai: From cpu and gpu to fpga,” in 2020 IEEE Canadian Conference on Electrical and Computer Engineering (CCECE) . IEEE, 2020, pp. 1–4. [18] X. Wang, L. L. Zhang, Y. Wang, and M. Yang, “Towards efficient vision transformer inference: A first study of transformers on mobile devices,” in Proceedings of the 23rd annual international workshop on mobile computing systems and applications , 2022, pp. 1–7. [19] F. N. Iandola, A. E. Shaw, R. Krishna, and K. W. Keutzer, “Squeezebert: What can computer vision teach nlp about efficient neural networks?” 
+
+arXiv preprint arXiv:2006.11316 , 2020. [20] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding,” arXiv preprint arXiv:1510.00149 , 2015. [21] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, “Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter,” arXiv preprint arXiv:1910.01108 , 2019. [22] A. Karatzas and I. Anagnostopoulos, “Omniboost: Boosting throughput of heterogeneous embedded devices under multi-dnn workload,” in 2023 60th ACM/IEEE Design Automation Conference (DAC) . IEEE, 2023. [23] Z. Taufique, A. Vyas, A. Miele, P. Liljeberg, and A. Kanduri, “Hidp: Hierarchical dnn partitioning for distributed inference on heterogeneous edge platforms,” in 2025 Design, Automation & Test in Europe Confer-ence (DATE) . IEEE, 2025, pp. 1–7. [24] ——, “Twill: Scheduling compound ai systems on heterogeneous mo-bile edge platforms,” in 2025 IEEE/ACM International Conference On Computer Aided Design (ICCAD) . IEEE, 2025, pp. 1–9. [25] H.-Y. Chang, S. H. Mozafari, C. Chen, J. J. Clark, B. H. Meyer, and W. J. Gross, “Pipebert: high-throughput bert inference for arm big. little multi-core processors,” Journal of Signal Processing Systems , vol. 95, no. 7, pp. 877–894, 2023. [26] Y. G. Kim and C.-J. Wu, “Autoscale: Energy efficiency optimization for stochastic edge inference using reinforcement learning,” in 2020 53rd Annual IEEE/ACM international symposium on microarchitecture (MICRO) . IEEE, 2020, pp. 1082–1096. [27] I. Dagli and M. E. Belviranli, “Shared memory-contention-aware con-current dnn execution for diversely heterogeneous system-on-chips,” in Proceedings of the 29th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming , 2024, pp. 243–256. [28] J. S. Jeong, J. Lee, D. Kim, C. Jeon, C. Jeong, Y. Lee, and B.-G. Chun, “Band: coordinated multi-dnn inference on heterogeneous mobile processors,” in Proceedings of the 20th Annual International Conference on Mobile Systems, Applications and Services , 2022, pp. 235–247. [29] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training of deep bidirectional transformers for language understanding,” arXiv preprint arXiv:1810.04805 , 2018.

@@ -1,0 +1,596 @@
+Title: LLM Compression with Jointly Optimizing Architectural and Quantization choices
+
+URL Source: https://arxiv.org/pdf/2606.04063v1
+
+Published Time: Thu, 04 Jun 2026 00:17:51 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# LLM Compression with Jointly Optimizing Architectural and Quantization choices 
+
+Hoang-Loc La 1, Truong-Thanh Le 1,2, Amir Taherkordi 2, and Phuong Ha Hoai 1 
+
+> 1
+
+UiT The Arctic University of Norway  
+
+> 2
+
+University of Oslo, Norway 
+
+{hoang.l.la,phuong.ha.hoai}@uit.no {truongl,amirhost}@ifi.uio.no 
+
+Abstract. Deploying large language models (LLMs) is challenging due to their significant memory and computational requirements. While some methods address this by developing small or tiny language models from scratch, these approaches demand extensive GPU training. Compress-ing pre-trained LLMs for edge devices offers a compelling alternative. Beyond pruning and quantization, Neural Architecture Search (NAS) enables effective compression, yet prior NAS approaches often limit the search space and decouple architecture from quantization. We introduce a differentiable NAS framework that explores the entire space and jointly optimizes architectural configurations alongside mixed-precision quan-tization for linear layers of LLMs. Experiments demonstrate superior accuracy-latency trade-offs: our models achieve up to 1.4× faster in-ference than sequential NAS-then-quantization baselines at comparable accuracy, or up to 6% higher average accuracy across seven reasoning tasks at equivalent latency. 
+
+Keywords: LLM Compression · Efficient LLM 
+
+1 Introduction 
+
+In recent years, Large Language Models (LLMs) have gained widespread at-tention, but their high computational and memory demands make deployment difficult on resource-constrained devices like laptops and smartphones. Rising privacy concerns with cloud-based LLMs have fueled interest in on-device infer-ence, yet memory requirements remain a key barrier. Two main approaches address the deployment challenges of LLMs: developing novel lightweight language models and compressing existing pre-trained LLMs. The first method involves training small language models from scratch, such as TinyLlama [31] with 1 billion parameters, which requires 90 days on 16 A100-40GB GPUs. Similarly, training Phi-2 [16] with 2.7 billion parameters takes 14 days on 96 A100 GPUs. The second approach leverages pre-trained LLMs, avoiding training from scratch and significantly reducing training time. Alongside techniques like struc-tural pruning [1] and quantization [10], neural architecture search (NAS) has emerged as a key method for LLM compression. However, current NAS applica-tions for LLM compression face challenges, such as requiring resource-intensive  
+
+> arXiv:2606.04063v1 [cs.LG] 2 Jun 2026 2Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai
+
+supernet training [6, 5] or updating only a small subset of candidate sub-networks during supernet training [24, 19]. In contrast to prior works that explore only a limited portion of the search space [24, 19, 5], Our proposed NAS framework optimizes over the full defined discrete search space via a relaxation. By directly optimizing architecture pa-rameters under given constraints— without pre-selection as in [24], our method explores a broader search space. Furthermore, unlike conventional approaches that apply uniform quantiza-tion post-pruning, our method jointly optimizes both architectural configura-tions and layer-specific non-uniform quantization policies. This enables the dis-covery of optimal pruning-quantization combinations, achieving substantially lower memory usage and superior accuracy compared to state-of-the-art meth-ods. Our main contributions are as follows. 
+
+– We introduce a novel differential weight-entanglement supernet design to-gether with a constrained differential optimization method for efficient com-pression of pre-trained LLMs. Our approach achieves superior accuracy and lower latency compared to the state-of-the-art methods. 
+
+– We present the first unified NAS framework that simultaneously optimizes model architecture and layer-wise quantization precision for LLM, addressing the longstanding limitation of treating pruning and quantization as separate steps. Models found by our joint approach deliver up to 1.4× faster inference than those produced by sequential NAS-then-quantization pipelines. 
+
+– We develop a novel vectorized implementation that significantly accelerates training of weight-entanglement supernets for LLMs, reducing training time by up to 4 × compared to the original approach [25]. 
+
+2 Related Work and Our Advancements 
+
+2.1 Weight-Entanglement NAS 
+
+Sukthanker et al. [25] introduce a weight superposition technique in Tangle-NAS, which consolidates all possible weight matrix configurations into a single weighted representation, with each configuration assigned a learned importance scalar. This enables simultaneous training and architecture search in a single stage, offering the potential for reduced search costs. However, applying Tangle-NAS directly to large language models (LLMs) presents significant challenges. 
+
+– The mixed-operation approach from TangleNAS [25] is not suitable for com-pressing the depth dimension of LLMs. It restricts depth reduction to drop-ping only the final consecutive blocks, whereas the importance of individual blocks in a pre-trained foundation model varies substantially. Removing a more critical block can lead to substantial accuracy degradation. 
+
+– The weight-entanglement mechanism in TangleNAS was not optimized for GPU efficiency, making it impractical for training supernet at the scale re-quired for LLMs (see Section 3.3 for further discussion). Title Suppressed Due to Excessive Length 3
+
+Our contribution : We propose an efficient weight-entanglement-based su-pernet design specifically tailored for compressing large language models. Our framework significantly expands the search space by incorporating diverse quan-tization precision options across layers. To address the first limitation of Tan-gleNAS, we propose importance-aware depth pruning that enables more flexible and effective depth compression (detailed in Section 3.2). To overcome the second limitation, we develop a software-level optimization that substantially acceler-ates supernet training, making it feasible to compress LLMs using only a single NVIDIA A100 80GB GPU within practical time budgets. 
+
+2.2 Neural Architecture Search techniques for LLM compression 
+
+A notable feature of transformers is permutation equivariance, which allows re-ordering embedding features, MLP intermediate features, and attention heads without significantly impacting model accuracy [27]. Leveraging this, a common preprocessing step involves ranking the components of a pre-trained LLM by importance [24]. When selecting a sub-network, we can then simply choose the first neurons or heads from the supernet. This preprocessing method is widely used in the related work [5, 6, 24] and is also adopted in our study. LoNAS [19] and subnet-selection [24] adopted a two-stage neural architecture search (NAS) approach to identify optimal sub-architectures in a pre-trained large language model (LLM). In the first stage, they train a supernet using LoRA[14]. In the second stage, they employ a multi-objective search to find sub-architectures that optimize accuracy and performance metrics, such as latency and energy efficiency, with the supernet serving as an accuracy estimator for sub-networks. Unlike LoNAS [19], subnet-selection method [24] incorporates a pre-selection step before the NAS process. They rank the model’s features and blocks by importance and select the top neurons, heads, or blocks when sampling sub-networks. They observed that random sampling, as used in LoNAS, introduces bias in the search space, where smaller sub-architectures are updated more fre-quently than larger ones, complicating supernet training. To address this and optimize the search space, they introduced a grid-based sampling approach, di-viding the search space into K partitions and selecting the best candidate from each. During supernet fine-tuning, they randomly select k ≪ K sub-networks and use knowledge distillation to train these sub-networks alongside the largest (original) network. However, this heuristic approach can introduce a strong bias based on the initial selection criteria, potentially resulting in suboptimal archi-tectures from the beginning. 
+
+Our contribution : Previous techniques focus primarily on the often-updated subnets while disregarding the bulk of those that are rarely or never updated, which may lead to missing the genuine optimal solution. In this work, we present a novel differential neural architecture search (NAS) method designed for com-pressing pre-trained large language models (LLMs). By leveraging weight en-tanglement style supernet, our differential supernet does not require randomly sampling architectures from search space, and thus avoids the skewness of ar-chitecture distribution as in LoNAS. Meanwhile, our method does not rely on 4 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 
+
+any heuristic to pre-select architectures as in subnet-selection . In contrast, our method explores all conceivable candidate subnets during fine-tuning, progres-sively converging toward the optimal structure. Additionally, unlike earlier meth-ods that lack support for quantization or require to apply compression and quan-tization techniques sequentially, our approach simultaneously optimizes architec-tural parameters and quantization precision across layers. 
+
+3 Method 
+
+3.1 Constrained Differential NAS Problem Formulation We approach the compression of large language models (LLMs) as a constrained optimization problem. Our search space S is parame-terized by ζ ∈ S, governing the architectural structure in a fully differentiable manner similar as in [25]. A sampled candidate network is drawn as ˆζ ∼ Pζ (S),where Pζ (S) is a probability distribution over search space S, parameterized by 
+
+ζ. Ltrain and Lval denote the training and validation losses, respectively. Conse-quently, the LLM compression task can be formulated as a bi-level constrained optimization problem as described below. 
+
+ζ∗ = min  
+
+> ζ
+
+Lval (w∗, ˆζ) (1a) s.t. w∗ = arg min  
+
+> w
+
+Ltrain (w, ˆζ),Bmin < F params (ζdiscrete ) < B max (1b) Denote w as weight of the pre-trained model. Let Fparams (ˆζ) denotes the parameter count of the optimal neural architecture derived from the discretiza-tion step within the NAS procedure. This discretization step entails applying the arg max function to the architectural parameters ζ in order to select the definitive architecture, yielding ζdiscrete = arg max( ζ). The involvement of the 
+
+arg max operation renders Fparams non-differentiable. A simple method for ap-proximating Fparams (ζdiscrete ) involves relaxing the hard constraint by calculating the expected value Eˆζ∼Pζ (S)[Fparams (ˆζ)] .
+
+Constrained Optimization We can transform the constrained optimization into an unconstrained one by adding a regularization term for the constraint 1b. Particularly, the constraint 1b can be formalized with a pair of ReLU functions as follows: 
+
+Fconstraint = ReLU (Eˆζ∼Pζ (S)[Fparams (ˆζ)] − Bmax )+ ReLU (Bmin − Eˆζ∼Pζ (S)[Fparams (ˆζ)]) (2) The loss terms in Equation 1a can be reformulated as: 
+
+Ltrain (w, ˆζ) = Eˆζ∼Pζ (S)[LCE (w, ˆζ)] (3) 
+
+Lval (w∗, ζ ) = Eˆζ∼Pζ (S)[LCE (w∗, ˆζ) + ηF latency (ˆζ)] + λF constraint Title Suppressed Due to Excessive Length 5
+
+where LCE is the cross-entropy loss and Flatency (ˆζ) is the expected infer-ence latency of the sampled architecture. This latency term is computed as a probability-weighted average of per-choice latencies, which are retrieved from a pre-calculated lookup table. We denote η is a hyperparameter defining the trade-off between validation loss LCE and inference latency Flatency . λ is a hyperparam-eter to control strength of the regularization term Fconstraint . It is note-worthy that Flatency can be substituted with other user-defined metrics, such as energy consumption or memory usage. 
+
+Pruning during supernet fine-tuning Assume we have D configurable ar-chitectural dimensions, such as the number of blocks, number of neurons, or number of heads per block. For each architectural dimension, we have C differ-ent choices. Denote pdc as the probability of the cth choice in the dth architectural dimension. The architectural entropy is defined as: 
+
+H = − 1
+
+D
+
+> D
+
+X
+
+> d=1
+> C
+
+X
+
+> c=1
+
+pdc log pdc . (4) When H < ϵ , indicating convergence to a single sub-architecture, we prune all redundant branches, retaining only the optimal sub-architecture for continued fine-tuning. 
+
+Knowledge Distillation After the pruning step and the supernet has con-verged to an optimal sub-network (when H < ϵ ), we continue fine-tuning it via a knowledge distillation approach, in which the largest subnet (the original model) acts as the teacher and the optimal sub-network serves as the student, thereby boosting the sub-network’s accuracy. 
+
+3.2 Supernet design Width dimensions To differentiate between the width and depth aspects of the architecture, we denote α and β as the respective parameters for these di-mensions. Consequently, the overall architectural parameters are ζ = {α, β }. The width aspects encompass elements like the hidden size, count of attention heads, head size, and intermediate size, while the depth aspect pertains to the count of transformer blocks. Figure 1 depicts our supernet architecture, emphasizing the width dimension. Specifically, we introduce a mixed-operation weight for ev-ery embedding layer, normalization layer, and linear layer. This mixed weight is formed by a straightforward linear combination of possible sizes for the layer’s original weight, with contributions weighted by the sampled mixing coefficients 
+
+ˆα.Drawing inspiration from DrNAS [7], we model the mixing weights ˆα, which encode the relative importance or selection probability of each width option, as random variables drawn from a Dirichlet distribution parameterized by α. We denote αIN and αOU T as the architectural parameters governing the input and output dimension selections for a given layer, respectively. For a linear layer with base weight matrix W0 of size M ×N , let ˆαi IN and ˆαj OU T represent the sampled 6 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 
+
+mixing weights for the i-th input dimension choice N i and the j-th output dimen-sion choice M j , respectively. A sampling function Fsample (W0, N i, M j ) extracts the top-left submatrix of W0 consisting of the first M j rows and N i columns, then zero-pads it to restore the original M × N shape. As in TangleNAS [25], the mixed-operation weight Wmixed for the layer is calculated accordingly. 50% Inter. 
+
+> Size
+> 75%
+> Inter. Size
+> 100%
+> Inter. Size
+> 25% Inter.
+> Size
+> 33%
+> Head Size /
+> #. Heads
+> 62.5%
+> Head Size /
+> #. Heads
+> 100%
+> Head Size /
+> #. Heads
+
++    
+
+> Mixed-Op
+> MLP
+> α1MLP α2MLP α3MLP α4MLP
+> Mixed-Op Normalization Layer
+> Mixed-Op Normalization Layer
+> α1ATTN
+> α2ATTN α3ATTN
+
++
+
+> Mixed-Op
+> Attention
+> Block 1
+> 33%
+> Embed. Dim
+> 66%
+> Embed. Dim
+> 100%
+> Embed. Dim
+
++
+
+> Mixed-Op Norm
+> 33%
+> Embed. Dim
+> 66%
+> Embed. Dim
+> 100%
+> Embed. Dim
+
++   
+
+> α1Emb α2Emb α3Emb
+> α1Emb
+> α2Emb α3Emb
+> Mixed-Op Embedding
+> Block L
+
+̂
+
+ˆ̂ ˆ̂ ˆ̂ ˆ̂ ˆ̂ ˆ̂ ˆ̂
+
+ˆ̂ ˆ̂ ˆ̂ ˆ̂ ˆ̂ ˆ
+
+Fig. 1. An overview of mixed-operation supernet design for width dimensions. 
+
+Wmixed = X
+
+> i
+
+X
+
+> j
+
+ˆαIN  
+
+> i
+
+ˆαOUT  
+
+> j
+
+Fsample (W0, N i, M j ) (5) with ˆαIN  
+
+> i
+
+∼ Dir (αIN  
+
+> i
+
+), ˆαOUT  
+
+> j
+
+∼ Dir (αOUT  
+
+> j
+
+)
+
+The iterations in the loops of Equation 5 are computationally independent. Moreover, each iteration in the above equation requires a different padding size 
+
+(N − N i, M − M j ). Therefore, the computation of the above equation requires non-uniform padding operations. However, Pytorch does not support parallelism for such operations and requires a loop over each i and j to run the slicing and padding operations. Consequently, naively computing the above equation on GPU with Pytorch, as in TangleNAS [25] is expensive. Further details on this issue are discussed in Section 3.3. 
+
+Depth dimension Unlike the width dimensions, applying the mixed-operation approach to the depth dimension presents several challenges. Figure 2(a) illus-trates the mixed-operation design for the depth dimension. This mixed-operation design requires to forward all L blocks sequentially [25], and thus, it imposes strict constraints on depth reduction. Particularly, the final mixed-operation output for the block sequence is computed as a weighted sum of the outputs, with weights governed by the architectural parameters β. By optimizing β, when 
+
+βi → 1, the mixed output is primarily influenced by the output of the ith block, effectively equivalent to sequentially forward all blocks up to the ith block and excluding all subsequent blocks. In a pre-trained large language model (LLM), transformer blocks have dif-ferent levels of importance, and removing more critical blocks can significantly Title Suppressed Due to Excessive Length 7
+
+impair model performance compared to removing less essential ones. The block importance metric, first introduced by [20], quantifies a block’s sensitivity by measuring the cosine similarity between its input and output. We adopt this metric to assess block importance in our study. As illustrated on the right side of Figure 2, pruning blocks based on their importance results in a lower vali-dation loss for the compressed sub-network compared to simply removing the final consecutive blocks. This finding aligns with [23], who examined the vali-dation loss of the Llama-3 8B model when dropping 16 consecutive final blocks versus 16 non-consecutive blocks selected by importance. They found that drop-ping consecutive layers caused a significantly larger increase in validation loss compared to dropping non-consecutive layers. We propose an importance-aware depth pruning method to compress the depth dimension of large language models as in Algorithm 1. Specifically, we model β as parameters of a categorical distribution Cat (β). In each training iteration, we sample the number of retained blocks ˆL ∼ Cat (β). To account for block importance, we maintain an array of block indices sorted by the impor-tance of the corresponding blocks. For each sampled ˆL, we perform the forward pass using only the top ˆL most important blocks, bypassing the rest. When 
+
+βi → 1, it indicates that we retain the i most important blocks and discard the remaining L − i least important ones. To enable gradient updates for β, we use a differentiable sampling technique, specifically the ReinMax method [18], a state-of-the-art gradient estimation technique for categorical sampling that provides enhanced robustness, as opposed to the Gumbel-Softmax trick described in [15]. Figure 2(b) depicts our proposed design for the depth dimension. Block          
+
+> 1
+> Block
+> 2
+> Block
+> L
+> β1β2βL+
+> Shrinking depth by dropping Klast blocks
+> Block
+> 3
+> β3
+> Block
+> 1
+> Block
+> 2
+> Block
+> L
+> Block
+> 3
+> 213…
+> Blocks sorted by their importance
+> L
+> Shrinking depth by dropping Kleast important blocks
+> Mixed-Op
+> Output
+> Embedding
+> LM Head
+> Embedding
+> LM Head
+> Skipping the dropped blocks
+
+(a) The mixed-op design Block          
+
+> 1
+> Block
+> 2
+> Block
+> L
+> β1β2βL+
+> Shrinking depth by dropping Klast blocks
+> Block
+> 3
+> β3
+> Block
+> 1
+> Block
+> 2
+> Block
+> L
+> Block
+> 3
+> 213…
+> Blocks sorted by their importance
+> L
+> Shrinking depth by dropping Kleast important blocks
+> Mixed-Op
+> Output
+> Embedding
+> LM Head
+> Embedding
+> LM Head
+> Skipping the dropped blocks
+
+(b) Our design 0 5 10 15 20 25 30 
+
+> Depth
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> 14
+> Validation Loss
+> dropping last consecutive blocks
+> dropping blocks by their importance
+
+Fig. 2. Left: The difference between the mixed-op design (a) and our proposed design (b) for pruning depth dimension. Right: Validation loss of compressed sub-network from Llama-3.1-8B model by dropping blocks with two schemes, namely dropping last consecutive blocks and dropping blocks by their importance. 
+
+Weight Quantization Fully fine-tuning the supernet described above is memory-intensive and impractical for deployment on a single NVIDIA A100 GPU. To mitigate this, we utilize LoRA techniques to reduce memory usage. Specifically, 8 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 
+
+Algorithm 1 Importance-Aware Probabilistic Depth Pruning 
+
+Require: Pre-trained LLM with N transformer blocks, learnable concentration pa-rameters β ∈ RN , block importance scores I ∈ RN
+
+1: sorted _indices ← argsort (I) {Indices of blocks sorted from most to least impor-tant} 2: for each training iteration do 
+
+3: ˆL ∼ Cat (β)
+
+4: kept _indices ← sorted _indices [1 : ˆL]
+
+5: Sort kept _indices in ascending order 6: input ← initial input to the first block 7: for i = 1 to ˆL do 
+
+8: if i ∈ kept _indices then 
+
+9: output ← block i(input )
+
+10: else 
+
+11: output ← input 
+
+12: end if 
+
+13: input ← output 
+
+14: end for 
+
+15: Compute loss and backpropagate (gradients flow to β via ReinMax reparame-terization) 16: end for 
+
+we incorporate LoRA adapters into all linear layers of the attention and MLP blocks. Let Qp(·) represent the quantization function that quantizes an input ma-trix to precision p, with A and B denoting the matrices of the LoRA adapters. The standard approach to integrating LoRA with quantization involves quan-tizing the sum of the original weight and the LoRA adapter, as described in [4, 17]. The quantized weight is formalized in Equation 6. 
+
+˜W = Qp(W0 + BA ) (6) This design can eliminate mixed-precision computation overhead during the inference phase [28]. Specifically, we employ a unique pair of LoRA matrices A and B for each distinct weight quantization precision, rather than using a single pair for all precisions. This method addresses discrepancies in precision ranges among varying precisions, which could otherwise lead to instability in the supernet fine-tuning process. Let P denote the set of weight precision. The mixed-op LoRA matrix for a precision p is denoted as BA p,mixed . The quantized mixed-op weight ˜Wmixed can be calculated as follows. 
+
+˜Wmixed = X
+
+> p∈P
+
+αweight  
+
+> p
+
+∗ Qp(Wmixed + BA p, mixed ) (7) Denote αweight p is the probability that the weight matrix W being quantized to precision p. One advantage of our approach is its compatibility with various quantization-aware training (QAT) techniques [17, 4], enabling the integration of fine-tuning and QAT to obtain the most effective architectures, we defer this di-Title Suppressed Due to Excessive Length 9
+
+rection for future research. In this paper, we use Straight-Through Estimator [2] to enable gradient flow through quantization operations. Note that the QA-LoRA methods [28] are incompatible with our above de-sign. Specifically, QA-LoRA alters the output shape of the Qp(.) function to 
+
+[M, N 
+
+> group_size
+
+] under low-precision settings, whereas it retains the [M, N ] shape for 16-bit precision, causing shape mismatches in the sum aggregation of Equa-tion 7. To enhance processing speed through better GPU parallelism, we present a software enhancement in Section 3.3. Regarding initialization, techniques for post-training quantization can be employed, including GPTQ [11] or OmniQuant [22], among others. 
+
+Activation Quantization We further explore activation quantization with a similar design. Particularly, the mixed activation Xmixed of different precisions can be defined as follows: 
+
+Xmixed = X
+
+> p∈P
+
+αactivation  
+
+> p
+
+Qp(X) (8) 
+
+3.3 Software Improvement: Vectorizing calculation of mixed-op weights 
+
+The weight-entanglement method requires multiple nested loops to calculate combined weights and low-rank adaptations (LoRA) for each linear layer, which greatly slows down fine-tuning. Specifically, Equation 5 for the aggregated weight matrix is computationally expensive due to loops over indices i and j, plus zero-padding that demands dynamic memory handling in each iteration. The left side of Figure 3 illustrates the original implementation and the implementation of our proposed software improvement for computing mixed weight [25]. To overcome this problem, we develop a method to vectorize the mixed weight calculation. Let Mi and Nj be the input and output feature sizes linked to architectural parameters αIN  
+
+> i
+
+and αOUT  
+
+> j
+
+. We use a binary mask matrix Gi,j (size 
+
+N × M ) to indicate pairings between the i-th input and j-th output dimensions, where each element gn,m is: 
+
+gn,m =
+
+(
+
+1 if n < N i and m < M j ,
+
+0 otherwise .
+
+To fix the loop inefficiencies, we rewrite Equation 5 as: 
+
+Wmixed = W0 ⊙ X
+
+> i
+
+X
+
+> j
+
+Gi,j αi,j (9) Here, ⊙ is element-wise multiplication and αi,j = αIN i αOU T j . The masks Gi,j can be precomputed at model startup and reused across blocks. The sum involves multiplying a 3D tensor of all G masks by the scalar vector α, then summing 10 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 
+
+element-wise to create a 2D probabilistic mask that adjusts the base weights W0.This vectorized version avoids loops, boosting fine-tuning speed. Although Equations 5 and 9 possess comparable complexity, our revised for-mulation supports parallel computation through broadcasting and element-wise operations. By precomputing the binary mask G only once at initialization, it avoids the repeated slicing and padding required for calculating Wmixed across layers in every training iteration. We additionally apply this updated approach to the consolidated LoRA matrices presented in Equation 7. While our technique incurs a minor overhead for retaining the binary G matrix, approximately 3.2 GB out of the 80GB available on an NVIDIA A100 GPU for the Llama-3.1-8B model using the Llama3Space search space (outlined in Section 4.4), this remains acceptable. Furthermore, the overhead is determined exclusively by the search space dimensions and is unaffected by size of training input prompts. In empiri-cal tests with the Llama3Space search space, this software enhancement provides up to 4.3 × improved training throughput over the baseline weight-entanglement method from [25]. This optimization can be adopted for any transformer-based architectures involving weight-entangled search spaces. We evaluate the performance advantages of our software optimization strat-egy by benchmarking it against the standard weight-entanglement technique described in [25]. This assessment includes determining the average runtime per training sample per iteration, using a batch size of 8, for both strategies across different search space scales, which are determined by the quantity of candidate networks. To vary the search space size, we adapt the Llama3Space 
+
+search space through modifications to architectural parameters, including the number of heads, embedding dimension, intermediate size, and head size. As illustrated in the right side of Figure 3, the speedup results demonstrate the clear superiority of our software-driven enhancement compared to the baseline weight-entanglement method. Our approach delivers a 4.3 × reduction in training time for the Llama3Space search space, at the expense of an additional 3.2GB in memory usage. This enhancement stems from the fact that larger search spaces amplify the sequential loop iterations in Equation 5, leading to increased run-time burdens in the original setup. In contrast, our vectorized method performs these operations concurrently, making it more resilient to expansions in search space size. Moreover, the speedup intensifies further as the number of candidate options rises, though this is accompanied by a corresponding increase in over-head memory. Therefore, when applying our method, it is crucial to consider the trade-off between memory costs and training acceleration. 
+
+4 Experiments 
+
+4.1 Baselines 
+
+We evaluate and compare our proposed approach with subnet-selection [24] and LoNAS [19], the state-of-the-art NAS approach for LLM compression. In ad-dition, for a fair comparision, we also apply feature reordering based on their importance and sandwich training procedure when adapting LoNAS. Title Suppressed Due to Excessive Length 11 W1                
+
+> W3
+> W4
+> Original Implementation:
+> Wmixed = 0
+> Foreach α iover all possible options
+> Wmixed += α iWi
+> W0
+> Binary Masks
+> (pre-computed from
+> initialization)
+> Original Weight
+> (Unchanged)
+> Expensive because for loop cannot
+> be run in parallel with Pytorch!!!
+> W1
+> W2
+> G1
+> G2
+> G3
+> G4
+> Vectorize
+> α1
+> α2
+> α3
+> α4
+> ⊙.sum(dim=0)
+> ⊙Element-wise multiplication
+> (element-wise sum)
+> Our implementation:
+> Mask mixed = (G * α).sum(dim=0)
+> Wmixed = Mask mixed * W 0
+> α3
+> α4
+> α2
+> α1
+> Highly-optimized by Pytorch 512 2048 8192 15360 38400 64512
+> Size of Search Space
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> Speedup
+> (higher is better)
+> 1.9x 2.1x 2.0x
+> 4.3x
+> 5.7x
+> 7.3x
+> Llama3Space
+> speedup
+> overhead
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> Memory cost (GB)
+
+Fig. 3. (Left) Software Implementation for mixed-op weight computation. (Right) Speedup and overhead memory cost of our proposed methods compared to the original weight-entanglement implementation [25] with different numbers of candidate networks (sizes of search space) running on a A100 GPU with 80GB memory. 
+
+Besides that, directly applying random search in search phase as in the orig-inal LoNAS paper [19] can lead to the dominance of small architectures in the result by the skewness in architectural distribution mentioned in [24]. Therefore, in the search phase of LoNAS, we apply the same grid-based partition strategy as in[24] by splitting the search space into k even parts, then randomly searching the best architecture from each partition. 
+
+4.2 Dataset Calibration and Fine-tuning Dataset: To ensure a fair comparison with other state-of-the-art methods, we adopt the same experimental setup as de-scribed in [24]. Specifically, we use the same calibration dataset from [24] for computing important score. We utilize the Alpaca dataset [26] with approxi-mately 52,000 instructions. The fine-tuning dataset is divided into two separate train and validation datasets during search phase of our method. After the su-pernet converges to a single optimal sub-architecture, we further fine-tune this optimal sub-architecture using the whole dataset. 
+
+Evaluation Dataset: We evaluate and compare our method with other baselines with 7 diverse common-reasoning tasks, namely BoolQ [8], PIQA [3], HellaSwag (HS) [29], WinoGrande (WG) [21] and ARC [9] (ARC-easy (ARC_E) and ARC-challenge (ARC_C)), and MMLU [13]. Moreover, similar to experi-mental settings in [24], we perform 5-shot evaluation for WinoGrande, 10-shot for HellaSwag, 25-shot for ARC-challenge, 5-shot evaluation for MMLU, and 0-shot evaluation for remaining tasks. 
+
+4.3 Latency Profiling 
+
+To evaluate and measure the inference latency of the Llama3 model across dif-ferent weight-activation quantization setups, we utilize several state-of-the-art kernels tailored to each configuration. Specifically, for W4A16 and W8A16 quan-tization, we adopt the Marlin kernel [12], which achieves top-tier performance in these scenarios. For alternative quantization configurations, we apply the method introduced in ABQ-LLM [30], enabling support for arbitrary quantization in lin-ear layers. This profiling and data gathering process is conducted on an A100 GPU equipped with 80GB of memory. 12 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 
+
+4.4 Search Space 
+
+We use Llama-3.1-8B as the foundation LLM, however, it is remarkable that our method is adaptable to other foundation models. For fair baseline comparisons, we assess our method against baselines within a search space called Llama3Space .For our quantization extension, we employ a distinct search space named QL-lama3Space . Notably, we adopt a group size of 128 for quantization options in 
+
+QLlama3Space , which requires us to exclude certain choices for hidden size, num-ber of heads, and head dimensions that are not divisible by 128. Details of both search spaces are provided in Alpaca1. For the sake of simplification, we denote 
+
+our-no-quant and our-quant as our proposed method run with Llama3Space 
+
+and QLlama3Space search space, respectively. 
+
+Table 1. Possible configurations of search space for Llama-3.1 8B                                                                        
+
+> Dimensions Llama3Space QLlama3Space
+> Hidden Dim. {2i|i∈[5 ,12] }{2i|i∈[7 ,12] }
+> Number of Heads {8,16 ,32 }{16 ,32 }
+> Head Dim. {8,16 ,32 ,64 ,128 }{32 ,64 ,128 }
+> Intermediate Dim. {4096 ∗i|i∈[1 .0,2.0,3.0,3.5] } { 4096 ∗i|i∈[1 .0,2.0,3.0,3.5] }
+> Number of Blocks {1, ..., 32 }{1, ..., 32 }
+> Weight Bitwidth {2,4,8}
+> Activation Bitwidth {2,4,8,16 }
+> # of Candidates 8×3×5×4×32 = 15360 6×2×3×4×332 ×432 ×32
+
+4.5 Experimental Details 
+
+For our method, subnet-selection , and LoNAS, LoRA is set with a rank of 32, alpha of 16, and a dropout rate of 0.05 during fine-tuning. We also pre-process the pre-trained LLM by reordering neurons and attention heads by their important scores as in [24]. To compute the block importance, we follows the method as mentioned in [20]. Unlike [24], which applies LoRA solely to embedding and attention layers, we follow LoNAS [19] by applying LoRA to both attention and MLP layers. Training settings for LoRA adapters are similar as settings in [24]. In terms of the quantization approach, we utilize group-wise quantization with a group size of 128. Furthermore, we initialize the quantizers in our pro-posed supernet using OmniQuant [22]. For quantizing models suggested by the baselines ( subnet-selection and LoNAS), we similarly employ the OmniQuant method. Notably, other post-training quantization techniques can also be ap-plied to initialize our supernet. 
+
+4.6 Comparison to baselines Without Quantization Table 2 presents a comparison of our proposed method against baseline approaches across common reasoning tasks, evaluated over four distinct parameter ranges. Notably, our method our-no-quant surpasses state-of-the-art baselines in both average accuracy and inference latency. To illustrate the advantages of our approach, Figure 4 shows Pareto fronts comparing our method to baselines, alongside the distribution of sub-architectures across vari-ous model size ranges. The distribution reveals a skew, with smaller models being far more prevalent than larger ones. This observation align with observations in Title Suppressed Due to Excessive Length 13 
+
+Table 2. A comparison between baselines with our proposed methods for 7 common reasoning tasks, with 4 different ranges of model size, namely 2-3 billion (2-3B), 3-4 billion (3-4B), 4-5 billions (4-5B), and 5-6 billions (5-6B) parameters. Remarkably, LoNAS* are improved as mentioned in Section 4.1.                                                                                                                       
+
+> Method Params Latency (ms) ARC_E ARC_C BoolQ WG HS MMLU PIQA Acc. (%) 2B-3B
+> subnet-selection 2.54B 70.95 25.66 26.62 49.88 38.50 26.38 25.72 53.76 35.22 LoNAS* 2.67B 69.84 24.45 25.77 48.86 61.87 26.05 22.95 52.23 37.45
+> ours-no-quant 2.27B 43.14 34.18 23.98 60.83 50.67 27.43 25.38 55.28 39.68
+> 3B-4B
+> subnet-selection 3.28B 81.31 28.20 25.77 48.78 37.95 27.15 24.49 54.03 35.19 LoNAS 3.28B 81.31 24.49 27.47 49.72 38.69 26.58 24.65 51.41 34.72
+> ours-no-quant 3.37B 40.90 38.13 23.21 60.55 52.72 29.21 25.86 56.53 40.89
+> 4B-5B
+> subnet-selection 4.32B 57.45 31.99 26.88 37.86 49.49 31.59 25.07 57.73 37.22 LoNAS* 4.00B 73.72 25.25 26.11 46.96 56.67 26.82 23.74 52.84 36.91
+> ours-no-quant 4.14B 53.93 41.33 29.79 62.69 56.27 41.98 26.90 62.68 45.93
+> 5B-6B
+> subnet-selection 6.06B 87.38 61.41 37.12 70.43 65.59 59.96 30.98 70.46 56.56 LoNAS* 6.84B 99.00 42.59 31.83 57.77 63.12 51.00 24.26 64.42 47.86
+> ours-no-quant 6.06B 87.38 59.18 42.32 72.54 65.51 60.77 49.07 70.82 60.03
+
+previous work [24]. Specifically, in the 6–8 billion parameter range, only a few architectures are present. When compared to two baselines, our method demon-strates superior performance across the 2–6 billion parameter range. For larger models, the architectures suggested by our method align closely with those from the subnet-selection method, primarily due to the limited number of available architectures in this range, allowing both methods to identify optimal configu-rations. However, in the 2–6 billion parameter range, our method consistently outperforms all baselines, indicating its ability to identify superior compression configurations. Besides that, subnet-selection also outperforms LoNAS in this range of model size. Therefore, for the experiment with quantization (Section 4.6), we apply quantization to subnet-selection and use it as the baseline for comparison. For small models ( < 2 billion parameters), the performance gap between our method and the baselines is minimal, as highly compressed ar-chitectures lose significant information, resulting in reduced accuracy across all methods. 
+
+With Quantization In this experiment, we investigate the QLlama3Space 
+
+search space, which supports a wide range of quantization configurations. For a fair comparison, we apply post-training quantization to the architectures identi-fied by the subnet-selection and our-no-quant methods using four quantization settings: W4A4, W8A8, W8A16, and W4A16. These quantized models are then benchmarked against those produced by our proposed joint optimization ap-proach, denoted our-quant . We exclude the LoNAS baseline from this analysis, as subnet-selection consistently outperformed it in earlier experiments. Figure 5 presents the Pareto fronts of compressed architectures discovered by our-quant, compared against those from subnet-selection and our-no-quant under the var-ious quantization settings. The results clearly show that jointly optimizing both architectural configurations and quantization precisions enables our method to 14 Hoang-Loc La, Truong-Thanh Le, Amir Taherkordi, and Phuong Ha Hoai 0 1 2 3 4 5 6 7 8 
+
+> Number of Params 1e9
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> Avg. Accuracy
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> Number of Architectures
+> subnet-selection
+> our-no-quant
+> LoNAS
+> Architecture Distribution
+
+Fig. 4. Pareto fronts of our pro-posed method compared to subnet-selection and LoNAS. The second y-axis is the architectural distribution across different ranges of model size for 
+
+Llama3Space search space. 20 30 40 50 60 70 80 
+
+> Latency (ms)
+> 0.350
+> 0.375
+> 0.400
+> 0.425
+> 0.450
+> 0.475
+> 0.500
+> 0.525
+> 0.550
+> Avg. Accuracy
+> subnet-selection-w4a4
+> subnet-selection-w4a16
+> subnet-selection-w8a16
+> subnet-selection-w8a8
+> our-quant
+> our-no-quant-w4a4
+> our-no-quant-w4a16
+> our-no-quant-w8a16
+> our-no-quant-w8a8
+
+Fig. 5. Pareto fronts of our-quant method compared to models compressed by subnet-selection and our-no-quant , with 4 different quantization configurations, namely W4A4, W4A16, W8A8, and W8A16 
+
+achieve superior efficiency–accuracy trade-offs compared to sequential pipelines (architecture search followed by quantization). For example, at the same aver-age accuracy of 40% across reasoning tasks, models compressed with our method achieve up to 1.4× faster inference than those from competing baselines. Alterna-tively, at a fixed inference latency of 30 ms, our models reach approximately 41% average accuracy on reasoning tasks, outperforming other baselines by roughly 6%. 
+
+5 Conclusions and Future Work 
+
+We present an effective compression approach for large language models (LLMs) using differential neural architecture search. Notably, our non-quantized method, 
+
+ours-no-quant , outperforms state-of-the-art approaches for non-quantized con-figurations, while our quantized version, ours-quant , which jointly optimizes both compression and quantization, surpasses sequential compression followed by quantization. This suggests that jointly optimizing structural architecture and quantization yields more efficient compression configurations compared to treating them as separate problems. 
+
+References 
+
+1. Ashkboos, S., et al.: SliceGPT: Compress large language models by deleting rows and columns. In: ICLR (2024) 2. Bengio, Y., Léonard, N., Courville, A.: Estimating or propagating gradi-ents through stochastic neurons for conditional computation. arXiv preprint arXiv:1308.3432 (2013) 3. Bisk, Y., Zellers, R., et al.: Piqa: Reasoning about physical commonsense in natural language. In: AAAI (2020) 4. Bondarenko, Y., Del Chiaro, R., Nagel, M.: Low rank quantization-aware training for llms. In: ICML (2024) Title Suppressed Due to Excessive Length 15 5. Cai, R., Muralidharan, S., et al.: Flextron: many-in-one flexible large language model. In: ICML. pp. 5298–5311 (2024) 6. Cai, R., et al.: Llamaflex: Many-in-one llms via generalized pruning and weight sharing. In: ICLR (2025) 7. Chen, X., et al.: Drnas: Dirichlet neural architecture search. In: ICLR (2021) 8. Clark, C., et al.: Boolq: Exploring the surprising difficulty of natural yes/no ques-tions. In: NAACL (2019) 9. Clark, P., et al.: Think you have solved question answering? try arc, the ai2 rea-soning challenge. arXiv:1803.05457v1 (2018) 10. Frantar, E., et al.: Gptq: Accurate post-training quantization for generative pre-trained transformers. arXiv preprint arXiv:2210.17323 (2022) 11. Frantar, E., et al.: Optq: Accurate post-training quantization for generative pre-trained transformers. In: ICLR (2023) 12. Frantar, E., et al.: Marlin: Mixed-precision auto-regressive parallel inference on large language models. In: PPoPP. pp. 239–251 (2025) 13. Hendrycks, D., et al.: Measuring massive multitask language understanding. ICLR (2021) 14. Hu, E.J., et al.: Lora: Low-rank adaptation of large language models. ICLR (2022) 15. Jang, E., Gu, S., Poole, B.: Categorical reparameterization with gumbel-softmax. arXiv preprint arXiv:1611.01144 (2016) 16. Javaheripi, M., et al.: Phi-2: The surprising power of small language models. Mi-crosoft Research Blog 1(3), 3 (2023) 17. Jeon, H., Kim, Y., Kim, J.j.: L4q: Parameter efficient quantization-aware fine-tuning on large language models. arXiv preprint arXiv:2402.04902 (2024) 18. Liu, L., et al.: Bridging discrete and backpropagation: Straight-through and be-yond. NeurIPS (2023) 19. Munoz, J.P., et al.: Lonas: Elastic low-rank adapters for efficient large language models. In: LREC-COLING 2024 (2024) 20. Muralidharan, S., et al.: Compact language models via pruning and knowledge distillation. arXiv preprint arXiv:2407.14679 (2024) 21. Sakaguchi, K., et al.: Winogrande: An adversarial winograd schema challenge at scale. In: AAAI (2020) 22. Shao, W., et al.: Omniquant: Omnidirectionally calibrated quantization for large language models. In: ICLR (2024) 23. Sreenivas, S.T., et al.: Llm pruning and distillation in practice: The minitron ap-proach. arXiv preprint arXiv:2408.11796 (2024) 24. Sukthanker, R.S., Staffler, B., Hutter, F., Klein, A.: Large language model com-pression with neural architecture search. In: NeurIPS (2024) 25. Sukthanker, R.S., et al.: Weight-entanglement meets gradient-based neural archi-tecture search. In: AutoML (2024) 26. Taori, R., et al.: Stanford alpaca: An instruction-following llama model (2023) 27. Xu, H., Xiang, L., Ye, H., Yao, D., Chu, P., Li, B.: Permutation equivariance of transformers and its applications. In: CVPR (2024) 28. Xu, Y., et al.: Qa-lora: Quantization-aware low-rank adaptation of large language models. In: ICLR (2024) 29. Zellers, R., et al.: Hellaswag: Can a machine really finish your sentence? In: ACL (2019) 30. Zeng, C., et al.: Abq-llm: Arbitrary-bit quantized inference acceleration for large language models. In: AAAI (2025) 31. Zhang, P., et al.: Tinyllama: An open-source small language model. arXiv preprint arXiv:2401.02385 (2024)

@@ -1,0 +1,747 @@
+Title: BIDENT: Heterogeneous Operator-level Mapping for Efficient Edge Inference
+
+URL Source: https://arxiv.org/pdf/2606.05271v1
+
+Published Time: Fri, 05 Jun 2026 00:04:55 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference 
+
+## Hoseok Kim †, Arghadip Das †, Soumendu Ghosh ‡, Arnab Raha ‡, Vijay Raghunathan †
+
+> †
+
+Purdue University ‡Intel Corporation 
+
+> †
+
+{kim5396, das169, vr}@purdue.edu, ‡{soumendu.ghosh, arnab.raha}@intel.com 
+
+Abstract 
+
+Modern edge System-on-Chips (SoCs) integrate increasingly het-erogeneous processing units (PUs) such as CPUs, GPUs, and NPUs, yet current inference stacks still map entire models to a single PU, leaving significant performance and energy efficiency on the table. This limitation is exacerbated by emerging neural architectures such as state-space models (SSMs), Kolmogorov–Arnold networks (KANs), and multi-stage vision-language-action (VLA) pipelines, whose diverse operator characteristics are not uniformly suited to any single PU. We present BIDENT , a unified operator-level orchestration framework for heterogeneous edge inference that maps individual operators to the most suitable PU based on profiled execution characteristics. BIDENT formulates operator-to-PU assignment as a shortest-path problem over a weighted execution graph, enabling efficient and optimal scheduling under the given cost model, for both latency and energy minimization objectives. Unlike prior work that relies on model-specific heuristics or coarse-grained par-titioning, BIDENT provides a model-agnostic framework that jointly supports sequential execution, intra-model parallelism across independent operators, and multi-model concurrent scheduling within a single formulation. We implement BIDENT on an Intel Core Ultra SoC and evaluate it across 10 diverse model families spanning CNNs, Transformers, SSMs, KANs, spiking networks, and multi-stage pipelines. BIDENT 
+
+unlocks substantial gains in realistic heterogeneous workloads, achieving up to 1.60 × speedup through intra-model parallelism and a 3.42 × geometric mean speedup across 190 multi-model combinations by effectively utilizing otherwise idle compute resources. Sequential heterogeneous mapping yields more modest improvements (up to 1.58 ×, 1.09 × geometric mean). Additionally, energy-aware scheduling reduces energy consumption by 48.2% on average in concurrent settings. These results demonstrate that operator-level orchestration, rather than model-level mapping, is the key abstraction for fully exploiting heterogeneity in next-generation edge AI systems. 
+
+CCS Concepts 
+
+• Computer systems organization → Heterogeneous (hybrid) systems ; • Computing methodologies → Neural networks .
+
+Keywords 
+
+Heterogeneous SoC, Edge inference, Execution orchestration 
+
+1 Introduction 
+
+On-device AI has evolved from narrow perception tasks, such as image classification and keyword spotting, to workloads that 
+
+Figure 1: BIDENT overview. 
+
+demand sustained reasoning over long contexts, multimodal fu-sion, and real-time decision-making. To efficiently handle these diverse demands, modern edge System-on-Chips (SoCs) integrate increasingly heterogeneous processing units (PUs): CPUs, GPUs, and neural processing units (NPUs). Concurrently, the landscape of neural network architectures deployed at the edge is diversifying. Beyond the Transformer and convolutional neural network (CNN) architectures that current de-ployment stacks are designed around, emerging models introduce operators with distinct compute requirements: FFT-based long convolutions and elementwise gating (Hyena [ 22 ]), learnable spline evaluations with control-heavy logic (KANs [ 18 ]), and selective scan kernels (Mamba [ 10 ]). In addition, multi-stage pipelines such as vision-language-action (VLA) models ( 𝜋 0.5 [ 15 ]) chain encoders, decoders, and iterative denoising stages, each with its own operator mix. These architectures rely on non-standard operations that do not uniformly map onto a single PU. As a result, the choice of PU becomes critical, since certain operators may suffer order-of-magnitude latency and energy penalties on a mismatched PU [ 5]. Furthermore, edge systems increasingly serve multiple inference streams concurrently (e.g., object detection alongside speech recog-nition, or a vision encoder co-executing with a language decoder in a VLA pipeline), amplifying the cost of suboptimal PU assignment. Despite the growing operator diversity, current deployment frameworks map an entire model’s execution graph to a single target PU, typically the one expected to offer the best average performance. This monolithic approach has three limitations. First, it ignores per-PU capability differences. Each PU excels at different operator types, yet monolithic execution forces all operators onto one PU, causing non-standard operators to incur significant latency and energy penalties [ 5 –7, 24 ]. Second, single-PU mapping leaves hardware underutilized. Though many operators in an inference graph have no data dependencies between them and could execute concurrently across PUs, single-PU execution serializes the entire graph. Third, forcing the entire graph onto one backend exposes unsupported operators, causing the backend to either fall back to an inefficient execution path, silently substitute an approximation, or fail to compile altogether [5]. 
+
+> arXiv:2606.05271v1 [cs.AR] 3 Jun 2026 Kim et al.
+
+The root cause of these inefficiencies is the absence of a system-level orchestration layer that is aware of operator-to-PU affinity. Ex-isting deployment frameworks (e.g., OpenVINO [ 14 ], TensorRT [ 21 ], ONNX Runtime [ 20 ]) optimize within a single-PU’s compilation boundary but do not provide cross-PU partitioning, scheduling, or parallel orchestration. Existing heterogeneous inference engines target specific accelerator pairs or model families, or else rely on coarse-grain model heuristics rather than general-purpose, model-agnostic orchestration across arbitrary PU configurations [ 2– 4, 29 ]. More fundamentally, the core challenge in heterogeneous in-ference is not merely selecting a target PU, but jointly reasoning about operator-level heterogeneity, inter-operator independence, and multi-model concurrency. We observe that these dimensions can be captured within a single graph-search formulation, enabling optimal operator-to-PU assignment across diverse models and execution scenarios. To address this gap, we propose BIDENT , an operator-level orchestration framework for heterogeneous edge SoCs that realizes this unified graph-based formulation by mapping operators from single or concurrent inference requests to appropriate PUs based on profiled per-operator affinity and cross-PU contention. Figure 1 illustrates the high-level overview. The key contributions of this work are: 
+
+• A unified operator-level abstraction for heterogeneous inference. We introduce a model-agnostic formulation that captures operator-level heterogeneity, inter-operator indepen-dence, and multi-model concurrency within a single graph-based representation. 
+
+• A principled graph-search formulation with optimality guarantees. We cast operator-to-PU assignment as a shortest-path problem over a weighted execution graph, reducing combinatorial scheduling to a polynomial-time optimization under both latency and energy objectives. 
+
+• A unified orchestration framework across execution regimes. BIDENT supports sequential heterogeneous map-ping, intra-model parallel execution of independent operators, and multi-model concurrent co-scheduling within a single framework. 
+
+• A full-system implementation on a real heterogeneous SoC. We build BIDENT end-to-end, including profiling, execution graph construction, and scheduling, integrated with a production inference backend. 
+
+• Comprehensive evaluation across diverse models and workloads. Across ten model families and 190 multi-model com-binations, BIDENT achieves up to 1.60 × speedup via intra-model parallelism and a 3.42 × geometric mean speedup in concur-rent settings, demonstrating the importance of operator-level orchestration. 
+
+2 Background and Motivation 
+
+This section provides background on diverse neural network archi-tectures for edge inference, and our motivational observations that reveal the shortcomings of single-PU execution. 
+
+2.1 Diverse Neural Network Architectures and Their Compute Demands 
+
+Modern edge SoCs integrate multiple processing units (CPU, GPU, and NPU) connected through an on-chip interconnect and sharing a common off-chip memory [ 1 , 12 ]. The CPU provides general-purpose scalar and vector execution well-suited for control-heavy and irregular operations that benefit from instruction-level par-allelism. The GPU employs a single-instruction, multiple-threads (SIMT) execution model with massively parallel threads, enabling high throughput for data-parallel workloads such as large general matrix multiplications (GEMMs). The NPU is a domain-specific accelerator built around fixed-function multiply-accumulate (MAC) arrays optimized for convolutions and energy-efficient GEMMs, complemented by vector DSPs that handle the elementwise and non-linear operations [12]. The operators that compose neural network architectures exhibit distinct computational patterns, each with varying affinity to these processing units. Convolutions, dominant in CNNs, map directly to the NPU’s MAC arrays and achieve high utilization. GEMMs and matrix-vector products (GEMVs), which dominate Transformer attention and feed-forward layers, are compute-bound during prefill and memory-bound during decode [ 29 ], with the optimal PU depending on hardware resources. FFT-based long convolutions and elementwise gating, central to the Hyena operator [ 22 ], are largely memory-bound and rely on operations that fall outside the GPU and NPU’s MAC-centric datapath, making the CPU a more natural fit. Selective state-space recurrences in models such as Mamba [ 10 ] introduce sequential dependencies that limit data-level parallelism, favoring CPU execution. Recursive spline evaluations in KANs [ 18 ] are control-heavy and dominated by DSP-bound operators such as comparisons and conditional logic, aligning best with the CPU’s instruction-level parallelism. Critically, practical neural network architectures comprise combinations of these operators rather than relying on any single type. A Transformer, for instance, interleaves GEMM-heavy atten-tion with non-linear activations and normalization layers, while hybrid models further mix attention with SSM or Hyena operators. Multi-stage pipelines such as vision-language-action (VLA) models chain vision encoders, language decoders, and iterative denoising stages, each with distinct PU affinity and natural opportunities for inter-stage parallelism. Furthermore, edge systems often execute multiple models concurrently to serve diverse use-cases, leading to PU contention and resource underutilization when each model is statically assigned to a single PU. Thus, mapping models to a single PU inevitably leaves some operators suboptimally executed, under-scoring the need for operator-aware heterogeneous orchestration across all available PUs. 
+
+2.2 PU Capability Variation 
+
+A key motivating observation is that the optimal processing unit varies not only across operator types but also across operand sizes for the same operator. 
+
+Observation 1: Best PU depends on operator type. To quantify how operator diversity influences PU affinity, Figure 2 compares seven key operators. Collectively, these operators represent the dominant computational patterns found in our selected model BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference MatMul  
+
+> (GEMM)
+> Conv2D Depthwise
+> Conv
+> Elementwise
+> (Add)
+> RDFT
+> (FFT)
+> CumSum
+> (Scan)
+> Gather
+> (Spline)
+> 1
+> 10
+> 100
+> Normalized Execution Latency
+> CPU
+> GPU
+> NPU
+
+Figure 2: Execution latency of seven representative operators across CPU, GPU, and NPU on an Intel Core Ultra SoC, mea-sured with 200 inferences at FP16 (normalized to the fastest). 32 64 128 256 512 1024 2048          
+
+> Matrix Size N ([1, N, N] × [N, N])
+> 1
+> 10
+> 100
+> 1e+03
+> Normalized Execution Latency
+> CPU
+> GPU
+> NPU
+> 32 64 128 256 512 1024 2048
+> Matrix Size N ([1, N, N] × [N, N])
+> 1
+> 10
+> 100
+> 1e+03
+> Normalized Execution Latency
+> (a) FP16 (b) INT8
+
+Figure 3: Execution latency of square MatMul of varying matrix size across CPU, GPU, and NPU on an Intel Core Ultra SoC, at FP16 (a) and INT8 (b) (each normalized to its fastest measurement). 
+
+families. MatMul and Conv2D represent the dense GEMM-like kernels at the core of Transformer attention and feed-forward layers and CNN feature extraction. DWConv and Elementwise ADD capture the low-arithmetic-intensity operators found in ef-ficient backbones and residual connections. RDFT , CumSum , and 
+
+Gather correspond to the non-GEMM kernels that characterize, respectively, Hyena’s FFT-based long-convolution, Mamba’s SSM sequential-scan recurrence, and KAN’s spline evaluation. Unlike the GPU-favoring GEMM operators, these three all favor the CPU. Profiling results on the CPU, GPU, and NPU confirm that no single PU is optimal across these operators. The GPU delivers lowest latency for dense linear operators: MatMul is 2.8× faster than CPU and 1.6× faster than NPU, while Conv2D is 2.2× faster than CPU and 1.1× faster than NPU. For all remaining operators, the CPU is fastest. The non-GEMM operators ( RDFT , CumSum , and Gather )suffer the most severe NPU penalty, with latencies 4.7×, 8.7×,and 4.1× higher than on the CPU, respectively, because these operations fall outside the NPU’s MAC-centric datapath and must route through its vector DSP or fall back to the CPU, incurring fixed per-kernel dispatch overhead on top of reduced throughput. Even NPU-native operators such as DWConv and Elementwise ADD 
+
+are outperformed by the CPU at the tested shapes, where the NPU’s dispatch overhead dominates the total compute time. 
+
+Observation 2: Best PU depends on operand size. Fig-ure 3 sweeps square MatMul of shape [1, 𝑁 , 𝑁 ] × [ 𝑁 , 𝑁 ] for 
+
+𝑁 ∈ {32 , . . . , 2048 } at both FP16 and INT8 precision. At FP16 (Figure 3a), the CPU is fastest for 𝑁 ≤ 64 ; the GPU crosses over at 𝑁 = 128 and widens its lead to 4.8× at 𝑁 = 2048 . At INT8 P1: MatMul     
+
+> + Conv2D
+> P2: MatMul
+> + CumSum
+> P3: Conv2D
+> + DWConv
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> Speedup
+> 1x
+> 0.42x 0.38x
+> 0.76x
+> 0.42x 0.37x
+> 0.69x
+> 1.41x 1.38x
+> 1.46x
+> 1.27x
+> 1.09x
+> 0.94x
+> 0.99x
+> 0.85x
+> 1.38x
+> 0.88x 0.82x
+> 1.28x
+> CPU||GPU
+> CPU||NPU
+> GPU||CPU
+> GPU||NPU
+> NPU||CPU
+> NPU||GPU
+
+Figure 4: Speedup of six ordered PU assignments (op_a PU 
+
+∥ op_b PU) for three independent operator pairs versus the best serial single-PU baseline. 
+
+(Figure 3b), the CPU holds the lead through 𝑁 = 128 while the GPU crosses over at 𝑁 = 256 . The NPU overtakes the GPU at 𝑁 = 2048 ,the only configuration in which the NPU is the fastest PU. This crossover demonstrates that the NPU’s INT8 compute density is sufficient to overcome its dispatch overhead only at large operand sizes, while the GPU remains preferable for mid-range sizes. Together, these observations imply that no single PU dominates across all operator types and operand sizes, motivating a mapping strategy that assigns the best PU for each operator individually. 
+
+2.3 SoC Underutilization 
+
+When an inference execution graph is serialized on a single PU, the remaining PUs on the SoC sit idle during the entire inference. Inference execution graphs frequently contain operator pairs with no mutual data dependency, such as parallel encoder branches, concurrent feature-extraction heads, or adjacent operators drawn from distinct model components in multi-task workloads. Serial-izing such independent subgraphs on one PU wastes hardware resources and unnecessarily extends end-to-end latency. 
+
+Observation 3: Parallel execution recovers idle PU capacity. 
+
+Figure 4 measures the speedup from dispatching independent op-erator pairs to separate PUs concurrently, against the best serial single-PU baseline. Three pairs are profiled, each representing a dis-tinct PU-affinity configuration drawn from the operator spectrum in Observation 1. P1 ( MatMul ∥ Conv2D ) pairs two GPU-favoring oper-ators from Transformer and CNN workloads. P2 ( MatMul ∥ CumSum )pairs a GPU-favoring GEMM with a CPU-favoring sequential-scan operator, representative of hybrid Transformer–Mamba inference graphs. P3 ( Conv2D ∥ DWConv ) pairs two convolution variants with split PU preferences, as from efficient CNN backbones. Across all six ordered assignments per pair, GPU ∥CPU consis-tently achieves the highest speedup: 1.41 × for P1, 1.38 × for P2, and 
+
+1.46 × for P3. In each case the CPU operator completes entirely within the GPU’s execution window, hiding its latency. These measured speedups already reflect shared-memory bandwidth contention between the two active PUs; BIDENT ’s contention model (Section 3.2.2) accounts for this effect when computing parallel makespans. Assignments that place the operator on the slower PU (e.g., placing MatMul or Conv2D on the CPU) severely fall below the serial baseline, confirming the importance of optimal PU selection for each operator. This operator-level parallelism Kim et al. 
+
+generalizes to multi-model workloads where entire inference graphs of independent models can be interleaved across PUs. Together, Observations 1–3 motivate a system-level orchestra-tion framework that (1) maps each operator to the PU best suited for its type and operand size, (2) exploits inter-operator parallelism for data-independent subgraphs, and (3) co-schedules concurrent infer-ence streams across idle PUs, the three core capabilities of BIDENT .
+
+3 BIDENT Framework 
+
+This section describes our BIDENT , an operator-level orchestration framework for heterogeneous edge SoCs. BIDENT takes as input one or more neural network models (supporting concurrent multi-model inference) and a description of the target SoC’s processing units. Then, it produces an optimized execution strategy that maps individual operators to PUs, minimizing end-to-end inference la-tency or energy, with the objective chosen by the user. Throughout this work, we use the term operator to refer to a group of primitive operations fused by the backend compiler (e.g., Conv–BN–ReLU ), consistent with the granularity used in [ 3, 4]. BIDENT consists of three main components: (1) a profiler that characterizes per-operator execution costs on each PU, (2) an execution graph builder 
+
+that encodes the mapping problem as a weighted directed graph, and (3) a search engine that finds the optimal mapping via shortest-path algorithms. Algorithm 1 summarizes the end-to-end pipeline. 
+
+BIDENT is designed to integrate with existing inference com-pilers and ML frameworks. In our implementation, we integrate 
+
+BIDENT with OpenVINO [ 14 ], using it as the backend for per-PU model compilation and inference. However, the framework is compiler-agnostic and can be adapted to other backends such as TensorRT [21], ONNX Runtime [20], or QNN [23]. 
+
+3.1 Profiler 
+
+The profiler (Algorithm 1, lines 2–9) measures four categories of per-operator latency and energy on each PU: 
+
+• Host-to-Device transfer (H2D): The time to make input ten-sors available to the target PU, including cache flush/invalidation and direct memory access (DMA) descriptor setup. 
+
+• Kernel dispatch: The time to submit the pre-compiled kernel to the PU’s execution queue. 
+
+• Kernel execution: The actual compute time on the PU, mea-sured using hardware performance counters. 
+
+• Device-to-Host transfer (D2H): The time to make output tensors available to the host or to a subsequent PU, symmetric to H2D. Profiling is performed offline and once per model–SoC pair . In case of concurrent execution, the profiler also profiles each model pair– PU pair combination. The profiler decomposes the model into fused operators (line 3) by running PERF_COUNT profiling on the NPU. The profiler extracts each fused operator as a standalone sub-model (line 5), compiles it independently for each PU, and measures the above four timing components and power to obtain 𝑤 (𝑂 𝑖 , 𝑃 𝑗 ) and 
+
+𝑝 (𝑂 𝑖 , 𝑃 𝑗 ), respectively (line 6–7). The resulting cost table, indexed by (operator, PU), serves as input to the execution graph builder. Since each operator is profiled at its actual operand shape within the model, the cost table inherently captures size-dependent PU affin-ity (cf. Observation 2, Section 2.2). PU crossover points shift with 
+
+Algorithm 1 BIDENT Framework 
+
+Require: Model(s) M = {𝑀 1, . . . , 𝑀 𝑅 }, PU set P = {𝑃 1, . . . , 𝑃 𝐾 }
+
+Ensure: PU assignment 𝜋 : (𝑟, 𝑖 ) ↦ → 𝑃 𝑗 for each operator 𝑂 𝑖 of request 𝑟  
+
+> 1:
+
+// Stage 1: Profiler  
+
+> 2:
+
+for each model 𝑀 𝑟 ∈ M do  
+
+> 3:
+
+Identify fused operators 𝑂 1, . . . , 𝑂 𝑁  
+
+> 4:
+
+for each fused operator 𝑂 𝑖 and PU 𝑃 𝑗 ∈ P do  
+
+> 5:
+
+Extract 𝑂 𝑖 as standalone sub-model  
+
+> 6:
+
+𝑤 (𝑂 𝑖 , 𝑃 𝑗 ) ← measured latency on 𝑃 𝑗  
+
+> 7:
+
+𝑝 (𝑂 𝑖 , 𝑃 𝑗 ) ← measured power on 𝑃 𝑗  
+
+> 8:
+
+end for  
+
+> 9:
+
+end for  
+
+> 10:
+
+// Stage 2: Execution Graph Builder  
+
+> 11:
+
+if single-model ( 𝑅 = 1) then  
+
+> 12:
+
+Build sequential DAG 𝐺 = (𝑉 , 𝐸 ): 
+
+> 13:
+
+𝑉 ← { 𝑠, 𝑡 } ∪ { 𝑣 𝑖,𝑗 | ∀ 𝑂 𝑖 , 𝑃 𝑗 } 
+
+> 14:
+
+𝐸 : edges between consecutive ops across all PU pairs  
+
+> 15:
+
+Edge weight = 𝑤 (𝑂 𝑖 , 𝑃 𝑗 ); energy mode: 𝑤 (𝑂 𝑖 , 𝑃 𝑗 ) × 
+
+𝑝 (𝑂 𝑖 , 𝑃 𝑗 ) 
+
+> 16:
+
+Partition ops into phases/branches at fork/join points  
+
+> 17:
+
+else  
+
+> 18:
+
+Build concurrent DAG (aligned or joint (𝑖, 𝑗 ) state space)  
+
+> 19:
+
+end if  
+
+> 20:
+
+// Stage 3: Search Engine  
+
+> 21:
+
+if single-model, sequential then  
+
+> 22:
+
+𝜋 ← Dijkstra shortest path 𝑠 → 𝑡 on 𝐺  
+
+> 23:
+
+else if single-model, parallel then  
+
+> 24:
+
+for each phase Φ𝑚 , each branch 𝐵 do  
+
+> 25:
+
+𝜋 𝐵 ← per-branch Dijkstra on 𝐵  
+
+> 26:
+
+end for  
+
+> 27:
+
+Makespan (Φ𝑚 ) ← max 𝐵 (cost (𝐵 ) × SF ) // contention-adjusted  
+
+> 28:
+
+else  
+
+> 29:
+
+𝜋 ← aligned or joint (𝑖, 𝑗 ) Dijkstra with profiled co-execution costs // multi-model concurrent  
+
+> 30:
+
+end if  
+
+> 31:
+
+return 𝜋 
+
+operand size, and this variation is reflected directly in the measured costs without any analytical model. If an operator fails to compile or cannot be profiled on a given PU (as occurs for non-standard operations on mismatched backends), its entry is omitted from the cost table, and the graph builder creates no corresponding node. The search then naturally routes such operators to a supported PU, eliminating the fallbacks and compilation failures that monolithic single-PU execution would otherwise incur (cf. Section 1). 
+
+3.2 Execution Graph Builder 
+
+The core of BIDENT is the formulation of the operator-to-PU map-ping problem as a shortest-path problem over a weighted directed graph (Algorithm 1, lines 11–19). 
+
+3.2.1 Sequential Execution Graph. For models with a linear (se-quential) data dependency chain 𝑂 1 → 𝑂 2 → · · · → 𝑂 𝑁 , BIDENT 
+
+constructs the execution graph 𝐺 = (𝑉 , 𝐸 ) as follows (lines 12–16). BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference 
+
+Nodes. For each operator 𝑂 𝑖 and each processing unit 𝑃 𝑗 ∈{𝑃 1, . . . , 𝑃 𝐾 } (where 𝐾 is the number of PUs), we create a node 𝑣 𝑖,𝑗 
+
+representing the execution of 𝑂 𝑖 on 𝑃 𝑗 . The node weight 𝑤 (𝑣 𝑖,𝑗 )
+
+is the profiled execution cost (kernel dispatch + kernel execution) of 𝑂 𝑖 on 𝑃 𝑗 . Additionally, a virtual start node 𝑠 and a virtual end node 𝑡 are added. 
+
+Edges. Edges connect nodes between consecutive operators: 
+
+• From 𝑠 to each 𝑣 1,𝑗 : weight = H2D cost for 𝑂 1 on 𝑃 𝑗 .
+
+• From 𝑣 𝑖,𝑗 to 𝑣 𝑖 +1,𝑘 for all PU pairs ( 𝑗, 𝑘 ): if 𝑗 = 𝑘 (same PU), the edge weight is zero (no transition cost); if 𝑗 ≠ 𝑘 (PU transition), the edge weight is the data-transfer overhead profiled for 𝑂 𝑖 +1 on 
+
+𝑃 𝑘 : H2D (𝑂 𝑖 +1, 𝑃 𝑘 ) when 𝑃 𝑘 is an accelerator (GPU or NPU), plus D2H (𝑂 𝑖 , 𝑃 𝑗 ) for transitions between two accelerators or from an accelerator to CPU. 
+
+• From each 𝑣 𝑁 ,𝑗 to 𝑡 : weight = D2H cost for 𝑂 𝑁 on 𝑃 𝑗 .The total cost of a path from 𝑠 to 𝑡 equals the end-to-end infer-ence latency under the corresponding operator-to-PU mapping. The optimal mapping is the shortest path from 𝑠 to 𝑡 .
+
+3.2.2 Parallel Execution Graph. Many neural network architec-tures, particularly the hybrid models discussed in Section 2.1, contain operators with no mutual data dependencies that can execute concurrently on separate PUs, the idle-PU waste quantified in Observation 3 (Section 2.3). Exploiting this intra-model paral-lelism is the primary objective of BIDENT ’s parallel orchestration engine. BIDENT identifies these parallelization opportunities by analyzing the model’s data dependency structure and partitioning the execution into phases (line 16). 
+
+Phase and branch partitioning. BIDENT performs a topolog-ical traversal of the fused-operator DAG and partitions it into 
+
+phases bounded by fork points (out-degree > 1) and join points (in-degree > 1). In each phase, operators are further grouped into 
+
+branches , independent computation paths identified by depth-first search from the phase’s root operators. Branches within a phase are mutually data-independent and can execute concurrently on separate PUs, while operators within a single branch form a sequential chain. The latency or energy of a phase, its makespan , is the maximum branch cost across all concurrent branches, adjusted for cross-PU contention (see below). Phase boundaries act as synchronization barriers (i.e., all branches must complete before the next phase begins). 
+
+Parallel execution graph. For each branch within a phase, BIDENT 
+
+constructs a sequential execution subgraph and runs per-branch Dijkstra (the same algorithm as the sequential search, allowing per-operator PU mixing within a branch). The phase makespan is the maximum of the contention-adjusted branch costs. The total parallel latency is the sum of phase makespans. 
+
+Memory contention modeling. When multiple PUs execute con-currently, they contend for shared memory bandwidth [ 3 ]. BIDENT 
+
+uses two empirically grounded contention models: 
+
+• Intra-model parallel: When branches execute concurrently on different PUs, each operator’s cost is adjusted by a measured cross-PU slowdown factor SF (𝑃 run , 𝑃 interfere ) derived from cross-PU profiling experiments. In our evaluation, the NPU shows the highest sensitivity ( 1.17 × when the CPU is active, 1.09 × when the GPU is active); CPU and GPU show negligible cross-PU interference. 
+
+• Multi-model concurrent: For co-scheduled operators from different models on the same PU, BIDENT profiles each model pair under barrier-synchronized simultaneous execution, cap-turing the actual co-execution latencies without parametric assumptions. 
+
+Multi-model concurrent inference. BIDENT extends to concur-rent execution of multiple inference requests (line 18) via two Dijkstra modes: 
+
+• Aligned Dijkstra (same-model pairs): Both requests advance in lockstep. State = (step , 𝑑 0, 𝑑 1); at each step the search selects a PU pair (𝑑 0, 𝑑 1). Same-PU cost uses the average of measured concurrent execution times; cross-PU cost uses the maximum of solo times. 
+
+• Joint (𝑖, 𝑗 ) Dijkstra (mixed-model pairs): Each request’s progress is tracked independently. State = (𝑖, 𝑗 ) where 𝑖 and 𝑗 
+
+count completed operators per request. Three transitions are available: advance both ( 𝑖 +1, 𝑗 +1), advance request 0 solo ( 𝑖 +1, 𝑗 ), or advance request 1 solo ( 𝑖, 𝑗 +1). This allows asymmetric com-pletion with solo tails when one model finishes before the other. Co-scheduled operators on the same PU use empirically measured concurrent execution costs; operators assigned to different PUs use their respective profiled costs. 
+
+3.3 Optimal Mapping Search 
+
+3.3.1 Sequential Search. Given the sequential execution graph 
+
+𝐺 , the optimal operator-to-PU mapping reduces to finding the shortest path from 𝑠 to 𝑡 (Algorithm 1, line 22). Since 𝐺 is a directed acyclic graph (DAG) with non-negative edge weights, this can be solved exactly using Dijkstra’s algorithm [ 8 ] in 𝑂 (𝑁 𝐾 2 log (𝑁 𝐾 )) 
+
+time, or via dynamic programming in 𝑂 (𝑁 𝐾 2) time by processing operators in topological order. Specifically, let cost (𝑖, 𝑗 ) denote the minimum total latency (or energy) to execute operators 𝑂 1, . . . , 𝑂 𝑖 with 𝑂 𝑖 assigned to PU 𝑃 𝑗 .The recurrence is: cost (𝑖, 𝑗 ) = 𝑤 (𝑣 𝑖,𝑗 ) + min    
+
+> 𝑘 ∈ { 1,...,𝐾 }
+
+[cost (𝑖 − 1, 𝑘 ) + trans (𝑖 − 1, 𝑘, 𝑖, 𝑗 )] 
+
+(1) where trans (𝑖 −1, 𝑘, 𝑖, 𝑗 ) is the transition cost from PU 𝑃 𝑘 (after 𝑂 𝑖 −1)to PU 𝑃 𝑗 (for 𝑂 𝑖 ): zero if 𝑘 = 𝑗 ; otherwise, the data-transfer overhead profiled for 𝑂 𝑖 on 𝑃 𝑗 : H2D (𝑂 𝑖 , 𝑃 𝑗 ) when 𝑃 𝑗 is an accelerator, plus D2H (𝑂 𝑖 −1, 𝑃 𝑘 ) for accelerator-to-accelerator or accelerator-to-CPU transitions. The base case is cost (1, 𝑗 ) = H2D (𝑂 1, 𝑃 𝑗 )+ 𝑤 (𝑣 1,𝑗 ) for each PU 𝑃 𝑗 .The optimal end-to-end latency is min 𝑗 [cost (𝑁 , 𝑗 ) + D2H (𝑂 𝑁 , 𝑃 𝑗 )] .
+
+3.3.2 Intra-Model Parallel Search. For the parallel execution graph (lines 23–27), BIDENT runs a per-branch Dijkstra within each phase. Each branch’s operators form a sequential chain, so the same Dijk-stra algorithm from Section 3.3.1 applies, allowing per-operator PU mixing within each branch. After all branches are solved, the phase makespan is computed as the maximum of the contention-adjusted branch costs. For each branch, the cost of every operator assigned to PU 𝑃 𝑗 is multiplied by max 𝑃 𝑘 ∈ P other SF (𝑃 𝑗 , 𝑃 𝑘 ), where Pother is the set of PUs used by the other concurrent branches and SF is the Kim et al. 
+
+measured cross-PU slowdown factor. The total parallel latency is the sum of per-phase makespans. 
+
+3.3.3 Multi-Model Concurrent Search. For concurrent execution of multiple inference requests (line 29), BIDENT searches over the product state space using the aligned or joint (𝑖, 𝑗 ) Dijkstra modes described in Section 3.2.2. This is tractable for typical values of 𝐾 
+
+(e.g., 𝐾 = 2–3). 
+
+3.3.4 Energy-Optimal Scheduling. The same graph and search framework supports energy-optimal scheduling by replacing the latency edge weight 𝑤 (𝑂 𝑖 , 𝑃 𝑗 ) with energy 𝑤 (𝑂 𝑖 , 𝑃 𝑗 ) × 𝑝 (𝑂 𝑖 , 𝑃 𝑗 ),where 𝑝 (𝑂 𝑖 , 𝑃 𝑗 ) is the sustained package power measured on PU 𝑃 𝑗 
+
+via hardware sensors during inference. The Dijkstra search then minimizes total energy rather than total latency. For parallel phases, the contention slowdown factor increases per-operator latency, which in turn increases the energy cost of concurrent execution; consequently, the energy-optimal parallel schedule may differ from the energy-optimal sequential schedule. 
+
+3.4 Framework Overhead 
+
+BIDENT ’s overhead is minimal and amortized: 
+
+Profiling. Profiling is a one-time, offline cost per model–SoC pair for single execution, and per model pair–PU pair for concurrent execution. 
+
+Graph construction. The execution graph has 𝑂 (𝑁 𝐾 ) nodes and 
+
+𝑂 (𝑁 𝐾 2) edges. For typical models ( 𝑁 ≈ 10 –500 , 𝐾 = 2–3), the graph contains hundreds to thousands of nodes. For multi-stage VLA pipelines with repeated denoising steps, 𝑁 can reach ∼4,600 ,yielding ∼14 ,000 nodes, still tractable for Dijkstra and consuming negligible memory. 
+
+Search. The sequential search runs in 𝑂 (𝑁 𝐾 2) time, sub-millisecond for practical problem sizes. The parallel search adds the intra-phase assignment cost, which is polynomial in 𝐾 for each phase. The total offline cost is dominated by profiling, not search, and is amortized as a one-time cost. Since all three components execute before inference, BIDENT 
+
+introduces zero runtime overhead to the inference critical path. The output schedule is a static mapping that is applied directly by the execution orchestrator. 
+
+3.5 System Model 
+
+BIDENT targets modern unified-memory edge SoCs and exploits two structural properties of this platform class: 
+
+Unified memory address space. On modern heterogeneous SoCs, the CPU, GPU, and NPU share a common off-chip DRAM [ 1 , 12 ], so tensor allocation is a one-time cost performed before inference begins. The host-to-device (H2D) and device-to-host (D2H) costs measured by BIDENT ’s profiler therefore correspond to cache coherency operations, input-output memory management unit (IOMMU) page-table walks, and DMA descriptor setup, rather than physical data copies. BIDENT accounts for these costs directly in the execution graph as PU transition edges. 
+
+Ahead-of-time kernel compilation. Modern inference frame-works such as OpenVINO compile models and offload kernels once during initialization (e.g., core.compile_model() ) before the inference loop begins [ 14 ]. Compilation is thus outside the 
+
+Table 1: Models evaluated. Each is profiled at FP16 and INT8 except 𝜋 0.5 (single mixed-precision). “Fused ops” re-ports the number of fused operators extracted by the profiler (FP16 / INT8; 𝜋 0.5: single value). Model Family Input shape Fused ops                                   
+
+> ResNet-50 [11] CNN 1×3×224 ×224 73 / 68 ViT-B/16 [9] Vision Transformer 1×3×224 ×224 175 / 151 LLaMA-7B (1L) [28] Transformer (1-layer decode) 1×128 13 / 13 BitNet [19] Ternary Transformer 1×128 36 / 35 Mamba-370M [10] Selective SSM 1×128 52 / 75 Hyena [22] Long convolution 1×1×1024 ×512 448 / 88 KAN [18] Kolmogorov–Arnold 1×784 27 / 28 SNN-VGG9 [27] Spiking NN (25 steps) 1×1×32 ×32 93 / 97 LAVISH [17] Audio-visual dual: 224 2+128 214 / 35
+> 𝜋 0.5[15] VLA (4 stages) multi-stage 4595
+
+per-inference critical path. The per-inference overhead BIDENT 
+
+captures is the kernel dispatch latency , the time to submit a pre-compiled kernel to the PU’s command queue, which is measured and included as part of each operator’s execution cost. 
+
+4 Evaluation 4.1 Experimental Setup 
+
+Hardware platform. All experiments are conducted on an Intel Core Ultra (Lunar Lake, Series 2) platform [ 12 ] integrating three PUs: a CPU with 8 logical cores (Performance + Efficient) at 3.3 GHz base frequency, an Intel Arc 140V integrated GPU with 64 Xe Vector Engines, and an Intel AI Boost NPU 4 with 6 compute tiles. The three PUs share a 16 GB unified DDR5 memory subsystem, con-sistent with BIDENT ’s unified-memory system model (Section 3.5). The host OS is Windows 11. 
+
+Models. We evaluate BIDENT on ten models (Table 1) spanning CNNs, Transformers, SSMs, VLAs, and emerging architectures (19 configurations total). Nine models are profiled at both FP16 and INT8 precision; INT8 models are obtained via NNCF [ 16 ] post-training quantization. KAN cannot compile on the NPU (unsup-ported BitwiseAnd on float inputs) and is therefore profiled on CPU and GPU only. 𝜋 0.5 is a multi-stage VLA pipeline comprising a text embedder, an INT8 vision encoder, a prefix-cache decoder, and 10 iterative denoising steps; it is evaluated as a single mixed-precision configuration on CPU and NPU (the prefix-cache and denoising stages exceed GPU memory). 
+
+Profiling. We use OpenVINO 2025.3 [ 14 ] as the inference back-end. We extract each fused operator from the whole models as a standalone sub-model, compile it independently on each PU, and measure its execution time (20 warm-up, 200 measurement iter-ations). Host-to-Device (H2D) and Device-to-Host (D2H) memory transfer latencies are measured with Intel VTune Profiler 2025.7 [ 13 ]using its gpu-offload analysis for the GPU and NPU hardware-event queries for the NPU. Kernel dispatch overhead, Deferred Procedure Call (DPC) and Interrupt Service Routine (ISR) latency incurred when submitting kernels to the GPU and NPU command queues, is captured via Event Tracing for Windows (ETW) using 
+
+xperf . Power is measured with HWInfo64 [ 26 ] (CPU package power sensor; equivalent to full package power) during sustained whole-model inference; energy is derived as power × latency. BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference NPU      
+
+> GPU
+> CPU
+> Gate Proj Up Proj SiLU Mul Down Proj
+> ... ...
+> 1.00
+> 1.16
+> 3.42
+> 1.00
+> 1.11
+> 2.98
+> 1.00
+> 378.00
+> 1.00
+> 2.00
+> 378.00
+> 1.00
+> 1.06
+> 1.00
+> 3.16
+
+Figure 5: Sequential execution graph for LLaMA-7B (1L) FP16. Nodes show per-operator latency normalized to the best single-PU value. The highlighted path illustrates per-operator PU affinity. Table 2: Sequential BIDENT orchestration. Best: best-performing single PU per row (the baseline). CPU/GPU/NPU/ BIDENT -lat: latency normalized to the baseline. BIDENT -energy: energy reduction (%) under energy-optimal scheduling vs. best single-PU energy. N/A = PU unsupported. Model Best CPU GPU NPU BIDENT -lat Speedup BIDENT -energy                                                                                                                                       
+
+> ResNet-50 FP16 GPU 1.43 1.00 1.06 0.92 1.09 ×7.5% ResNet-50 INT8 GPU 1.54 1.00 1.28 0.96 1.04 ×3.8% ViT-B/16 FP16 GPU 2.45 1.00 1.26 0.91 1.10 ×8.4% ViT-B/16 INT8 GPU 2.08 1.00 1.23 0.97 1.04 ×3.5% LLaMA-7B (1L) FP16 GPU 2.48 1.00 1.11 0.99 1.01 ×5.5% LLaMA-7B (1L) INT8 GPU 2.54 1.00 1.11 0.98 1.02 ×6.5% BitNet FP16 GPU 1.87 1.00 1.06 0.94 1.06 ×6.9% BitNet INT8 GPU 2.02 1.00 1.11 0.99 1.01 ×4.2% Mamba-370M FP16 GPU 2.70 1.00 1.08 0.88 1.14 ×8.8% Mamba-370M INT8 GPU 2.82 1.00 1.35 0.90 1.11 ×8.1% Hyena FP16 NPU 2.44 1.12 1.00 0.86 1.16 ×10.9% Hyena INT8 GPU 4.08 1.00 1.28 0.95 1.05 ×7.0% KAN FP16 CPU 1.00 1.20 N/A 0.99 1.01 ×0.7% KAN INT8 CPU 1.00 1.15 N/A 0.98 1.02 ×0.2% SNN-VGG9 FP16 CPU 1.00 1.88 1.76 0.63 1.58 ×43.7% SNN-VGG9 INT8 CPU 1.00 1.89 4.18 0.88 1.14 ×13.7% LAVISH FP16 GPU 5.41 1.00 1.10 0.92 1.09 ×8.8% LAVISH INT8 GPU 2.43 1.00 1.39 0.96 1.04 ×7.5%
+> 𝜋 0.5NPU 15.17 N/A 1.00 0.81 1.23 ×18.8%
+> Geometric mean speedup 1.09 ×
+
+Baselines. We compare BIDENT against three monolithic single-PU baselines ( CPU-only , GPU-only , NPU-only ) and report speedup relative to the best-performing single-PU for each model. 
+
+4.2 Sequential Orchestration 
+
+Figure 5 illustrates BIDENT ’s sequential execution graph for five representative operators from LLaMA-7B (1L) FP16. The optimal path assigns Gate Proj and Up Proj to the NPU, SiLU and 
+
+element-wise Mul to the CPU, and Down Proj to the GPU, demonstrating that different operator types favor different PUs even within a single layer. Table 2 reports the results of BIDENT ’s sequential orchestration across all 19 model–precision configurations. BIDENT -lat shows the latency-optimized heterogeneous latency; BIDENT -energy shows the energy reduction achieved by the energy-optimized search (Section 3.3.4). 
+
+Latency. BIDENT achieves consistent speedups of 1.01–1.58 × across all 19 configurations (geometric mean 1.09 ×). Since the schedule is computed offline and applied as a static mapping, these gains come with zero runtime overhead. ResNet 
+
+> FP16
+> ResNet
+> INT8
+> ViT
+> FP16
+> ViT
+> INT8
+> LLaMA
+> FP16
+> LLaMA
+> INT8
+> BitNet
+> FP16
+> BitNet
+> INT8
+> Mamba
+> FP16
+> Mamba
+> INT8
+> Hyena
+> FP16
+> Hyena
+> INT8
+> KAN
+> FP16
+> KAN
+> INT8
+> SNN
+> FP16
+> SNN
+> INT8
+> LAVISH
+> FP16
+> LAVISH
+> INT8
+> 0.5
+> MIX
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+> Energy Reduction vs. Best Single-PU (%)
+> Seq. energy-opt
+> Seq. latency-opt
+
+Figure 6: Sequential energy reduction vs. best single-PU base-line for latency-optimized and energy-optimized schedules. 
+
+Emerging architectures see the largest gains. SNN-VGG9 FP16 achieves 1.58 ×: its 93 fused operators split across NPU (50 convo-lution ops that benefit from the MAC arrays), CPU (39 lightweight spiking-accumulation ops where per-op CPU execution avoids the NPU dispatch overhead), and GPU (4 ops), directly exploiting the operator-type affinity differences from Observation 1. Mamba-370M FP16 (1.14 ×) and Hyena FP16 (1.16 ×) benefit similarly: their non-GEMM operators (selective scan and FFT-based long convolu-tion, respectively) are cheaper on the CPU, while standard MatMul 
+
+operators are assigned to the GPU. 𝜋 0.5 achieves 1.23 ×. BIDENT 
+
+routes 3,992 of its 4,595 fused operators to the NPU (vision-encoder and denoiser attention blocks) and 603 to the CPU (text embedding and lightweight non-linear ops), exploiting the distinct PU affinity of each pipeline stage. For conventional architectures (ResNet-50, ViT-B/16), BIDENT 
+
+achieves 1.04–1.10 × since most operators are already well-served by a single PU, with only a few normalization or element-wise ops benefiting from redirection.For models whose operator mix is nearly uniform (LLaMA, KAN), the heterogeneous mapping provides small benefit ( ≤1.02 ×). We profile a single LLaMA-7B decode layer to isolate the Transformer operator mix; since decode layers are structurally identical, per-layer behavior is representative of the full model’s per-layer scheduling potential. The near-unity speedup confirms that standard Transformer decode layers, dominated by large MatMul operators, are already well-served by a single PU, validating that BIDENT ’s gains are con-centrated where operator heterogeneity exists. More broadly, this result highlights that the primary opportunity for heterogeneous or-chestration lies not in further optimizing homogeneous workloads, but in exploiting heterogeneity across operators and across work-loads. Sequential orchestration therefore establishes a lower bound; Section 4.3 shows that substantially larger gains emerge when intra-model parallelism and multi-model concurrency are considered. 
+
+Energy. The BIDENT -energy column in Table 2 shows the energy reduction achieved by the energy-optimized search (Section 3.3.4), which replaces edge weights with energy = 𝑤 × power . Conceptu-ally, there are two distinct paths to energy reduction: (i) indirectly ,by minimizing latency—since energy equals power × latency, a shorter execution time can lower total energy even on a higher-power PU—and (ii) directly , by minimizing the profiled energy 𝑤 ×𝑝 
+
+during the search, which sacrifices some speedup on operators where a lower-power PU suffices. BIDENT -lat and BIDENT -energy realize these two paths, respectively. The energy-optimal schedule always reduces energy versus the best single-PU baseline (average Kim et al. NPU      
+
+> GPU
+> CPU
+> Gate Proj Up Proj SiLU Mul Down Proj
+> ( )
+> ... ...
+> 1.00
+> 1.16
+> 3.42
+> 1.00
+> 1.11
+> 2.98
+> 1.00
+> 378.00
+> 1.00
+> 2.00
+> 378.00
+> 1.00
+> 1.06
+> 1.00
+> 3.16
+> LLaMA
+> finishes
+> NPU
+> GPU
+> CPU
+> LLaMA / NPU
+> Mamba / NPU
+> LLaMA / GPU
+> Mamba / GPU
+> LLaMA / CPU
+> Mamba / CPU
+
+(a) (b) 
+
+Figure 7: (a) Sequential execution graph from Fig. 5 with phase annotations. Phase Φ8 contains data-independent operators. (b) Concurrent execution schedule for LLaMA-7B (1L) INT8 (13 fused ops) and Mamba 370M FP16 (52 fused ops). Each column is one step; row position indicates the assigned PU. The dashed line marks where LLaMA completes. 
+
+9.2% across 19 configs). SNN-VGG9 FP16 saves 44%, 𝜋 0.5 saves 19%, Hyena FP16 saves 11%, and KAN achieves a slight reduction (0.2– 0.7%). The energy-optimal assignment incurs a latency trade-off: its geometric mean latency speedup is 1.03 × (vs. 1.09 × for latency-optimal), since the lowest-energy PU is not always the fastest. Figure 6 visualizes this trade-off, comparing the energy reduction of the latency-optimized and energy-optimized schedules for all 19 configurations. The latency-optimized schedule reduces energy by 3.7% on average but increases energy for 5 of 19 configurations, while the energy-optimal schedule eliminates all such cases. Com-paring the two paths head-to-head, the direct energy-driven path (9.2% average reduction, zero regressions) dominates the indirect latency-driven path (3.7%, 5 regressions), because the latency objec-tive is blind to per-PU power and will pay any power premium for a latency gain. This divergence arises because the three PUs differ substantially in sustained power. In our measurements the GPU draws the highest package power under GEMM load, the NPU the lowest (its MAC arrays being the most power-efficient datapath), and the CPU is intermediate, so an operator with similar latency on two PUs is routed to the faster one under the latency objective and to the lower-power one under the energy objective. For ex-ample, BIDENT -lat offloads KAN’s operators to the GPU for only a 1.01 × speedup yet raises energy 18% above the CPU baseline, while 
+
+BIDENT -energy keeps them on the CPU. This highlights the inher-ent latency–energy tradeoff that the fastest PU for an operator is not always the most energy-efficient, so the two objectives select differ-ent PUs whenever the power gap outweighs the latency gap. Con-versely, the NPU being the lowest-power PU does not imply it is al-ways the most energy-efficient. An operator that runs much slower on the NPU (e.g., one that falls outside the MAC datapath and spills to the vector DSP) can consume more total energy there than on the CPU despite the NPU’s lower instantaneous power. The energy-optimal search captures this by operating on the profiled product 
+
+𝑤 × 𝑝 rather than on power alone. Two caveats generalize these results. First, the optimal partitioning is hardware-dependent. Suc-cessive NPU generations differ in power efficiency, peak throughput, and dispatch overhead, so the same model may prefer a different PU assignment on a different SoC, and the energy winner on one generation may not be the winner on the next. Second, both la-tency and power shift at runtime under thermal throttling, memory-bandwidth contention, and concurrent workload pressure. This 
+
+Table 3: Intra-model parallel orchestration (FP16; 𝜋 0.5: mixed). “Conc. Phases” = phases with concurrent branches. Model Par. Speedup Par. Gain Conc. Phases 
+
+ResNet-50 1.09 × +0% 2ViT-B/16 1.55 × +29% 51 LLaMA-7B (1L) 1.05 × +3% 3BitNet 1.06 × N/A 0Mamba-370M 1.29 × +12% 25 Hyena 1.26 × +8% 17 KAN 1.02 × +0% 2SNN-VGG9 1.60 × +2% 5LAVISH 1.19 × +9% 4
+
+𝜋 0.5 1.46 × +16% 615 
+
+variability is more prominent in dynamic multi-model settings and motivates the dynamic scheduling extension discussed in Section 6. 
+
+4.3 Parallel and Concurrent Orchestration 
+
+Beyond sequential scheduling, BIDENT exploits two additional levels of concurrency: (1) intra-model phase-based parallelism, where data-independent operators within a single model execute simultaneously on separate PUs, and (2) multi-model concurrent in-ference, where operators from two independent inference requests are co-scheduled across PUs. 
+
+Intra-model parallel results. Figure 7(a) annotates the parallel phases in the sequential execution graph from Fig. 5. Phase Φ8
+
+contains Up Proj and SiLU , which have no data dependency and can run concurrently on NPU and CPU.Table 3 reports the parallel execution speedup relative to the best single-PU and gain compared to sequential orchestration. The parallel gain over the sequential schedule depends on the model’s internal data-dependency structure. All makespans in Table 3 include the measured cross-PU contention factors from Section 3.2.2. ViT-B/16 benefits the most (+29%) since its multi-head attention produces 51 concurrent phases in which independent attention heads execute on different PUs simultaneously, raising the overall speedup from 1.10 × to 1.55 ×. 𝜋 0.5 gains +16% (1.46 ×) from 615 concurrent phases. The text-embedding and vision-encoding stages execute in parallel, and each denoising iteration contains BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference Bit F16                                                                                                                                                                            
+
+> Bit I8
+> Hye F16
+> Hye I8
+> KAN F16
+> KAN I8
+> LAV F16
+> LAV I8
+> LLM F16
+> LLM I8
+> Mamba F16
+> Mamba I8
+> 0.5
+> RN50 F16
+> RN50 I8
+> SNN F16
+> SNN I8
+> ViT F16
+> ViT I8
+> Bit F16
+> Bit I8
+> Hye F16
+> Hye I8
+> KAN F16
+> KAN I8
+> LAV F16
+> LAV I8
+> LLM F16
+> LLM I8
+> Mamba F16
+> Mamba I8
+> 0.5
+> RN50 F16
+> RN50 I8
+> SNN F16
+> SNN I8
+> ViT F16
+> ViT I8
+> 14.1 7.7 1.8 4.2 6.6 6.7 5.8 4.3 3.0 3.1 8.2 4.7 1.2 4.3 5.3 9.8 13.2 3.8 4.0
+> 13.6 1.9 4.3 11.7 12.5 7.8 7.2 3.1 3.1 9.8 5.0 1.2 4.6 5.5 10.8 13.4 4.0 4.2
+> 2.4 1.7 1.7 1.7 1.8 1.8 1.8 1.8 2.0 1.9 1.4 1.8 1.8 1.8 1.8 1.9 2.0
+> 3.6 2.2 2.5 4.4 3.9 2.6 2.5 5.4 3.6 1.3 2.5 2.5 2.9 2.9 2.5 2.8
+> 1.4 0.9 19.9 8.8 2.7 2.8 9.5 3.8 18.7 3.9 3.4 4.1 2.5 2.7 3.1
+> 1.7 22.4 10.6 2.8 2.7 10.9 3.9 18.7 4.4 4.0 5.1 4.1 2.8 3.2
+> 4.0 1.6 2.6 2.6 8.9 3.1 1.2 1.5 1.4 6.4 13.4 3.6 4.0
+> 1.3 2.5 2.5 7.3 3.4 1.2 1.3 1.0 2.5 4.6 3.6 3.9
+> 3.9 3.6 3.6 2.7 1.2 2.5 2.4 2.8 2.9 2.6 2.7
+> 4.0 3.7 2.9 1.2 2.5 2.6 2.8 3.1 2.4 2.7
+> 10.5 6.1 1.2 6.8 9.5 18.2 21.7 4.3 4.6
+> 7.0 1.2 4.0 5.0 8.1 8.9 4.0 4.2
+> 1.2 1.2 1.2 1.2 1.2 1.3 1.3
+> 1.6 1.4 2.4 3.5 3.1 3.3
+> 1.5 2.1 3.7 3.0 3.1
+> 5.0 4.5 3.4 3.6
+> 2.4 3.4 3.6
+> 4.8 3.5
+> 4.8
+
+Geometric mean 
+
+3.42× 2.5 
+
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> 17.5
+> 20.0
+> Speedup vs. homo serial
+
+Figure 8: Multi-model concurrent orchestration speedup for 190 unique model pairs vs. homogeneous serial execution. 
+
+intra-layer parallel branches. Mamba-370M (+12%, 25 concurrent phases) and LAVISH (+9%, 4 concurrent phases) also see gains; Mamba from its parallel SSM branches and LAVISH from its dual visual-audio encoder. BitNet, whose 36 operators form a single sequential chain (0 concurrent phases), sees no parallel gain. KAN and LLaMA have 2–3 concurrent phases but negligible gain ( ≤3%) because the parallel branches are heavily imbalanced. 
+
+Parallel energy. Because the contention slowdown factor increases per-operator latency during concurrent phases, the energy-optimal parallel schedule consumes more energy than the sequential one: 7.6% average reduction (parallel) versus 9.2% (sequential). The 1.6% gap is the measured cost of memory bandwidth contention. Models with many concurrent phases (ViT, Mamba, 𝜋 0.5) show the largest parallel–sequential energy gap; models with zero concurrent phases (BitNet) show no difference. 
+
+Multi-model concurrent results. Edge SoCs increasingly serve multiple inference streams simultaneously, for example, running ob-ject detection alongside speech recognition, or co-executing a vision encoder with a language decoder in a vision-language-action (VLA) pipeline. In such settings, effective utilization of heterogeneous resources requires coordinating execution across models, as concur-rent workloads introduce both memory-bandwidth contention [ 3 ]and diverse operator-level execution patterns [ 29 ]. BIDENT ad-dresses this scenario by co-scheduling operators from both models across all available PUs via its Dijkstra-based concurrent search (Section 3.3.3), enabling complementary operator-to-PU affinities to be exploited while recovering otherwise idle hardware capacity. Figure 7(b) shows a concrete example. When LLaMA-7B (1L) INT8 and Mamba-370M FP16 are co-scheduled, BIDENT assigns each step’s operators to different PUs so that both models make progress concurrently. After LLaMA completes, Mamba’s remain-ing 39 operators continue on NPU and CPU. Figure 8 presents the speedup for all 190 model pairs (10 models, 19 configurations) versus homogeneous serial execution, where both models run sequentially on their best single PU. Across all 190 pairs, BIDENT achieves a geometric mean speedup of 3.42 × (range: 0.86–22.4 ×). Three patterns emerge from the heatmap: 
+
+(1) Complementary-affinity pairs yield the largest gains. KAN 𝐼 𝑁𝑇 8
+
++LAVISH 𝐹 𝑃 16 reaches 22.4 ×. KAN’s CPU-bound spline evaluations overlap almost entirely with LAVISH’s GPU-bound convolution blocks. Similarly, Mamba 𝐹 𝑃 16 +SNN 𝐼 𝑁𝑇 8 achieves 21.7 × by inter-leaving selective-scan ops on one PU with spiking-accumulation ops on another. 
+
+(2) Same-model pairs still benefit substantially. BitNet 𝐹 𝑃 16 +BitNet 𝐹 𝑃 16 reaches 14.1 × and Mamba 𝐹 𝑃 16 +Mamba 𝐹 𝑃 16 reaches 10.5 ×, because BIDENT distributes the two instances’ operators across GPU and CPU, recovering the idle-PU capacity that serial single-PU execution wastes. 
+
+(3) Large-model pairs show moderate gains. Pairs involving LLaMA or ViT achieve 2–5 × because their dominant large MatMul 
+
+operators saturate a single PU’s memory bandwidth. 𝜋 0.5 pairs range from 1.2–18.7 ×: with KAN the smaller model runs entirely within 𝜋 0.5’s execution window (18.7 ×), while pairs with similarly large models (Hyena FP16, ViT) achieve 1.3–1.4 ×. Two pairs (1.1% of total) show speedup <1×, where concurrent memory-bandwidth contention outweighs the parallelism benefit. 
+
+Concurrent energy. Thanks to energy-optimal concurrent sched-uling, BIDENT achieves an average energy reduction of 48.2%; 16 pairs see an energy increase where the contention penalty exceeds the energy benefit. 
+
+5 Related Work 
+
+Existing heterogeneous inference systems typically address only a subset of the orchestration problem. Prior approaches either focus on specific model families, operate at coarse granularity (model or phase level), or target only inter-model scheduling. As a result, they lack a unified mechanism to jointly reason about operator-level PU affinity, intra-model parallelism, and multi-model concur-rency. BIDENT addresses this gap through a single, model-agnostic formulation that captures all three dimensions. 
+
+Heterogeneous DNN execution on SoCs. AxoNN [ 4 ] partitions CNN inference across CPU and DLA on NVIDIA Jetson SoCs using an energy-aware pipelined execution model. HaX-CoNN [ 3] models shared-memory contention when co-scheduling multiple DNN instances on CPU, GPU, and DLA, and proposes contention-aware inter-model scheduling. Both works advance heterogeneous SoC utilization, though AxoNN focuses on a two-PU CNN-specific setting and HaX-CoNN addresses inter-model scheduling rather than intra-model operator partitioning. BIDENT generalizes to three or more PUs (including NPUs), operates at per-operator granularity across arbitrary architectures, and supports both intra-model partitioning and multi-model concurrent scheduling within a unified graph formulation. While HaX-CoNN models contention at the whole-model level, BIDENT measures cross-PU interference em-pirically at per-operator granularity for both intra-model parallel and multi-model concurrent execution. 
+
+Heterogeneous LLM inference. HeteroLLM [ 2 ] partitions the pre-fill and decode phases of LLM inference across CPU, GPU, and NPU on mobile SoCs. Agent.xpu [ 29 ] extends heterogeneous scheduling to agentic LLM workloads with diverse tool-calling and reasoning Kim et al. 
+
+Table 4: Feature comparison with related heterogeneous in-ference systems. ✓ = supported, ✗ = not supported. Feature AxoNN HaX-CoNN HeteroLLM Agent.xpu BIDENT                          
+
+> Operator-level granularity ✓✗✗✓✓
+> ≥3 PUs (incl. NPU) ✗✓✓✓✓
+> Model-agnostic ✗✓✗✗✓
+> Intra-model parallelism ✗✗✗✗✓
+> Multi-model concurrent ✗✓✗✓✓
+
+operators. These systems demonstrate the value of heterogeneous execution for LLMs, though they rely on phase-level (prefill/decode) heuristics tailored to Transformer-specific workload characteristics. 
+
+BIDENT is model-agnostic. It accommodates CNNs, Transformers, SSMs, KANs, Hyena, spiking networks, and multi-stage VLA pipelines with the same profiling-driven shortest-path formulation, without requiring architecture-specific scheduling rules. 
+
+NPU architecture and flexibility. FlexNPU [ 25 ] investigates flexible NPU datapath designs that support a wider range of operators at the hardware level. This approach is complementary to BIDENT ’s operator-level orchestration. A more flexible NPU reduces the set of operators that must be routed to alternative PUs, but as long as capability differences exist among PUs, BIDENT ’s operator-level scheduling continues to provide benefit. 
+
+Summary. Table 4 positions BIDENT among these systems. Direct quantitative comparison is infeasible because each system targets a different SoC family and none provide public implementations on the Intel Core Ultra platform used in our evaluation. 
+
+6 Future Work 
+
+Dynamic operator-level scheduling. BIDENT currently pro-duces a static mapping determined offline. However, as shown by Agent.xpu [ 29 ], neural network workloads on edge SoCs are increasingly introduced dynamically. Agentic LLM workflows invoke tool-calling models on demand, and multi-application environments launch and terminate inference streams at run-time. In such scenarios, the optimal assignment of PU changes as resource availability changes. Thermal throttling reduces PU throughput, concurrent system processes compete for memory bandwidth, and input-dependent execution paths (e.g., early exit, mixture-of-experts gating) alter operator counts mid-inference. A dynamic extension of BIDENT would require (1) lightweight runtime monitoring of PU utilization and memory bandwidth, and (2) fast re-profiling or analytical modeling of per-operator costs under varying resource contention, so that remapping decisions can be made at operator granularity without incurring scheduling overhead that negates the latency benefit. 
+
+Intra-PU tile-level mapping. Even with optimal inter-PU scheduling, BIDENT ’s execution schedules exhibit underutilization bubbles (visible in Figure 7(b)) where a PU sits idle while waiting for a phase boundary. Moreover, within a single PU, not all internal components are utilized simultaneously. For example, the NPU contains both MAC arrays and vector DSP units, yet a given operator typically exercises only one datapath [5]. Modern SoCs incorporate tiled architectures. The Intel Core Ultra NPU exposes 6 compute tiles [ 12 ], and GPUs use similar Xe Vector Engine clusters. A finer-grained mapping strategy could assign a variable number of tiles per operator based on its compute-or memory-boundedness, determined via roofline analysis. Oper-ators below the ridge point (memory-bound) would receive fewer tiles, freeing the remaining tiles for concurrent data-independent operators, while compute-bound operators would receive more. This intra-PU tiling naturally extends to dynamic scheduling. Since resource availability changes at runtime, the roofline shifts and the tile assignment adapts accordingly. 
+
+7 Conclusion 
+
+We present BIDENT , an operator-level orchestration framework for heterogeneous edge SoCs that casts operator-to-PU assignment as a shortest-path search and jointly supports sequential, contention-aware intra-model parallel, and multi-model concurrent execution under latency and energy objectives. Evaluated on ten diverse architectures on an Intel Core Ultra SoC, BIDENT achieves up to 1.58 × sequential and 1.60 × intra-model parallel speedup over the best single-PU baseline, a 3.42 × geometric mean speedup across 190 multi-model pairs, and average energy reductions of 9.2% (sequential) and 48.2% (concurrent). Extending BIDENT with runtime-adaptive scheduling and intra-PU tile-level mapping (Section 6) will further close the gap between available hardware capacity and realized inference performance. More broadly, this work suggests that operator-level orchestra-tion, not model-level mapping, should serve as the fundamental abstraction for heterogeneous inference on future edge systems. 
+
+Acknowledgments 
+
+This work was supported in part by the Center for the Co-Design of Cognitive Systems (CoCoSYS) and the Center on Cognitive Multi-spectral Sensors (CogniSense), two research centers under the Joint University Microelectronics Program (JUMP) 2.0, a Semiconductor Research Corporation (SRC) initiative sponsored by DARPA. 
+
+References                 
+
+> [1] Apple Inc. 2025. Apple M5 Processor Architecture. Hardware Specification. https://www.apple.com/mac/ [2] Le Chen, Dahu Feng, Erhu Feng, Rong Zhao, Yingrui Wang, Yubin Xia, Haibo Chen, and Pinjie Xu. 2025. HeteroLLM: Accelerating large language model inference on mobile SoC platforms with heterogeneous AI accelerators. arXiv preprint arXiv:2501.07705 (2025). [3] Ismet Dagli and Mehmet E Belviranli. 2024. Shared memory-contention-aware concurrent dnn execution for diversely heterogeneous system-on-chips. In Pro-ceedings of the 29th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming . 243–256. [4] Ismet Dagli, Alexander Cieslewicz, Jedidiah McClurg, and Mehmet E Belviranli. 2022. Axonn: Energy-aware execution of neural network inference on multi-accelerator heterogeneous socs. In Proceedings of the 59th ACM/IEEE Design Automation Conference . 1069–1074. [5] Arghadip Das, Hoseok Kim, Arnab Raha, Shamik Kundu, Soumendu Kumar Ghosh, Deepak Mathaikutty, and Vijay Raghunathan. 2025. Towards Efficient Acceleration of Hyena and Kolmogorov–Arnold Networks on NPUs. In 2025 First International Conference on Intelligent Computing and Systems at the Edge (ICEdge) , Vol. 1. IEEE, 1–7. [6] Arghadip Das, Shamik Kundu, Arnab Raha, Soumendu Ghosh, Deepak Math-aikutty, and Vijay Raghunathan. 2025. Grannite: Enabling high-performance execution of graph neural networks on resource-constrained neural processing units. In 2025 International Joint Conference on Neural Networks (IJCNN) . IEEE, 1–10. [7] Arghadip Das, Arnab Raha, Shamik Kundu, Soumendu Kumar Ghosh, Deepak Mathaikutty, and Vijay Raghunathan. 2025. XAMBA: Enabling Efficient State Space Models on Resource-Constrained Neural Processing Units. arXiv preprint arXiv:2502.06924 (2025).
+
+BIDENT : Heterogeneous Operator-level Mapping for Efficient Edge Inference 
+
+[8] Edsger W Dijkstra. 2022. A note on two problems in connexion with graphs. In 
+
+Edsger Wybe Dijkstra: his life, work, and legacy . 287–290. [9] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xi-aohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al . 2020. An image is worth 16x16 words: Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929 (2020). [10] Albert Gu and Tri Dao. 2024. Mamba: Linear-time sequence modeling with selective state spaces. In First conference on language modeling .[11] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual learning for image recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition . 770–778. [12] Intel Corporation. 2024. Intel Core Ultra Processor Family. https://www.intel. com/content/www/us/en/products/details/processors/core-ultra.html. [13] Intel Corporation. 2024. Intel VTune Profiler. https://www.intel.com/content/ www/us/en/developer/tools/oneapi/vtune-profiler.html. [14] Intel Corporation. 2024. OpenVINO Toolkit. https://docs.openvino.ai/. [15] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dha-balia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al . 2025. 𝜋 0.5: a Vision-Language-Action Model with Open-World Generaliza-tion. arXiv preprint arXiv:2504.16054 (2025). [16] Alexander Kozlov, Ivan Lazarevich, Vasily Shamporov, Nikolay Lyalyushkin, and Yury Gorbachev. 2020. Neural network compression framework for fast model inference. arXiv preprint arXiv:2002.08679 (2020). [17] Yan-Bo Lin, Yi-Lin Sung, Jie Lei, Mohit Bansal, and Gedas Bertasius. 2023. Vision transformers are parameter-efficient audio-visual learners. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 2299–2309. [18] Ziming Liu, Yixuan Wang, Sachin Vaidya, Fabian Ruehle, James Halverson, Marin Soljačić, Thomas Y Hou, and Max Tegmark. 2024. Kan: Kolmogorov-arnold networks. arXiv preprint arXiv:2404.19756 (2024). [19] Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan Huang, Li Dong, Ruiping Wang, Jilong Xue, and Furu Wei. 2024. The era of 1-bit LLMs: All large language models are in 1.58 bits. arXiv preprint arXiv:2402.17764 
+
+(2024). [20] Microsoft Corporation. 2024. ONNX Runtime. https://onnxruntime.ai/. [21] NVIDIA Corporation. 2024. TensorRT: High-Performance Deep Learning Infer-ence. https://developer.nvidia.com/tensorrt. [22] Michael Poli, Stefano Massaroli, Eric Nguyen, Daniel Y Fu, Tri Dao, Stephen Bac-cus, Yoshua Bengio, Stefano Ermon, and Christopher Ré. 2023. Hyena hierarchy: Towards larger convolutional language models. In International Conference on Machine Learning . PMLR, 28043–28078. [23] Qualcomm Technologies. 2024. Qualcomm AI Engine Direct (QNN). [24] Arnab Raha, Souvik Kundu, Sharath Nittur Sridhar, Shamik Kundu, Soumendu Kumar Ghosh, Alessandro Palla, Arghadip Das, Darren Crews, and Deepak A Mathaikutty. 2025. LLM-NPU: Towards Efficient Foundation Model Inference on Low-Power Neural Processing Units. In 2025 IEEE International Conference on Omni-layer Intelligent Systems (COINS) . IEEE, 1–8. [25] Arnab Raha, Deepak A Mathaikutty, Shamik Kundu, and Soumendu K Ghosh. 2025. FlexNPU: A dataflow-aware flexible deep learning accelerator for energy-efficient edge devices. Frontiers in High Performance Computing 3 (2025), 1570210. [26] REALiX. 2026. HWiNFO - Detailed Hardware Inventory and Hardware Monitor-ing. https://www.hwinfo.com/ [27] Abhronil Sengupta, Yuting Ye, Robert Wang, Chiao Liu, and Kaushik Roy. 2019. Going deeper in spiking neural networks: VGG and residual architectures. Fron-tiers in neuroscience 13 (2019), 95. [28] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al . 2023. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 (2023). [29] Xinming Wei, Jiahao Zhang, Haoran Li, Jiayu Chen, Haoning Guan, Rui Qu, Maoliang Li, Xiang Chen, and Guojie Luo. 2025. Agent. xpu: Efficient scheduling of agentic llm workloads on heterogeneous soc. arXiv preprint arXiv:2506.24045 
+
+(2025).

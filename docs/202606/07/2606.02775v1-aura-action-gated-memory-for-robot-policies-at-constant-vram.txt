@@ -1,0 +1,1265 @@
+Title: AURA: Action-Gated Memory for Robot Policies at Constant VRAM
+
+URL Source: https://arxiv.org/pdf/2606.02775v1
+
+Published Time: Wed, 03 Jun 2026 00:07:56 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# AURA: Action-Gated Memory for Robot Policies at Constant VRAM 
+
+Josef Chen KAIKAKU 
+
+josef@kaikaku.ai 
+
+June 2026 
+
+Abstract 
+
+The KV-cache is the right memory for datacenters and the wrong memory for robots. In a datacenter, many short requests are batched and reset, so an attention cache is amortized across them. An embodied agent instead runs one endless, non-resetting episode, so its cache grows without bound on bandwidth-limited edge hardware where high-bandwidth memory and flash are scarce and write-endurance limited—and memory writes , not compute, become the binding constraint. AURA - Mem (Action-Utility Recurrent Adaptive Memory) is built for that regime: a constant-size memory wrapped around a frozen vision-language-action backbone, with a learned gate that writes only when the current observation would change the next action—memory that knows when to shut up. The gate is trained directly against a closed-loop action-error signal rather than a reconstruction loss. Its inference state is a fixed 
+
+4,224 bytes regardless of horizon, versus a growing KV-cache 6,061 × larger at 100,000 steps. On a controlled synthetic benchmark, AURA - Mem matches the best O(1) baseline in accuracy at 5.19–6.13 × fewer writes (up to 9 .19 × on easier configurations); budget-matched random and periodic schedules do not recover this, isolating the gain to the action-surprise signal. On a real , trained closed-loop OpenVLA-OFT 7B panel (LIBERO-Long, n= 60 episodes/arm), the gate does not hurt success: AURA - Mem matches the ungated base (0 .233) and slightly exceeds an always-write KV arm (0 .217) at 7 .0× fewer writes and constant memory. We also instantiate an approximate-information-state (AIS) value-loss bound [ 49 ], reported transparently as a methodology demonstration: at this scale the bound is vacuous, not a guarantee. 
+
+# 1 Introduction 
+
+A robot that runs forever on fixed hardware faces a memory wall that grows by the step. The standard approach, keeping a Transformer KV-cache of every past token, is exact but unbounded: cache size grows linearly with the number of control steps, and on edge accelerators that are bandwidth-limited, reading an ever-larger cache eventually becomes the binding constraint on latency, not computation. A multi-hundred-step manipulation episode already stresses this budget; an endless navigation or inspection task that runs for tens of thousands of steps makes it fatal. Yet a robot does not need to reconstruct every past frame. It needs only enough state to choose its next action .Every autoregressive inference step issues a memory write: the policy reads its compressed world-state, selects an action, then writes an updated state vector back to high-bandwidth memory before the next step begins. Those writes, not arithmetic, are what fill the scarce, high-priced memory that currently bottlenecks physical-AI deployment at scale. High-bandwidth memory (HBM) is sold out through 2026 across all three major suppliers, with Micron and SK Hynix holding zero uncommitted capacity while together committing over $45 B in capital expenditure to expand output [ 4 , 63 ]. DRAM contract prices surged 90–95% quarter-over-quarter in Q1 2026, a single-quarter record, and NAND flash posted its 17th consecutive monthly price record in May 2026 [ 54 ]. 1
+
+> arXiv:2606.02775v1 [cs.AI] 1 Jun 2026
+
+Against this backdrop, SanDisk and SK Hynix have formalized a new high-bandwidth flash (HBF) standard targeting AI inference: a 512 GB-per-stack, 1.6 TB/s read-bandwidth NAND stack in an HBM4-compatible footprint, with samples planned for H2 2026 and first inference devices for early 2027 [ 40 ]. Because flash memory is governed by finite program/erase cycle endurance, write-minimizing algorithms directly and proportionally extend the usable lifetime of write-limited memory. This makes the frequency of memory writes an architectural variable with hardware economic consequences, not merely a performance metric. This observation motivates a different question: rather than asking how much of the past to keep , ask what the past must supply in order for the current action to be near-optimal . The information-theoretic answer is an action-sufficient compressed state: one that preserves the content relevant to acting well and discards the rest. Translating that idea into a deployable module requires solving three problems simultaneously: (i) the memory must occupy constant 
+
+space regardless of episode length; (ii) it must be written sparingly so that memory-bandwidth costs are bounded; and (iii) it must be trained against an action objective rather than a generic reconstruction objective, so that what is retained reflects action utility rather than token-level fidelity. 
+
+The gap in existing work. Recurrent state-space models (SSMs) such as Mamba [ 22 ] and S4 [ 23 ] achieve O(1) inference-state memory by design, but they write their state at every step, paying full bandwidth costs, and are not trained with an explicit action-utility bottleneck. KV-cache compression and eviction methods (H2O [ 66 ], Ada-KV [ 17 ], SnapKV [ 32 ], StreamingLLM [ 58 ], VLA-Cache [ 59 ]) reduce cache size but remain fundamentally linear in the horizon: they operate on a fraction of a growing cache , not a constant-size state, and cannot guarantee O(1) VRAM at unbounded horizons. Neither family provides a quantitative link between the quality of the compressed state and closed-loop task performance. The approximate information state (AIS) framework of Subramanian et al. [49] provides the structural form of such a link, a value-loss bound of the form ∥V ∗ − V πZ ∥∞ ≤ 2( ε + γL V δ)/(1 − γ), but it has not previously been instantiated for a bounded, sparsely-written, recurrent memory module in an embodied-control setting, nor have its premises ε and δ been measured empirically for such a module; as we show, the instantiated bound is loose at current scale. 
+
+The novelty. AURA -Mem advances the write-bandwidth frontier through a four-way conjunc-tion absent from all prior bounded-state and embodied-memory work: (1) a learned action-utility write gate whose trigger signal is the policy’s own action-prediction error, not perplexity gradient, not recency eviction, not spatial prediction; (2) an action-information-bottleneck (action-IB) training objective that back-propagates the closed-loop action-chunk loss through the gate de-cision, directly aligning write selection with decision quality; (3) a training-time write-rate control ( ρ, the target write rate, with γ its penalty weight) that places the model anywhere on the write-bandwidth/accuracy frontier by selecting a target at train time, characterized empirically (Fig. 13); and (4) a measured ( ε, δ )-action-information-state certificate , an instantia-tion of the bound of Subramanian et al. [49] , measured empirically on the shipped checkpoint (εmean = 0 .0021, εq95 = 0 .0076; the LV -loaded bound is vacuous at current scale, so the in-formative quantity is the measured ε). The empirical result is accuracy parity with the best O(1) baseline ( fixed size state ) at 4.98–9.19 × fewer memory writes; the established story is the write-bandwidth frontier, not accuracy superiority. The closest structural sibling, Tensor Cache [ 52 ], shares the outer-product fast-weight substrate but writes on sliding-window evic-tion, trains on a language-modeling objective, and provides no control-rate conditioning and no action-sufficiency certificate; AURA-Mem differs on all four remaining axes simultaneously. 
+
+Contributions. We make four honest, independently falsifiable contributions: 21. Write-bandwidth frontier (primary). At matched task success on memory-dependent synthetic benchmarks, AURA -Mem achieves 4.98–9.19 × fewer memory writes per second than a write-everything dense baseline while maintaining statistically equivalent accuracy (paired bootstrap CI includes 0 at N =64; ≥ 3 seeds). Budget-matched na¨ ıve write strategies (random and periodic gating) fail to recover this accuracy at the same write rate (success 
+
+≈ 0.366–0 .375 versus AURA -Mem 1 .000 at N =64 on noisy long recall ). A learned token-loss gate trained at the same state size collapses ( g=0 always), isolating the gain to the action-surprise signal. Memory writes translate directly to DRAM/HBM bandwidth consumed on memory-constrained accelerators [ 21 ]; the write-bandwidth axis is therefore the correct efficiency measure for hardware-constrained embodied deployment. 2. O(1) constant inference-state VRAM (measured). 1 AURA - Mem’s fast-weight state occupies a fixed 4,224 bytes at the sweep configuration ( dk=dv=32, batch= 1, fp32), computed analytically as ( dkdv + dv) × batch × 4. Over a 100,000-step endless rollout on a real L40S GPU, this figure is confirmed constant across all 500 logged checkpoints, while a matched growing-KV reference reaches 25,600,000 bytes at 100,000 steps, a 6,061 × larger footprint. This is a structural property: the shape of the fast-weight tensor W ∈ RB×dk ×dv is independent of the step count t. The long-horizon 6 ,061 × figure is an analytic extrapolation against a matched-dimension KV stub; for the regime where we can train both sides, the next contribution supplies a competent trained transformer baseline. 3. Action-sufficiency bound (instantiation of Subramanian et al. 49 ). We instantiate the approximate-information-state value-loss bound of Subramanian et al. [49] (JMLR 2022, Thm. 9/27) for the AURA - Mem setting and measure its premises on the real shipped checkpoint. Action-prediction sufficiency is strong ( εmean = 0 .0021, 95% CI [0 .0020 , 0.0023]; 
+
+εq95 = 0 .0076), but the instantiated LV -loaded value-loss bounds are vacuous at current scale (guaranteed form 52 .69; trivial value span 10 .0). We report this as a methodology demonstration: an action-sufficiency value-loss bound in the sense of Subramanian et al. [49], not a formal guarantee (see §4). 4. Trained KV-cache head-to-head and a real-VLA panel. Against a trained , position-aware growing-KV transformer (relative-age positional encoding on its keys, a standard component) on a sparse-recall task, AURA - Mem reaches accuracy parity across horizons 
+
+T =128–1024 (both ≈1.000; n= 3 seeds, small) while holding its inference state constant; the KV baseline matches accuracy only by growing its state linearly (62 .1× as many bytes at 
+
+T =1024, 606 × at T =10 ,000, crossover near T =17). We additionally run the AURA -Mem memory and the ( ε, δ ) AIS measurement on a real OpenVLA-OFT 7B policy in closed-loop LIBERO-Long rollouts, demonstrating the mechanism on a real 4,096-dim policy stream (O(1) state at 4,224 bytes) rather than a toy. This panel is a zero-shot proof-of-mechanism, not a state-of-the-art success sweep, and AURA -Mem is a memory/measurement layer that does not by itself raise robot success. 
+
+Paper organization. Section 2 reviews related work. Section 3 describes the AURA - Mem architecture. Section 4 presents the action-sufficiency bound and its empirical instantiation. Section 5 describes experiments. Section 6 presents results. Section 7 discusses limitations. Section 8 concludes.    
+
+> 1Throughout, O(1) refers to the carried inference state only; training-time activation memory is O( T) under backpropagation through time, as in any recurrent network.
+
+32 Related Work 
+
+2.1 Linear attention, state space models, and fast-weight programmers 
+
+Structured state-space models (S4 [ 23 ], S5 [ 47 ], Mamba [ 22 ], and Mamba-2/SSD [ 14 ]) replace quadratic-cost attention with fixed-size recurrences that achieve O(1) inference-state VRAM, and linear-attention variants (RWKV [ 42 ], RetNet [ 50 ], GLA [ 61 ], Based [ 3 ], Performers [ 12 ]) offer similar asymptotic benefits through kernel approximations. All of these architectures write to their recurrent state at every time step: Mamba’s input-selective gating modulates which dimensions are updated but never skips a step outright. Fast-weight programmers [ 5] and their formalization as linear Transformers [ 46 ] show that outer-product activations serve as rapidly rewritten associative memories; modern Hopfield networks [ 44 ] establish exponential associative capacity in continuous state spaces. Test-time training (TTT) [ 51 ] and its descendants (Titans [ 8 ], Atlas [ 6], MIRAS [ 7], LaCT [ 65 ]) extend this lineage by learning the fast-weight update rule via self-supervised signals at test time, treating the fast-weight matrix as a compressed context window; Titans specifically uses the gradient of an associative-memory (perplexity-style) loss as the gate signal and trains end-to-end on a language-modeling objective. Gated DeltaNet-2 [26 ] adds per-step decoupled channel-wise erase and write gates to linear attention, also firing at every step with no write sparsity. AURA -Mem inherits the bounded-state substrate of this family but departs on three axes absent from all of the above: the write-gate signal is action-utility surprise (not step-clock, perplexity gradient, or spatial prediction); the gate is trained against a closed-loop action-chunk and action-IB objective (not a language-modeling loss); and it exposes a training-time write-rate control ( ρ, with γ its penalty weight) that places the model on the write-bandwidth/accuracy frontier. 
+
+2.2 KV-cache compression, eviction, and bounded fast-weight memory 
+
+Eviction-based methods (H2O [ 66 ], StreamingLLM [ 58 ], SnapKV [ 32 ], FastGen [ 19 ], ScissorHands [ 35 ], KIVI [ 36 ], KVQuant [ 27 ], AdaKV [ 17 ], VL-Cache [ 57 ], PagedAttention [ 31 ]) reduce KV-cache footprint but operate on caches that remain asymptotically growing with context length; they bound cache size to a window , not to O(1). The two most recent bounded fast-weight entries are the closest structural siblings to AURA -Mem. Tensor Cache [ 52 ] establishes fixed-size outer-product fast-weight matrices as the substrate for bounded Transformer memory and trains per-head decay and write-rate parameters end-to-end on a language-modeling objective: the same substrate AURA - Mem adopts. Tensor Cache writes on window eviction (a recency/positional trigger), operates in a text-only domain with no control-rate conditioning, and provides no action-sufficiency certificate; AURA -Mem writes on action-utility surprise (a decision-relevance trigger), trains against a closed-loop action-chunk and action-IB objective, conditions on the deployed control rate, and provides a measured ( ε, δ )-AIS certificate. Tensor Memory [ 53 ], a concurrent fixed-size recurrent tensor whose tokens write via differentiable soft-write into predicted 3D voxel positions, shares the O(1)-VRAM property but uses a spatial/geometric write trigger and a perception objective, with no control-rate knob and no sufficiency certificate. The categorical distinction between eviction and AURA -Mem’s design is structural: at 100 k inference steps, a comparable KV-cache stub ( dk=dv=32) requires 6 ,061 × the bytes of AURA - Mem’s constant state, a gap that no eviction scheme closes by design. 
+
+2.3 VLA memory and KV eviction for embodied policies 
+
+VLA-specific compression methods bring learned eviction into the embodied domain but remain in the eviction family. VLA-Cache [ 59 ] and KV-Efficient VLA [ 60 ] apply learned RNN or token-utility gates to KV-cache eviction for robot policies; unlike AURA -Mem, both operate on growing KV-caches (no O(1)-VRAM guarantee at unbounded horizon), train against token-level surrogate objectives rather than a closed-loop action loss, and provide no action-sufficiency certificate. 4DySta [ 43 ] learns a Gumbel-softmax recache gate for VLA inference; its gate regularizer penalizes sparsity based on a temporal-change signal (image similarity across timesteps), not a closed-loop action-prediction loss, and its chunked KV-cache grows with context length. EfficientVLA [ 62 ]and the KV policy of Moschella et al. [39] follow the same eviction pattern. MEM [ 56 ] uses a video encoder plus text journal for multi-scale embodied memory; it applies no learned action-utility write gate, and its store grows with episode length. CSR [ 2 ] uses KV-cache reuse via prefix stability and asynchronous eviction for infinite-horizon robot policies; its cache remains asymptotically growing. AURA -Mem is categorically distinct: its O(1) inference-state VRAM is fixed at initialization and does not grow with horizon. Looking forward, unified world-action foundation models such as NVIDIA’s Cosmos 3 (GTC 2026) inherit the same growing carried-state problem in batch-1 embodied deployment, which makes bounded memory more relevant as policy backbones scale, not less. The concurrent SANA-WM world model uses a Hybrid Gated DeltaNet that keeps its recurrent state at a constant D × D size regardless of video length—independent industrial validation of AURA - Mem’s bounded-state premise. AURA - Mem’s learned write-gating is complementary and orthogonal to these backbones: it can wrap any such policy to add selective, constant-footprint memory. 
+
+2.4 Memory architectures for reinforcement learning and robot policies 
+
+Classical RL memory approaches (RL 2 [ 16 ], R2D2 [ 29 ], Decision Transformer [ 10 ], DreamerV2 [ 25 ]) and locomotion controllers (RMA [ 30 ], POPGym [ 38 ]) establish the need for bounded recurrent state in partially observable settings but do not connect state size to a formal sufficiency bound. Recent robot-policy memory works (ELMUR [ 11 ], GMP [ 18 ], RoboMamba [ 34 ], MemER [ 48 ], Memo [ 24 ]) address long-horizon manipulation but use growing external stores or unconditional write schedules and provide no certificate. RoboMME [ 13 ] benchmarks 16 robot-memory tasks across 14 memory-architecture variants, finding that na¨ ıve test-time training updates do not reliably improve memory quality across tasks, a negative result that directly motivates AURA -Mem’s design choice of an offline-trained, action-utility-gated write mechanism rather than online gradient-based writes. None of the 14 variants achieves O(1) inference-state VRAM or provides an action-sufficiency certificate. 
+
+2.5 Surprise and information-gain gating 
+
+ICM [ 41 ] and RND [ 9] use forward-model prediction error as an intrinsic exploration reward, driving agents toward novel states. This use of surprise is extrinsic to the memory mechanism : it governs action selection, not memory management. AURA -Mem repurposes the same mathematical object, forward-model prediction error, for an orthogonal purpose: gating when the fast-weight state is updated. The gate signal is action-utility surprise, the discrepancy between the policy’s predicted action and the actual action token, so the write criterion is directly aligned with decision quality rather than environmental novelty. The action-IB objective then regularizes the information rate between the written state and the action sequence, jointly minimizing write bandwidth and maximizing action fidelity. No prior exploration-bonus work or information-bottleneck formulation [1, 55 ] in RL conditions on action-prediction error to gate memory writes within a bounded-state O(1)-VRAM architecture. 
+
+2.6 State representation theory and action-sufficiency certificates 
+
+The approximate-information-state (AIS) framework of Subramanian et al. [49] (JMLR 2022) formalizes what a finite state must satisfy to support near-optimal decisions in POMDPs, providing the theoretical backbone for AURA -Mem’s certificate. Related state-representation theory (pre-dictive state representations [ 33 ], DeepMDP [ 20 ], DBC [ 64 ], belief compression [ 45 ]) characterizes when compact representations suffice for control but does not instantiate measurable ( ε, δ ) bounds on rollouts. AURA - Mem instantiates the AIS bound of Subramanian et al. [49] and measures ε
+
+5Table 1: Comparison of memory architectures on six discriminating axes. Gate : a learned write-gate (not a fixed write schedule). Act. obj. : trained against a closed-loop action-prediction objective (not a language-modeling loss). Rate-knob : a deployable writes-per-second budget conditioned on the control rate. O(1) VRAM : inference-state size fixed at initialization, indepen-dent of episode length. AIS cert. : a measured ( ε, δ )-action-sufficiency certificate (instantiation of Subramanian et al. 49 ). Robot : targeting robot or VLA deployment. ✓ = yes; ✗ = no; ∼ =partial (see text).                                                             
+
+> Method Gate Act. obj. Rate-knob O(1) VRAM AIS cert. Robot
+> Titans [8] ✓✗✗✓✗✗
+> Tensor Cache [52] ∼✗✗✓✗✗
+> Gated DeltaNet-2 [26] ∼✗✗✓✗✗
+> DySta [43] ✓✗✗✗✗✓
+> KV-Efficient VLA [60] ✓✗✗✗✗✓
+> MEM [56] ✗✗✗✗✗✓
+> RoboMME [13] ∼✗✗✗✗✓
+> Factored Diffusion [37] ✗✓✗✗∼✓
+> AURA-Mem (ours) ✓✓✓✓✓✓
+
+and δ empirically on the visited distribution of policy rollouts ( εmean = 0 .0021, εq95 = 0 .0076); the LV -loaded bound is vacuous at current scale, so we report the measured ε as the informative quantity and do not claim a formal guarantee of policy optimality. Factored Diffusion Policies [ 37 ]provide a closed-loop trajectory-tube certificate for policy-composition generalization , a distinct object that certifies generalization across task distributions, whereas AURA - Mem’s certificate bounds value sub-optimality incurred by finite memory size. The memory wall [ 21 ] quantifies why this matters at system scale: compute has improved roughly 60 ,000 × over twenty years while DRAM bandwidth has improved only 100 ×; FlashAttention [ 15 ] and data-movement analysis [ 28 ]confirm that memory I/O, not arithmetic, dominates inference cost for attention-class architectures. AURA - Mem’s 4.98–9.19 × write sparsity (measured across budget levels N ∈ { 16 , 32 , 64 }) directly reduces this dominant cost. 
+
+# 3 Method: AURA-Mem 
+
+AURA - Mem ( Action- Utility Recurrent A daptive Mem ory) is one bounded fast-weight re-current state that a policy carries across an episode: updated test-time-training style, written 
+
+only on action-relevant surprise, and trained against a closed-loop action objective . There is exactly one state object, one write gate, and one training loss. We describe the memory as a single fixed-size recurrent statistic with O(1) inference-state VRAM ; we never describe our method as KV-cache eviction or as a fraction of a growing cache. The eviction methods of §2(H2O, Ada-KV, SnapKV, VLA-Cache) are a baseline family we compare against on a common memory-bytes axis, not a description of AURA -Mem. The full control loop —a learned write gate and a bounded O(1) state wrapped around a frozen VLA backbone—is sketched in Figure 1, and the single control-step datapath is shown in Figure 2. 
+
+3.1 Problem setup: VLA policy as a POMDP 
+
+We model a robot policy as a discrete-time partially observed Markov decision process (POMDP). At each control tick t the agent receives an observation Yt ∈ Y (an image/proprioception frame, summarized by the frozen VLA backbone into a per-frame token vector zt ∈ Rd), emits an action 
+
+At ∈ A (e.g. a 6-DoF end-effector delta plus gripper, daction =7 in the default config), and collects 6(weights frozen) writes only on surprise 4,224 B constant             
+
+> write iff gt= 1
+> read rtconditions next action
+> closed loop: action changes the world → next observation
+> AURA-Mem contributions: learned write gate bounded O(1) state
+> Observation
+> ot
+> (camera + state)
+> Frozen VLA
+> backbone
+> (OpenVLA-OFT 7B)
+> Latent
+> token zt
+> = proj( ht)
+> Action-error
+> WRITE GATE
+> gt=[pt>τ]
+> Bounded
+> fast-weight state W
+> [dk×dv], O(1) VRAM
+> Action
+> at
+
+Figure 1: AURA - Mem in one picture: memory that knows when to shut up. The whole system is a learned write gate plus a bounded fast-weight state wrapped around a frozen VLA back-bone. At each tick the observation ot is summarised by the frozen backbone (OpenVLA-OFT 7B, weights unchanged) into a latent token zt=proj (ht). An action-error write gate gt=1[pt>τ ] decides whether to write: it fires only on surprise , so most steps carry the state over untouched. The bounded fast-weight state W ∈ Rdk ×dv has O(1) inference-state VRAM —a constant 4 ,224 bytes (batch 1, fp32) regardless of horizon—and is read back as rt, which conditions the next action 
+
+at; the executed action changes the world, closing the loop into the next observation (dashed arc). The two AURA - Mem contributions are highlighted: the learned write gate (writes only when the incoming token is action-relevant surprise) and the bounded O(1) state (constant bytes, never a growing cache). The backbone is never fine-tuned; only the lightweight gate, projections, and memory read/write heads are trained. a bounded reward Rt ∈ [Rmin , R max ] under discount γ ∈ (0 , 1). The latent state St is never observed. The history Ht = ( Y1: t, A 1: t−1) ∈ H t is itself an (intractably large) information state: the system is Markov in Ht and an exact dynamic program exists on histories with value Vt(ht)and action-value Qt(ht, a t). 
+
+The memory-bandwidth / O(1)-VRAM problem. The standard Transformer realization of “condition on Ht” is a KV-cache of shape [ B, T, . . . ] whose length T equals the step count. On embodied hardware (edge SoCs with bounded HBM/LPDDR), this linearly growing cache is the binding constraint: VRAM grows with horizon until the policy throttles or OOMs, and every step re-reads an ever-larger cache, so memory bandwidth (bytes moved per second), not FLOPs, dominates. The design goal is a policy whose resident inference state and per-step memory traffic are constant in the episode length while preserving the information needed to act well. AURA - Mem attacks this by replacing the growing cache with one fixed-size recurrent state that (i) costs constant inference-state VRAM because the recurrent state is a fixed-shape tensor allocated at initialization, so its byte footprint is independent of the rollout horizon T (§3.2), (ii) is written sparsely to bound writes-per-second ( §3.3), and (iii) is trained to be action-sufficient ( §3.4). 
+
+3.2 The single state object: a bounded fast-weight state W
+
+The entire memory is one tensor. The GatedTTTState carries a fast-weight matrix 
+
+Wt ∈ RB×dk ×dv ,
+
+a small linear model whose weights are the memory. Reading the memory is a linear map of a query; writing it is an online (test-time-training) gradient step that folds the current frame into 7frame summary                                
+
+> zt∈ℝd
+> θQ
+> query qt
+> θK
+> key kt
+> θV
+> value vt
+> fast-weight state
+> W∈ℝdk×dv
+> (carried, O(1))
+> read
+> ot=qtW
+> surprise st
+> ‖̂ kW −v‖2(det.)
+> GateMLP
+> gt∈ {0, 1}
+> (straight-through)
+> gated TTT write
+> W←gtTTT( W,z)
+> + (1− gt)W
+> state update (skipped if gt= 0)
+> Action-IB head
+> ot→μ, log σ2→z
+> →̂ at
+> LBC
+> β L IB
+> γ L write
+> AURA-Mem control step: read always, write only when the action-error gate fires
+> L=LBC +β L IB +γ L write —behaviour cloning + action-information-bottleneck rate + write-sparsity
+
+Figure 2: AURA -Mem single control-step datapath. At each tick t the frozen backbone summarises the raw observation into a latent token zt ∈ Rd. Three linear projections emit a query 
+
+q=θQz, key k=θK z, and value v=θV z; the fast-weight state W ∈ Rdk ×dv is read first via o=q⊤W
+
+to produce the memory output before any write occurs. The surprise scalar s=∥kW − v∥22 (the inner TTT reconstruction error, detached from the gradient graph) is fed together with z and the previous read o into a small GateMLP, which emits a soft gate probability pt=σ(ℓ/τ ); a straight-through binariser produces gt∈{ 0, 1} in the forward pass while passing soft gradients backward. The gated TTT write is W ← g · TTT (W, z ) + (1 −g) · W : when g=0 the state is carried over byte-for-byte and no write traffic is incurred. The read o passes to the ActionIB head, which maps o → (μ, log σ2), samples z′ ∼ N (μ, σ 2) (reparameterisation; mean μ at eval), and predicts the action chunk; the training loss is L = Laction + β LIB + γ Lwrite . At budget N = 32 the architecture uses 30,279 total parameters (21,447 gradient-active; sweep config dmodel =64, 
+
+dk=dv=N ); parameter counts scale with N (20,935 / 30,279 / 55,111 total at N = 16 /32 /64). At every budget the parity variants are exactly parameter-matched; the GateMLP contributes +6 ,337 gradient-active parameters not present in the write-every-step baseline, a capacity asymmetry disclosed in §7 and Appendix B.2. the values of this fixed-shape tensor. The shape of W never depends on t: history is absorbed into the contents of a constant-shape matrix, never appended as new rows the way a KV-cache is. 
+
+Read. A query is projected from the frame summary and applied to the fast weights: 
+
+qt = θQzt ∈ Rdk , ot = q⊤
+
+t Wt ∈ Rdv ,
+
+implemented as torch.einsum("bk,bkv->bv", q, W) . The read ot is the memory output passed to the action head; it is the realized read of the state Zt.
+
+Inner objective and update rule. The fast weights store an associative key →value map. With key kt = θK zt and value vt = θV zt, the self-supervised inner loss is the TTT-Linear / delta-rule reconstruction: 
+
+Linner 
+
+t (W ) = k⊤
+
+t W − vt 22.
+
+One test-time-training step with a learned decay then updates the state: 
+
+Wt = (1 − α) Wt−1 − η ∇W Linner 
+
+t (Wt−1)where the gradient of the linear delta rule is available in closed form, ∇W Linner 
+
+t = 2 kt(k⊤
+
+t Wt−1 −vt), so no inner autograd loop is needed. The scalars are meta-learned (outer loop) and kept in range 8by reparameterization: the inner learning rate η = exp (ηraw ) > 0 and the forgetting gate 
+
+α = sigmoid( αraw ) ∈ (0 , 1). 
+
+Why memory bytes is constant (O(1) inference-state VRAM). The only tensors carried across control steps are W of shape [ B, d k, d v] and the transient previous read of shape [ B, d v]. Neither depends on t. Hence: 
+
+memory bytes (B, dtype) =  B d kdv + B d v
+
+ · element size (dtype) ,
+
+a pure function of ( dk, d v, B, dtype ) and independent of the number of steps . In the dedicated batch= 1 horizon-stress configuration ( dk=dv=32, B= 1, fp32; stress endless.py ,
+
+sparse recall ) this evaluates to exactly (32 ×32 + 32) ×1×4 = 4 ,224 bytes; the sweep’s per-budget state is larger but likewise constant in T . This is the constant-VRAM property verified empirically at 100 k steps on a real L40S GPU ( §6.2). The claim applies to the inference state only : training-time activation memory is O( T ) under backpropagation through time, as in any recurrent network. 
+
+3.3 The surprise / action-error write gate 
+
+Reading happens every control tick (an action is required at every tick), but writing , firing the TTT update above, is gated. A learned binary surprise gate gt ∈ { 0, 1} decides whether step t
+
+carries enough action-relevant novelty to be worth a write; most embodied steps are uninformative and skip the write, leaving the state unchanged. 
+
+Surprise signal. The surprise scalar is the magnitude of the current inner prediction error (how poorly the present fast weights already explain the incoming frame), normalized by a running mean/std: 
+
+st = normalize  Linner  
+
+> t
+
+(Wt−1).
+
+Gate. A small MLP consumes the frame summary, the previous read, and the surprise scalar and emits a logit: 
+
+ℓt = GateMLP([ zt, o t−1, s t ]) , pt = sigmoid( ℓt/τ ).
+
+The binary decision is made differentiable with a straight-through estimator by default (hard 
+
+{0, 1} in the forward pass, soft sigmoid gradient in the backward pass: gt = 1[pt > 0.5] + ( pt −
+
+detach (pt))) or, optionally, a Gumbel-sigmoid relaxation that injects logistic noise during training and is deterministic at eval. 
+
+Multiplexed state update. The gate selects between the write branch and the carry-over branch: 
+
+Wt = gt · TTT( Wt−1, z t) + (1 − gt) · Wt−1
+
+so when gt = 0 the state is carried over byte-for-byte and no write traffic is incurred. The order within a step is read-then-gated-write, reflecting the read/write asymmetry: every tick reads, only surprising ticks write. 
+
+Writes-per-second budget. A one-sided sparsity penalty targets a write rate ρ (default 
+
+write target rho = 0 .15), penalizing only overshoot of the realized soft write rate E[pt]: 
+
+Lwrite =  ReLU( E[pt] − ρ)2.
+
+The penalty is one-sided so a genuinely hard task may write more if the action loss demands it; it only prevents the gate from writing every step. Sweeping ρ traces the writes-per-second (bandwidth) axis; the gate’s selectivity is illustrated in §6.9. 9Algorithm 1 AURA-Mem: Surprise-gated fast-weight memory update (one step) 
+
+Require: Observation encoding zt, state Wt−1, previous read ot−1, budget ρ 
+
+> 1:
+
+Read: qt ← θQzt; ot ← q⊤ 
+
+> t
+
+Wt−1 
+
+> 2:
+
+Surprise: st ← normalize  ∥k⊤ 
+
+> t
+
+Wt−1 − vt∥22
+
+ where kt = θK zt, vt = θV zt 
+
+> 3:
+
+Gate: ℓt ← GateMLP ([ zt, o t−1, s t]); pt ← sigmoid (ℓt/τ ); gt ← 1[pt > 0.5] (straight-through in backward)  
+
+> 4:
+
+Write (conditional): ∆t ← 2 kt(k⊤ 
+
+> t
+
+Wt−1 − vt) (closed-form delta-rule gradient)  
+
+> 5:
+
+W new  
+
+> t
+
+← (1 − α) Wt−1 − η ∆t (TTT step)  
+
+> 6:
+
+Wt ← gt · W new  
+
+> t
+
++ (1 − gt) · Wt−1 (gated carry-over)  
+
+> 7:
+
+Action: ˆAt ← ActionHead( ot)
+
+Ensure: Updated state Wt (same shape as Wt−1; O(1) inference-state VRAM), read ot, action ˆAt
+
+3.4 The action-IB training objective 
+
+The state is trained end-to-end against a closed-loop action objective, not a generic reconstruction loss. ActionIBHead treats the memory read ot as parameterizing a stochastic bottleneck code and predicts the action chunk from it: 
+
+μt = to mu( ot), log σ2 
+
+> t
+
+= to logvar( ot), ˜zt = μt +σt ⊙ϵ (ϵ ∼ N (0 , I )) , ˆAt = ActionHead(˜ zt),
+
+using the reparameterization trick in training and the mean μt at eval. The full training objective (outer loop, total loss ) is: 
+
+L = Laction + β LIB + γeff Lwrite 
+
+with each term doing one job: 
+
+• Laction (action utility; control-sufficiency driver). Masked cross-entropy of the predicted action against the expert action on query/decision steps only. This term supplies the 
+
+I(Z; action ) “keep what matters for control” pressure, forcing the state to retain action-relevant information. This is the explicit contrast with token-utility : a token-loss twin trains the same gate architecture on a token/LM-reconstruction loss (the learned token gate 
+
+baseline). 
+
+• β LIB (rate / compression term). Variational KL between the bottleneck posterior and a Gaussian prior, KL  N (μt, σ 2 
+
+> t
+
+) ∥ N (0 , σ 2prior ), which upper-bounds I( history ; Z). Minimizing 
+
+Laction + β LIB realizes the control-sufficient information bottleneck [ 1, 55 ]. Consistent with 
+
+§4, this IB term is a compression knob / training objective , not a sufficiency certificate. 
+
+• γeff Lwrite (write sparsity). The one-sided write-rate penalty of §3.3, which holds the gate to the writes-per-second budget. γeff is ramped 0 → γ over the first 60% of training to prevent gate collapse before the gate has learned which steps are action-relevant. Defaults: β = 10 −3, γ = 3 × 10 −3, ρ = 0 .15, σprior = 1. The full algorithm is summarized in Algorithm 1. 
+
+3.5 The elastic state knob: state size N as the Pareto axis 
+
+AURA - Mem exposes a single capacity knob reported in physical units. The knob is the retained-state size M , measured in bytes , governed by the bounded state dimension ( dk, d v). Because the state shape is fixed ( §3.2), M = memory bytes is a constant independent of horizon, which is precisely why bytes (not “% of a growing cache”) is the honest axis. Two coupled axes result: (1) state bytes M , set by ( dk, d v), where larger M lifts success toward the full-history upper 10 AURA-Mem     
+
+> O(1) state
+> W
+> z1
+> W
+> z2
+> skip
+> W
+> z3
+> skip
+> W
+> z4
+> write
+> W
+> z5
+> skip
+> W
+> z6
+> write
+> W
+> z7
+> skip
+> W
+> z8
+> skip
+> → const. bytes
+> KV cache
+> O(T) state
+> +1
+> +2
+> +3
+> +4
+> +5
+> +6
+> +7
+> +8
+> → grows w/ T
+> Constant-shape recurrent state with sparse writes vs. a step-indexed growing cache
+> write ( gt= 1) skip ( gt= 0)
+
+Figure 3: O(1) constant-shape state vs. growing KV-cache across a long episode. 
+
+Top: AURA -Mem unrolled over T steps: the fast-weight tensor W maintains a fixed shape [dk × dv] at every step; only the contents of W evolve, and only on gate-selected steps (sparse ticks, filled circles); the resident inference-state footprint is 4,224 bytes throughout (formula (dkdv + dv)×batch ×4, dk=dv=32), confirmed constant across 100,000 steps on an NVIDIA L40S GPU. Bottom: a standard attention KV-cache unrolled over the same T steps: each step appends a new row of 256 bytes, growing to 25,600,000 bytes (25.6 MB) at step 100,000, 6,061 × larger than AURA -Mem’s state (the KV contrast uses a local untrained stub with the same dimensions 
+
+dk=dv=32, fp32, batch= 1; not a trained transformer). Sparse writes (4.98–9.19 × fewer than write-every-step, across state budgets N = 32–64) further reduce DRAM/HBM write traffic beyond the O(1) state-size advantage. (O(1) refers to the carried inference state only; see §3.2.) bound at higher resident-memory cost; and (2) writes per second , set by the write-rate target ρ,where lower write rate cuts memory-bandwidth at some success cost. Throughout the experiments we hold ρ fixed and sweep M , tracing a one-dimensional curve through the (success, bytes, writes/sec) surface; we do not claim a full two-dimensional Pareto sweep. 
+
+# 4 Theory: an action-sufficiency value-loss bound 
+
+We ground the analysis in the approximate-information-state (AIS) framework of Subramanian et al. [49] . We do not claim a new sufficiency theorem ; the novelty of the paper is the method (surprise-gated TTT fast-weight memory trained against an action-utility objective) and in instantiating, then empirically measuring, an action-sufficiency value-loss bound for the embodied-VLA memory setting. All mathematics below is standard, an instantiation of Subramanian et al. [49], and is re-derived for completeness. 
+
+4.1 Setup and the compressed memory state 
+
+The partially observed system ( St, A t, Y t, R t, γ ) was defined in §3.1. The compressed memory state is Zt = σt(Ht) ∈ Z , where ( Z, d ) is a Polish metric space and σt is the learned, recurrent encoder. In our system Zt is the gated TTT fast-weight state. We attach two learned heads: a reward/action head ˆr : Z × A → R and a latent-transition head ˆP : Z × A → ∆( Z). We require (and our recurrent encoder satisfies) that Z updates in a state-like manner : Zt+1 =ˆϕ(Zt, Y t, A t). This is condition (AP2a) of Subramanian et al. [49] : the “one fixed-size state, updated recurrently” property that gives O(1) inference-state memory. 11 4.2 The AIS conditions ( ε and δ)
+
+Fix a class F of uniformly bounded measurable functions on Z and let dF be the associated 
+
+integral probability metric (IPM) dF (μ, ν ) := sup f ∈F
+
+R f dμ − R f dν . Total variation (TV) and Wasserstein-1 are both IPMs. 
+
+Definition 4.1 (( ε, δ )-AIS; Subramanian et al. 49 , Def. 7) . The tuple ( σ, ˆP , ˆr) is an ( ε, δ )-approximate information state generator if for every reachable history–action pair ( ht, a t), with zt := σt(ht): 
+
+(AP1): reward/action-value prediction ( ε condition). 
+
+E[Rt | Ht = ht, A t = at] − ˆr(zt, a t) ≤ ε. 
+
+(AP2): self-prediction / next-AIS prediction ( δ condition). Let μt(·) := P(Zt+1 ∈ · | 
+
+Ht = ht, A t = at) be the true law of the next compressed state given the full history, and 
+
+νt(·) := ˆP (· | zt, a t) the learned latent-transition prediction. Then dF
+
+ μt, ν t
+
+ ≤ δ.
+
+4.3 Bound and proof 
+
+Assumption 4.2 (Regularity) . (A1) Rewards are bounded: Rt ∈ [Rmin , R max ] a.s. (A2) dF is an IPM. (A3) The surrogate value function ˆV ∗ has finite Minkowski functional LV := ρF ( ˆV ∗) < ∞
+
+w.r.t. F . (A4) Time-homogeneity: σ, ˆP , ˆr are time-homogeneous and (AP1)–(AP2) hold with time-independent ( ε, δ ). (A5) Existence on the reachable set: (AP1)–(AP2) hold over the reachable/visited ( ht, a t). 
+
+Theorem 4.3 (Action-sufficiency value-loss bound; instantiation of Subramanian et al. 49 ,Thm 9/27) . Under Assumptions 4.2, let (σ, ˆP , ˆr) be a time-homogeneous (ε, δ )-AIS generator, let 
+
+ˆV ∗ be the fixed point of the surrogate Bellman operator on (Z, ˆr, ˆP , γ ), and let πZ = ˆπ ◦ σ be the induced greedy policy with LV := ρF ( ˆV ∗). Then: 
+
+(i) Value-function approximation. For all reachable ht, a t,
+
+Vt(ht) − ˆV ∗(σt(ht)) ≤ α, α := ε + γ L V δ
+
+1 − γ .
+
+(ii) Closed-loop policy loss. For all reachable ht, a t,
+
+V ∗ − V πZ 
+
+> ∞
+
+≤ 2α = 2 ( ε + γ L V δ)1 − γ .
+
+Proof. Step 1 (dual IPM inequality). For any bounded f and μ, ν ∈ ∆( Z), the Minkowski functional satisfies | R f dμ − R f dν | ≤ ρF (f ) dF (μ, ν ). Apply with f = ˆV ∗ and (AP2): dF (μt, ν t) ≤ δ, giving 
+
+|E[ ˆV ∗(Zt+1 ) | ht, a t] − R ˆV ∗ dν t| ≤ LV δ.
+
+Step 2 (one-step Bellman mismatch). At any reachable ( ht, a t), write zt = σt(ht). By (AP1) and Step 1: |(B ˆV ∗)( ht, a t) − ( ˆB ˆV ∗)( zt, a t)| ≤ ε + γ L V δ =: η.
+
+Step 3 (contraction). Let α = sup h |V ∗(h) − ˆV ∗(σ(h)) |. Since V ∗ = BV ∗ and using Step 2 and the γ-contraction of B: α ≤ γα + η, so α ≤ η/ (1 − γ). 
+
+Step 4 (policy loss, factor of 2). By the standard performance-difference/greedy argument applied to πZ (greedy w.r.t. ˆQ∗), both the overestimation and underestimation of value are bounded by α, giving the 2 α factor. This matches Subramanian et al. [49] Thm 9/27 exactly. The full step-by-step proof is reproduced in Appendix A.1. 
+
+Remark 4.4 (Tighter bound) . The transition term in Step 2 is upper-bounded via LV δ; the tight quantity is the realized one-step value-prediction residual ∆ ∗( ˆV ∗) ≤ LV δ (Subramanian et al. 49 ,12 Remark 11). One may report α = ( ε + γ ∆∗( ˆV ∗)) /(1 − γ) when ∆ ∗ is measured directly, which is never looser than the LV δ form. We report this tighter form in §6.6 where measured, and discuss its loose-at-scale behaviour in §7. 
+
+4.4 Empirical certification 
+
+The bound’s hypotheses (AP1, AP2) are sup-errors over the reachable set. Our certification estimates related quantities by Monte Carlo on the visited distribution. Specifically, we report: 
+
+• ε (AP1 proxy): the action-prediction error of the bounded state vs. the oracle on query steps. 
+
+• δ (AP2 proxy): the IPM distance between the policy and the EMA-teacher next-state/action distributions on query steps (self-consistency diagnostic). 
+
+• The numerically instantiated LV -loaded bound 2( ε + γL V δ)/(1 − γ), with LV from the value head. 
+
+Important scope. These are empirical on-policy diagnostics , not worst-case bounds over all possible state sequences. The structural form of the bound is exact (an instantiation of Subramanian et al. 49 ), but it is loose at current scale ; the coverage caveat (Assumption A5) applies, so the certificate does not extend to distribution shifts at deployment. We do not claim the Monte-Carlo readout equals the AIS premise, and we do not claim a novel theorem or a formal guarantee. 
+
+4.5 What we do NOT claim 
+
+1. No MI sufficiency theorem. We do not assert that a mutual-information deficit implies a value-loss bound. The guarantee is carried by the worst-case prediction-error premises (AP1, AP2), not by mutual information. 2. No claim of exact sufficient statistic. We claim approximate sufficiency with a quantified loss that vanishes only as ( ε, δ ) → 0. 3. No novelty of the bound. The value-loss bound is Subramanian et al. [49] (Thm 9/27); we instantiate and measure it. 4. No off-distribution guarantee. (A5) holds only over the reachable/visited distribution. 5. No formal guarantee at current scale. As reported in §6.6 and §7, the instantiated bound is numerically vacuous at the present experimental scale; we present it as a methodology demonstration. 
+
+# 5 Experiments 
+
+5.1 Tasks 
+
+All full-scale experiments use synthetic memory-stress tasks implemented in tasks.py . There is no real-world data and no pre-training on an external corpus. 
+
+noisy long recall (primary memory benchmark). NoisyLongRecallTask : multi-binding associative recall in a long, distractor-heavy stream. The policy must hold multiple simultaneous key →value bindings; bindings can be overwritten (latest-write-wins); distractors pad the stream. Neither accuracy nor capacity trivially saturates for feasible state budgets and training steps. Hard config (used for the non-saturating sweep): nkeys =16, nvals =8, nbindings =16, nqueries =8, distractor prob=0 .5, overwrite prob=0 .4, T =128, 4,000 training steps, chance floor 1 /8 = 0 .125. 13 sparse recall (mechanism / rate-knob illustration). SparseRecallTask : a long, highly redundant stream where only rare “event” tokens carry decision-relevant information. Used to illustrate the gate’s selectivity and the rate-knob trade-off ( §6.9). Parameters: nsymbols =4, event prob=0 .10, query frac=0 .4, T =40. 
+
+Honesty note. On easy/saturated configurations, all non-trivial variants reach ≈ 1.0 accuracy. The differentiating axis is then write bandwidth (writes/sec) and constant VRAM, not raw accuracy. The primary claim is: AURA -Mem matches the best O(1) baseline’s accuracy at 4.98–9.19 × lower write-rate; budget-matched na¨ ıve gate schedules fail. 
+
+5.2 Baselines and variants 
+
+All eight variants are parameter-matched within ±5% of ours (verified by report params.py ;full counts in Appendix B.2). 
+
+• ours / AURA -Mem [the method ]: surprise-gated action-IB fast weights. O(1) inference-state VRAM. Learned, action-utility surprise gate. 
+
+• write every step : AURA -Mem fast weights, gate forced ON every step. O(1) inference-state VRAM, always writes. 
+
+• fixed size state : same fast-weight shape as ours , no gate, writes every step. The strongest O(1) baseline; isolates the gate contribution. (Its uses action ib configuration flag is dead metadata: it receives the identical β LIB term as ours .) 
+
+• full recurrence : a GRU with a fixed-size hidden state (O(1) inference-state VRAM); writes its hidden state every step. The hidden state has constant shape (it does not grow with the episode) but, unlike AURA-Mem, it is never write-gated. 
+
+• random write : AURA - Mem fast weights, random schedule at matched mean rate ρ (signal-swap control). O(1) inference-state VRAM. 
+
+• periodic write : AURA -Mem fast weights, fixed periodic schedule at matched ρ (control). O(1) inference-state VRAM. 
+
+• learned token gate : AURA - Mem fast weights + gate trained on next-token / reconstruc-tion loss rather than action utility (intended token-utility comparator). O(1) inference-state VRAM. 
+
+• no memory : feed-forward only, zero state (chance floor). Never writes. 
+
+5.3 Metrics 
+
+• Success (primary): masked argmax accuracy on decision/query steps only. Chance floor: 1/n vals =0 .125 (hard config). 
+
+• Writes/sec : E[gt] × control hz (fixed 20.0). 
+
+• Memory bytes : policy.memory bytes(batch) , constant for O(1) variants. 
+
+• ε (diagnostic) : action-prediction error proxy. 
+
+• δ (diagnostic) : IPM distance between policy and EMA-teacher action distributions on query steps. 
+
+5.4 Experimental protocol 
+
+Hardware. H100 SXM5 via Modal for accuracy/bandwidth sweeps; the O(1)-VRAM measure-ment uses a real L40S GPU (run 20260530-endless-100k ). 14 Software. Python 3.11; PyTorch 2.3.1; NumPy 1.26.4. All cells deterministic given the same seed (triple seed setting: random , numpy , torch ). 
+
+Seeds. Up to 7 seeds {0, . . . , 6} per cell; governance floor ≥ 5. Where a cell has fewer committed seeds we disclose n explicitly. 
+
+State budgets. The state budget N denotes the memory dimension dk = dv; parameter count scales with N , and at each budget the five parity variants (AURA - Mem, fixed size state ,
+
+write every step , random write , periodic write ) are exactly parameter-matched (identical totals, not ±tolerance; see Appendix B.2). We sweep N =dk=dv ∈ { 16 , 32 , 64 } (main sweep) and 
+
+{8, 16 , 24 , 32 } (hard sweep), reporting inference state in physical bytes. 
+
+Training. 4,000 gradient steps per cell; AdamW, lr = 3 × 10 −3; gradient clip max norm= 1.0; EMA teacher decay 0 .95. 
+
+Statistical testing. Reported CIs are 95% t-intervals over seeds. Paired bootstrap CIs with 10,000 resamples for head-to-head comparisons. A gate-attribution claim requires a CI excluding 0 ( p < 0.05). 
+
+Main figures. Figure 4 shows the bandwidth frontier; Figure 5 shows hard-task accuracy vs. state budget; the extended 100k-step horizon-stress detail (VRAM vs. horizon, the O(1) measurement) is in Appendix Figure 14; Figure 6 shows the accuracy-vs-bytes frontier. 
+
+# 6 Results 
+
+6.1 Write-bandwidth frontier (primary claim) 
+
+The write-bandwidth results across all variants and state budgets are given in Table 2 (run 
+
+lean-20260530-1449 , H100, noisy long recall ). At state budget N = 64 ( dk=dv=64), AURA -Mem achieves 9.19 × fewer writes per second (ours: 2 .18 ± 0.55 writes/s; dense write-every-step: 20 .0 writes/s) at statistically identical task success (ours 1 .000 ± 0.000; dense 0 .9995 ± 0.0015; ∆ acc=+ 0.0005, CI includes 0). This is a fair, exactly parameter-matched comparison (parameter-matched on total count; AURA -Mem carries a +41 .9% gradient-active asymmetry, +6 ,337 params, disclosed in the parameter-accounting discussion): at N =64 both AURA - Mem and the dense 
+
+fixed size state / write every step baselines have an identical total of 55,111 parameters (Appendix B.2); the 9 .19 × is a 55,111-parameter AURA -Mem versus an identically-sized 55,111-parameter dense baseline. We disclose that this N = 64 result for AURA -Mem rests on n= 3
+
+seeds ; the N = 16 and N =32 cells provide fuller seeding ( n= 6 and n=5) at the cost of a larger accuracy delta versus the dense reference (∆ acc= −0.099 and −0.045 respectively). Across state budgets N = 32–64 the write-reduction range is 4.98–9.19 × (7 .13 × at N =16, 4 .98 × at N =32, 9.19 × at N =64). The write-reduction ratio is non-monotone in N because it is the ratio of two learned, budget-dependent write rates: AURA - Mem’s gate fires more conservatively at some budgets than others, while the dense baseline writes every step by construction. The N =32 cell additionally exhibits a wide write-rate confidence interval across seeds, reflecting genuine seed-to-seed variability in the learned gate threshold at that budget rather than a systematic trend. We therefore report the full per-budget range (4.98–9.19 ×) rather than a single point estimate, and anchor the conservative claim on the N =32 result (4 .98 ×, n=5). 
+
+The gain is attributable to the action-utility gate signal, not the write budget. Budget-matched na¨ ıve gate schedules fail at the same write rate: random write scores 0 .365–0 .368 success and periodic write scores 0 .366–0 .375 (7 seeds each), versus AURA -Mem’s 1 .000 at N = 64. This 15 10 −2 10 −1 10 0 10 1 
+
+> Write bandwidth (writes s −1 , log scale)
+> ←lower = less energy / wear / bus cost
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Task success rate
+> Pareto-efficient region
+
+Write-bandwidth vs. accuracy frontier (N=64) 
+
+> Fixed-size state
+> Full recurrence
+> Learned token gate
+> No memory
+> Periodic write
+> Random write
+> Write-every-step
+> AURA-Mem (ours)
+> [HERO] 9.19× fewer writes
+> vs. write-every-step
+
+Figure 4: Write-bandwidth vs. accuracy frontier (noisy long recall , T =96, N =64, 4,000 training steps; Wong colorblind-safe palette; error bars: 95% t-interval). Each point is one variant’s mean task success plotted against its mean write bandwidth (writes/sec, log scale) at the highest evaluated state budget ( N =64); lower bandwidth is preferable for DRAM/HBM wear and energy cost. AURA -Mem ( blue star ) achieves 9.19 × fewer writes per second than the write-every-step reference (ours: 2 .175 ± 0.551 writes/s, n= 3 seeds; dense: 20 .000 writes/s) at statistically indistinguishable task success (∆ acc=+ 0.0005), while random-write and periodic-write schedules at comparable bandwidth score ≈0.366 success (vs. ours 1 .000). The learned token gate variant (sky-blue triangle) is a collapsed comparator ( g=0 always, writes/sec = 0 .000, success ≈ 0.257) and should be read as a broken baseline, not a fair ablation; the N = 64 ours result rests on n= 3seeds and the task is saturated at this budget (both ours and write-every-step reach ≈1.000), so bandwidth efficiency rather than an accuracy gap is the meaningful discriminant. is the signal-swap control: holding the write budget fixed and swapping the action-utility signal 
+
+for a content-blind schedule destroys the accuracy, isolating the gain to what the gate chooses to write rather than how often it writes. The no memory floor sits at 0 .254–0 .257 (7 seeds, consistent with chance 0 .25). The intended token-utility comparator, learned token gate , collapsed to a degenerate state: g=0 at every step (writes/sec = 0 .000), producing results identical to no memory 
+
+at N =16 (0 .257 ± 0.012) and high-variance values at larger budgets (0 .444 ± 0.589 at N =32; 0.494 ± 1.090 at N = 64). We therefore report it as a broken comparator , not as evidence that action-IB beats a functional token-loss objective; that isolated comparison is discussed in §6.8 and 
+
+§7. 
+
+Scope. The write-bandwidth advantage is established on the bandwidth and VRAM axes only; per-step wall-clock latency has not been profiled in the current experiments ( §7). 
+
+6.2 O(1) constant inference-state VRAM (secondary claim) 
+
+Over a 100,000-step endless rollout on a real L40S GPU (the dedicated horizon-constancy stress test stress endless.py , task sparse recall , batch= 1, dk=dv=32; run 20260530-endless-100k ), the AURA -Mem fast-weight inference state remains flat at 4,224 bytes across all steps. This figure is formula-derived: ( dkdv + dv) × batch × 4 = (32 ×32 + 32) ×1×4 = 4 ,224 bytes, confirmed constant across all 500 logged checkpoints. This is the batch= 1 horizon-stress configuration, not the sweep: the sweep’s per-budget inference state is larger (e.g. 69,632 / 270,336 / 1,064,960 bytes 16 8 16 24 32 2 × 10 1 3 × 10 1
+
+> State dimension N (log scale)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Task success rate
+> Accuracy at matched state budget [HARD task]
+> AURA-Mem (ours)
+> Full recurrence
+> Fixed-size state
+> Write-every-step
+> No memory
+> Learned token gate
+> Random write
+> Periodic write
+
+Figure 5: Task success rate vs. state budget N on the hard noisy long recall con-figuration ( nkeys =16, nvals =8, nbindings =16, distractor= 0 .5, overwrite= 0 .4, T =128; up to 6 seeds per cell; chance floor 0 .125; shaded bands: 95% t-CI). AURA -Mem (solid blue) matches 
+
+fixed size state (solid green) at every tested budget ( N ∈{ 8, 16 , 24 , 32 }): accuracy gaps are ∆∈{− 0.016 , +0 .023 , +0 .006 , +0 .007 }, with all Welch-t and bootstrap 95% CIs including zero (parity, not superiority). full recurrence (orange, write-every dense GRU with fixed hidden state) collapses to 0 .25–0 .38 success, far below parity and approaching the chance floor of 0 .125 at small budgets, demonstrating that dense writes do not automatically confer better task perfor-mance on the hard configuration. The N =16 AURA -Mem point is 0 .962 ± 0.023 ( n= 6 healthy seeds); a single seed-1 collapse reproduces on rerun (both runs ≈0.117), a genuine reproducible bad-seed failure that we exclude and disclose rather than silently drop. learned token gate 
+
+collapses to g=0 ( ≈ chance) at all budgets and is a broken comparator, not a meaningful ablation. at N =16 /32 /64, batch= 64) but is likewise constant in the horizon T ; the O(1) claim concerns constancy in T , not magnitude. The full CUDA allocation ( torch.cuda.max memory allocated )plateaus at 43,051,008 bytes with zero variance over the final 80,000 steps; this is a distinct quan-tity (total GPU peak including weights, activations, and transient buffers) and must not be conflated with the 4,224-byte inference-state formula. A local growing-KV stub with identical dimensions (dk=dv=32, fp32, batch= 1), computing KV growth analytically at 256 bytes/step, reaches 
+
+25,600,000 bytes at 100,000 steps, a 6,061 × larger footprint (25 ,600 ,000 /4,224 = 6 ,060 .6). This long-horizon 6 ,061 × figure is an analytic extrapolation against a matched-dimension KV stub at 100,000 steps (no trained model is run that far). It is no longer our only KV comparison, however: the trained head-to-head in §6.3 shows that a trained , position-aware transformer matches AURA -Mem’s accuracy precisely at these byte counts, so the growing-KV side of the contrast is now a competent baseline, not a strawman, and the separation is a property of where the bytes go (constant vs. linear), not of baseline weakness. The growth is by construction: the KV-cache appends a row at every step, whereas the AURA -Mem state shape is fixed at initialization. The extended 100,000-step measured trajectory is shown in Appendix Figure 14. As established in 
+
+§3.2, O(1) here refers to the carried inference state only; training is O( T ) BPTT. 
+
+6.3 Trained KV-cache head-to-head (primary upgraded claim) 
+
+The O(1)-VRAM separation above is most defensible when the growing-KV side is a trained, compe-tent transformer rather than an untrained stub. We therefore trained a position-aware growing-KV attention core head-to-head against AURA - Mem on the sparse recall task ( nsymbols =4, chance 0.25; event probability 0 .20; dk=dv=32) across horizons T =128–1024, with n= 3 seeds per cell (a small seed count, stated plainly). Success is masked argmax accuracy on query steps. The KV 17 10 0 10 1 10 2 10 3 10 4 10 5 10 6   
+
+> Memory footprint (bytes, log scale)
+> ←lower = more memory-efficient
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Task success rate
+> AURA-Mem (ours)
+> Accuracy vs. memory-footprint frontier (N=64, fixed ρ= 0.15 )
+> Pareto front
+> Fixed-size state
+> Full recurrence
+> Learned token gate
+> No memory
+> Periodic write
+> Random write
+> Write-every-step
+> AURA-Mem (ours)
+
+Figure 6: Accuracy vs. memory-footprint frontier (noisy long recall , T =96, N = 64; Wong palette; error bars: 95% t-CI). Each point plots a variant’s mean task success against its mean per-step memory footprint (bytes, log scale); upper-left is preferable (high accuracy, low memory). AURA - Mem (blue star, annotated) achieves task success 1 .000 ± 0.000 ( n= 3 seeds) at a constant state footprint of 4 ,224 bytes, 6 ,061 × smaller than the KV-cache reference at 100,000 steps, while write-every-step and fixed size state achieve comparable accuracy only at higher memory cost. Random-write and periodic-write schedules are memory-matched to AURA - Mem but score ≈0.365, confirming that low bandwidth alone does not suffice; the learned action-utility gate signal is necessary. The write-rate target ρ=0.15 is held fixed: this is a one-dimensional curve through the (success, bytes, writes/sec) surface, not a full two-dimensional Pareto sweep. The N = 64 ours result rests on n=3 seeds; memory footprints are formula-derived constants confirmed over the 100k-step rollout (extended detail in Appendix Fig. 14). baseline is given relative-age positional encoding on its keys , a standard transformer component: without it a content-only attention core cannot solve “latest-event-wins” recall and would be an unfair strawman. The positional information is added at attention time and does not change the stored-state byte count, so the O(1)-vs-growing-KV byte contrast is untouched. The two models reach accuracy parity (Table 3). Both sit at ≈1.000 across all horizons; the only AURA -Mem points measurably below saturation are T =768 (0 .9986 ± 0.0005) and T =1024 (0 .9923 ± 0.0062, seeds {0.9848 , 0.9919 , 1.0000 }, where one seed dipped before a longer-training seed reached 1 .0000), and these gaps are within the small-seed spread. We frame the grid as parity at constant VRAM, not as AURA -Mem beating the trained transformer. The decisive difference is state size, not accuracy: AURA - Mem’s inference state is constant (270 ,336 bytes at the batch-64 training configuration, 4 ,224 bytes at batch 1), independent of T , whereas the trained KV cache grows linearly to 16 .78 MB at T =1024 (batch 64) / 262 ,144 bytes (batch 1). For reference, the best O(1) baseline ( fixed size state ) and a dense write every step control both score 1 .0000 at T =128. 
+
+Memory separation (deterministic, real tensor measurement). We measured the carried state of both modules directly ( memory bytes() on the instantiated module, KV cache rolled forward to T tokens; batch 1, fp32). AURA -Mem holds at 4,224 bytes constant at every T ,while the trained KV cache grows linearly: 32 ,768 bytes at T =128 (7 .76 × ours), 131 ,072 at T =512 (31 .0×), 262 ,144 at T =1024 (62 .1×), 1 .28 MB at T =5,000 (303 ×), and 2 .56 MB at T =10 ,000 (606 ×). The crossover, the horizon at which the KV cache first exceeds AURA -Mem’s constant 18 Table 2: Write-bandwidth frontier on the primary memory benchmark ( noisy long recall ,main config: Nk=16, Nv=8, T =96, 4 000 training steps). Results shown for three state-budget levels ( dk=dv ∈ { 16 , 32 , 64 }); 7 seeds except ours (n= 6 at dk=16, n= 5 at dk=32, n=3 at 
+
+dk=64). AURA-Mem matches dense accuracy while achieving 4.98–9.19 × fewer writes per second. Budget-matched naive gate schedules (random, periodic) collapse to ≈0.366 success; the learned token gate ( token-gate baseline) also collapses (gate →0, see text). Parity variants are 
+
+exactly parameter-matched at each state budget ( nparams =20 ,935 /30 ,279 /55 ,111 at N = 16 /32 /64; Appendix B.2). Writes/sec capped at control hz= 20 (write-every-step baseline). Source: run tag 
+
+lean-20260530-1449 .                                                                                                                                  
+
+> Variant Gate type Success (mean ±95% CI) Writes/sec
+> dk=16 dk=32 dk=64 (at dk=64)
+> AURA-Mem (ours) Action-utility surprise 0.901 ±0.244 0.955 ±0.125 1.000 ±0.000 2.18 ±0.55
+> write every step Forced ON (no gate) 1.000 ±0.000 1.000 ±0.001 1.000 ±0.002 20 .0
+> fixed size state Forced ON (same cell) 1.000 ±0.000 1.000 ±0.001 1.000 ±0.001 20 .0
+> full recurrence GRU (no fast-weight) 0.883 ±0.140 0.873 ±0.139 0.848 ±0.185 20 .0
+> learned token gate Token-loss gate †0.257 ±0.012 0.444 ±0.589 0.494 ±1.090 0.0 (collapsed)
+> random write Random at ρ0.366 ±0.012 0.368 ±0.010 0.365 ±0.009 2.98 ±0.06
+> periodic write Periodic at ρ0.366 ±0.019 0.375 ±0.017 0.374 ±0.017 2.92
+> no memory None (chance floor) 0.257 ±0.012 0.256 ±0.012 0.254 ±0.020 0.0
+> Write ratio (ours vs dense) 7.13 ×4.98 ×9.19 ×
+> †learned token gate : gate collapsed to g=0 (never writes) at dk=16, producing results identical to
+> no memory ; high-variance at dk=32 ,64. See §6.8 for discussion. 7 seeds {0–6 }for all variants except ours (n=6 at dk=16; n=5 at dk=32; n=3 at dk=64) and
+> learned token gate (n=7 at dk=16; n=4 at dk=32; n=3 at dk=64). 95% CI: t-interval (two-tailed,
+> lean aggregate.py ). H100 on Modal; 44.7 GPU-hours. Although total parameters are matched per budget, AURA-Mem carries a +41 .9% gradient-active parameter asymmetry (21 ,447 vs. 15 ,110; +6 ,337) from the gate/surprise pathway; see §7.
+
+footprint, is near T =17: below it the KV cache is smaller, above it the separation grows without bound (Figure 7). 
+
+One mechanism, two deployment regimes (batch-1 vs. batch-N ). The batch-1 and batch-N byte counts are not two separate findings: they are the same mechanism scaled by the batch factor (×64 between our batch-1 and batch-64 configurations). What differs is the 
+
+deployment regime (Figure 8). In datacenter LLM serving the regime is batch-N : many concurrent requests share the serving hardware, so a KV-cache’s cost is amortized across the batch ( ÷N ) and sessions reset between requests, so the cache never grows unbounded; there, a growing KV-cache is the right tool. Physical AI is the opposite regime, batch-1: a single embodied agent runs one continuous, non-resetting episode, so its KV-cache grows without bound and there is no batch over which to amortize the cost. In that regime O(1) carried state is required, and this is precisely where AURA - Mem applies. Both batch framings are honest; we state the batch explicitly wherever a byte count appears. 
+
+6.4 Trained closed-loop 3-arm panel: does the gate hurt success? 
+
+The sharpest critique of a write-gating mechanism is closed-loop: when the gate is allowed to suppress writes during control, does task success degrade? To answer this directly we ran a trained, end-to-end closed-loop experiment on a real policy. Provenance (all real, no stubs): we collected LIBERO-Long base-policy rollouts with a 10-GPU sharded collection (seed 19 Table 3: Trained KV-cache head-to-head on sparse recall (nsymbols =4, chance 0 .25, dk=dv=32, 
+
+n= 3 seeds; masked argmax accuracy, mean (std)). Both methods reach accuracy parity; only AURA - Mem holds its inference state constant in the horizon T (O(1)), while the trained KV cache grows linearly. Memory bytes are at the batch-64 training configuration. 
+
+Variant T =128 T =256 T =512 T =768 T =1024 O(1)? 
+
+AURA-Mem (ours) 1.0000 0.9999 0.9998 0.9986 0.9923 ✓
+
+(.0000) (.0002) (.0003) (.0005) (.0062) Trained KV (attn) 0.9998 0.9997 0.9999 0.9998 0.9998 ✗
+
+(.0002) (.0004) (.0001) (.0001) (.0000) State bytes (ours) 270 ,336 (constant in T ) ✓
+
+State bytes (KV) 2.10 MB 4.19 MB 8.39 MB 12 .58 MB 16 .78 MB ✗0 200 400 600 800 1000  
+
+> Episode horizon T (control steps)
+> 10 4
+> 10 5
+> 10 6
+> 10 7
+> Carried memory (bytes, log scale)
+> crossover T 17
+> (batch 1)
+> 16.78 MB
+> 262 KB
+> 270 KB const
+> 4,224 B const
+> Memory grows with the robot's life AURA-Mem does not
+> KV-cache, batch 64 (datacenter)
+> KV-cache, batch 1 (robot)
+> AURA-Mem state, batch 64
+> AURA-Mem state, batch 1
+
+Figure 7: Carried-state growth vs. horizon. AURA -Mem’s inference state is constant at 4,224 bytes (batch 1, fp32) at every horizon T , while a growing KV-cache scales linearly with T .The crossover is near T =17; beyond it the separation grows without bound. 0); the collection’s zero-shot success was 15 /150 = 10 .0% (single seed). We aggregated the 15 successful trajectories and trained AURA -Mem together with an always-write KV residual corrector (behavior-cloning residual heads) for 30 epochs; AURA - Mem’s training-time write rate settled at 0.281 against a target ρtrain =0.175. We then evaluated three arms on a held-out evaluation seed (seed eval =999) over tasks {0, 1, 2, 3, 5, 7} with n= 10 episodes per task (60 episodes per arm), a 520-step horizon, on a single NVIDIA A100-40GB (run 20260601-1509-trainshards ). The three arms are: base (no memory writes), kv (always-write growing KV residual), and aura 
+
+(surprise-gated writes). Table 4 reports the result. The headline is that the gate does not hurt success (Figure 9). AURA -Mem matches the base policy’s success exactly (0 .233 = 0 .233) and slightly exceeds the always-write KV arm (0 .217), while issuing 7 .0× fewer memory writes than KV (504 vs. 3 ,541; write rate 0 .142 vs. 1 .000) and holding its inference state constant at 4,224 bytes versus KV’s growth to 906 ,496 bytes (214 .6×
+
+smaller at this query count). Crucially, the trained gate’s deployment write rate (0 .142) fell 
+
+below both its training target ( ρtrain =0.175) and its training-time value (0 .281) without degrading success: under closed-loop control the gate became more selective than it was trained to be, yet task success held. This is direct closed-loop evidence for “memory that knows when to shut up.” 20 Two memory regimes, two economics      
+
+> Why KV-cache works in the datacenter but breaks down on a single robot
+> DATACENTER · CHATBOT SERVING
+> batch = N (hundreds of users in parallel)
+> user 1
+> user 2
+> user N
+> Transformer + KV-cache
+> KV cost is shared
+> across the whole batch
+> cost / user = KV ÷ N
+> Sessions are short. Memory is amortized.
+> Each chat is bounded
+> a few thousand tokens, then the session ends
+> KV grows, but resets
+> the cache is wiped between conversations
+> N users hide the cost
+> linear KV ÷ N looks flat per user
+> PHYSICAL AI · EMBODIED AGENT
+> batch = 1 (one robot, one continuous life)
+> 1 robot
+> 20 Hz control
+> 0.138 s / step
+> VLA + KV-cache
+> cost / agent = full KV
+> no batch to
+> hide behind
+> The episode never ends. Memory never resets.
+> Horizon is unbounded
+> a robot runs for minutes, hours, days not turns
+> KV grows with time
+> +256 bytes every control step, with no reset
+> VRAM is fixed on-device
+> growth eventually overruns the on-robot budget
+> KV-cache is the right tool here. KV-cache breaks down you need O(1) state.
+
+Figure 8: One mechanism, two deployment regimes. The same byte counts scale by the batch factor ( ×64 here); see text. Datacenter serving (batch-N ) amortizes and resets the cache; physical AI (batch-1) does neither, so O(1) state is required. Table 4: Trained closed-loop 3-arm panel on OpenVLA-OFT 7B / LIBERO-Long (held-out seed eval =999, tasks {0, 1, 2, 3, 5, 7}, n= 60 episodes/arm, 520-step horizon, A100-40GB). AURA - Mem matches base success and slightly exceeds always-write KV, at 7 .0× fewer writes and constant memory. Memory bytes are batch-1 inference state; the KV arm’s footprint is the cache grown over the evaluated queries. 
+
+Arm Success ( n=60 ) Writes Write rate Memory Latency (s/step) 
+
+base 14 /60 = 0 .233 0 0.000 4,224 B (const) 0.117 
+
+kv 13 /60 = 0 .217 3,541 1.000 grows to 906 ,496 B 0.119 
+
+aura (ours) 14 /60 = 0 .233 504 0.142 4,224 B (const) 0.117 We state the limits of this result conservatively. The success differences across arms (0 .217–0 .233) are within small-sample noise at n= 60, so the defensible claim is parity of success at a fraction of the writes and constant VRAM , not that AURA -Mem improves task success; absolute success is bounded by the underlying base policy, not by the memory layer. The low absolute success ( ≈ 0.23) reflects our zero-shot, single-seed evaluation regime rather than a policy or harness failure: published OpenVLA-OFT reaches ≈ 0.90–0 .98 on LIBERO-Long under proper matched multi-seed evaluation. Within those limits, this trained closed-loop panel directly answers the closed-loop critique: a learned write-gate can be inserted into a real VLA control loop and deliver constant-memory, low-write operation at success parity with both an always-write cache and the ungated base policy. 
+
+6.5 Real-robot panel: OpenVLA-OFT 7B on LIBERO-Long 
+
+To show that the AURA - Mem mechanism and the AIS measurement run on a real vision- language-action policy rather than a synthetic stub, we ran a closed-loop panel on OpenVLA-OFT 7B 
+
+over LIBERO-Long. The policy loaded and acted in real time on a single NVIDIA A100-40GB 
+
+(vla loaded =True; peak VRAM 16 .08 GB; mean latency 0 .138 s/step) over the official 512-step LIBERO-Long horizon, on 5 tasks × 3 episodes. This panel and the trained closed-loop 3-arm panel of §6.4 share the same A100-40GB harness; this one establishes that the mechanism and AIS measurement run on the real policy, while the former tests the gate’s effect on closed-loop success. The overall closed-loop success rate is 0 .20 (3 /15 episodes): tasks 0, 1, 2 each succeeded 21 base         
+
+> (no memory)
+> KV
+> (always-write)
+> AURA
+> (ours)
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> Closed-loop task success  0.233
+> (14/60) 0.217
+> (13/60)
+> 0.233
+> (14/60)
+> Success: AURA =base, ≥KV
+> base
+> (no memory)
+> KV
+> (always-write)
+> AURA
+> (ours)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Memory write rate (writes / query)
+> 0.000
+> 1.000
+> 0.142
+> 7.0 ×
+> fewer
+> Writes: AURA 7.0 × fewer than KV
+> Trained closed-loop 3-arm panel — OpenVLA-OFT 7B / LIBERO-Long ( n= 60 /arm, held-out seed)
+
+Figure 9: Trained closed-loop 3-arm panel (OpenVLA-OFT 7B / LIBERO-Long; held-out 
+
+seed eval =999, tasks {0, 1, 2, 3, 5, 7}, n= 60 episodes/arm, 520-step horizon, NVIDIA A100-40GB). 
+
+Left: closed-loop task success per arm— base 14 /60 =0.233, kv 13 /60 =0.217, aura 14 /60 =0.233 (n counts annotated). AURA - Mem matches the ungated base policy’s success exactly and slightly exceeds the always-write KV arm. Right: memory write rate— base 0.000, kv 1.000, aura 
+
+0.142 (504 vs. 3 ,541 writes, the annotated 7.0× fewer)—at a constant 4 ,224-byte inference state versus KV’s growth to 906 ,496 bytes. The success spread across arms (0 .217–0 .233) is within small-sample noise at n= 60, so the defensible reading is success parity at a fraction of the writes and constant VRAM , not a success improvement; absolute success is bounded by the underlying zero-shot base policy, not by the memory layer. once (0 .33), and tasks 3 and 4 scored 0 .00. We report this honestly as a zero-shot proof-of-mechanism panel, not a state-of-the-art sweep , and we do not claim AURA - Mem improves robot success: AURA -Mem is a memory/measurement layer, and the success figures here are the underlying policy’s. As noted in §6.4, our low absolute success ( ≈ 0.20–0 .23) reflects the zero-shot, single-seed evaluation regime—not a policy or harness failure—against the ≈ 0.90–0 .98 published OpenVLA-OFT calibration. On the real policy hidden-state stream, we measured the ( ε, δ ) action-information-state premises by hooking the 4 ,096-dim last-layer hidden states ( language model.model.norm forward hook, sequence-mean-pooled), 890 transition tuples. The measured premises are εmean =0.0132, εq90 =0.0259, and δW1 =0.0074. As in the synthetic setting ( §6.6), the instantiated value-loss bound remains 
+
+vacuous at this scale , so we present it as a methodology demonstration of the AIS measurement on a real VLA stream, not a formal guarantee. Finally, AURA - Mem’s O(1) state holds on this real stream at 4,224 bytes constant , confirming the constant-VRAM property transfers from the synthetic benchmarks to a real 7B policy. 
+
+6.6 Action-sufficiency certificate 
+
+We instantiate and measure the bound of §4 on the real shipped checkpoint ( 20260531-0220-ours-s0 ;
+
+noisy long recall , 4,000 steps, H100, seed 0, nparams =55 ,111, inference-state 16 ,640 bytes at 
+
+dk=dv=64). The measured AIS premises are strong on the action-prediction axis: εmean =0.0021 (95% CI [0 .0020 , 0.0023]), εq95 =0.0076 ([0 .0067 , 0.0083]), with self-prediction distance δTV =0.5838 ([0 .5803 , 0.5872]) and δW1 =0.081. The measured one-step value-prediction residual is ∆ ∗
+
+> mean
+
+=0.661 ([0 .647 , 0.676]) and ∆ ∗
+
+> q95
+
+=3 .854 ([3 .634 , 4.050]). 
+
+All instantiated value-loss bounds are vacuous at this scale. The conservative LV -loaded form (guaranteed) evaluates to 52 .69, and even the tight ∆ ∗ form (guaranteed) evaluates to 22 69 .53; both far exceed the trivial value span of 10 .0 that the bounded-reward assumption alone provides. Using empirical (rather than worst-case) constants gives estimated readouts of 1 .70 (loose form, with empirical LV =0.158) and 11 .93 (tight form); these are informative diagnostics, not guarantees . The headline takeaway is that action-prediction sufficiency ε is small while the 
+
+value-loss bound is loose; we present the certificate as a methodology demonstration (instantiating Subramanian et al. 49 ), not as a formal guarantee. These ε, δ, ∆∗ readouts are empirical on-policy diagnostics; distribution shift at deployment is not covered. 
+
+6.7 Hard-task results 
+
+To recover a non-saturated accuracy regime we ran the hard noisy long recall configuration (nkeys =16, nvals =8, nbindings =16, nqueries =8, distractor= 0 .5, overwrite= 0 .4, T =128, chance floor 0.125; run lean-hard-20260530-2036 , 160/160 cells complete). AURA -Mem achieves accuracy at or near parity with the strongest O(1) baseline fixed size state at every budget: N = 8 ours 0.867 at 6 .13 × fewer writes; N = 16 ours 0 .962 ± 0.023 ( n= 6 healthy seeds, ∆ acc=+ 0.0234 versus the dense reference, write-ratio 5 .19 ×); N = 24 ours 0 .989 at 5 .36 ×; and N =32 ours 0 .997 at 5 .95 ×.The N =16 seed-1 collapse reproduces on rerun (the rerun likewise collapsed to 0 .117): this is a genuine, reproducible bad-seed failure of the gate at this budget, not a transient or measurement artifact. We exclude that seed and report the n= 6 healthy seeds above; the excluded seed is disclosed rather than silently dropped. The parity gaps versus fixed size state all have Welch-t
+
+and bootstrap 95% CIs that include zero: AURA - Mem is at parity , not superior, in accuracy, while writing 5 .19–6 .13 × less. The full recurrence baseline (write-every dense GRU with fixed hidden state) collapses to ≈ 0.25, near the chance floor, on this configuration, demonstrating that dense writing does not by itself solve the harder task. Figure 5 plots the full budget sweep. 
+
+6.8 Ablations and gate mechanism 
+
+Variant ablation. Figure 10 compares all variants at N =64 on the main task. The forced-write twins write every step (0 .9995, 20 .0 writes/s) and fixed size state (0 .9996, 20 .0 writes/s) confirm that the fast-weight substrate alone reaches ceiling at this budget; AURA -Mem matches them (1 .000) at 2 .18 writes/s (the 9 .19 × efficiency). Content-blind schedules ( random write 0.365 at 2 .98 writes/s; periodic write 0.374 at 2 .92 writes/s) and the collapsed learned token gate 
+
+(0 .494, n= 3, CI ±1.090; writes/sec 1 .000 ± 4.301: high variance, broken gate) fall far below, and 
+
+no memory sits at the 0 .254 floor. All five variants in this matched-budget comparison are trained with the identical action-information-bottleneck objective ( βL IB , β=10 −3); only the gate signal / write schedule differs, so the IB term is held constant and this ablation isolates the gate signal , not the IB objective, whose separate contribution we measure in the dedicated β=0 ablation below. 
+
+Information-bottleneck ablation. We ran an isolated β=0 ablation on the hard task (run 
+
+lean-hard-ibabl-20260530-2125 , N =8): ours ib (β> 0) scores 0 .867 ± 0.040 versus ours noib 
+
+(β=0) at 0 .692 ± 0.276, a gap of +0 .175. The Welch CI is [ −0.100 , +0 .450] ( p= 0.153) and the bootstrap CI is [+0 .014 , +0 .368]. We read this as borderline positive : the IB term confers a training-stability benefit (lower variance, higher mean), but its write-rate reduction is not statistically significant at this sample size. We do not claim a decisive IB isolation. Figure 11 shows the comparison. 
+
+6.9 Gate-mechanism illustration (single seed) 
+
+To address whether the action-error gate behaves sensibly on a sequential control-style stream, we provide a small mechanism illustration on SparseRecallTask (T =40, nsymbols =4, chance 0 .25; 512 evaluation episodes; single trained seed). This is a mechanism illustration on one synthetic stream with a single training seed, not a robotics benchmark. 
+
+23 0% 20% 40% 60% 80% 100% 
+
+> Task-success rate
+> Full model (AURA-Mem)
+> No write-gate
+> Recon-loss gate
+> Fixed state, no IB
+> No memory
+> 1.00
+> 1.00
+> 0.81
+> 1.00
+> 0.23
+> Ablation: action-utility write-gate contribution
+> Full model
+> Ablated
+
+Figure 10: Variant ablation at N = 64 ( noisy long recall , run lean-20260530-1449 ; error bars: 95% t-CI). Each ablated gate signal is compared at matched state size. The forced-write twins ( write every step , fixed size state ) and AURA -Mem all reach ≈1.000 success, but AURA - Mem does so at 2 .18 writes/s vs. 20 .0 (9 .19 × fewer). Content-blind schedules (random/periodic) collapse to ≈0.37 at matched bandwidth, and learned token gate is a broken comparator ( g→0, high variance). The gate signal , not the write budget , drives the result. 
+
+Gate selectivity. Splitting timesteps by category, the gate fires at psoft =0.829 ± 0.211 on event 
+
+(salient, decision-relevant) steps versus 0 .318 ± 0.248 on distractor (filler) steps, a 2.61 × selectivity ratio (absolute gap +0 .511), and at 0 .236 ± 0.245 on query steps where no new information arrives. The trained policy reaches 0 .982 accuracy while writing only ≈24% of steps on average, consistent with the ≈10% event rate. Figure 12 shows the per-step trace and the aggregate by category. 
+
+Rate knob. Sweeping the write target ρ ∈ { 0.05 , 0.20 , 0.50 , 0.85 } (seed 3, T =40) traces a monotone trade-off with a sharp threshold near the task’s information density: ρ=0.05 collapses the gate (realized write rate 0 .023, accuracy 0 .420, approaching chance); ρ=0.20 enters the correct regime (write 0 .383, accuracy 0 .988); and ρ=0.50–0 .85 saturate (write 0 .467–0 .507, accuracy 0.979–0 .981), because the ≈10% event information is already captured. Figure 13 plots the trade-off. These are single-seed results on a synthetic stream and should not be extrapolated quantitatively to real VLA deployments. 
+
+# 7 Limitations and honest disclosures 
+
+We report the following limitations without mitigation spin. Each maps directly to a scope boundary in the claims ledger and to a specific experimental or theoretical finding. 
+
+1. O(1)-VRAM applies to inference state only; training is O( T ) BPTT. The O(1) memory claim refers exclusively to the inference-time state footprint of the recurrent fast-weight cell. The state is a single matrix–vector pair of fixed dimension dk × dv + dv; at the sweep configuration ( dk=dv=32, batch= 1, fp32) this is exactly 4,224 bytes , computed analytically as ( dk · dv + dv) × batch × 4. This quantity is constant over 100,000 inference steps (run 24 Budget N=8 
+
+> (d_k=d_v=8)
+> Budget N=16
+> (d_k=d_v=16)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> Success rate (mean ± 95 % CI)
+> n=5
+> n=4
+> n=5
+> n=2
+> †ib s1
+> †noib s1
+> Information Bottleneck ablation
+> (noisy_long_recall, seq_len=128, 4000 steps)
+> IB ( β=1e-3)
+> no-IB ( β=0)
+> individual seed
+> collapsed seed (excluded)
+> † Collapsed seeds (writes≈0, succ≈chance) excluded from bar statistics but shown individually (×). noib‑N16: only seeds 0,1,4
+> committed (seeds 2,3 pending); ib‑N16: all 5 seeds committed.
+
+Figure 11: Information-bottleneck ablation (hard noisy long recall , N =8, run 
+
+lean-hard-ibabl-20260530-2125 ). ours ib (β> 0, 0 .867 ± 0.040) vs. ours noib (β=0, 0 .692 ±
+
+0.276); gap +0 .175, Welch p=0.153 (CI [ −0.100 , +0 .450]), bootstrap CI [+0 .014 , +0 .368]. Border-line positive: a training-stability benefit, but the write-rate effect is not significant at this sample size. 
+
+20260530-endless-100k , NVIDIA L40S). It is not torch.cuda.max memory allocated() : the CUDA allocator peak, which includes model weights, activations, and all bookkeeping, measured 
+
+43,051,008 bytes (≈43 .1 MB) and also plateaus (zero variance over the final 80,000 steps); these are distinct quantities that must not be conflated. During training , AURA -Mem uses standard backpropagation through time (BPTT), which retains intermediate activations for the full unroll length T ; training memory therefore scales as O( T ), identically to any recurrent network. The O(1) advantage does not apply to training VRAM. 
+
+2. The accuracy claim is parity with the best O(1) baseline, not superiority. AURA -Mem does not achieve higher task accuracy than fixed size state , the strongest O(1) recurrent baseline. The primary contribution is write-bandwidth efficiency at matched accuracy : 4.98– 9.19 × fewer memory writes per second while maintaining accuracy within confidence intervals of 
+
+fixed size state on both the main task ( T =96) and the hard task ( T =128, 160/160 cells, up to 6 seeds). On the main task, accuracy deltas relative to the dense write reference are ∆ N16 =−0.099, ∆N32 =−0.045, ∆ N64 =+ 0.0005. On the hard task, parity gaps versus fixed size state are 
+
+−0.016, +0 .023, +0 .006, +0 .007; all Welch t-test and bootstrap 95% CIs include zero. Any fram-ing of this work as an accuracy improvement over the best O(1) baseline would be unsupported by the data. 
+
+3. The 9.19 × headline operates on a near-saturated task. The largest write-bandwidth ratio, 9.19 × at N = 64, is measured where AURA -Mem achieves success 1 .000 ± 0.000 and the dense baseline achieves 0 .9995 ± 0.0015: the accuracy gap is 0 .0005, smaller than one standard deviation. At saturation the bandwidth frontier is the only axis of differentiation (the correct and honest framing), but a reviewer checking “what is the accuracy cost?” will correctly note that ceiling performance removes information about accuracy robustness. The hard task ( T =128, chance floor 0 .125) was introduced specifically to recover a non-saturated regime; there full recurrence 
+
+collapses to ≈0.25, and AURA - Mem achieves 5 .19–6 .13 × fewer writes at near-parity accuracy 25 Event 
+
+frames 
+
+Distractor 
+
+frames 
+
+Query 
+
+frames 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Mean gate activation  gt 0.829
+> n=2,204
+> 0.318
+> n=18,276
+> 0.236
+> n=6,480
+> ×2.61 selectivity
+
+Gate selectivity: writes on action-error events 
+
+(sparse_recall task, T = 40, event_prob=0.10)     
+
+> Bars: mean gate activation ± 95 % CI (z=1.96) |selectivity = event / distractor = 2.61× |experiment:
+> vla_mechanism_demo_v3
+
+Figure 12: Action-error gate selectivity on a sequential control stream 
+
+(SparseRecallTask , T =40, nsymbols =4, chance 0 .25; 512 evaluation episodes; single trained seed; error bars: standard error over episodes). Left: a single episode’s per-step soft gate proba-bility psoft (blue) overlaid on event steps (orange shading, ≈10% of steps) and distractor steps (grey shading). Right: mean psoft by step category: the gate fires at 0 .829 ± 0.211 on event steps versus 0 .318 ± 0.248 on distractor steps ( 2.61 × selectivity, ∆ =+ 0.511), and 0 .236 ± 0.245 on query steps. The policy reaches 0 .982 accuracy writing ≈24% of steps. Mechanism illustration on one synthetic stream, single seed; not a robotics benchmark. with fixed size state . The N = 64 headline ratio should be interpreted alongside the hard-task results, not in isolation. 
+
+4. Gradient-active parameter asymmetry: AURA -Mem has +41 .9% more gradient-active parameters than the scheduled-write comparators. At each budget the parity variants share an identical total parameter count (e.g. 20,935 / 30,279 / 55,111 at N = 16 /32 /64; exact match, not a tolerance band, verified by report params.py ). However, the gate mlp (6,337 parameters at the N = 32 reference) is gradient-active only in AURA -Mem ; in write every step ,
+
+fixed size state , random write , and periodic write it is bypassed and receives no gradi-ent. As a result AURA - Mem has 21,447 gradient-active parameters versus 15,110 for 
+
+write every step , a difference of + 6,337 (+41 .9%; figures at the N =32 reference configura-tion). In addition, the GatedTTTState.predictor MLP (8,320 parameters) is a dead module: a backward-pass audit confirms its gradient is None for every variant, including AURA -Mem; it is never invoked in any forward path and inflates all nominal counts by 8,320. The framing “AURA -Mem = write-every-step minus the gate” is architecturally accurate but understates the effective capacity advantage given to AURA -Mem. A conclusive capacity-controlled ablation would require a variant that allocates gate mlp but holds its parameters frozen, which we have not run. We disclose this so readers can assess whether the observed frontier reflects the gating mechanism, the added gate-module capacity, or both. 26 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> Mean write rate (fraction of steps written)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Task success (accuracy on decision steps)
+> ρ=0.05
+> ρ=0.20 ρ=0.50
+> ρ=0.85
+> Demo sweep (4-point ρ grid, seed=3; 50-cell γ sweep pending)
+> Rate-knob sweep: write-rate vs. task success
+> (sparse_recall, T=40, ρ sweep, synthetic control stream — demonstration sweep)
+> AURA-Mem (ours)
+> Chance (1/4 actions)
+
+Figure 13: Write-rate vs. accuracy trade-off under the rate-knob sweep ( SparseRecallTask ,
+
+T =40; ρ∈{ 0.05 , 0.20 , 0.50 , 0.85 }; single seed (seed 3); 350 training steps per run; x: measured write rate; y: accuracy; points labeled by ρ). Below the task’s event density ( ≈10%), the gate collapses (ρ=0.05 → write 0 .023, accuracy 0 .420). At ρ=0.20 the gate enters the correct regime (write 
+
+≈0.38, accuracy 0 .988); further increasing ρ saturates (write 0 .467–0 .507, accuracy 0 .979–0 .981). A tunable bandwidth knob with a sharp threshold near the task’s information density; single-seed synthetic result. 
+
+5. The AIS certificate bound is currently vacuous at this scale; we report it as a methodology demonstration only. Measured on the real shipped checkpoint ( §6.6), the AIS value-loss bound (instantiation of Subramanian et al. 49 , Thm 9/27) is numerically vacuous: the conservative LV -loaded form evaluates to a guaranteed 52 .69 and the tight ∆ ∗ form to a guaranteed 69 .53, both exceeding the trivial value span 10 .0. A bound that exceeds the trivial span is valid but vacuous : it adds no information beyond the bounded-reward argument. We report this transparently. The measured premises are nonetheless strong on the action-prediction axis (εmean =0.0021, 95% CI [0 .0020 , 0.0023]; εq95 =0.0076), with δTV =0.5838 and one-step value-residual ∆∗
+
+> mean
+
+=0.661. Using empirical rather than worst-case constants gives informative (non-guaranteed) readouts of 1 .70 (loose form, empirical LV =0.158) and 11 .93 (tight form). These are empirical on-policy diagnostics of how closely AURA -Mem’s learned transition head tracks actual next-state distributions; we do not claim a “formal guarantee” of value-loss quality. The AIS section of this paper constitutes a methodology demonstration, not a tight numerical guarantee. 
+
+6. The information-bottleneck contribution is borderline positive and not decisively isolated. The intended token-utility comparator, learned token gate , collapsed in all runs (g=0.000 at every step, writes/sec = 0 .000), reducing to no memory behaviour; it therefore establishes only that a surprise gate outperforms a broken comparator, not that the action-IB objective outperforms a functional token-prediction objective. The isolated β=0 ablation (ours noib , run lean-hard-ibabl-20260530-2125 , N = 8) gives ours ib 0.867 ± 0.040 versus 
+
+ours noib 0.692 ± 0.276, a gap of +0 .175 (Welch p= 0.153, CI [ −0.100 , +0 .450]; bootstrap CI [+0 .014 , +0 .368]). This is borderline positive: the IB term confers a training-stability benefit, but its write-rate reduction is not statistically significant at this sample size. We restrict the claim accordingly: a learned surprise gate ( ≫ random/periodic schedules by +0 .535 success at N =16, 7 seeds) together with the action-IB loss produce the reported frontier; the independent contribution 27 of the IB term is suggestive but not decisively isolated. 
+
+7. The shipped checkpoint and the sweep configuration use different hyperparameters. 
+
+All experimental results in this paper (write-bandwidth ratios, accuracy, the 4,224-byte state for-mula, the 6,061 × KV ratio, parameter counts) use the sweep configuration : dmodel =64, dk=dv=N
+
+with N ∈{ 16 , 32 , 64 } (30,279 total parameters at the N =32 reference, 21,447 gradient-active). The publicly released HuggingFace checkpoint ( Kaikaku/aura , currently private) uses dk=dv=64, totalling 55,111 parameters; at this configuration the inference state is (64 ×64 + 64) ×1×4 = 16 ,640 bytes and the AIS certificate of §6.6 was measured. These numbers differ from the sweep figures and must not be cross-cited; the shipped checkpoint is described in the model card (Appendix C). 
+
+8. The KV-cache contrast uses an untrained local stub, not a trained transformer. The 6,061 × state-size ratio is derived from an analytic comparison against a local stub ( GrowingKVCache ,matched to dk=dv=32, batch= 1, fp32), not against a production trained transformer. The stub is untrained; it serves as a reference for the memory-growth formula only. We make no claim about the task performance of a KV-attention model at matched compute; the comparison establishes only the structural memory-growth asymptote. A fair task-accuracy comparison against a trained transformer with KV-cache eviction (e.g., H2O, Ada-KV, SnapKV) would require running those systems closed-loop at the same horizon, which we have not done; they appear in this paper as contextual references only. 
+
+9. All results are on synthetic recall benchmarks; no real-robot, energy, wall-clock, or LIBERO multi-baseline claims. Every quantitative result (write-bandwidth ratios, accuracy, the O(1)-VRAM demonstration, parameter counts, AIS measurements) comes from synthetic 
+
+noisy long recall (main task T =96; hard task T =128) and sparse recall benchmarks run in simulation on H100/L40S GPUs via Modal. We have not deployed AURA -Mem on physical robot hardware; dynamics noise, sensor artifacts, actuation delays, contact physics, and sim-to-real shift are not captured. We make no claims about robot energy consumption or joule costs; we measure 
+
+write counts , not energy. Per-step wall-clock latency has not been profiled; the O(1) advantage on the memory and write-bandwidth axes is structural and holds from the first step (the state shape is fixed, so its footprint never grows), but a latency crossover comparison requires hardware profiling not yet conducted. The VLA mechanism panel ( §6.9) is a single-seed illustration, not a robotics benchmark, and OpenVLA-OFT/LIBERO are referenced for motivation only; a multi-baseline retrained comparison on a 7B VLA run closed-loop on physical hardware remains future work. Pending items include N =96 cells and additional hard-sweep seeds. 
+
+# 8 Conclusion 
+
+We presented AURA -Mem, a surprise-gated, action-sufficient fast-weight memory for O(1) inference-state-VRAM robot policies. The mechanism is one bounded state object, one learned action-error write gate, and one closed-loop action-IB objective. Our results establish three honest, independently falsifiable contributions. First, a write-bandwidth frontier : across state budgets 
+
+N =32–64 on the noisy long recall task, AURA - Mem achieves 4.98–9.19 × fewer writes per second (4 .98 × at N =32 with n= 5 seeds, up to 9 .19 × at N =64 with n= 3 seeds) at accuracy that is statistically equivalent to the dense write-every-step baseline, with budget-matched random and periodic schedules failing at the same write rate, establishing that the gain comes from the 
+
+action-utility gate signal , not the write budget. Second, measured O(1) constant inference-state VRAM : 4,224 bytes formula-derived and confirmed flat across 100,000 steps on a real L40S GPU, versus a 6 ,061 ×-larger growing-KV reference. Third, an empirical instantiation of the AIS action-sufficiency value-loss bound of Subramanian et al. [49] , with small measured 28 action-prediction error ( εmean =0.0021) but a value-loss bound that is vacuous at current scale, reported transparently as a methodology demonstration, not a formal guarantee. We are deliberate about what we do not show. The accuracy result is parity with the best O(1) baseline ( fixed size state ), not superiority: on the non-saturating hard task ( T =128, 160/160 cells), parity gaps have CIs including zero while AURA - Mem writes 5 .19–6 .13 × less, and a write-every recurrence collapses to ≈0.25. All evaluation is on synthetic memory benchmarks; we have no real-robot deployment, no energy measurements, and no wall-clock latency profile. The IB term’s independent contribution is borderline positive but not decisively isolated, and the headline gate comparator ( learned token gate ) collapsed. Future work follows directly from these boundaries: deployment on physical robot hardware and a multi-baseline closed-loop comparison against trained KV-eviction systems on a 7B VLA backbone; profiling the wall-clock latency crossover on edge accelerators; measuring the tighter ∆ ∗
+
+certificate at a scale where the value-loss bound becomes non-vacuous; and a capacity-controlled ablation (frozen gate-MLP weights) to isolate the gating mechanism from its added parameters. The central thesis, that a robot should write only what it would act on , is, we believe, the right organizing principle for memory on bandwidth- and endurance-constrained embodied hardware. 
+
+# References 
+
+[1] A. A. Alemi, I. Fischer, J. V. Dillon, and K. Murphy. Deep variational information bottleneck. In International Conference on Learning Representations (ICLR) , 2017. [2] Anonymous. CSR: Cache-state reuse for infinite-horizon robot policies. arXiv preprint arXiv:2605.07325 , 2026. URL https://arxiv.org/abs/2605.07325 . KV-cache reuse via prefix stability; asymptotically growing cache. [3] S. Arora, S. Eyuboglu, M. Zhang, A. Timalsina, S. Alberti, D. Zinsley, J. Zou, A. Rudra, and C. R´ e. Simple linear attention language models balance the recall-throughput tradeoff. 
+
+arXiv preprint , 2024. [4] Auton AI News. Micron, SK hynix commit over $45 billion to boost HBM supply, May 2026. URL https://autonainews.com/ micron-sk-hynix-commit-over-45-billion-to-boost-hbm-supply/ . May 20, 2026. [5] J. Ba, G. Hinton, V. Mnih, J. Z. Leibo, and C. Ionescu. Using fast weights to attend to the recent past. In Advances in Neural Information Processing Systems (NeurIPS) , 2016. [6] A. Behrouz, Z. Li, P. Kacham, M. Daliri, Y. Deng, P. Zhong, M. Razaviyayn, and V. Mir-rokni. ATLAS: Learning to optimally memorize the context at test time. arXiv preprint arXiv:2505.23735 , 2025. [7] A. Behrouz, M. Razaviyayn, P. Zhong, and V. Mirrokni. It’s all connected: A journey through test-time memorization, attentional bias, retention, and online optimization. arXiv preprint arXiv:2504.13173 , 2025. [8] A. Behrouz, P. Zhong, and V. Mirrokni. Titans: Learning to memorize at test time. arXiv preprint arXiv:2501.00663 , 2025. [9] Y. Burda, H. Edwards, A. Storkey, and O. Klimov. Exploration by random network distillation. In International Conference on Learning Representations (ICLR) , 2019. [10] L. Chen, K. Lu, A. Rajeswaran, K. Lee, A. Grover, M. Laskin, P. Abbeel, A. Srinivas, and I. Mordatch. Decision transformer: Reinforcement learning via sequence modeling. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2021. 29 [11] E. Cherepanov, A. K. Kovalev, and A. I. Panov. ELMUR: External layer memory with update/rewrite for long-horizon RL. arXiv preprint arXiv:2510.07151 , 2025. CoRL 2025 RemembeRL Workshop. [12] K. Choromanski, V. Likhosherstov, D. Dohan, X. Song, A. Gane, T. Sarl´ os, P. Hawkins, J. Davis, A. Mohiuddin, L. Kaiser, D. Belanger, L. Colwell, and A. Weller. Rethinking attention with performers. In International Conference on Learning Representations (ICLR) ,2021. [13] Y. Dai, H. Fu, J. Lee, Y. Liu, H. Zhang, J. Yang, C. Finn, N. Fazeli, and J. Chai. RoboMME: Benchmarking and understanding memory for robotic generalist policies. arXiv preprint arXiv:2603.04639 , 2026. URL https://arxiv.org/abs/2603.04639 . ICML 2026. [14] T. Dao and A. Gu. Transformers are SSMs: Generalized models and efficient algorithms through structured state space duality. In International Conference on Machine Learning (ICML) , 2024. [15] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R´ e. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [16] Y. Duan, J. Schulman, X. Chen, P. L. Bartlett, I. Sutskever, and P. Abbeel. RL 2: Fast reinforcement learning via slow reinforcement learning. arXiv preprint , 2016. [17] Y. Feng, J. Lv, Y. Cao, X. Xie, and S. K. Zhou. Ada-KV: Optimizing KV cache eviction by adaptive budget allocation for efficient LLM inference. arXiv preprint arXiv:2407.11550 ,2024. [18] Y. Gao, J. Liu, S. Li, and S. Song. Gated memory policy. arXiv preprint arXiv:2604.18933 ,2026. [19] S. Ge, Y. Zhang, L. Liu, M. Zhang, J. Han, and J. Gao. Model tells you what to discard: Adaptive KV cache compression for LLMs. arXiv preprint , 2023. [20] C. Gelada, S. Kumar, J. Buckman, O. Nachum, and M. G. Bellemare. DeepMDP: Learning continuous latent space models for representation learning. In International Conference on Machine Learning (ICML) , 2019. [21] A. Gholami, Z. Yao, S. Kim, C. Hooper, M. W. Mahoney, and K. Keutzer. AI and memory wall. IEEE Micro , 44(3):33–39, 2024. doi: 10.1109/mm.2024.3373763. [22] A. Gu and T. Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. [23] A. Gu, K. Goel, and C. R´ e. Efficiently modeling long sequences with structured state spaces. In International Conference on Learning Representations (ICLR) , 2022. URL 
+
+https://arxiv.org/abs/2111.00396 .[24] G. Gupta et al. Memo: Training memory-efficient embodied agents with reinforcement learning. arXiv preprint arXiv:2510.19732 , 2025. [25] D. Hafner, T. Lillicrap, M. Norouzi, and J. Ba. Mastering atari with discrete world models. In International Conference on Learning Representations (ICLR) , 2021. [26] A. Hatamizadeh, Y. Choi, and J. Kautz. Gated DeltaNet-2: Decoupling erase and write in linear attention. arXiv preprint arXiv:2605.22791 , 2026. URL https://arxiv.org/ abs/2605.22791 . Per-step channel-wise erase+write gates in linear attention; LM-only; no certificate. 30 [27] C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao, K. Keutzer, and A. Gholami. KVQuant: Towards 10 million context length LLM inference with KV cache quantization. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [28] A. Ivanov, N. Dryden, T. Ben-Nun, S. Li, and T. Hoefler. Data movement is all you need: A case study on optimizing transformers. In Conference on Machine Learning and Systems (MLSys) , 2021. [29] S. Kapturowski, G. Ostrovski, J. Quan, R. Munos, and W. Dabney. Recurrent experience replay in distributed reinforcement learning. In International Conference on Learning Representations (ICLR) , 2019. URL https://openreview.net/forum?id=r1lyTjAqYX .[30] A. Kumar, Z. Fu, D. Pathak, and J. Malik. RMA: Rapid motor adaptation for legged robots. In Robotics: Science and Systems (RSS) , 2021. doi: 10.15607/RSS.2021.XVII.011. URL 
+
+https://doi.org/10.15607/RSS.2021.XVII.011 .[31] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang, and I. Stoica. Efficient memory management for large language model serving with PagedAttention. In ACM Symposium on Operating Systems Principles (SOSP) , 2023. [32] Y. Li, Y. Huang, B. Yang, B. Venkitesh, A. Locatelli, H. Ye, T. Cai, P. Lewis, and D. Chen. SnapKV: LLM knows what you are looking for before generation. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [33] M. L. Littman, R. S. Sutton, and S. Singh. Predictive representations of state. In Advances in Neural Information Processing Systems (NIPS) , 2001. URL https://proceedings.neurips. cc/paper/2001 .[34] J. Liu, M. Liu, Z. Wang, et al. RoboMamba: Efficient vision-language-action model for robotic reasoning and manipulation. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [35] Z. Liu, A. Desai, F. Liao, W. Wang, V. Xie, Z. Xu, A. Kyrillidis, and A. Shrivastava. Scissorhands: Exploiting the persistence of importance hypothesis for LLM KV cache compression at test time. In Advances in Neural Information Processing Systems (NeurIPS) ,2023. [36] Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu. KIVI: A tuning-free asymmetric 2bit quantization for KV cache. In International Conference on Machine Learning (ICML) , 2024. [37] S. Mitra, E. Yuceel, N. Giles, and A. Pai. Factored diffusion policies: Compositionally generalized robot control with a single score network. arXiv preprint arXiv:2605.22596 ,2026. URL https://arxiv.org/abs/2605.22596 . Trajectory-tube closed-loop certificate for diffusion policy composition; certifies composition NOT memory sufficiency. [38] S. Morad, R. Kortvelesy, M. Bettini, S. Liwicki, and A. Prorok. POPGym: Benchmark-ing partially observable reinforcement learning. In International Conference on Learning Representations (ICLR) , 2023. [39] L. Moschella, L. Manduchi, and O. Sener. Learning to evict from key-value cache. arXiv preprint arXiv:2602.10238 , 2026. [40] B. Moyer. Flash getting stacked high-bandwidth version. Semicon-ductor Engineering, May 2026. URL https://semiengineering.com/ flash-getting-stacked-high-bandwidth-version/ . May 14, 2026. 31 [41] D. Pathak, P. Agrawal, A. A. Efros, and T. Darrell. Curiosity-driven exploration by self-supervised prediction. In International Conference on Machine Learning (ICML) , 2017. [42] B. Peng, E. Alcaide, Q. Anthony, et al. RWKV: Reinventing RNNs for the trans-former era. In Findings of the Association for Computational Linguistics: EMNLP 2023 ,2023. doi: 10.18653/v1/2023.findings-emnlp.936. URL https://aclanthology.org/2023. findings-emnlp.936 .[43] W. Qiu, T. Huang, and R. Ying. Efficient long-horizon vision-language-action models via static-dynamic disentanglement. arXiv preprint arXiv:2602.03983 , 2026. [44] H. Ramsauer, B. Sch¨ afl, J. Lehner, P. Seidl, M. Widrich, T. Adler, L. Gruber, M. Holzleitner, M. Pavlovi´ c, G. K. Sandve, V. Greiff, D. Kreil, M. Kopp, G. Klambauer, J. Brandstetter, and S. Hochreiter. Hopfield networks is all you need. In International Conference on Learning Representations (ICLR) , 2021. [45] N. Roy, G. Gordon, and S. Thrun. Finding approximate POMDP solutions through belief compression. Journal of Artificial Intelligence Research , 23:1–40, 2005. URL http://www. cs.cmu.edu/~ggordon/roy-gordon-thrun.belief-compression-jair.pdf .[46] I. Schlag, K. Irie, and J. Schmidhuber. Linear transformers are secretly fast weight program-mers. In International Conference on Machine Learning (ICML) , 2021. [47] J. T. Smith, A. Warrington, and S. W. Linderman. Simplified state space layers for sequence modeling. arXiv preprint , 2023. URL https://arxiv.org/abs/2208.04933 .[48] A. Sridhar, J. Pan, S. Sharma, and C. Finn. MemER: Scaling up memory for robot control via experience retrieval. arXiv preprint arXiv:2510.20328 , 2025. [49] J. Subramanian, A. Sinha, R. Seraj, and A. Mahajan. Approximate information state for approximate planning and reinforcement learning in partially observed systems. Journal of Machine Learning Research , 23(12):1–83, 2022. URL https://jmlr.org/papers/v23/ 20-1165.html .[50] Y. Sun, L. Dong, S. Huang, S. Ma, Y. Xia, J. Xue, F. Wei, et al. Retentive network: A successor to Transformer for large language models. arXiv preprint arXiv:2307.08621 , 2023. [51] Y. Sun, X. Li, K. Dalal, J. Xu, A. Vikram, G. Zhang, Y. Dubois, X. Chen, X. Wang, S. Koyejo, T. Hashimoto, and C. Guestrin. Learning to (learn at test time): RNNs with expressive hidden states. arXiv preprint arXiv:2407.04620 , 2024. [52] K. Swain, S. Han, D. K. I. Weidele, M. Martino, and A. Torralba. Tensor cache: Eviction-conditioned associative memory for transformers. arXiv preprint arXiv:2605.22884 , 2026. URL https://arxiv.org/abs/2605.22884 . MIT/Torralba group; bounded fast-weight prior; LM-only, eviction-triggered write, no certificate. [53] K. Swain, S. Han, D. K. I. Weidele, M. Martino, and A. Torralba. Tensor memory: Fixed-size recurrent state for long-horizon transformers. arXiv preprint arXiv:2605.27686 , 2026. URL 
+
+https://arxiv.org/abs/2605.27686 . Fixed-size 3D recurrent tensor; spatial soft-write; perception loss; no control-rate, no certificate. [54] TechTimes. DRAM prices reach all-time high at $20: Q2 increase slows as PC deals close, May 2026. URL http://www.techtimes.com/articles/317403/20260530/ dram-prices-reach-all-time-high-20-q2-increase-slows-pc-deals-close.htm .May 30, 2026; TrendForce / DRAMeXchange data. 32 [55] N. Tishby, F. C. Pereira, and W. Bialek. The information bottleneck method. In Proceedings of the 37th Annual Allerton Conference on Communication, Control and Computing , pages 368–377, 1999. [56] M. Torne, K. Pertsch, H. Walke, K. Vedder, S. Nair, B. Ichter, A. Z. Ren, H. Wang, J. Tang, K. Stachowicz, K. Dhabalia, M. Equi, Q. Vuong, J. T. Springenberg, S. Levine, C. Finn, and D. Driess. MEM: Multi-scale embodied memory for vision language action models. arXiv preprint arXiv:2603.03596 , 2026. URL https://arxiv.org/abs/2603.03596 . Mixed-modal embodied memory (video+text); not O(1) VRAM; no action-gate; no certificate. [57] D. Tu, D. Vashchilenko, Y. Lu, and P. Xu. VL-Cache: Sparsity and modality-aware KV cache compression for vision-language model inference acceleration. arXiv preprint arXiv:2410.23317 ,2024. [58] G. Xiao, Y. Tian, B. Chen, S. Han, and M. Lewis. Efficient streaming language models with attention sinks. In International Conference on Learning Representations (ICLR) , 2024. [59] S. Xu, Y. Wang, C. Xia, D. Zhu, T. Huang, and C. Xu. VLA-Cache: Efficient vision-language-action manipulation via adaptive token caching. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. [60] W. Xu, L. Zhuang, and L. Shan. KV-Efficient VLA: A method of speed up vision language model with RNN-gated chunked KV cache. arXiv preprint arXiv:2509.21354 , 2025. [61] S. Yang, B. Wang, Y. Shen, R. Panda, and Y. Kim. Gated linear attention transformers with hardware-efficient training. In International Conference on Machine Learning (ICML) , 2024. [62] Y. Yang, Y. Wang, Z. Wen, Z. Luo, C. Zou, Z. Zhang, C. Wen, and L. Zhang. EfficientVLA: Training-free acceleration and compression for vision-language-action models. arXiv preprint arXiv:2506.10100 , 2025. [63] Zacks Investment Research. Micron stock slips despite blowout earnings, up-beat guidance, May 2026. URL https://www.zacks.com/commentary/2886800/ micron-stock-slips-despite-blowout-earnings-upbeat-guidance . May 22, 2026. [64] A. Zhang, R. McAllister, R. Calandra, Y. Gal, and S. Levine. Learning invariant represen-tations for reinforcement learning without reconstruction. In International Conference on Learning Representations (ICLR) , 2021. [65] T. Zhang et al. Test-time training done right. arXiv preprint arXiv:2505.23884 , 2025. Also available at OpenReview Tb9qAxT3xv. [66] Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song, Y. Tian, C. R´ e, C. Barrett, Z. Wang, and B. Chen. H2O: Heavy-hitter oracle for efficient generative inference of large language models. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. 
+
+# A Proofs (full detail) 
+
+A.1 Proof of Theorem 4.3 (full detail) 
+
+We reproduce the full four-step proof for self-containment. 33 Notation. Write the true discounted Bellman optimality operator on histories B and the 
+
+surrogate operator on Z, ˆB:(BV )( h, a ) = E[R | h, a ] + γ E[V (H′) | h, a ], ( ˆB ˆV )( z, a ) = ˆ r(z, a ) + γ
+
+Z
+
+> Z
+
+ˆV (z′) ˆP (dz ′ | z, a ).
+
+Both are γ-contractions in ∥ · ∥ ∞ (A1, A4); V ∗ = BV ∗, ˆV ∗ = ˆB ˆV ∗. For a history ht we abbreviate 
+
+zt = σt(ht). 
+
+Step 1: dual (IPM) inequality. For any bounded f and μ, ν ∈ ∆( Z), the Minkowski functional 
+
+ρF (f ) (the smallest ρ > 0 with ρ−1f ∈ F ) satisfies R f dμ − R f dν ≤ ρF (f ) dF (μ, ν ). Apply with f = ˆV ∗, μ = μt (true next-state law), ν = νt = ˆP (· | zt, a t). Using (AP2), dF (μt, ν t) ≤ δ:
+
+E[ ˆV ∗(Zt+1 ) | Ht = ht, A t = at] −
+
+Z
+
+ˆV ∗(z′) ˆP (dz ′ | zt, a t) ≤ LV δ. (A.1) 
+
+Step 2: one-step Bellman mismatch. At any reachable ( ht, a t): 
+
+(B ˆV ∗)( ht, a t) − ( ˆB ˆV ∗)( zt, a t) ≤ E[Rt | ht, a t] − ˆr(zt, a t)
+
+| {z }  
+
+> ≤εby (AP1)
+
++ γ E[ ˆV ∗(Zt+1 ) | ht, a t] −
+
+Z
+
+ˆV ∗ dν t
+
+| {z }   
+
+> ≤LVδby (A.1)
+
+≤ ε + γ L V δ =: η. (A.2) 
+
+Step 3: contraction propagates the one-step error. Let α = sup h |V ∗(h) − ˆV ∗(σ(h)) |
+
+(finite by A1). Since V ∗ = BV ∗, using (A.2) and the γ-contraction of B:
+
+α ≤ γα + η, ⇒ α ≤ η
+
+1 − γ = ε + γ L V δ
+
+1 − γ . (A.3) This proves part (i). 
+
+Step 4: value approximation to closed-loop loss (factor of 2). Let πZ be greedy w.r.t. ˆQ∗.For any state: 
+
+V ∗(h) − V πZ (h) =  V ∗(h) − ˆV ∗(σ(h)) | {z }  
+
+> ≤αby (A.3)
+
++   ˆV ∗(σ(h)) − V πZ (h)| {z }  
+
+> ≤αby policy-eval bound
+
+.
+
+The first term is ≤ α by part (i). For the second, the deviation between the surrogate-evaluated and truly-evaluated value of πZ is controlled by the one-step residual η propagated through the 
+
+γ-contraction of the policy-evaluation Bellman operator, giving ≤ η/ (1 − γ) = α. Adding: 
+
+V ∗(h) − V πZ (h) ≤ 2α = 2 ( ε + γ L V δ)1 − γ . (A.4) This factor of 2 matches Subramanian et al. [49] Thm 9/27 exactly. ■
+
+A.2 What LV is, per metric 
+
+The constant LV = ρF ( ˆV ∗) is the Minkowski functional of the surrogate value function w.r.t. the IPM class F :
+
+• Total variation (dF =TV): LV = 12 span( ˆV ∗) = 12 (max ˆV ∗ − min ˆV ∗) ≤ 12 · Rmax −Rmin  
+
+> 1−γ
+
+.
+
+• Wasserstein-1 (dF =W1): LV = ∥ ˆV ∗∥Lip , the Lipschitz constant of the value function on (Z, d ). In both cases LV < ∞ under (A1)+(A3) and the bound reads 2( ε + γL V δ)/(1 − γ). At current experimental scale, the numerically instantiated LV -loaded bound is vacuous (guaranteed form 52 .69 vs. trivial value span 10 .0; see §6.6); we report it transparently alongside the tighter ∆ ∗
+
+form (Remark 4.4). 34 B Additional experimental details 
+
+B.1 Hyperparameter table 
+
+Table 5: Training hyperparameters ( TrainConfig ). 
+
+Parameter Value Description 
+
+lr 3 × 10 −3 AdamW learning rate 
+
+batch size 64 Batches per gradient step 
+
+max steps 4 000 Hard task sweep 
+
+seq len 96 / 128 Sequence length (main / hard task) 
+
+beta 10 −3 IB loss weight 
+
+gamma 3 × 10 −3 Write-sparsity loss weight 
+
+gamma warmup frac 0.6 Ramp γ over first 60% of steps 
+
+write target rho 0.15 Target mean write rate 
+
+d model 64 Token embedding dimension 
+
+d key 16/32/64 Fast-weight key dim (swept) 
+
+d val = d key Fast-weight value dim 
+
+enc hidden 64 Encoder MLP hidden size 
+
+gate hidden 64 Gate MLP hidden size 
+
+control hz 20.0 Control frequency (fixed constant) Gradient clip max norm 1.0 clip grad norm 
+
+EMA teacher decay 0.95 teacher update rate Optimizer betas (0.9, 0.999) AdamW defaults Seeds {0, . . . , 6} up to 7 seeds per cell 
+
+B.2 Parameter-count disclosure 
+
+Total parameter counts by variant and state budget (verified by report params.py ; run lean-20260530-1449 ). Parameters scale with the state dimension N =dk=dv; the five primary parity variants (AURA - Mem, 
+
+fixed size state , write every step , random write , periodic write ) match exactly at every budget (identical totals, not a ±tolerance band). full recurrence , learned token gate , and 
+
+no memory differ by architecture and are disclosed separately. Table 6: Total parameter counts by variant across state budgets N =dk=dv ∈ { 16 , 32 , 64 }.
+
+Variant N =16 N =32 N =64 
+
+ours (AURA-Mem) 20,935 30,279 55,111 
+
+fixed size state 20,935 30,279 55,111 
+
+write every step 20,935 30,279 55,111 
+
+random write 20,935 30,279 55,111 
+
+periodic write 20,935 30,279 55,111 
+
+full recurrence 26,061 30,125 44,397 
+
+learned token gate 22,100 31,444 56,276 
+
+no memory 7,316 11,556 26,180 
+
+The gradient-active counts at the N = 32 reference are 21,447 for AURA -Mem versus 15,110 for the scheduled-write parity variants ( write every step , fixed size state , random write ,
+
+periodic write ), the +6 ,337 gate mlp asymmetry discussed below. 
+
+Predictor-head disclosure. The GatedTTTState.predictor sub-head (8,320 parameters at this size) is allocated but never called in any variant’s forward pass; a backward-pass audit confirms its gradient is None for every variant. It inflates all nominal counts by 8,320 without contributing computation; it should be removed before final checkpoint release. 
+
+Gradient-active asymmetry. AURA -Mem has 21,447 gradient-active parameters versus 15,110 35 for the scheduled-write variants, a difference of +6 ,337 (+41 .9%), because the gate mlp is gradient-active only in AURA -Mem. The framing “ours = write-every-step minus the gate” is architecturally accurate but understates this capacity advantage ( §7, item 4). 
+
+GRU configuration. full recurrence uses gru hidden = 53 ( −0.52% vs. ours nominal) to correct a prior configuration where hidden = 32 left the GRU materially under-parameterized; any results using hidden = 32 were invalid and discarded. 
+
+B.3 Reproducibility commands 
+
+# Deploy sweep app (one-time): modal deploy aura/lean_sweep.py # Launch main hard-task sweep: modal run --detach aura/lean_sweep.py --max-concurrent 10 # Collect and aggregate results: python -m aura.lean_aggregate --run-tag lean-YYYYMMDD-HHMM # Check proof gates: python aura/check_proof_matrix.py --run-tag lean-YYYYMMDD-HHMM # Single-seed reference run: python -m aura.train --variant ours --task noisy_long_recall \ --seeds 0 1 2 --max-steps 4000 --seq-len 96 \ --batch-size 64 --lr 3e-3 --beta 1e-3 --gamma 3e-3 \ --write-target-rho 0.15 --state-dim 32 --device cuda 
+
+Source code and checkpoint: https://huggingface.co/Kaikaku/aura (currently a private repos-itory; access on request). 
+
+B.4 Extended horizon-stress detail 
+
+The main-text crossover figure (Figure 7) shows the constant-vs-linear carried-state separation near the practically relevant short-horizon regime. For completeness we include the full 100,000-step horizon-stress measurement below (Figure 14), which extends the same constant-vs-growing comparison out to the long horizon and quantifies the 6 ,061 × separation; it complements, rather than duplicates, the main-text figure. 
+
+# C Model card (abridged) 
+
+Intended use. Research benchmarking of bounded-memory policies on synthetic tasks; ablations on write-gating, IB compression, and bandwidth efficiency; long-horizon control on memory-constrained hardware (proof-of-concept, research only). Not validated for real-robot deployment, safety-critical or unmonitored use, or non-embodied workloads. 
+
+Configuration. The released checkpoint ( Kaikaku/aura ) uses dk=dv=64 (55,111 parameters, 16,640-byte inference state) and differs from the sweep configuration ( dk=dv=N , 30,279 parameters at the N =32 reference) used for all experimental results; the two must not be cross-cited ( §7, item 7). 
+
+Limitations (required disclosure). All evaluation is on synthetic benchmarks ( noisy long recall ,
+
+sparse recall ); no real-robot validation. The ε and δ values are action self-consistency diagnos-36 10 3 10 4 10 5 
+
+> Sequence step / horizon (log scale)
+> 10 KB
+> 100 KB
+> 1 MB
+> 10 MB
+> 100 MB
+> 1 GB
+> 10 GB
+> Memory footprint (bytes, log scale)
+> KV exceeds AURA-Mem's state by
+> step ≈ 16 (analytic; KV grows 256 B/step)
+> Memory footprint vs. sequence horizon (O(1) vs. O(T) VRAM)
+> [MEASURED — NVIDIA L40S, 100k steps, run 20260530-endless-100k]
+> AURA-Mem (ours) [O(1) state]
+> Attention KV-cache (baseline) [O(T) growth]
+> 16 GB GPU OOM threshold At step 100,000:
+> KV = 25.6 MB
+> AURA-Mem = 4,224 B
+> → 6,061× larger
+> Caveat: ours_bytes = formula (d_key×d_val+d_val)×batch×4, not CUDA allocator read. KV = local untrained stub (d_k=d_v=32, fp32, 256 B/step). O(1) = inference state only.
+
+Figure 14: Extended 100k-step horizon-stress detail: memory footprint vs. sequence horizon (log–log; NVIDIA L40S, run 20260530-endless-100k , 100,000 steps, 500 logged check-points). This is the extended long-horizon companion to the main-text crossover figure (Figure 7): the same constant-vs-growing comparison carried out to 100,000 steps. AURA -Mem’s inference state (blue) occupies a constant 4,224 bytes at every step, computed by the closed-form formula (dkdv + dv)×batch ×4 ( dk=dv=32, batch= 1, fp32) and confirmed identical across all 500 logged steps, while a growing-KV reference stub (vermillion dashed; same dimensions, local untrained reference, 256 bytes/step analytic) reaches 25 ,600 ,000 bytes (25.6 MB) at step 100,000, a ratio of 6,061 × larger. (O(1) refers to the inference state only; see §3.2.) The 4,224-byte figure is the architectural state formula and must not be conflated with the peak CUDA allocator reading ( cuda max memory allocated = 43 ,051 ,008 bytes, which includes weights, activations, and transient buffers); the KV contrast uses a local untrained stub, not a trained transformer. tics, not formal theorem-certificate values, and the instantiated value-loss bound is vacuous at current scale. 
+
+Citation. 
+
+@article{josefchen2026auramem, title = {Write Only What You’d Act On: Learned Action-Error Gating for O(1)-VRAM Robot Policies}, author = {Josef Chen}, journal = {Preprint}, year = {2026}, url = {https://huggingface.co/Kaikaku/aura} }
+
+# D Broader impact 
+
+Reducing inference-state VRAM and memory-write traffic for robot policies lowers the barrier to on-device deployment of capable vision-language-action models on memory-constrained edge hardware. Because every autoregressive step issues a memory write, and because high-bandwidth memory is the scarce, expensive resource currently bottlenecking physical-AI deployment, a 4.98–9 .19 × reduction in writes per second suggests a proportional reduction in DRAM/HBM write traffic, a first-order driver of energy cost on LPDDR/HBM hardware. We emphasize, however, that we measure write counts , not joules: any energy implication is a proxy argument, and measured 37 energy savings would require hardware-level experiments beyond this paper’s scope. We make no measured-energy claims. The principal risk is the usual dual-edged consequence of efficiency: gains that make capable policies cheaper to deploy can also accelerate deployment into unmonitored or safety-critical settings before adequate validation. AURA -Mem is validated only on synthetic benchmarks and is explicitly not certified for real-robot or safety-critical use; deployers should treat it as a research artifact requiring appropriate human oversight and task-specific safety validation. We identify no application-specific dual-use concern beyond this general efficiency consideration: the contribution is a general memory-efficiency mechanism rather than a capability targeted at a sensitive domain. 38
