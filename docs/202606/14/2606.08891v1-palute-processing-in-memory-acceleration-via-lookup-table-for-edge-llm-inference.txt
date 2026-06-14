@@ -1,0 +1,294 @@
+Title: PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference
+
+URL Source: https://arxiv.org/pdf/2606.08891v1
+
+Published Time: Tue, 09 Jun 2026 01:33:21 GMT
+
+Number of Pages: 7
+
+Markdown Content:
+# PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference 
+
+## Runyang Tian 
+
+r3tian@ucsd.edu University of California San Diego La Jolla, CA, USA 
+
+## Yanru Chen 
+
+yac054@ucsd.edu University of California San Diego La Jolla, CA, USA 
+
+## Weihong Xu 
+
+weihong.xu@epfl.ch Ecole Polytechnique Fédérale de Lausanne Lausanne, Switzerland 
+
+## Tajana Šimunić Rosing 
+
+tajana@ucsd.edu University of California San Diego La Jolla, CA, USA 
+
+## Abstract 
+
+Large language models are increasingly deployed on edge devices with tight power and area budgets. While mixed-precision GEMM reduces arithmetic complexity, quantized inference is often dom-inated by dequantization and nonlinear operators. Lookup Table (LUT)-based method mitigates these costs by precomputing outputs and replacing repeated arithmetic with table lookups, but existing designs incur significant capacity and lookup-latency overheads. This paper presents PALUTE, a LUT-based Processing-In-Memory accelerator built on Monolithic 3D DRAM for efficient edge LLM inference. PALUTE enables in-DRAM LUT queries that exploit the vertical organization of M3D DRAM memory array tiles to achieve high parallelism with low area overhead. A near-memory LUT gen-erator supports low-latency LUT generation for both GEMM and element-wise unary nonlinear operators, while a system-level tier-ing and scheduling strategy minimizes data movement across mem-ory tiers. Evaluation using cycle-accurate simulation and RTL syn-thesis shows that PALUTE achieves 1,264 TPS end-to-end through-put at 0.16 W, improving energy efficiency by 12.8 × over CHIME [ 4 ]and 1.6 × over FIGLUT [ 20 ], improving area efficiency by 2.0 × over PIMPAL [11] under W4A4 across Qwen3-4B models. 
+
+## CCS Concepts 
+
+• Hardware → Emerging architectures ; Memory and dense storage ; • Computer systems organization → Other architec-tures .
+
+## Keywords 
+
+Processing-In-Memory, Lookup Table, Large Language Model, Low-Bit Inference, Monolithic 3D DRAM 
+
+## 1 Introduction 
+
+Large language models (LLMs) have emerged as a milestone in Arti-ficial Intelligence (AI), enabling natural and context-aware dialogue. Modern LLMs encode knowledge in billions of parameters, and their scale continues to grow rapidly [ 26 ]. These models support pow-erful applications such as personalized healthcare agents [ 22 ] and interactive intelligent systems [ 6 ]. However, their increasing size introduces substantial computational and memory demands dur-ing inference. Privacy-critical domains such as healthcare further require local execution, accelerating the shift from cloud-centric processing to edge deployment. Edge platforms, however, are con-strained by limited compute capability, restricted memory band-width, and tight power and area budgets. These constraints are espe-cially severe for decoder-only Transformers, where auto-regressive generation repeatedly performs GEMM and maintains key-value (KV) caches [21]. Mixed-precision has therefore become a key technique for re-ducing model size and compute cost by lowering numerical preci-sion [ 8]. Yet many practical systems suffer from substantial dequan-tization overhead, which can account for 20–90% of runtime and diminish the benefits of low-precision arithmetic [ 15 ]. Although pruning, quantization, and conventional accelerators improve ef-ficiency [ 1, 12 , 15 , 27 ], they still preserve the separation between memory and compute. Empirical studies show that data movement dominates system energy, accounting for 62.7% of total energy on average [ 3 ]. Thus, reducing arithmetic cost alone cannot resolve the memory bottleneck. Processing-In-Memory (PIM) addresses this bottleneck by per-forming computation where data resides, minimizing off-chip trans-fers [ 2]. For example, pLUTo [ 7] demonstrates the potential of DRAM-resident lookup-table (LUT) computation, outperforming CPU and GPU baselines through highly parallel in-memory LUT queries. LUT-based inference also intrinsically avoids dequantiza-tion [20], making it well suited for low-precision LLM workloads. Prior LUT-based systems [ 4, 11 , 19 , 20 , 23 ] mainly place MAC or LUT units near memory arrays or on logic dies. T-MAC [ 23 ]presents a CPU-friendly LUT-based mpGEMM kernel for low-bit LLM inference, reporting up to 4× higher throughput and 70% lower energy than llama.cpp. PIMPAL [ 11 ] uses parallel in-DRAM arith-metic lookups with locality-aware mapping and LUT aggregation for GEMM, achieving up to speedup of 17.8 × than prior LUT-based PIM designs while reducing area overhead by 40% over processing unit (PU)-based PIM. To further improve parallelism while reducing power and area, we introduce an energy-efficient, high-throughput PIM architecture for LLM inference using Monolithic 3D (M3D) DRAM, which provides high density and vertical memory array tiers (MATs), enabling vertical LUT queries with high parallelism and low area overhead. Our main contributions are: 
+
+• An LUT query mechanism on M3D DRAM that exploits vertical MATs to achieve high parallelism with low area overhead for dequantization-free low-precision computation. 
+
+• Near-memory LUT generators implemented on the logic die and connected via hybrid bonding, providing low-latency, high-bandwidth support for in-memory LUT querying. 
+
+• A system-level data tiering, scheduling workflow in M3D DRAM, which minimizes off-chip data movement and alleviates memory bottlenecks during transformer inference. 
+
+• Simulation shows that PALUTE delivers 1,264 TPS at 0.16 W, improving energy efficiency by 12.8 × over CHIME [ 4] and 1.6 ×
+
+over FIGLUT [ 20 ], and area efficiency by 2.0 × over PIMPAL [ 11 ]. 
+
+> arXiv:2606.08891v1 [cs.AR] 8 Jun 2026 Tian et al.
+
+## 2 Background and Motivations 2.1 Transformer Model 49% 10% 11% 4% 19% 6% 1% De-Quantization GELU ResADD LayerNorm Softmax Matmul Others    
+
+> 0% 20% 40% 60% 80% 100% Flops Runtime 99.8% 0.03% 0.17% 61.0% 25.5% 13.5% (a) (b) Softmax & LayerNorm Element-wise GEMM
+
+Figure 1: LLM architecture overview (a) Flops and runtime breakdown (b) Runtime breakdown with conventional NPU 
+
+LLM inference is dominated by GEMM and nonlinear opera-tors (e.g., Softmax, GELU). During auto-regressive decoding, these kernels execute once per generated token, so their efficiency di-rectly determines end-to-end latency and energy. Figure 1(a) shows a clear imbalance: GEMM contributes 99.8% of FLOPs but only 61.0% of runtime, while Softmax/LayerNorm/element-wise kernels contribute < 0.2% FLOPs yet consume ∼39% runtime [ 10 ]. This is a memory-wall effect. These kernels are dominated by data move-ment between HBM and on-chip SRAM rather than compute [ 5, 10 ]. Therefore, optimizing GEMM alone shifts the bottleneck to nonlin-ear operators and dequantization overhead (Figure 1(b)) [13]. 
+
+## 2.2 In/Near-Memory Processing using Monolithic 3D DRAM 
+
+The deployment of LLMs is fundamentally constrained by von Neumann bottleneck, the gap between computation capability and memory bandwidth. Limited memory bandwidth makes data movement a dominant source of latency and energy [ 10 ]. Memory-centric architectures mitigate this bottleneck by co-locating com-pute with memory, including both near-memory processing (NMP) and Processing-In-Memory (PIM): NMP integrates logic adjacent to memory arrays to exploit high internal bandwidth, while PIM pushes computation closer to or into the memory using device-level primitives for massive parallelism [10, 16]. M3D DRAM is a key memory substrate for PIM/NMP designs. By sequentially stacking multiple memory tiers on a single wafer and connecting them with dense monolithic inter-tier vias (MIVs), M3D DRAM increases bit density and reduces interconnect latency. Compared with conventional 2D DRAM that relies on long lateral wires or Through-Silicon Via (TSV)-based stacks with relatively sparse vertical connections, M3D DRAM offers denser vertical con-nectivity with Monolithic Inter-Layer Vias (MIV) and much shorter tier-to-tier interconnect distances. M3D DRAM organizations are commonly categorized into Vertical Wordline (VWL) and Verti-cal Bitline (VBL) topologies [ 9 ] as shown in Figure 2(a). PALUTE adopts a VBL-style organization where bitlines traverse tiers verti-cally while wordlines are routed within tiers, therefore the DRAM MATs are also vertical, which provides high vertical connectiv-ity that can be exploited for in/near-memory compute and data movement reduction. VBL M3D DRAM can offer higher density (e.g., ∼2.74 Gb/mm 2) and lower read energy than VWL alternatives, making it attractive for next-generation AI accelerators [9]. WL1       
+
+> WL 2
+> WL 3
+> WL4
+> BL1 BL2 BL4
+> BL3
+> BL WL2 WL1 WL3 WL4 [-8, -8] [-8, -7] [7, 7] ...
+> Index Value (a) (b) -8x 11 - 8x 12 -8x 11 - 7x 12 7x 11 + 7x 12
+
+Figure 2: M3D DRAM and LUT structure (a) Vertical M3D DRAM stacking [ 4 , 9] (b) A LUT mapped in M3D DRAM cells 
+
+## 2.3 LUT-based Operation 
+
+A LUT stores a precomputed mapping from discrete inputs to out-puts. At runtime, an input serves as the index, and the correspond-ing result is returned through a table read. As shown in Figure 2(b), each WL represents one index, while cells on that WL store the associated value, which is read out upon WL activation. LUTs trade computation for memory, making them attractive for Transformer inference to reduce redundant MACs in GEMM [ 20 ] and acceler-ate expensive nonlinear operations. They are most effective with low-precision inputs, repeated function invocations, and memory substrates that support highly parallel queries. Their main draw-backs are storage overhead and limited flexibility: LUT size grows rapidly with input precision, and changes in function, range, or precision typically require table regeneration. LUT-based computation can be applied to both GEMM and element-wise nonlinear operators. For GEMM, we split 𝑋 · 𝑊 
+
+into small dot-product segments, e.g., 𝑥 seg1 · 𝑤 seg1 = [𝑥 1,1, 𝑥 1,2] · [𝑤 1,1; 𝑤 2,1]. When weights are low-bit quantized, 𝑤 seg1 only takes values from a finite set (e.g., 𝑤 1,1, 𝑤 2,1 ∈ [− 8, 7]), so the number of possible 𝑤 seg1 combinations is limited. Given 𝑥 seg1 , we precompute a LUT that enumerates all possible results of 𝑥 seg1 · 𝑤 seg1 , such as −8𝑥 1,1 − 8𝑥 1,2, −8𝑥 1,1 − 7𝑥 1,2, . . . , 7𝑥 1,1 + 7𝑥 1,2. At runtime, 𝑤 seg1 
+
+serves as the LUT index and the corresponding partial dot-product value is fetched directly. For nonlinear operators, we use LUTs for element-wise unary functions such as GELU and ReLU. We precom-pute all possible outputs 𝑓 (𝑥 𝑖 𝑗 ) for 𝑥 𝑖 𝑗 ∈ [− 8, 7] and use 𝑥 𝑖 𝑗 as the LUT index to retrieve 𝑓 (𝑥 𝑖 𝑗 ).
+
+## 2.4 Motivation 
+
+LUT-based accelerators replace expensive arithmetic with table reads [ 20 , 23 ], but LUTs require large capacity and often incur irregular accesses, amplifying memory traffic and single-query latency. As representative SOTA, T-MAC is constrained by CPU memory bandwidth for LUT-driven GEMM [ 23 ], while FIGLUT, as a standalone ASIC, does not fundamentally resolve the mem-ory wall at the system level [ 20 ]. LUT-based PIM/NMP solutions also have limits: pLUTo proposes in-memory (normal DRAM) LUT querying, yet leaves open a complete end-to-end pipeline (e.g., LUT generation/management) and does not fully address LUT-induced latency/area overheads under scaling [ 7]; PIMPAL executes LUTs inside normal DRAM to reduce off-chip transfers, but achievable parallelism and query latency remain bounded by DRAM row-buffer/burst interfaces and LUT footprint, making throughput sen-sitive to memory-interface limits and access locality [11]. To address these challenges, PALUTE’s core innovations are (1) a LUT query mechanism using M3D DRAM that exploits vertical PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference KV Cache Storage                 
+
+> LUT Storage
+> Weights Storage
+> (a) (b)
+> LUT
+> Generator
+> 1
+> 2
+> 4
+> 5
+> Vector -wise
+> Core
+> 3
+> (c) (d)
+> Sign_flip
+> 0101 Sign_flip
+> FF FF FF FF FF
+> SA SA SA SA SA SA SA SA SA
+> Match
+> FF FF FF FF
+> Sweep
+> Decoder & Matching Logic
+
+Figure 3: PALUTE hardware design (a) M3D DRAM with logic die (b) Logic die organization, data placement, and scheduling (c) M3D DRAM bank organization with VBLs (d) Vertical M3D MAT with in-DRAM query logic 
+
+MATs to deliver high parallelism with low area overhead, enabling dequantization-free low-precision computation while accommo-dating large LUT capacity; (2) Near-memory LUT generators on the logic die , connected via hybrid bonding, that provides low-latency, high-bandwidth support for data movement; and (3) a system-level data tiering and scheduling workflow in M3D memory organization that minimizes off-chip data movement and alleviates memory bottlenecks during Transformer inference. 
+
+## 3 PALUTE Architecture Design 3.1 System Overview 
+
+In this section, we present PALUTE, a PIM accelerator that en-ables LUT-centric LLM inference via in-DRAM LUT querying on M3D DRAM. PALUTE uses an M3D stack with a bottom logic die hybrid-bonded to DRAM tiers (Figure 3(a)), exposing high die-to-die bandwidth ( ∼1.38 TB/s) for near-memory access [ 17 ]. We design an in-DRAM LUT querying architecture using M3D DRAM for LLM inference. We decompose GEMM into LUT-mappable partial-MAC combinations, and map these queries onto DRAM MATs. This choice exploits massive MAT-level parallelism and reduces data movement and logic-die compute overhead. (Figure 3(d)); and element-wise unary operators (e.g., GELU) are preprocessed into LUTs using the mapping method in Figure 2(b). At the system level, PALUTE integrates accumulators into DRAM banks and applies a GEMM storage optimization that uses only a half-table (Sec. 3.2). All the results of LUT are preprocessed in the LUT generator on the logic die (Sec. 3.3) connected via hybrid bonding. PALUTE further provides a scheduling flow that coordinates LUT generation, data placement, and in-DRAM LUT query (Fig-ure 3(b)) to minimize cross-tier data movement (Sec. 3.4). Finally, M3D DRAM’s vertical MAT organization (VBL) offers high intrin-sic parallelism: matching it in planar DRAM would require large area overhead, while TSV-based 3D stacks introduce non-trivial cross-layer latency. PALUTE includes LUT generators on the logic die, which can produce a ready-to-query LUT in three clock cycles, keeping table preparation off the critical path. 
+
+## 3.2 PALUTE Hardware Design 
+
+LUT-querying supports both GEMM and nonlinear operations. Fig-ure 4(a) shows an example where the first row of 𝑋 multiplies the first row of 𝑊 and is accumulated; we partition the long dot-product into smaller segments to improve efficiency. The key observation is reuse: a fixed activation segment is shared. Once a segment of 𝑋 is fixed, it pairs with various segments of 𝑊 , yielding a bounded set of partial sums. Thus, for each activation segment, we precompute all possible results induced by the corresponding weight patterns and store them in a LUT. It encodes each weight segment as an index and directly retrieves the precomputed value. Assuming 4-bit values, LUT entries are stored horizontally across four DRAM cells in an M3D DRAM MAT. We place multiple horizon-tal replicas of the LUT to increase parallelism, enabling row-wise retrieval of many LUT values simultaneously. Figure 4(b) illustrates half-table lookup: due to sign symmetry, we store only entries for non-negative values. Negative cases flip sign bits to map to the symmetric index, read the LUT value, and restore the sign. Unlike FIGLUT’s half flip-flop based LUT (hFFLUT) that reduces flip-flop LUT cost inside an ASIC [ 20 ], PALUTE applies half-table directly to in-DRAM LUT storage to reduce off-chip transfers. This halves LUT capacity demand, reducing DRAM storage overhead and allowing longer LUTs to fit in-memory query. Let segment length = 𝑏 and weight bit width = 𝑞 , the length of LUT 𝐿 = 2𝑏𝑞 , PALUTE chooses segment length to be 2. 
+
+3.2.1 LUT-Query-Supported M3D DRAM MAT. To enable highly parallel LUT queries, PALUTE leverages the vertical organization of M3D DRAM. Figure 3(c) illustrates the structure of an M3D DRAM bank, where each vertical stack corresponds to a DRAM MAT. Within each MAT, shown in Figure 3(d), every purple node represents a one transistor one cell (1T1C) DRAM cell that holds one bit of a stored LUT value. PALUTE exploits the vertical axis to issue LUT queries across many MATs simultaneously. This hardware-aware arrangement maximizes parallelism while keeping the area footprint minimal. Each MAT consists of horizontal WLs and verti-cal BLs, with a SA array located at the bottom of the stack. Beneath the SAs, transistor switches and FFs capture the selected LUT out-puts. A MUX and a sign-flip unit implement the half-table LUT mechanism and convert raw table outputs into their corresponding signed values. On the left side of each MAT, matching logic inte-grated into a lightweight row decoder iteratively sweeps through all MAT rows, identifies matches with the queried index, and activates the corresponding group of switches that route the matched LUT Tian et al. Value Index(w 1w 2)8∙x 1,1 - 8 ∙x 1,2 8 -8 8∙x 1,1 - 7 ∙x 1,2 8 -7 ... ... 0∙x 1,1 + 7 ∙x 1,2 0 7 Value Index(w 1w 2)GELU(7) 7GELU(6) 6... ... GELU(-8) -8 Reuse x 1,3 x1,4 x 1,d x 2,1 x2,2 x2,3 x 2,4 x2,d x n,1 xn,2 xn,3 x n,4 xn,d Half table                           
+
+> -8 7 (1 111_0111 )Sign_flip
+> 8 -7
+> Sign_flip
+> Value -Value
+> LUT 1(a) LUT Generator LUT 2copy copy 4-bit x1,1 x1,2 x1,3 x1,4 x1,d x2,1 x2,2 x2,3 x2,4 x2,d xn,2 xn,3 xn,4 xn,d GELU Pre-generated LUT (b) On-the-fly-generated LUT w1,1 w1,2 w2,d w2,1 w2,2 w2,d w3,1 w3,2 w3,d wd,1 wd,2 wd,d x1,1 x1,2 xn,1
+
+Figure 4: In-DRAM LUT mapping (a) Examples of LUT for GEMM (X ·W) and GELU (b) Half-table logic for GEMM 
+
+columns to the FFs. As a MAT can store lots of LUTs horizontally, a single sweep retrieves LUT outputs from many LUTs in paral-lel, yielding high query throughput. Assume there are 𝑀 channels per chip, 𝑁 banks per channel and 𝐾 MATs per bank, reaching 
+
+𝑀 × 𝑁 × 𝐾 MATs for LUT query in parallel. Assume a row-buffer interface bandwidth of 𝐵𝑊 𝑏𝑢 𝑓 bit/cycle and the data storing in the MAT are 𝑊 -bit, maximum parallelism reaches 𝑀 × 𝑁 × 𝐾 × 𝐵𝑊 𝑏𝑢 𝑓  
+
+> 𝑊
+
+.
+
+3.2.2 M3D DRAM Chip Architecture. A bank in our M3D DRAM architecture consists of 1024 MATs, and each channel is organized as a 4 ×4 array of banks. Likewise, 4 ×4 channels together form a full M3D DRAM chip, as illustrated in Figure 3(a). Each channel is interfaced with a LUT-generation unit on the logic die through hybrid bonding, which provides ultrahigh bandwidth communica-tion (1.38 TB/s) [ 17 ]. The paraellism can reach 8, 388 , 608 for W4A4 quantization and 128 bit/cycle [ 14 ] maximum row-buffer interface bandwidth. All MATs in a bank are connected to a bank-level ac-cumulator that aggregates partial results across matrix segments. Within each MAT, the storage space is logically partitioned into three functional regions: the upper region stores KV-cache data, the middle region stores LUTs and enables in-DRAM LUT querying, and the lower region stores model weights. This organization is motivated by the access-frequency and data-locality characteristics of each data type, whose structure is shown in Figure 3(b), as fur-ther discussed in the Sec. 3.4. During computation, LUT-retrieved values are forwarded to the bank-level accumulator. 
+
+## 3.3 LUT Generator 
+
+The LUT generator is implemented on the logic die and connected to DRAM banks via hybrid bonding. It consists of a 4 × 4 array of units, where each unit serves one DRAM bank. As shown in Fig-ure 5(d), each unit integrates two specialized cores: a GEMM core for generating LUTs used in GEMM, and an element-wise unary core for generating LUTs for functions such as GELU. PALUTE’s bank-attached LUT generator is a system component that generates LUTs and writes them back into the M3D DRAM array for in-situ queries. PALUTE extends LUT generation beyond GEMM to also cover element-wise unary operators (e.g., GELU). Prior work [ 20 ]generates LUTs on the fly and propagates them across PE arrays, which can repeatedly regenerate identical LUT contents with lim-ited reuse and thus incurs recurrent latency and energy overhead. ...                                       
+
+> ... ...
+> 8*
+> x1x2
+> 762
+> ...
+> Controller
+> ...
+> ... ...
+> BA
+> Cyc 1 8·x 17·x 16·x 2... 2x 1x1
+> Cyc 2 8·x 27·x 26·x 2... 2x 2x2
+> Cyc 3 -7·x 2-6·x 2... -2x 2-x2
+> ...
+> 2·x 1+2·x 2, 2·x 1+2·x 2... 2·x 1+x 2
+> 8·x 1-x2Cyc 2 8·x 1+8·x 2,8·x 1+7·x 2... 8·x 1+x 2
+> Cyc 3 8·x 1-8·x 2,8·x 1-7·x 2... 8·x 1-x2
+> LUT Generator
+> (a)
+> (d)
+> *e.g. INT4
+> (b)
+> (c)
+> MegaMultiplier
+> MegaAdder  1
+> 78
+> |w 1|· x1|w 2|·x2-|w 2|·x2
+> FF
+> FF
+> ××××
+> FF
+> +++++
+> AAA
+> B
+> AA
+> GEMM
+> Core
+> Controller
+> Element -wise
+> Unary Core
+
+Figure 5: LUT generator (a) Digital logic for the first addend controlled by a FSM-based controller (b) Digital logic for state alignment (c) Digital logic for the second addend (d) Overall LUT generator architecture with GEMM and non-linear core 
+
+Prior works [ 7 , 11 , 25 ] assume that LUTs are precomputed and merely staged in memory, which fails to account for LUT gener-ation overhead. PALUTE employs a bank-parallel LUT generator that materializes both GEMM and unary-operator LUTs directly near M3D DRAM and transfers them with high bandwidth. Instead of performing explicit multiply-accumulate (MAC) or dequantization operations during inference, the GEMM core enu-merates all possible partial sums of low-precision activations and materializes them as LUT entries. Subsequent computation is re-duced to index-based LUT lookup and accumulation, reducing arith-metic complexity and data movement. For a LUT entry 𝑤 1𝑥 1 +𝑤 2𝑥 2,we leverage the half-table by enforcing 𝑤 1 ≥ 0 while allowing 𝑤 2 to be signed. The GEMM core therefore generates |𝑤 1 |𝑥 1 and ±| 𝑤 2 |𝑥 2
+
+separately and combines them to enumerate all entries. Figure 5(a) illustrates INT4 weights with |𝑤 1 | ∈ { 1, . . . , 8} and |𝑤 2 | ∈ { 1, . . . , 7}.A controller drives a multiplier array plus a MUX with a sign-inverter to produce partial products in three cycles: (1) |𝑤 1 |𝑥 1, (2) 
+
+|𝑤 2 |𝑥 2, and (3) −| 𝑤 2 |𝑥 2. In cycle 1, all |𝑤 1 |𝑥 1 terms are buffered (Figure 5(b) right); cycles 2–3 buffer the corresponding ±| 𝑤 2 |𝑥 2
+
+terms (Figure 5(b) left). Cycle-aligned multiplexing pairs buffered 
+
+|𝑤 1 |𝑥 1 with each ±| 𝑤 2 |𝑥 2 and forwards them to the adder arrays. Figure 5(c) shows the replicated MegaAdder: each instance takes a PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference 
+
+fixed |𝑤 1 |𝑥 1 on one input and enumerates all ±| 𝑤 2 |𝑥 2 on the others, producing the full set of partial sums in parallel. Consequently, all LUT entries for 𝑤 1𝑥 1 ± 𝑤 2𝑥 2 are materialized within three cycles and then written back to DRAM. 
+
+## 3.4 PALUTE Tiering and Scheduling Framework 
+
+Due to the staircase-like wordline (WL) routing in M3D DRAM, lower WLs suffer higher parasitic capacitance and resistance from longer routing paths. This latency imbalance becomes significant as M3D DRAM scales to hundreds of layers [ 19 ], leading to nonuni-form activation latency across tiers and making data tiering neces-sary. Figure 3(b) illustrates PALUTE’s end-to-end scheduling flow: 1 weights and initial tokens are fetched into the logic die through hybrid bonding; 2 the LUT-generation unit constructs LUTs from incoming token values; 3 the LUTs are written back into the M3D DRAM array for in-situ queries; 4 weights serve as indices during LUT querying, and each MAT returns LUT results to the bank-level accumulator; 5 the KV cache is stored in M3D DRAM to support high-throughput decoding read/write. To reduce data movement, PALUTE places data according to tier locality. Initial tokens and frequently accessed weights are placed in lower tiers close to the logic die, reducing WL traversal length. LUTs are placed in middle tiers to balance latency and capacity. Since KV-cache read/write dominates decoding traffic, the KV cache is placed adjacent to LUT storage in higher layers. The bank-level accumulator sits at the top of each MAT, directly above the KV-cache region, so LUT results travel only a short vertical path before accumulation, reducing latency and energy while improving effective bandwidth. 
+
+## 4 Evaluation 4.1 Experimental Setup 
+
+4.1.1 Baselines. We evaluate PALUTE against an NVIDIA Jetson Orin NX GPU [ 18 ] and SOTA in-memory (normal DRAM) LUT-based accelerators PIMPAL [ 11 ], a LUT-based ASIC FIGLUT [ 20 ]and a heterogeneous NMP accelerator CHIME [ 4]. We assess end-to-end LLM inference, and we compare performance in terms of throughput, power, energy efficiency and area efficiency. All eval-uations are conducted on the Qwen3-0.6B, 1.7B, 4B and 8B [ 24 ]model under W4A4 quantization. 
+
+4.1.2 Hardware Configuration. Table 1 summarizes the hardware configuration of the baseline M3D DRAM used in this work. We assume a 35 nm M3D DRAM device with 768 vertically stacked layers. Each MAT is vertical and consists of a 768 × 1024 cell array. A total of 1024 MATs form one bank, and banks are hierarchically organized as a 4 × 4 array per channel and a 4 × 4 array of channels per chip, enabling massive parallelism across banks and channels. Under this organization, the effective storage capacity of a single layer is 32 MB, with 768 stacked layers, the total chip capacity reaches approximately 24 GB. We assume a row-buffer interface bandwidth of 128 bps [ 14 ], which determines the peak data transfer rate for row activations. Let each LUT result is stored in 4-bit, a 128-bit row-buffer burst can deliver at most 32 results per transfer, i.e., the peak transfer parallelism is 32. When more than 32 LUTs are activated, the results must be moved in multiple bursts, effectively 
+
+Table 1: Hardware parameters of M3D DRAM Device Overview                      
+
+> # Layers 768 Technology Node 35 nm Bank Capacity 96 MB Bank Area 0.44 mm 2
+> Chip Capacity 24 GB Chip Area 112.4 mm 2
+> Energy Parameters (pJ / row)
+> 𝐸 ACT 207 𝐸 PRE 458
+> 𝐸 READ 7260 𝐸 WRITE 7540
+> Timing Parameters (ns)
+> 𝑇 ACT 14.16 𝑇 PRE 14.16
+> 𝑇 READ 14.16 𝑇 WRITE 14.16
+
+Table 2: End-to-end energy and area efficiency comparison                                    
+
+> PIMPAL CHIME FIGLUT Ours
+> Category PIM NMP ASIC PIM Technology ∗(nm) N/A 7nm 28nm 7nm Power (W) N/A 1.95 0.29 0.16 Area ∗∗ (mm 2)1.82 53.6 0.78 112.4 Throughput (TPS) 10.2 1,179 20.7 1,264 Energy Eff. (TPS/W) N/A 604.6 71.4 7,738 Area Eff. (TPS/mm 2)5.62 22.01 26.54 11.25
+> ∗For PIM/NMP baselines, the technology node is for the logic die.
+> ∗∗ For PIM/NMP baselines, the area is for the max{memory, logic die}.
+
+serializing the transfer. The system sustains up to 16 ×16 ×1024 ×32 =
+
+8, 388 , 608 concurrent LUT lookups. 
+
+4.1.3 Methodology. We evaluate PALUTE with an in-house cycle-accurate simulator that models end-to-end LUT-based Transformer inference on M3D DRAM, including in-DRAM LUT querying, bank-level accumulation, and the near-memory LUT generator. The LUT-query timing follows pLUTo-style bulk LUT access semantics [ 7], extended to M3D DRAM’s vertical MAT organization. To model realistic overheads, we implement the LUT Generator and system controller are implemented in Verilog and synthesized with Ca-dence Genus using a 7 nm CMOS PDK at 200 MHz for performance, power, and area estimation. 
+
+## 4.2 Performance 
+
+Table 2 and Figure 6 jointly compare PALUTE against SOTA ac-celerators [ 4 , 11 , 20 ] and Jetson Orin NX [ 18 ]. Table 2 summarizes the end-to-end energy and area efficiency of PALUTE for decod-ing under W4A4 precision. PALUTE achieves an energy efficiency of 7,738, outperforming CHIME [ 4] and FIGLUT [ 20 ] by 12.8 ×
+
+and 1.6 ×, respectively; PIMPAL [ 11 ] does not report end-to-end energy in its evaluation. These gains come from reducing the en-ergy from dequantization, GEMM and nonlinear kernel, as well as the system-level data movement. For area efficiency, PALUTE reaches 11.25 TPS/mm 2, exceeding PIMPAL [ 11 ] by 2.0 ×, which is driven by M3D DRAM’s vertical MAT organization. We restrict the area-efficiency comparison to in-memory LUT-based designs, since LUT support introduces non-trivial area overhead that is explicitly accounted for in our implementation but is absent in non-LUT baselines. Figure 6(a) compares PALUTE against Jetson [ 18 ], showing consistent gains in both energy and area efficiency across model sizes from 0.6B to 8B. Figure 6(b) places PALUTE on a fa-vorable throughput–power Pareto frontier relative to Jetson [ 18 ], FIGLUT [ 20 ], and CHIME [ 4 ], demonstrating higher token through-put under a tighter power envelope. Tian et al. Throughput (TPS) 10 210 310 110 0 10 1Power (W) Qwen3-0.6B Qwen3-1.7B Qwen3-4B Qwen3-8B Qwen3-0.6B Qwen3-1.7B Qwen3-4B Qwen3-8B Qwen3-4B Ours CHIME Jetson 10 410 30.6B 1.7B 4B 8B Model Size Energy Effi. (TPS/W) Area Effi. (TPS/mm  2 )Energy Eff. Area Eff. FIGLUT Qwen3-4B (a) (b) 
+
+Figure 6: End-to-end inference evaluation (a) Energy and area efficiency gain compared with Jetson (b) Throughput and power compared with all SOTAs 10 210 310 410 510 610 1Input Tokens 10 1 10 2 10 3 10 4 10 5Output Tokens 0-1 1Energy (J)              
+
+> 10 210 310 410 510 610 1Input Tokens 10 110 210 310 4Output Tokens Latency (s) 10 50-1 1-2
+> 10 210 310 410 510 610 1Input Tokens 10 110 210 310 410 5Output Tokens Power (W) 0-0.5 0.5 -1.0 -1.5 -2.0 -2.5
+> 10 210 310 410 510 610 1Input Tokens 10 110 210 310 410 5Output Tokens Throughput (TPS) 1000 800 1200 600 400 200 (a) (b) (c) (d)
+
+Figure 7: Sensitivity to input/output token lengths: heatmaps of (a) energy, (b) latency, (c) power, and (d) throughput 
+
+## 4.3 Sensitivity Analysis 
+
+This section studies PALUTE’s sensitivity to prompt (input) and generation (output) lengths by sweeping token counts and report-ing energy and latency. As Figure 7(a) and (b) shows, both metrics generally rise with longer sequences because longer decoding in-creases auto-regressive steps and enlarges the KV cache, raising memory traffic and attention cost. For a fixed output length, Figure 7(c) shows that shorter inputs can reduce average power by decreasing prefill work and the initial KV cache size; decoding power scales largely with the active KV footprint. Figure 7(d) shows the corresponding throughput: shorter inputs and longer outputs typically improve throughput since prefill overhead is amortized and KV reuse is higher. In contrast, long inputs spend more time in prefill and create a large KV cache early, increasing per-step cost and lowering steady-state token rate; very short outputs also limit KV reuse and reduce effective throughput. We further evaluate energy and area efficiency versus sequence length. Figure 8(a) shows energy efficiency decreases with longer inputs but generally improves with longer outputs, unless a large KV cache under long-input settings degrades throughput enough to offset the benefit of longer decoding. We define AreaEff =
+
+Throughput /Area ; since area is constant, Figure 8(b) directly fol-lows the throughput trend in Figure 7(d). Energy Effi. (TPS/W) 10 100 1000 10000 100000 1000000 Input Tokens 10 100 1000 10000 100000 1000000 Area Effi. (TPS/mm  2 )Input Tokens Output Tokens = 10 Output Tokens = 10 2 Output Tokens = 10 3Output Tokens = 10 4 Output Tokens = 10 5
+
+> (a) (b) 10.0 7.5 5.0 0.0 2.5 10 610 410 210 0
+
+Figure 8: Energy and area efficiency versus input token length under different output-length settings (a) Energy (b) Area 96.0% 96.4% 4.0% 3.6%                  
+
+> 32.6% 30.4% 20.9% 15.0% 1.1% 34.0% 29.9% 19.3% 16.4% 0.3%
+> (a) (b)
+> Single LUT Generator Area: 0.00039 mm 2Single LUT Generator Power: 0.32 mW
+> Logic Die Area: 0.019 mm 2Logic Die Power: 15.1 mW
+> GEMM Core
+> On -chip SRAM
+> Controller
+> LUT Generators
+> Nonlinear Element -wise Unary Core
+> Nonlinear Reduction Core
+> Nonlinear Element -wise Binary Core
+
+Figure 9: Overhead breakdown (a) Area (b) Power 
+
+## 4.4 Overhead Breakdown and Analysis 
+
+On the logic die, PALUTE integrates a controller and LUT genera-tors. For a single LUT generator (Fig. 9(a) and (b)), the GEMM core dominates both area and power, accounting for 96.0% of 0.00039 mm 2
+
+and over 96.4% of 0.32 mW, while the nonlinear element-wise unary core contributes only 4.0% area and 2.06% power. At the logic-die level, LUT generators occupy 32.6% of the logic-die area, followed by the controller (30.4%), nonlinear reduction core (20.9%), and SRAM (15.0%), with the nonlinear element-wise binary core negligible (1.1%). Total logic-die area is 0.019 mm 2. Power is led by LUT-related computation (34.0%), followed by the controller (29.9%), nonlinear reduction core (19.3%) and On-chip SRAM (16.4%). Overall logic-die power is 15.1 mW. 
+
+## 5 Conclusion 
+
+We present PALUTE, a LUT-based PIM accelerator on M3D DRAM that leverages in-DRAM LUT querying, a logic-die LUT gener-ator, and system-level tiering/scheduling to cut dequantization, nonlinear overheads, and data movement for edge LLM inference. Under end-to-end W4A4 quantization, PALUTE delivers 1,264 TPS at 0.16 W (7,738 TPS/W), improving energy efficiency by 12.8 × over CHIME [ 4 ] and 1.6 × over FIGLUT [ 20 ], and area efficiency by 2.0 ×
+
+over PIMPAL [ 11 ], demonstrating a practical path to energy/area-efficient LLM inference via LUT-centric execution on M3D DRAM. 
+
+## Acknowledgment 
+
+This work was supported in part by PRISM and CoCoSys, cen-ters in JUMP 2.0, an SRC program sponsored by DARPA (SRC grant number 2023-JU-3135). This work was also supported by NSF grants #2003279, #1911095, #2112167, #2052809, #2112665, #2120019, #2211386. PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference 
+
+## References 
+
+[1] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Pashmina Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman. 2024. QuaRot: outlier-free 4-bit inference in rotated LLMs. In Proceedings of the 38th International Conference on Neural Information Processing Systems (NeurIPS) .[2] Kazi Asifuzzaman, Narasinga Miniskar, Aaron Young, Frank Liu, and Jeffrey Vetter. 2022. A survey on processing-in-memory techniques: Advances and challenges. Memories - Materials, Devices, Circuits and Systems 4 (12 2022), 100022. doi:10.1016/j.memori.2022.100022 [3] Amirali Boroumand, Saugata Ghose, Youngsok Kim, Rachata Ausavarungnirun, Eric Shiu, Rahul Thakur, Daehyun Kim, Aki Kuusela, Allan Knies, Parthasarathy Ranganathan, and Onur Mutlu. 2018. Google Workloads for Consumer Devices: Mitigating Data Movement Bottlenecks. In Proceedings of the Twenty-Third In-ternational Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) . 316–331. [4] Yanru Chen, Runyang Tian, Yue Pan, Zheyu Li, Weihong Xu, and Tajana Rosing. 2025. CHIME: Chiplet-based Heterogeneous Near-Memory Acceleration for Edge Multimodal LLM Inference. arXiv:2601.19908 [cs.AR] [5] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FLASHATTENTION: fast and memory-efficient exact attention with IO-awareness. In Advances in Neural Information Processing Systems (NeurIPS) .[6] Danny Driess, Fei Xia, Mehdi S. M. Sajjadi, Corey Lynch, Aakanksha Chowdh-ery, Brian Ichter, Ayzaan Wahid, Jonathan Tompson, Quan Vuong, Tianhe Yu, Wenlong Huang, Yevgen Chebotar, Pierre Sermanet, Daniel Duckworth, Sergey Levine, Vincent Vanhoucke, Karol Hausman, Marc Toussaint, Klaus Greff, Andy Zeng, Igor Mordatch, and Pete Florence. 2023. PaLM-E: an embodied multimodal language model. In Proceedings of the 40th International Conference on Machine Learning (Honolulu, Hawaii, USA) (ICML’23) . JMLR.org, Article 340, 20 pages. [7] Joao Dinis Ferreira, Gabriel Falcao, Juan Gomez-Luna, Mohammed Alser, Lois Orosa, Mohammad Sadrosadati, Jeremie S. Kim, Geraldo F. Oliveira, Taha Shahroodi, Anant Nori, and Onur Mutlu. 2022. pLUTo: Enabling Massively Parallel Computation in DRAM via Lookup Tables. In 2022 IEEE/ACM Interna-tional Symposium on Microarchitecture (MICRO) . 900–919. [8] Amir Gholami, Sehoon Kim, Zhen Dong, Zhewei Yao, Michael W. Mahoney, and Kurt Keutzer. 2021. A Survey of Quantization Methods for Efficient Neural Network Inference. arXiv:2103.13630 [cs.CV] https://arxiv.org/abs/2103.13630 [9] Po-Kai Hsu, Janak Sharda, Xiangjin Wu, H.-S. Philip Wong, and Shimeng Yu. 2025. Monolithic 3D Stackable DRAM. IEEE Nanotechnology Magazine 19, 2 (2025), 7–16. [10] Andrei Ivanov, Nikoli Dryden, Tal Ben-Nun, Shigang Li, and Torsten Hoefler. 2021. Data Movement Is All You Need: A Case Study on Optimizing Transformers. arXiv:2007.00072 [cs.LG] [11] Yoonho Jang, Hyeongjun Cho, Yesin Ryu, Jungrae Kim, and Seokin Hong. 2025. PIMPAL: Accelerating LLM Inference on Edge Devices via In-DRAM Arithmetic Lookup. In Proceedings of the 62nd Annual ACM/IEEE Design Automation Confer-ence (DAC) .[12] Sehoon Kim, Amir Gholami, Zhewei Yao, Michael W. Mahoney, and Kurt Keutzer. 2021. I-BERT: Integer-only BERT Quantization. International Conference on Machine Learning (ICML) (2021). [13] Sehoon Kim, Coleman Hooper, Thanakul Wattanawong, Minwoo Kang, Ruohan Yan, Hasan Genc, Grace Dinh, Qijing Huang, Kurt Keutzer, Michael W. Mahoney, Yakun Sophia Shao, and Amir Gholami. 2023. Full Stack Optimization of Trans-former Inference. In Architecture and System Support for Transformer Models (ASSYST @ ISCA) .[14] Donghyuk Lee, Gennady Pekhimenko, Samira Khan, Saugata Ghose, and Onur Mutlu. 2016. Simultaneous Multi-Layer Access: Improving 3D-Stacked Memory Bandwidth at Low Cost. ACM Transactions on Architecture and Code Optimization 
+
+12, 4 (2016). [15] Yujun Lin, Haotian Tang, Shang Yang, Zhekai Zhang, Guangxuan Xiao, Chuang Gan, and Song Han. 2025. QServe: W4A8KV4 Quantization and System Co-design for Efficient LLM Serving. arXiv:2405.04532 [cs.CL] https://arxiv.org/ abs/2405.04532 [16] Onur Mutlu, Saugata Ghose, Juan Gómez-Luna, and Rachata Ausavarungnirun. 2019. Processing Data Where It Makes Sense in Modern Computing Systems: Enabling In-Memory Computation. In Great Lakes Symposium on VLSI (GLSVLSI) .5–6. [17] Dimin Niu, Shuangchen Li, Yuhao Wang, Wei Han, Zhe Zhang, Yijin Guan, Tianchan Guan, Fei Sun, Fei Xue, Lide Duan, Yuanwei Fang, Hongzhong Zheng, Xiping Jiang, Song Wang, Fengguo Zuo, Yubing Wang, Bing Yu, Qiwei Ren, and Yuan Xie. 2022. 184QPS/W 64Mb/mm2 3D Logic-to-DRAM Hybrid Bonding with Process-Near-Memory Engine for Recommendation System. In IEEE International Solid-State Circuits Conference (ISSCC) . 1–3. [18] NVIDIA Corporation. 2022. Jetson Orin NX Series Datasheet . Technical Report. [19] Yue Pan, Zihan Xia, Po-Kai Hsu, Lanxiang Hu, Hyungyo Kim, Janak Sharda, Minx-uan Zhou, Nam Sung Kim, Shimeng Yu, Tajana Rosing, and Mingu Kang. 2025. Stratum: System-Hardware Co-Design with Tiered Monolithic 3D-Stackable DRAM for Efficient MoE Serving. In Proceedings of the 58th IEEE/ACM Interna-tional Symposium on Microarchitecture (MICRO) . 1–17. [20] Gunho Park, Hyeokjun Kwon, Jiwoo Kim, Jeongin Bae, Baeseong Park, Dongsoo Lee, and Youngjoo Lee. 2025. FIGLUT: An Energy-Efficient Accelerator Design for FP-INT GEMM Using Look-Up Tables. In IEEE International Symposium on High Performance Computer Architecture (HPCA) . 1098–1111. [21] Guanqiao Qu, Qiyuan Chen, Wei Wei, Zheng Lin, Xianhao Chen, and Kaibin Huang. 2025. Mobile Edge Intelligence for Large Language Models: A Contem-porary Survey. IEEE Communications Surveys & Tutorials PP (01 2025), 1–1. doi:10.1109/COMST.2025.3527641 [22] Tao Tu, Shekoofeh Azizi, Danny Driess, Mike Schaekermann, Mohamed Amin, Pi-Chuan Chang, Andrew Carroll, Chuck Lau, Ryutaro Tanno, Sofia Ira Ktena, Basil Mustafa, Aakanksha Chowdhery, Yun Liu, Simon Kornblith, David Fleet, Philip Mansfield, Sushant Prakash, Renee Wong, Sunny Virmani, and Vivek Natarajan. 2023. Towards Generalist Biomedical AI. doi:10.48550/arXiv.2307.14334 [23] Jianyu Wei, Shijie Cao, Ting Cao, Lingxiao Ma, Lei Wang, Yanyong Zhang, and Mao Yang. 2025. T-MAC: CPU Renaissance via Table Lookup for Low-Bit LLM Deployment on Edge. In Proceedings of the Twentieth European Conference on Computer Systems (Rotterdam, Netherlands) (EuroSys ’25) . Association for Computing Machinery, New York, NY, USA, 278–292. [24] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. 2025. Qwen3 Technical Report. arXiv:2505.09388 [cs.CL] [25] Zhiheng Yue, Yang Wang, Chao Li, Shaojun Wei, Yang Hu, and Shouyi Yin. 2025. 3D-PATH: A Hierarchy LUT Processing-in-memory Accelerator with Thermal-aware Hybrid Bonding Integration. In Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture (MICRO) . 78–93. [26] Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou, Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, Yifan Du, Chen Yang, Yushuo Chen, Zhipeng Chen, Jinhao Jiang, Ruiyang Ren, Yifan Li, Xinyu Tang, Zikang Liu, Peiyu Liu, Jian-Yun Nie, and Ji-Rong Wen. 2023. A Survey of Large Language Models. http://arxiv.org/abs/2303.18223 arXiv:2303.18223 [cs]. [27] Yilong Zhao, Chien-Yu Lin, Kan Zhu, Zihao Ye, Lequn Chen, Size Zheng, Luis Ceze, Arvind Krishnamurthy, Tianqi Chen, and Baris Kasikci. 2024. Atom: Low-Bit Quantization for Efficient and Accurate LLM Serving. In Proceedings of Machine Learning and Systems (MLSys) , Vol. 6. 196–209.

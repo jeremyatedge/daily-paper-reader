@@ -1,0 +1,304 @@
+Title: Arithmetic Packing on Wide Integer Datapaths in DSP Primitives of Modern FPGA Devices
+
+URL Source: https://arxiv.org/pdf/2606.11065v1
+
+Published Time: Wed, 10 Jun 2026 01:17:51 GMT
+
+Number of Pages: 8
+
+Markdown Content:
+# Arithmetic Packing on Wide Integer Datapaths in DSP Primitives of Modern FPGA Devices 
+
+Titus Borntr¨ ager ∗, Shane Fleming †, Philipp Holzinger ∗, Dietmar Fey ∗, Michaela Blott ‡, Thomas B. Preußer §∗Friedrich-Alexander Universit¨ at Erlangen-N¨ urnberg , Erlangen, Germany, firstname.lastname @fau.de 
+
+> †
+
+AMD Research and Advanced Development , Swansea, UK, shane.fleming@amd.com 
+
+> ‡
+
+AMD Research and Advanced Development , Dublin, Ireland, michaela.blott@amd.com 
+
+> §
+
+AMD Research and Advanced Development , Dresden, Germany, thomas.preusser@amd.com 
+
+Abstract —Deep Neural Networks increasingly employ low-precision quantization to reduce computational requirements. While FPGAs are well suited for workloads with heterogeneous precisions, their dedicated digital signal processing (DSP) slices only feature fixed-width datapaths that are significantly under-utilized by low-bitwidth arithmetic. While previous approaches have already introduced the packing of multiple values onto the same wide DSP datapath, they either only support specific fixed bitwidths or are wasteful regarding the use of additional support logic external to the DSP. This paper proposes an efficient method to dynamically pack multiple (un-)signed inputs with arbitrary bitwidths into a wide multiplier path by leveraging the DSP’s internal pre-adder. Building on this, we present two distinct archi-tectures, one optimized for matrix-vector multiplications and the other for convolutions. Our implementations are integrated into AMD’s FINN framework. With these optimizations, we reduce the LUT utilization by 21% and increase the FPS/DSP by 36% for the UltraNet model compared to the FINN reference. 
+
+Index Terms —AI accelerators, digital signal processors, field-programmable gate arrays, fixed-point arithmetic 
+
+I. I NTRODUCTION 
+
+Modern applications, particularly in the field of artificial intelligence, require increasingly higher compute power at a low energy consumption [1]. Field-programmable gate arrays (FPGAs) have emerged as indispensable platforms for satisfy-ing this need in the embedded application domain [2]. How-ever, the available resources, such as lookup tables (LUTs), flip-flops (FFs) and digital signal processing slices (DSPs), have not scaled at the same pace as the computational demand. Hence, the gap between demand and supply of compute resources on hardware devices is growing. While LUTs and FFs can be used flexibly with bit-level granularity, the dedi-cated DSP slices provide only a fixed-width, relatively wide multiply-accumulate datapath. The naive mapping of low-bitwidth operations to these hardware structures results in a significant and systematic underutilization of the consumed silicon footprint. One example of such applications that heavily rely on low-bitwidth operations are deep neural networks (DNNs). Here, optimizations are critically needed to reduce the memory and compute demands of large models such that they can also be deployed on resource-constrained edge devices. For this purpose, sophisticated quantization techniques are often em-ployed to derive low-precision, fixed-point inference versions from models originally trained using floating-point number formats [3]–[5]. These computations, in turn, also have to be efficiently mapped onto the limited amount of available FPGA device resources. As a solution, previous research presented the packing of multiple arithmetic operations into the same wide DSP datapath [6], [7]. However, these exist-ing approaches have significant limitations. They either only support a specific fixed bitwidth or are wasteful regarding the use of additional support logic external to the DSP [6], [8], [9]. Therefore, efficient resource utilization, particularly in the context of more complex operations like convolutions, still poses a challenge today. To solve these challenges, this paper proposes multiple optimizations that significantly improve the operational density of a design (i.e., the number of operations per DSP and cycle). First, we generalize previous approaches to efficiently pack both signed and unsigned values with arbitrary input widths into a wider DSP datapath, particularly for computations smaller than 8 bits. This is achieved by initially adapting existing research [7] to determine the interactions between all individual products. Based on this, we present a more efficient new method that dynamically handles signed values while only using the internal pre-adder common to most modern DSP architectures. We then further extend these techniques to also calculate packed multiply-accumulate operations that are found in convolutions even more efficiently. For this purpose, we leverage guard bits as lane offsets to separate the individual products. With these techniques combined we can minimize the required amount of FPGA resources external to DSPs. To demonstrate the advantages of our approach in practice, we integrated these optimizations into AMD’s state-of-the-art FINN framework [4], [5] to generate DNN architectures for efficient low-precision matrix-vector multiplications and convolutions on FPGAs. These implementations are directly optimized for FINN’s standard tensor layout, which specifies how multidimensional tensors are mapped onto 1D streams. Our contributions are also provided as open source, such that all resulting designs are fully accessible and reproducible. The paper is organized as follows: Sec. II reviews previ-ous related works. Sec. III details the proposed optimization methods and the corresponding architectures for matrix-vector multiplications and convolutions. These are then evaluated in Sec. IV. Finally, Sec. V summarizes the findings and gives an outlook on possible future work. 
+
+> arXiv:2606.11065v1 [cs.AR] 9 Jun 2026
+
+TABLE I: Comparison of key features and capabilities of different DSP packing implementations.                                          
+
+> Feature INT8
+> [6]
+> HiKonv
+> [8]
+> SA4
+> [9]
+> Overpacking
+> [10]
+> SSiMD
+> [11]
+> DLPack
+> [12]
+> Proposed Methods Packing Strategy Single Dual Dual Dual Dual Dual Single & Dual
+> Precision Support Fixed (INT8) Arbitrary Fixed (INT4) Arbitrary Fixed (INT4) Fixed (INT2) Arbitrary
+> Target Application MatVec & Conv Conv Conv Conv Conv Conv MatVec & Conv
+> Signed Input Packing Internal (Trivial) External External External External (Optimized) Unsigned Values Only Internal (DSP Pre-Adder)
+> Accurate Computing ✓✓✓✗✓✓✓
+> Open-Source ✗✗✓✗✗✗✓
+
+II. R ELATED WORK 
+
+Prior research on improving the computational throughput of DSPs has introduced a variety of techniques that differ significantly in their implementation details. To highlight our contributions, Tab. I provides a qualitative summary of key features of state-of-the-art systems contrasted with our pro-posed method. The idea of packing multiple low-precision values onto the wider DSP datapath was presented in a Xilinx™ whitepa-per [6]. It demonstrates how an average of 1.75 INT8 
+
+multiply-accumulate (MAC) operations per clock cycle can be attained per DSP slice. This INT8 case was also ex-amined by Lee et al. [13] who even achieved two MAC operations per DSP and cycle. While these techniques increase the achieved operational density specifically for INT8 data, they do not try to optimize for other precisions. Mert et al. demonstrated how to pack multiple constant multiplications into one DSP [14]. While this served applications in video processing and compression, it lacks the flexibility of variable inputs. In general, this type of mapping strategy is employed for matrix–vector multiplication (MatVec), which can also be used for convolutions (Conv). However, to date, no work has optimized the operational density for arbitrary precisions in the context of MatVec. Several works have explored the opportunity to extend the packing to the second multiplier input. Another Xilinx whitepaper [15] implements this strategy by packing two 
+
+INT4 values into each input datapath of a DSP48E2, thereby, enabling four parallel, mutually independent INT4 MAC operations per DSP slice. While Sommer et al. [10] explore overpacking for a further increase of the operational den-sity at the cost of producing approximate results, Mohabbati et al. [12] aim at a further reduction of the data precision describing the packing of unsigned INT2 values. Maintaining faithful results across arbitrary precisions, HiKonv [8] rather aims at optimizations enabled by the concrete AI application domain specifically requiring the computation of convolu-tions. Ultimately, they re-discover the technique termed binary segmentation by Pan [16]. It allows and, in fact, exploits the stacking of multiple vertical additions of partial products within the multiplier matrix. Building on these principles, SA4 [9] further advanced the state-of-the-art with an optimized systolic array structure specifically for INT4 precision. +/− 
+
+> ×+
+
+ABCDP
+
+Fig. 1: Block-level architecture of the DSP slices. A major difference between the individual works lies in how multiple signed values are packed into the same wide input path. For two values, this can be done trivially by leveraging the pre-adder found in modern DSP architectures as demonstrated by Fu et al. [6]. External fabric is typically used for packing more values [8], [11]. In contrast to these approaches, we present a method accomplishing this packing, only relying on the pre-adder without the need for additional external resources. It should be noted that, although similar packing techniques can be used for Altera (Intel) FPGAs, their differing DSP architectures (e.g., [17]) featuring more native support for low-precision operations require other optimization strategies that go beyond the scope of this paper. III. I MPLEMENTATION 
+
+A. Packing Concept 
+
+We first introduce the packing concept, essential for un-derstanding our proposed architectures. Consider a DSP slice designed with a fixed-width high-precision datapath, as shown in Fig. 1. It can immediately implement a multiply-accumulate operation with fixed-width input pairs (e.g., 27 × 18 -bit for the DSP48E2 ). However, in many application domains, of which AI is a prominent example, considerably narrower datatypes are common. The naive one-to-one binding of their low-precision compute to DSP slices implies considerable fragmentation cost in unused silicon expenditure. Packing aims at mitigating this price by increasing the number of operations mapped to a single DSP slice. From now on, we will refer to the technique of applying packing to only one multiplier input as soft datapath vec-torization (SDV). In contrast, we call it binary segmentation Fig. 2: Multiplier utilization options: (a) full-word multiplication, (b) SDV and (c) BSEG. 
+
+Fig. 3: Using the DSP pre-adder for packing signed weights by subtracting the separated sign bits. (BSEG) when packing is used on both multiplier input paths. The relevant scope of techniques is illustrated in Fig. 2. Packing must space the inputs sufficiently to ensure that the result lanes can be separated easily. Determining the minimum required distance is essential for achieving the maximum oper-ational density and is discussed in detail for both architectures. Let the lane size L, be the number of bits occupied by one value plus the padding introduced to assist the ultimate extraction of individual results. SDV with an embedding of n
+
+elements a0, · · · , a n−1 as packed multiplicand and a shared multiplier b then computes this sum of products: 
+
+> n−1
+
+X
+
+> i=0
+
+2iL ai
+
+!
+
+· b =
+
+> n−1
+
+X
+
+> i=0
+
+2iL (ai · b) (1) If the lane size L is large enough, the high-precision result can be sliced into individual results, thus, enabling the computation of multiple products in parallel. In contrast, BSEG embeds 
+
+m elements b0, · · · , b m−1 as packed multiplier instead of a singular b, such that it computes: 
+
+> n−1
+
+X
+
+> i=0
+
+2iL ai
+
+!
+
+> m−1
+
+X
+
+> j=0
+
+2jL bj
+
+ =
+
+> n+m−2
+
+X
+
+> k=0
+
+X
+
+> i+j=k
+> 0≤i<n
+> 0≤j<m
+
+2kL aibj (2) Again, if the lane size L is sufficiently large, the individual results can be extracted from the high-precision output of the multiplier. It is important to note that with BSEG some products are added up directly during multiplication, as shown in Fig. 2 (c), which is exploited for convolutions. However, the two’s complement representation of signed numbers inevitably leads to interference between individual values, even for large lane sizes. The sign extensions of negative lane values overlap all lanes located to their left. This is true for both the vectorized inputs as well as for vectorized outputs. Addressing these interferences is crucial for obtaining correct results. 
+
+B. Efficient Packing of Signed Inputs 
+
+When packing multiple values into a single input datapath, the sign extensions of the two’s-complement representation of lower-order values overlap with the lanes of higher-order values. Therefore, plain concatenation no longer suffices if the individual values can be negative. The assumed arithmetic sum must actually be computed. This is conventionally done by 
+
+external additions in the fabric as described by Liu et al. [8]. However, the packing problem can also be solved directly by leveraging the dedicated pre-adder in the DSP slice archi-tecture of modern AMD FPGAs shown in Fig. 1. In two’s complement arithmetic, the sign bit of a number carries a negative radix weight. After slicing it off from all individual input values, the remainders of their representations can be simply concatenated again into one word D. By collecting all the negative-weight sign bits into a second word A, the overall packing of an arbitrary number of input values can now be concluded by a single subtraction of this latter word 
+
+A from the former word D. This method is illustrated in Fig. 3. Hereby, the internal pre-adder of the DSP slice is configured to compute this subtraction D − A.
+
+C. Soft Datapath Vectorization 
+
+The SDV technique targets matrix-vector multiplications by packing multiple low-precision values into exactly one of the multiplier input words. We now detail the efficient monitoring and correction of the interferences between the compute lanes and what lane sizes are enabled by the implemented technique. Modern AMD FPGAs feature fracturable LUTs that can implement either one arbitrary Boolean 6-input function or two arbitrary 5-input functions with shared inputs [18]. In the fractured setup, a single LUT is able to compute the two least significant bits of a product given the two least significant bits of both factors. This result allows the computation of a reference for the product accumulation step in terms of the modulo-4 remainder classes of all lanes under the assumption AD BM P 
+
+> −×+DSP b
+
+## }
+
+> Sign Fixup
+> a0...
+> an−1Lane Fixup
+
+## { s0...      
+
+> sn−1LUT +−+LUT +−+......
+
+Fig. 4: Overall SDV architecture. Dashed and dotted lines indicate the extraction of individual bits. that they were separate. Differences observed in the accumula-tion results computed by the DSP represent spill-overs between lanes. We will dimension lane sizes such that the arithmetically possible spill-overs are confined to a narrow numeric range of no more than four values. Under this condition, the modulo-4 reference compute enables faithful tracking of all lane spill-overs in an external accumulator. The tracked spill-over totals serve to complete and correct the ultimately emitted lane results. The overall architecture is shown in Fig. 4. Denote the total spill-over out of lane i as Si and the result computed for this lane by the DSP as Ri. The ultimate result for this lane, 
+
+ˆRi, is the concatenation of Si as its high part and Ri as its low part, which is reduced by Si−1, the spill-over contribution received from its right neighbor lane: 
+
+ˆRi =  2L · Si + Ri
+
+ − Si−1 (3) The proposed packing approach can differentiate four different remainder classes of the spill-overs between accumulation lanes. In the first step, this would allow a lane that is two bits narrower than the computed product as the two topmost bits of this product, which indeed extend into the next lane, can still be recovered and tracked. In a continuous operation, however, the arbitrary value already accumulated in a lane will regularly cause an extra carry across its boundary by the addition with the contained part of the product. When accumulating unsigned products, this blurs the possible range of spill-overs from [0 : 3] to [0 : 4] , in the signed case, from [−2 : 1] to [−2 : 2] . In either case, the boundaries of the extended ranges can no longer be differentiated by their modulo-4 remainder classes. However, it is sufficient to require a lane size that is, at most, one bit shorter than the width of the accumulated products. Their additions with the already resident accumulated values may still produce an extra carry out of the lane. With only one bit of the product reaching beyond the core lane, this only extends the unsigned spill-over range from [0 : 1] to [0 : 2] , and the signed one from [−1 : 0] to [−1 : 1] . In both cases, all possible values are fully differentiated by their modulo-4 remainder class and hence, can be detected and tracked. Denoting the width of the  
+
+> (a) SDV on DSP48E2 / DSP58. (b) BSEG on DSP48E2.
+
+Fig. 5: Operational density of the proposed methods. individual factors as wa and wb, this argument yields the lane size requirement: 
+
+L ≥ wa + wb − 1 (4) This allows the computation of the maximum operational density as a function of the input precisions. The results specifically for the DSP48E2 and DSP58 slice generations are shown in Fig. 5a. These calculations take into account that the leftmost element in a packing does not require a full lane but only its own width plus one bit. The latter is needed to protect its sign. If the elements are unsigned, a leading zero bit ensures correct computation within the underlying signed multiplier. If the elements are signed, the packing with neighboring negative values produces the arithmetic equivalent of a decrement. A padding MSB ensures that this does not flip the overall sign when such a decrement meets the most negative value of −2wb−1 in the leftmost lane. Note that the DSP58 on Versal™ devices supports a native 
+
+INT8 mode capable of accumulating three 9 × 8-bit products. On this architecture, SDV only adds value for very low-precision computations where it is able to attain an operational density of at least 4 MAC operations per DSP slice. 
+
+D. Binary Segmentation 
+
+We employ the original binary segmentation (BSEG) tech-nique [16] with non-overlapping computations for imple-menting the two-dimensional packing of operands on both multiplier input datapaths as shown in Fig. 2(c). This approach enables the quadratic increase in operational density with decreasing precision [8]. Unlike SDV, which accumulates all products individually, this BSEG implementation achieves the summation of some products directly inside the multiplier ma-trix. This construction presumes a specific input sharing. While this limits its general applicability, it coincides seamlessly with the compute structure of convolutions. From an implementation perspective, discrete convolution and correlation are equivalent. One is transformed into the other simply by flipping the kernel. For simplicity, we adopt the correlation formulation, which is commonly used to de-scribe convolutions in deep learning. The 1D convolution of a kernel K = [ K[0] , · · · , K [n − 1]] and an input I =[I[0] , · · · , I [m − 1]] with m ≥ n elements produces an output of (m − n + 1) elements as given by Eq. 5. 
+
+(K ∗ I)[ j] = 
+
+> n−1
+
+X
+
+> k=0
+
+K[k] · I[j + k] with 0 ≤ j ≤ m − n (5) Particularly in the vision context, the typical convolution is two-dimensional, operating on image frames with a third channel dimension. Multiple channels of the output feature map are computed using independent designated kernels, also known as filters. With C output channels, the set of kernels is a tensor K ∈ RWK ×HK ×D×C where each kernel has width WK ,height HK and depth D. Such a kernel induces a 2D convo-lution with an input feature map I ∈ RWI ×HI ×D with width 
+
+WI ≥ WK , height HI ≥ HK and the same depth D. The result is a 3D tensor (K ∗ I) ∈ R(WI −WK +1) ×(HI −HK +1) ×C
+
+with the individual elements given by Eq. 6. 
+
+(K ∗ I)[ w][ h][ c] =  
+
+> WK−1
+
+X  
+
+> kw=0
+> HK−1
+
+X
+
+> kh=0
+> D−1
+
+X
+
+> d=0
+
+K[kw][ kh][ d][ c] · I[w + kw][ h + kh][ d] (6) We will first present the 1D architecture before describing its generalization. Assuming the packing of nk kernel elements into the first factor and ni input elements into the second factor, the multiplier computes all pairwise products between kernel and input elements and adds specific partial results. In each cycle, we want to use all kernel elements and a subset of the input elements. Therefore, for a total of n kernel elements, we require ⌈n/n k⌉ multipliers. After each cycle, we retrieve the partial results from each lane and shift them to the next set of kernel elements. The situation is illustrated in Fig. 6 for 
+
+n = 6 , n k = 3 , n i = 2 . To add the partial results from the previous cycle to the new products, we use the C-input of the DSPs depicted in Fig. 1. This can be done independently for all lanes by setting only the corresponding bits of the C-input. To minimize the critical path, the connections between DSPs are pipelined, which requires additional buffering of kernel and input elements for synchronization reasons. While the kernel elements must be buffered externally, the input elements can be buffered directly inside the DSPs utilizing the dedicated cascade path of the B-input. i5                       
+
+> i4
+> i3
+> i2
+> i1
+> i0
+> k0k1k2k3k4k5
+> k0i0+k1i1
+> k0i0+k1i1+k2i2+k3i3
+> k0i0+k1i1+k2i2+k3i3+k4i4+k5i5
+> Cycle 2 Cycle 1 Cycle 0
+
+Fig. 6: Cycle-by-cycle illustration showing the operation of our BSEG architecture. 
+
+Fig. 7: Lane value slicing for multi-stage accumulation. Due to the higher operational density compared to SDV, the overflow detection technique using the two least significant bits gets more expensive for BSEG. To prevent interference between the individual lanes entirely, every lane is primed with a static offset that biases the accumulation within each lane. These guard bits added to each lane are sufficient to prevent both positive and negative spill-overs between lanes. The required offsets can be injected via the C port. In the newer DSP48E2 and DSP58 slices, they can alternatively be introduced via the internally configured RND parameter. The provisioning of guard bits consumes valuable area in the multiplier matrix. We limit this investment to cope only with the accumulation stacked within the height of the multiplier matrix. For the continued accumulation as needed for larger kernels, the lane values are sliced in between DSP stages as shown in Fig. 7. While the low part stays on the DSP datapath, the high part is extracted and tracked in fabric logic. It is replaced by a guard value that re-biases the lane value, preparing it for the next accumulation stage (cf. [19]). We derive the maximum operational density achievable by this design. The packing of nk kernel elements of width wk
+
+into the first factor of width wA, and of ni input elements of width wi into the second factor of width wB must satisfy the constraints Eq. 7 and Eq. 8. Similar to SDV, the plus one is needed to protect the sign of the leftmost element. (nk − 1) · L + wk + 1 ≤ wA (7) 
+
+(ni − 1) · L + wi + 1 ≤ wB (8) Guard bits separate the individual lanes. To prevent both positive and negative overflows, the offset is chosen as 2L−1,which centers the accumulation range. This leads to the conditions for avoiding positive overflows, given in Eq. 9, as well as for avoiding negative overflows, given in Eq. 10. These conditions are valid specifically for the case of signed kernel values, unsigned input values, and a low-part width of wl.
+
+2L−1 ≥ min( nk, n i)2 wk −1(2 wi −1) (9) 
+
+2L−1 > min( nk, n i)(2 wk −1 −1)(2 wi −1) + (2 wl −1) (10) To determine the maximum operational density nk · ni, we set 
+
+wl = 0 and drop Eq. 10 as it is a weaker condition than Eq. 9 in this case. The maximum operational density can, thus, be computed by solving Eq. 7, Eq. 8 and Eq. 9. The results are shown in Fig. 5b. It can be seen that significantly higher operational densities can be achieved for very low-precision values. Also, the minimum lane size and maximum low part width can be determined from these conditions. However, it may be beneficial to pick a larger lane size if it does not affect the operational density and reduces the width of the external high part. To determine optimal parameters, resource usage is estimated for both the minimum lane size and the minimum lane size plus one. The option with lower overall cost is selected. The 1D architecture generalizes easily. If the convolution has multiple output channels, these can be computed either in parallel instances or inside the same DSP in a round-robin fashion by buffering partial results instead of advancing to the next kernel elements immediately. Higher-dimensional convolutions are sliced into individual 1D computations whose results are combined before output. In a parallel computation of the rows, an adder tree is used to combine all the results. In a sequential computation, the results are combined using an accumulator. 
+
+E. FINN Integration 
+
+To make our implementations accessible for the wider research community, we have integrated them into AMD’s open-source FINN framework [4], [5]. The SystemVerilog code is available in the supplementary materials and planned to be upstreamed into the official FINN repo [20]. This ensures that it can be easily applied to real-world DNN inference tasks. To ensure compatibility with FINN, our implementations were adapted to its operator interface requirements. This implies data input and output via AXI-Streams assuming a channels-last tensor layout. We adopted and directly optimized these requirements. Consequently, the BSEG architecture re-quires a preceding input generator to not only buffer the stream but to reorder and package the specific elements needed for the parallel DSP inputs. The memory required for this input gen-erator can be implemented using either BRAM or LUTRAM. FINN produces highly customizable dataflow inference solu-tions. Gauging the trade-off between resource investment and compute throughput is one of its key customization levers, which typically translates into tuning the degree of compute parallelism with the implementation of an operator. Our SDV architecture fits FINN’s standard parallelization scheme where 
+
+PE captures parallelism in terms of outputs and SIMD in terms of inputs. While the BSEG implementation escapes this terminology, its parallelism is, nonetheless, flexibly tunable by unrolling along the input width, kernel height and output channel dimensions independently. IV. E VALUATION 
+
+A qualitative comparison of the key features between our approach and previous ones has already been shown in Sec. II in Tab. I. As a quantitative demonstration of the efficiency of the proposed SDV and BSEG architectures, we performed a comprehensive analysis of operational density, resource utilization and critical path timing. All results were obtained using out-of-context synthesis in Vivado™ 2025.2 with the de-fault implementation strategy. We targeted the AMD ZCU104 evaluation board, incorporating a Zynq™ UltraScale+™ MP-SoC with DSP48E2 slices. For clarity, we adopt the following convention: Tensor dimensions are denoted as height × width for 2D tensors and as height ×width ×depth for 3D tensors. In terms of resource utilization, we will focus primarily on DSP and LUT consumption as the observed results for FF usage are always very similar to LUT consumption. The following evaluation is structured to address three main aspects for each architecture: scalability with respect to precisions and tensor sizes, comparison with state-of-the-art systems, and comparison with previous FINN implementations. 
+
+A. Scalability Analysis 
+
+To analyze scalability, we performed a parameter sweep over precision and tensor size. We generally targeted and reached a clock frequency of 250 MHz for all configurations. For both SDV and BSEG the number of DSPs is as expected proportional to the total number of MAC operations per cycle divided by the operational density of a DSP that has already been shown in Fig. 5. However, the amount of additional resources external to the DSPs is equally important. For the SDV architecture, we use as a reference configura-tion the multiplication of a 24 × 24-matrix of 4-bit values with a corresponding 4-bit vector, to reflect typical work-loads in resource-constrained AI applications. The architecture was configured such that the entire matrix-vector product is computed within three cycles. The LUT resources for the parameter sweep over precision and matrix size are shown in Fig. 8. It is evident that the number of LUTs strongly correlates with the number of DSPs. This implies that a higher packing density is always desirable. Due to the condition that the entire matrix-vector product is calculated in three cycles, a larger matrix also requires more resources. It can be seen that the number of LUTs is approximately a linear function of the total matrix size. (a) Scaling with precision. (b) Scaling with matrix size. 
+
+Fig. 8: Scaling of LUT resource utilization for SDV. 
+
+(a) Scaling with precision. (b) Scaling with kernel size. 
+
+Fig. 9: Scaling of LUT resource utilization for BSEG. For the BSEG architecture, we establish a reference con-figuration consisting of a convolutional layer with an input feature map size of 1 × 1500 × 16 and 128 kernels of size 1 × 8 × 16, both using 4-bit values. This type of configura-tion is commonly found in audio processing and time-series forecasting, where long temporal sequences are processed with significant channel expansion. Building on this baseline, we perform a parameter sweep over different precisions and kernel sizes, while maintaining an average throughput of eight output feature map elements per cycle. The corresponding LUT resource utilization for these variations is shown in Fig. 9. Again, the number of LUTs strongly correlates with the number of DSPs, making higher packing densities desirable. Regarding kernel size, the number of LUTs is approximately a linear function of the total kernel size. In addition, there is a constant offset arising from the fixed control logic, as well as a logarithmic component from the increase in output bit width. However, the contribution of the logarithmic component remains marginal across the evaluated range. 
+
+B. Comparison with State-of-the-Art Systems 
+
+For the SDV technique, the current state-of-the-art system is represented by [13]. It achieves an operational density of two MAC operations per DSP for INT8 values. As depicted in Fig. 5a, our architecture matches this performance for INT8 
+
+values. However, as our design supports arbitrary precisions, the achieved operational density significantly increases for many cases below 8 bits. This ensures that the available TABLE II: Comparison of the BSEG architecture using LU-TRAM/BRAM vs state-of-the-art systems for the full UltraNet model (FM) and convolutional layers only (Conv).                                
+
+> Design Base [21] HiKonv [8] FINN BSEG Scope Conv Conv FM FM Conv
+> LUT 43k 48k 63k 50k/46k 35k/31k DSP 360 327 586 422 422 FPS 248 401 636 636 636 FPS/DSP 0.7 1.2 1.1 1.5 1.5
+
+TABLE III: Resource utilization comparison for the UltraNet convolutional layers: FINN baseline vs the BSEG architecture using BRAM (B1) and LUTRAM (B2) for the input generator.                                                        
+
+> LUT FF DSP BRAM Layer FINN B1 B2 FINN B1 B2 FINN B1 B2 FINN B1 B2
+> 04959 1380 2231 3248 1686 2348 27 18 18 01.5 017028 3536 5658 12551 3725 5665 72 48 48 06028465 4785 6261 13335 4867 6151 96 64 64 21.5 15 11 34417 5871 7338 7580 3954 5247 144 64 64 815 11 42746 5856 6623 1420 3950 4725 32 64 64 7.5 15 11
+
+resources are always fully utilized for aggressive quantization, providing a substantial throughput gain over existing fixed-precision implementations. For the BSEG technique, the most capable state-of-the-art system that also supports arbitrary precisions is HiKonv [8]. For comparison, we generated an architecture for the INT4 
+
+UltraNet model [21]. Distinct from the original 160 ×320 input resolution [21], we employed a square 416 ×416 configuration to align with standard YOLO topologies and to assess the architecture under increased requirements. A comparison of resource utilization and performance of different designs is shown in Tab. II. In a first step, the entire model was mapped onto the FPGA using FINN. In a subsequent step the first three convolutional layers were replaced by the BSEG architecture. Since the reference works [8], [21] targeted the resource-constrained Ultra96 board and only considered the resources of the convolutional layers, we determined the contribution of these layers as well. Compared to HiKonv [8], our design reduces LUT usage by 27% . Although it requires 
+
+29% more DSPs to support greater parallelism, it yields a significantly higher throughput, ultimately improving DSP efficiency (FPS/DSP) by 25% .
+
+C. Comparison with Previous FINN Implementation 
+
+FINN traditionally lowers convolutions into a sequence of an input generator and a matrix-vector multiplication. To keep the comparison aligned with state-of-the-art techniques, we use the new SDV architecture for matrix-vector multiplications in the FINN baseline. A comparison of the resources required for UltraNet is shown in Tab. II. The BSEG architecture requires 
+
+21% fewer LUTs and 28% fewer DSPs at the same throughput. A more detailed comparison is shown in Tab. III, where the different types of convolutional layers of the UltraNet were TABLE IV: Comparison of the BSEG architecture against the FINN baseline at maximum frequencies. 
+
+FINN Baseline BSEG 
+
+Frequency 580 MHz 590 MHz 
+
+LUT 17761 6505 
+
+DSP 256 192 
+
+synthesized and compared separately. It becomes apparent that BSEG is advantageous for the first three layers, whereas SDV is preferable for all other layers. The problem with layer types 3 and 4 is that the required input generator based on FINN’s tensor layout gets costly for many input channels. To compare both architectures at their maximum operating frequency, we use the base convolutional layer from the scalability analysis in Sec. IV-A. The results are summarized in Tab. IV. We see a significant improvement as the BSEG architecture requires 63% fewer LUTs and 25% fewer DSPs while even improving the achievable clock frequency slightly. V. C ONCLUSION 
+
+In this paper, we presented several novel arithmetic packing strategies that significantly improve the utilization of fixed-width DSP slices in modern FPGA devices. A key contribution is the first efficient method that packs multiple signed values into the same DSP datapath using only the DSP internal pre-adder without any external logic. Furthermore, our proposed overflow detection and guard-bit strategies ensure accurate computations with high efficiency, particularly for precisions below 8 bits, achieving higher operational densities than state-of-the-art techniques. Based on this, we introduced two complementary architectures, SDV for matrix-vector multi-plications and BSEG for convolutions, which both support arbitrary precisions. This flexibility allows the design to be used efficiently across a wide range of quantization levels. We integrated the proposed architectures into AMD’s open-source framework FINN and directly optimized them for FINN’s standard tensor layout. Experimental results for the full UltraNet model show an efficiency increase by 36% to 
+
+1.5 FPS /DSP while reducing the LUT count by 21%. A com-parison of the BSEG architecture to the FINN implementation at maximum frequencies shows a reduction in LUT and DSP by 63% and 25% respectively, while maintaining or improving achievable clock frequencies. Future work will investigate dynamic arithmetic packing strategies that adapt to the computational workload in real time. Additionally, we plan to extend the approach to support the mapping of multiple low-precision floating-point values. Furthermore, our packing techniques are readily compatible with clock pumping such that an even higher throughput per DSP can be achieved in the future. 
+
+AMD, the AMD Arrow logo, UltraScale+, Versal, Virtex, Vivado, Xilinx and combinations thereof are trademarks of Advanced Micro Devices, Inc. Other product names used in this publication are for identification purposes only and may be trademarks of their respective companies. 
+
+REFERENCES [1] N. C. Thompson, K. Greenewald, K. Lee, and G. F. Manso, “The computational limits of deep learning,” arXiv , 2020. [2] A. Boutros, A. Arora, and V. Betz, “Field-programmable gate array ar-chitecture for deep learning: Survey and future directions,” Proceedings of the IEEE , vol. 113, no. 7, pp. 613–639, 2025. [3] V. Sze, Y.-H. Chen, T.-J. Yang, and J. S. Emer, Efficient Processing of Deep Neural Networks . Morgan & Claypool, 2020. [4] Y. Umuroglu, N. J. Fraser, G. Gambardella, M. Blott, P. Leong, M. Jahre, and K. Vissers, “FINN: A framework for fast, scalable binarized neural network inference,” in Proceedings of the 2017 ACM/SIGDA international symposium on field-programmable gate arrays , pp. 65–74. [5] M. Blott, T. B. Preußer, N. J. Fraser, G. Gambardella, K. O’Brien, Y. Umuroglu, M. Leeser, and K. Vissers, “FINN-R: An end-to-end deep-learning framework for fast exploration of quantized neural networks,” 
+
+ACM Transactions on Reconfigurable Technology and Systems (TRETS) ,vol. 11, no. 3, pp. 1–23, 2018. [6] Y. Fu, E. Wu, A. Sirasao, S. Attia, K. Khan, and R. Wittig, “Deep learning with INT8 optimization on Xilinx devices,” White Paper , no. WP486 (v1.0.1), 2017. [7] T. B. Preusser and T. A. Branca, “Vectorization of wide integer data paths for parallel operations with side-band logic monitoring the numeric overflow between vector lanes,” U.S. Patent 10,671,388 B1, June 2, 2020. [8] X. Liu, Y. Chen, P. Ganesh, J. Pan, J. Xiong, and D. Chen, “Hikonv: High throughput quantized convolution with novel bit-wise management and computation,” in 2022 27th Asia and South Pacific Design Automation Conference (ASP-DAC) . IEEE, 2022, pp. 140–146. [9] G. Yang, J. Lei, Z. Fang, J. Zhang, J. Zhang, W. Xie, and Y. Li, “SA4: A comprehensive analysis and optimization of systolic array architecture for 4-bit convolutions,” in 2024 34th International Conference on Field-Programmable Logic and Applications (FPL) . IEEE, pp. 204–212. [10] J. Sommer, M. A. ¨Ozkan, O. Keszocze, and J. Teich, “DSP-packing: Squeezing low-precision arithmetic into FPGA DSP blocks,” in 2022 32nd International Conference on Field-Programmable Logic and Ap-plications (FPL) . IEEE, 2022, pp. 160–166. [11] Q. Liu, M. Sun, J. Sun, L. Lu, J. Zhao, and Z. Wang, “SSiMD: Support-ing six signed multiplications in a DSP block for low-precision CNN on FPGAs,” in 2023 International Conference on Field Programmable Technology (ICFPT) . IEEE, 2023, pp. 161–169. [12] M. Mohabbati, H. Beitollahi, and S. Kashi, “DLPack: A DSP-based low-bitwidth packing architecture for efficient 2-bit CNN inference on FPGA-based edge devices,” Research Square , 2025, preprint. [13] S. Lee, D. Kim, D. Nguyen, and J. Lee, “Double MAC on a DSP: Boosting the performance of convolutional neural networks on FPGAs,” 
+
+IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 38, no. 5, pp. 888–897, 2018. [14] A. C. Mert, H. Azgin, E. Kalali, and I. Hamzaoglu, “Efficient multiple constant multiplication using DSP blocks in FPGA,” in 2018 28th In-ternational Conference on Field Programmable Logic and Applications (FPL) . IEEE, 2018, pp. 331–334. [15] Xilinx, Inc, “Convolutional neural network with INT4 optimization on Xilinx devices,” White Paper , no. WP521, 2020. [16] V. Pan, “Binary segmentation for matrix and vector operations,” Com-puters & Mathematics with Applications , vol. 25, no. 3, pp. 69–71, 1993. [17] Intel Corporation, Variable Precision DSP Blocks User Guide: Agilex 5 FPGAs and SoCs , https://docs.altera.com/r/docs/813968/25. 1/variable-precision-dsp-blocks-user-guide-agilextm-5-fpgas-and-socs/ agilextm-5-variable-precision-dsp-blocks-overview, 2025, UG-813968 (v25.1). [18] Xilinx, Inc., UltraScale Architecture Configurable Logic Block User Guide (UG574) , https://www.xilinx.com/support/documentation/user guides/ug574-ultrascale-clb.pdf, 2025, UG574 (v1.6). [19] T. B. Preusser and T. A. Branca, “Vectorization of wide integer data paths into parallel operations with value extraction for maintaining valid guard bands,” U.S. Patent 10,747,534 B1, Aug 18, 2020. [20] “FINN: Fast, scalable quantized neural network inference on FPGAs,” https://github.com/Xilinx/finn. [21] K. Zhan, J. Guo, B. Song, W. Zhang, and Z. Bao, “UltraNet: A FPGA-based object detection for the DAC-SDC 2020,” https://github.com/ heheda365/ultra net, 2020.

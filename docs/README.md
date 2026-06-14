@@ -6,88 +6,98 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-07
-- 运行时间：2026-06-07 20:20:27 UTC
+- 最新运行日期：2026-06-14
+- 运行时间：2026-06-14 21:28:42 UTC
 - 运行状态：成功
-- 本次总论文数：22
-- 精读区：11
+- 本次总论文数：26
+- 精读区：15
 - 速读区：11
 
 ### 今日简报（AI）
-今日精读11篇，速读11篇，重点考察AI-IoT-机器人集成与在传感器计算两大前沿方向。  
-最值得关注的两篇9分文章：AI-IoT-机器人集成框架综述，以及面向节能地球观测的在传感器计算技术。  
-建议普通读者优先了解Llama量化推理加速（SPARQLe）与边缘多机器人任务调度方案。
-- 详情：[/202606/07/README](/202606/07/README)
+今日精读15篇、速读11篇，重点关注精度可配置浮点乘法器与边缘LLM查找表推理加速。最值得看的是《Accuracy-Configurable FP Multiplier》和《PALUTE》两篇9分论文，分别涉及SRAM存内计算与边缘推理加速。建议普通读者优先阅读这两篇高分文章，把握存算一体与边缘AI的最新方向。
+- 详情：[/202606/14/README](/202606/14/README)
 
 ### 精读区论文标签
-1. [AI-IoT-Robotics Integration: Survey of Frameworks, Emerging Trends, and the Path Toward Connected Robotics](/202606/07/2606.01015v1-ai-iot-robotics-integration-survey-of-frameworks-emerging-trends-and-the-path-toward-connected-robotics)  
+1. [Accuracy-Configurable Floating-Point Multiplier Design for SRAM-Based Compute-in-Memory](/202606/14/2606.08430v1-accuracy-configurable-floating-point-multiplier-design-for-sram-based-compute-in-memory)  
    标签：评分：9.0/10、query:aiot
-   evidence：关于AI-IoT集成与连接机器人新兴趋势的综述
-2. [Exploiting In-Sensor Computing for Energy-Efficient Earth Observation](/202606/07/2606.01271v1-exploiting-in-sensor-computing-for-energy-efficient-earth-observation)  
+   evidence：适用于SRAM存内计算的精度可配置浮点乘法器，支持能效边缘AI
+2. [PALUTE: Processing-In-Memory Acceleration via Lookup Table for Edge LLM Inference](/202606/14/2606.08891v1-palute-processing-in-memory-acceleration-via-lookup-table-for-edge-llm-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：利用TinyML在嵌入式视觉传感器上进行能效型地球观测
-3. [OpenEye: A Scalable Open-Source Hardware Accelerator for DNNs](/202606/07/2606.01450v1-openeye-a-scalable-open-source-hardware-accelerator-for-dnns)  
+   evidence：使用查找表的边缘LLM推理低功耗PIM加速器
+3. [NeuDW-CIM: a 65-nm 0.8-pJ/Sop Reconfigurable Neuromorphic Compute-in-Memory Macro with Nonlinear Dendrites and K-Winners](/202606/14/2606.08947v1-neudw-cim-a-65-nm-08-pjsop-reconfigurable-neuromorphic-compute-in-memory-macro-with-nonlinear-dendrites-and-k-winners)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向嵌入式平台的可扩展稀疏感知FPGA硬件加速器
-4. [A 32-Channel 3.53-μW Per Channel Brain-Machine Interface SoC Featuring Dual-Threshold Delta-modulation, In-Memory Spike Detection and Bi-SNN Based Motor Decoding](/202606/07/2606.01776v1-a-32-channel-353-w-per-channel-brain-machine-interface-soc-featuring-dual-threshold-delta-modulation-in-memory-spike-detection-and-bi-snn-based-motor-decoding)  
+   evidence：65nm神经形态存内计算宏单元，支持SNN，能耗0.8pJ/Sop，可重构非线性树突
+4. [CANS: Accelerating Multiuser Collaborative Edge Inference via Cooperative Autodidactic NeuroSurgeon](/202606/14/2606.09175v1-cans-accelerating-multiuser-collaborative-edge-inference-via-cooperative-autodidactic-neurosurgeon)  
    标签：评分：9.0/10、query:aiot
-   evidence：超低功耗SoC用于神经形态信号处理，包含存内计算和SNN解码器，每通道仅3.53微瓦
-5. [CHIMERA: A Flexible and Scalable 3.1 TOPS/W AI-MCU with Transformer Accelerator and 563 Gb/s Shared-L2 Memory Subsystem with QoS Guarantees](/202606/07/2606.02358v1-chimera-a-flexible-and-scalable-31-topsw-ai-mcu-with-transformer-accelerator-and-563-gbs-shared-l2-memory-subsystem-with-qos-guarantees)  
+   evidence：面向移动设备的协同边缘推理，支持AIoT应用
+5. [Toward a Small ML Runtime Stack for Raspberry Pi 5 QPUs](/202606/14/2606.09905v1-toward-a-small-ml-runtime-stack-for-raspberry-pi-5-qpus)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘推理的低功耗AI-MCU，集成Transformer加速器
-6. [Fast Transformer Inference on ARM-Based HMPSoCs](/202606/07/2606.02836v1-fast-transformer-inference-on-arm-based-hmpsocs)  
+   evidence：在树莓派QPU上构建机器学习运行时栈，加速边缘AI
+6. [Sigma-Branch: Hierarchical Single-Path Network Reconstruction for Dynamic Inference with Reduced Active Parameters](/202606/14/2606.09924v1-sigma-branch-hierarchical-single-path-network-reconstruction-for-dynamic-inference-with-reduced-active-parameters)  
    标签：评分：9.0/10、query:aiot
-   evidence：在ARM嵌入式板上实现Transformer推理加速高达3倍
-7. [Toward a Modular Architecture for Embedded AI Agent Systems at the Edge](/202606/07/2606.02862v1-toward-a-modular-architecture-for-embedded-ai-agent-systems-at-the-edge)  
+   evidence：面向内存约束边缘加速器的动态推理，减少活跃参数
+7. [Spiking Neural Network inference on FPGAs with hls4ml](/202606/14/2606.10008v1-spiking-neural-network-inference-on-fpgas-with-hls4ml)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘嵌入式AI智能体系统的模块化架构，解决存储和能耗约束
-8. [Tiny Collaborative Inference for Occlusion-Robust Object Detection](/202606/07/2606.02894v2-tiny-collaborative-inference-for-occlusion-robust-object-detection)  
+   evidence：在FPGA上进行SNN推理以实现低功耗嵌入式部署
+8. [Arithmetic Packing on Wide Integer Datapaths in DSP Primitives of Modern FPGA Devices](/202606/14/2606.11065v1-arithmetic-packing-on-wide-integer-datapaths-in-dsp-primitives-of-modern-fpga-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：使用低于1MB SRAM的超低端嵌入式设备进行遮挡鲁棒目标检测的协作推理
-9. [LLM Compression with Jointly Optimizing Architectural and Quantization choices](/202606/07/2606.04063v1-llm-compression-with-jointly-optimizing-architectural-and-quantization-choices)  
+   evidence：FPGA DSP切片上低比特宽算术的高效打包，用于神经网络加速
+9. [Energy-Efficient On-Device RAG on a Mobile NPU: System Design and Benchmark on Snapdragon X Elite](/202606/14/2606.11257v1-energy-efficient-on-device-rag-on-a-mobile-npu-system-design-and-benchmark-on-snapdragon-x-elite)  
    标签：评分：9.0/10、query:aiot
-   evidence：联合神经架构搜索与量化优化实现LLM压缩，面向边缘部署
-10. [BIDENT: Heterogeneous Operator-level Mapping for Efficient Edge Inference](/202606/07/2606.05271v1-bident-heterogeneous-operator-level-mapping-for-efficient-edge-inference)  
+   evidence：在移动NPU上运行全流程RAG管道，实现高能效
+10. [TileFuse: A Fused Mixed-Precision Kernel Library for Efficient Quantized LLM Inference on AMD NPUs](/202606/14/2606.11357v1-tilefuse-a-fused-mixed-precision-kernel-library-for-efficient-quantized-llm-inference-on-amd-npus)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向高效边缘推理的算子级异构映射
-11. [ITP-STDP: An Intrinsic-Timing Power-of-Two Learning Engine for On-Chip SNN Training](/202606/07/2606.06159v1-itp-stdp-an-intrinsic-timing-power-of-two-learning-engine-for-on-chip-snn-training)  
+   evidence：用于NPU上量化大语言模型推理的混合精度内核库
+11. [Attention by Synchronization in Coupled Oscillator Networks](/202606/14/2606.12059v1-attention-by-synchronization-in-coupled-oscillator-networks)  
    标签：评分：9.0/10、query:aiot
-   evidence：片上SNN训练，采用幂次学习引擎降低硬件开销
+   evidence：利用振荡器同步实现低功耗注意力，适用于能量受限硬件
+12. [Otters++: A Time-to-first-spike Based Energy Efficient Optical Spiking Transformer](/202606/14/2606.13016v1-otters-a-time-to-first-spike-based-energy-efficient-optical-spiking-transformer)  
+   标签：评分：9.0/10、query:aiot
+   evidence：利用光电子突触衰变的基于首次脉冲时间编码的能量高效脉冲Transformer
+13. [Multi-Objective Coevolution of Prompts and Templates for Circuit Approximation](/202606/14/2606.13089v1-multi-objective-coevolution-of-prompts-and-templates-for-circuit-approximation)  
+   标签：评分：9.0/10、query:aiot
+   evidence：使用LLM进行近似乘法器的协同进化设计以提升神经网络硬件的能效
+14. [Non-Parametric Dual-Manifold Mapping via 8-Bit Bounded Transformation Matrices: Challenging FP-centric Hardware Paradigms in Low-Energy AI](/202606/14/2606.13328v1-non-parametric-dual-manifold-mapping-via-8-bit-bounded-transformation-matrices-challenging-fp-centric-hardware-paradigms-in-low-energy-ai)  
+   标签：评分：9.0/10、query:aiot
+   evidence：基于8位整数的非参数双流形映射，消除浮点运算以实现低能耗AI
+15. [ReSCom: A Reconfigurable Spiking Neural Network Accelerator Using Stochastic Computing](/202606/14/2606.13560v1-rescom-a-reconfigurable-spiking-neural-network-accelerator-using-stochastic-computing)  
+   标签：评分：9.0/10、query:aiot
+   evidence：基于随机计算的低功耗脉冲神经网络加速器
 
 ### 速读区论文标签
-1. [SPARQLe: Sub-Precision Activation Representation for Quantized LLM Inference](/202606/07/2606.00365v1-sparqle-sub-precision-activation-representation-for-quantized-llm-inference)  
+1. [AlignFed: Alignment-Aware Asynchronous Federated Fine-Tuning for Large Language Models in Heterogeneous Edge Environments](/202606/14/2606.08197v1-alignfed-alignment-aware-asynchronous-federated-fine-tuning-for-large-language-models-in-heterogeneous-edge-environments)  
    标签：评分：8.0/10、query:aiot
-   evidence：利用子精度激活冗余的硬件-软件协同设计框架
-2. [Wire-Level Interrupt-to-Decision Latency of On-Sensor MLC versus Host Inference on the NVIDIA Jetson Orin Nano: A Pre-Registered Measurement Study](/202606/07/2606.00524v1-wire-level-interrupt-to-decision-latency-of-on-sensor-mlc-versus-host-inference-on-the-nvidia-jetson-orin-nano-a-pre-registered-measurement-study)  
+   evidence：异构边缘设备上LLM的联邦微调面向AIoT
+2. [Programming Domain-Specific FPGA Hardblocks from HLS: An RTL Blackbox Approach](/202606/14/2606.08380v1-programming-domain-specific-fpga-hardblocks-from-hls-an-rtl-blackbox-approach)  
    标签：评分：8.0/10、query:aiot
-   evidence：片上传感器MLC与主机推理延迟的对比测量
-3. [Edge-Based QoS-Aware Adaptive Task Placement: A Closed-Loop Control in Multi-Robot Systems](/202606/07/2606.00552v1-edge-based-qos-aware-adaptive-task-placement-a-closed-loop-control-in-multi-robot-systems)  
+   evidence：编译器无关的HLS方法，使FPGA硬块可编程以加速AI负载
+3. [SPARX: Secure and Privacy-Aware Approximate CNN Acceleration with Edge RISC-V SoC](/202606/14/2606.09946v1-sparx-secure-and-privacy-aware-approximate-cnn-acceleration-with-edge-risc-v-soc)  
    标签：评分：8.0/10、query:aiot
-   evidence：基于边缘的QoS感知自适应任务放置，使用树莓派的多机器人系统
-4. [IO Pad Integrity in Energy-Efficient Neuromorphic Chips](/202606/07/2606.01181v1-io-pad-integrity-in-energy-efficient-neuromorphic-chips)  
+   evidence：通过自定义RISC-V扩展和SoC集成实现近似CNN加速，适用于边缘AI
+4. [HydraCIL: Decoupled Class-Incremental Learning through Prototype-Guided Multi-Head Classifiers](/202606/14/2606.09960v1-hydracil-decoupled-class-incremental-learning-through-prototype-guided-multi-head-classifiers)  
    标签：评分：8.0/10、query:aiot
-   evidence：节能神经形态芯片设计，聚焦I/O焊盘完整性以降低功耗
-5. [Heterogeneous Mapping for Analog In-Memory Computing Accelerators: A Unified Workflow](/202606/07/2606.02672v1-heterogeneous-mapping-for-analog-in-memory-computing-accelerators-a-unified-workflow)  
+   evidence：为资源受限嵌入式部署设计的持续学习方法，使用轻量级分类器头
+5. [Assessing the Energy and Carbon Emissions of Neural Speaker Verification Model in Training and Inference](/202606/14/2606.08087v1-assessing-the-energy-and-carbon-emissions-of-neural-speaker-verification-model-in-training-and-inference)  
    标签：评分：7.0/10、query:aiot
-   evidence：模拟内存计算加速器的异构映射提升DNN效率
-6. [CRAM-ER: Error-Resilient Spintronic Computational Random Access Memory for Scalable In-Memory Computation](/202606/07/2606.02781v1-cram-er-error-resilient-spintronic-computational-random-access-memory-for-scalable-in-memory-computation)  
+   evidence：神经网络模型的能耗与碳排放评估
+6. [STEPS: Semantic-Contract-Guided Scheduling for LLM-Assisted Natural-Language-Driven Edge AI Services](/202606/14/2606.09537v1-steps-semantic-contract-guided-scheduling-for-llm-assisted-natural-language-driven-edge-ai-services)  
    标签：评分：7.0/10、query:aiot
-   evidence：容错自旋CRAM用于能效内存内DNN加速
-7. [GreenGNN: Energy-Aware Windowed Communication Optimization for Distributed GNN Training](/202606/07/2606.02916v1-greengnn-energy-aware-windowed-communication-optimization-for-distributed-gnn-training)  
+   evidence：面向边缘AI服务的自然语言驱动调度框架
+7. [Fair Comparison of Scheduling Algorithms on Heterogeneous Edge Clusters: A Continuous Adaptive Benchmark](/202606/14/2606.12343v1-fair-comparison-of-scheduling-algorithms-on-heterogeneous-edge-clusters-a-continuous-adaptive-benchmark)  
    标签：评分：7.0/10、query:aiot
-   evidence：分布式GNN训练的能耗感知通信优化
-8. [Spike-Aware C++ INT8 Inference for Sparse Spiking Language Models on Commodity CPUs](/202606/07/2606.03026v1-spike-aware-c-int8-inference-for-sparse-spiking-language-models-on-commodity-cpus)  
+   evidence：异构边缘集群上AI工作负载调度的基准平台
+8. [Quantum Reservoir Computing for Short-Term Power Load Forecasting in Resource-Constrained Energy Systems](/202606/14/2606.12806v1-quantum-reservoir-computing-for-short-term-power-load-forecasting-in-resource-constrained-energy-systems)  
    标签：评分：7.0/10、query:aiot
-   evidence：通过脉冲稀疏性和INT8量化在CPU上实现能效推理
-9. [HASTE: Hardware-Aware Dynamic Sparse Training for Large Output Spaces](/202606/07/2606.01117v1-haste-hardware-aware-dynamic-sparse-training-for-large-output-spaces)  
+   evidence：资源受限边缘设备上的电力负荷预测
+9. [OpenOpt: An Open-Source SRAM Optimizer Based on Equivalent Circuit Model](/202606/14/2606.09129v1-openopt-an-open-source-sram-optimizer-based-on-equivalent-circuit-model)  
    标签：评分：6.0/10、query:aiot
-   evidence：硬件感知的动态稀疏训练，减少大输出层的存储和计算
-10. [AURA: Action-Gated Memory for Robot Policies at Constant VRAM](/202606/07/2606.02775v1-aura-action-gated-memory-for-robot-policies-at-constant-vram)  
+   evidence：SRAM功耗与延迟优化
+10. [Distilling Safe LLM Systems via Soft Prompts for On Device Settings](/202606/14/2606.09388v1-distilling-safe-llm-systems-via-soft-prompts-for-on-device-settings)  
    标签：评分：6.0/10、query:aiot
-   evidence：面向边缘硬件的机器人策略常驻循环记忆
-11. [From Prompt to Service: An SLM-Based Agent Orchestration Gateway for AI-Driven Virtual Worlds](/202606/07/2606.03557v1-from-prompt-to-service-an-slm-based-agent-orchestration-gateway-for-ai-driven-virtual-worlds)  
+   evidence：通过软提示和蒸馏实现设备端LLM的参数高效安全对齐
+11. [A Deployment-Oriented Framework for Explainable AI-Assisted eBPF/XDP Mitigation at the IoT Edge](/202606/14/2606.10508v2-a-deployment-oriented-framework-for-explainable-ai-assisted-ebpfxdp-mitigation-at-the-iot-edge)  
    标签：评分：6.0/10、query:aiot
-   evidence：在虚拟世界边缘部署SLM进行意图驱动服务路由，可应用于AIoT协调
+   evidence：基于eBPF/XDP的AI辅助IoT边缘网关框架
 
 
 <div class="dpr-home-promo-card">
