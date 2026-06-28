@@ -1,0 +1,887 @@
+Title: EnerInfer: Energy-Aware On-Device LLM Inference
+
+URL Source: https://arxiv.org/pdf/2606.23001v1
+
+Published Time: Tue, 23 Jun 2026 02:49:23 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# EnerInfer: Energy-Aware On-Device LLM Inference 
+
+## Bohua Zou 1,2, Nian Liu 4, Binqi Sun 1, Matteo Mascherin 2, Debayan Roy 2, Yutao Liu 2, Yu Peng 3,Ning Jia 3, Haibo Chen 3,4
+
+> 1
+
+Technical University of Munich 2Huawei Hilbert Research Center (Dresden) 3Huawei Central Software Institute 
+
+> 4
+
+Shanghai Jiao Tong University 
+
+## Abstract 
+
+On-device LLM inference is increasingly attractive for privacy-preserving, reliable, and cost-effective deployment, yet its energy and thermal costs remain a critical bottleneck. Exist-ing systems primarily optimize for decoding speed, implicitly assuming that faster execution is always preferable. We show instead that on-device LLM inference often has exploitable configuration slack: modestly lowering NPU and memory frequencies preserves quality of experience (QoE) while sub-stantially improving energy efficiency and reducing heat. Realizing this opportunity in production is challenging. The most energy-efficient NPU/DDR setting varies with the model, inference engine, platform, and runtime conditions, with no stable ranking across configurations. Commercial devices further lack component-level power sensing, and shell temperature evolves with request arrivals, response lengths, and thermal history. To address these challenges, we propose EnerInfer , the first on-device LLM inference frame-work that jointly manages energy efficiency, throughput, and thermal comfort for LLM workloads. EnerInfer replaces per-model profiling and sensor-heavy control with disag-gregated, model-structure-aware prediction and ranking-driven online feedback. It predicts throughput and power for unseen LLMs across NPU/DDR frequency settings, se-lects QoE-satisfying efficient configurations under runtime interference, and uses lightweight limited-horizon thermal prediction to dynamically switch between energy-optimized and thermally constrained inference. Evaluations on real-world LLMs show that EnerInfer improves energy efficiency by up to 65%, 12%, and 24% on phones, a laptop, and a devel-opment board, respectively, without QoE violation. 
+
+## 1 Introduction 
+
+Large language models (LLMs) have garnered widespread attention since their inception, powering a variety of applica-tions, from conversational agents to tasks such as text polish-ing and translation. On-device LLM inference has become a focal point of academic research [ 11 , 30 , 33 , 54 , 69 ] and is in-creasingly getting adopted by industry [ 4 , 65 ], as it improves privacy by keeping data local, offers low and stable latency, while reducing vendor costs. Even as on - device LLMs achieve substantial gains in prefill and decoding speed [ 3, 54 , 69 ], their high and insufficiently studied power consumption          
+
+> Corresponding author: Nian Liu, nianliu@sjtu.edu.cn; 0.0 0.5 1.0 1.5 2.0 2.5 3.0
+> Power (Watt)
+> Cloud
+> EnerInfer
+> On-device 0.91
+> 0.86
+> 0.80
+> 0.16
+> 0.19
+> 0.15
+> 1.38
+> 0.77
+> 13.09 t/s
+> 10.11 t/s
+> ~20 t/s
+> Others (display etc.) CPU NPU+Mem
+
+Figure 1. Component-wise power consumption of LLM-based text polishing on a phone under the default settings and our method for on-device inference, as well as a cloud-offloaded inference. 
+
+continues to erode battery life and heighten battery anxiety, undermining their practicality in everyday mobile scenarios. Figure 1 illustrates the average power in a text-polishing scenario using an LLM [ 65 ] on a phone [ 22 ]. As shown, the default on-device inference consumes more than 138% of the power required by cloud offloading. Most of this additional power is consumed by the neural processing unit (NPU) and memory (Mem). Because the decode phase is heavily memory -bandwidth -bound and the NPU offers limited dy-namic voltage and frequency scaling (DVFS) control, the de-fault NPU and Mem governors run both frequencies at their maximum to maximize the decoding throughput, measured in tokens per second . However, an alternative frequency con-figuration can significantly reduce NPU and Mem power con-sumption by 44% while still maintaining a throughput above 10 tokens/s. As a result, the energy efficiency—measured in 
+
+tokens per joule of NPU and Mem energy—improves by 38%. This highlights an opportunity that many scenarios do not require maximum throughput , and reducing NPU and Mem fre-quencies can significantly improve energy efficiency, while still maintaining a satisfactory quality of experience (QoE) and in-curring no accuracy loss. For instance, in a voice assistant sce-nario, speaking is typically <3 words/s [ 64 ], and reading <5.3 words/s [ 10 , 62 ], making higher throughput unnecessary. A recent study also found that users read/listen at 4.8/3.3 to-kens/s on average across age and language groups [35]. In this work, we first gain a comprehensive understand-ing of the energy efficiency of on-device LLM inference through extensive analysis of throughput and power con-sumption under different hardware configurations (i.e., NPU and Mem frequencies) for a wide range of synthetic LLMs— self-engineered by varying hyperparameters—as well as pro-duction -grade LLMs (§3). Our experiments span diverse plat-forms , including a smartphone [ 22 ], a laptop [ 21 ], and a 
+
+> 1
+> arXiv:2606.23001v1 [cs.SE] 22 Jun 2026
+
+development board [ 47 ]. Based on our experimental analy-sis , we list the following challenges towards optimizing the energy efficiency while meeting the throughput target. 
+
+• C 1. Both energy efficiency and throughput under a spe-cific hardware configuration vary significantly across mod-els and inference engines, and these variations are also platform-dependent. With LLMs evolving rapidly—Hugging Face now hosts over 1 million models [ 14 ]—profiling each model offline is impractical. Also, commercial systems typically lack hardware support for measuring component-level (e.g., NPU) power consumption ; hence, obtaining the energy-performance profile of a new model in a produc-tion environment is not feasible. 
+
+• C 2. There is no consistent partial ordering (i.e., ranking) among configurations in terms of energy efficiency across models, rendering simple feedback mechanisms ineffec-tive, e.g., a minimal configuration that satisfies the speed requirement may still result in a poor efficiency. Besides energy concerns, smartphones also face thermal constraints [ 8 ] to preserve user comfort; for example, the back-shell temperature should remain below 42 ◦C. Back-to-back inference sessions can cause the temperature to rise continuously. The temperature evolution depends on the chosen hardware configuration, the arrival pattern of infer-ence requests, the response lengths, and other environmental factors. This leads to a third challenge as follows: 
+
+• C 3. Predicting the arrival pattern of inference requests and response lengths is challenging. In particular, the existing response-length prediction techniques—such as using a proxy model [ 49 ]—incur unacceptable overhead, primarily because of the auto-regressive nature of LLM decoding. Previous studies have explored generic SoC energy man-agement [ 40 ] as well as energy-efficient serving of deep learning (DL) models [ 12 , 48 , 66 ] and LLMs [ 27 , 56 , 75 ]. However, these existing techniques cannot address the afore-mentioned challenges due to the following shortcomings: (i) Coarse -grained resource utilization measurements on mo-bile SoCs [ 40 ] cannot capture the energy–throughput charac-teristics of LLM inference. (ii) Operator-level profiling-based methods [ 48 , 66 ] are impractical without fine-grained observ-ability into NPU kernel execution. (iii) Even mobile -oriented work such as [ 75 ] relies on offline profiling of fixed infer-ence workloads, which is infeasible on production devices and cannot generalize to unseen models; the same limita-tion applies to [ 12 , 27 , 56 ]. (iv) Cloud-serving techniques optimize control knobs such as batch size, GPU frequency, and model partitioning and multiplexing, but do not address coordinated NPU and memory frequency scaling, which is critical for mobile devices with unified-memory architec-tures [ 13 ]. (v) Energy efficiency and thermal limits are rarely addressed jointly in LLM inference serving. To mitigate the limitation of existing techniques, we pro-pose EnerInfer , an energy -aware on - device inference frame-work (§4) with the following contributions: 
+
+• We present the first framework that jointly considers en-ergy consumption, thermal impact, and throughput of 
+
+on-device LLM inference. It mitigates the overlooked en-ergy and thermal bottlenecks of mobile NPUs and memory subsystems that cloud-oriented approaches do not handle. 
+
+• Addressing C1, we develop an offline prediction pipeline that learns the strong coupling between model structural characteristics and hardware frequency configurations (NPU and DDR). Using a disaggregated machine-learning design, EnerInfer accurately predicts the throughput and power of unseen LLMs across configurations, despite lack-ing component-level power sensors and having only lim-ited profiling data. 
+
+• Addressing C2, we design an online , ranking-driven feed-back control algorithm that dynamically tunes NPU and DDR frequencies to maximize energy efficiency under QoE constraints. Hence, the controller is robust against interfer-ence from co-running workloads. It further incorporates a lightweight thermal-aware controller—drawing inspira-tion from model predictive control (MPC)—together with a limited-horizon temperature predictor, addressing C3, to preserve user thermal comfort for longer under rising shell temperatures. In essence, we employ a bi-modal control strategy to dynamically switch between energy-aware and thermal-aware LLM inference. 
+
+• We discuss a product-ready implementation of EnerIn-fer (§5) and evaluate it (§6) on commercial smartphones and laptops spanning mid-tier to high-end devices, using real-world LLM applications (e.g., text polishing and con-versational agents). Across platforms, EnerInfer improves energy efficiency by 9 – 65% and reduces overall device energy consumption by up to 11% compared to the default OS governors, with no QoE violation. The rest of the paper is organized as follows. Section 2 provides the necessary background. Section 3 presents the insights from observations in terms of throughput, energy, and thermal behavior. Section 4 outlines our proposed frame-work EnerInfer , and the design of each part. Section 5 de-scribes the implementation of EnerInfer . Section 6 evaluates 
+
+EnerInfer in terms of prediction accuracy, energy efficiency improvements, the effectiveness of thermal management, and real-world energy consumption optimizations. Section 7 reviews relevant related works. Section 8 provides conclud-ing remarks and outlines future directions. 
+
+## 2 Background 
+
+2.1 Emerging on-device inference 
+
+Large Language Models (LLMs) are transformer-based ma-chine learning (ML) models [ 63 ], typically employing a de-coder -only structure for generative tasks. The LLM inference 
+
+> 2
+
+process follows an auto-regressive pattern: input text is first tokenized, then processed through a prefill phase, and finally decoded token by token to produce output. 
+
+On-device inference. Smartphones, as ubiquitous per-sonal devices, are becoming one of the most suitable in-terfaces for users to interact with LLM-based agents. The industry has already introduced advanced AI assistants capa-ble of handling a wide range of tasks on mobiles [ 17 ], from conversations, text polishing, message abstraction to UI au-tomation [ 33 ]. While most of these systems currently rely on cloud services to offload heavy inference tasks, the industry is increasingly adopting on-device inference [ 4 , 65 ] in spe-cific scenarios due to its enhanced user privacy through local data processing, reduced reliance on cloud services, and im-proved accessibility and reliability. The adoption of on-device inference is further boosted by advances in model compres-sion, training strategies, and specialized hardware accelera-tors. Specifically, techniques such as knowledge distillation enable lightweight models, such as LLaMA 3.2-1B [ 36 ], to achieve accuracy comparable to larger counterparts while significantly reducing computational overhead. Addition-ally, model quantization enhances inference efficiency by re-ducing memory and processing requirements with minimal accuracy degradation. Furthermore, PowerInfer2 [ 70 ] and llm.npu [ 69 ] leverage NPU on phones to further accelerate inference, achieving impressive speeds (e.g., 11.68 tokens/s on decoding 47B model [70]). 
+
+Execution backend. While many open-source LLM in-ference engines leverage CPUs and GPUs on phones, NPUs offer significantly better energy efficiency than GPUs and are more capable of handling highly parallel computations than CPUs [ 69 ]. Additionally, using GPUs for inference may interfere with rendering tasks, potentially degrading the user experience. Hence, most commercially deployed on-device inference systems rely on NPUs [ 4 , 44 ]. Therefore, this work primarily focuses on the energy consumption of the NPU and memory during inference. 
+
+Quality of experience (QoE). Similar to cloud-based inference, the QoE for on-device inference is influenced by several factors. Time-to-first-token (TTFT) defines the initial response latency before the first token appears and is largely determined by the prefill phase. Tokens-per-second (TPS) measures the rate at which tokens are generated, reflecting the system’s decoding throughput. Further, mobile devices and laptops must ensure that the shell temperature does not exceed a certain threshold to provide a good thermal experience [ 8 ]. Although minimizing TTFT and maximizing TPS generally enhance QoE, most users cannot effectively consume tokens at high speeds [ 35 ], leaving substantial room for improving energy efficiency and thermal experience. 
+
+2.2 Efficient inference via DVFS 
+
+Although operating all hardware components at peak fre-quency can improve performance, it compromises energy efficiency because higher frequencies necessitate increased voltage [ 66 ], and power consumption scales quadratically [ 16 ]. Hence, running inference under peak hardware frequency quickly drains the battery. A recent work [ 30 ] reports that a phone can process about 500 prompts under such a setting before shutting down. To balance performance and energy consumption, modern SoCs adopt DVFS [ 37 ], which reduces the frequency to save energy when peak performance is not required. Besides CPUs, DVFS is supported for GPUs [ 58 ], NPUs [ 66 ], and memory [ 26 ], enabling a broader system-level optimization. Prior works on CPU DVFS governors leverage utiliza-tion [ 67 ], workload characteristics [ 34 ] and task deadlines [ 73 ]. However, these governors are primarily optimized for bursty, intermittent, and CPU-bound workloads. In contrast, LLM inference imposes a sustained load on the NPU, keeping it op-erating at maximum frequency by default. Certain governors rely on hardware-exposed performance counters and state metrics [51]; however, most mobile NPUs do not offer such features. Hence, NPU frequency scaling is often either static or manually-controlled [ 66 ]. Moreover, inference spans mul-tiple components, whose frequencies must be co-managed to improve energy efficiency. For example, CRAVE [ 40 ] jointly tunes CPU, GPU, and memory frequencies on mobile plat-forms. However, it does not study different LLM inference workloads as they vary significantly in performance and efficiency, making offline profiles hard to generalize (§3). 
+
+## 3 Characterizing On-device Inference 
+
+To understand the energy and thermal behavior of on-device inference, we characterize throughput, power, and thermal metrics across LLMs on three platforms—a phone [ 22 ], a laptop [ 21 ], and a development board [ 47 ]. For certain mea-surements, we use external devices; details are provided in §6. Considering that the prefill stage simultaneously processes multiple tokens and is 15–25 × faster than the decoding stage, the latter dominates the power consumption [ 30 ] in most scenarios. The prefill stage typically runs at the maximum hardware frequency to minimize TTFT. This paper, therefore, explores the possibilities of energy savings only during de-coding. All test platforms primarily use the NPU for decoding. Hence, for an LLM inference, we account only for the power consumed by the components active during decoding —i.e., the NPU and memory (Fig. 1). 
+
+Key hyperparameters. Figure 2 shows the time break-down for decoding a token using the 4-layer LLaMA2-1.3B. We can conclude that one decoding iteration is dominated by several matrix-multiplication operators, such as in the language modeling head (LM head), self-attention, and feed-forward networks (FFN). Moreover, the breakdown yields 6  
+
+> 3Layer 2 Layer 3 Layer 1
+> Self Attention
+> Layer 0
+
+Figure 2. Time breakdown of decoding a token in LLaMA2–1.3B. Layers 
+
+> 0 50
+> Heads
+> 0 25
+> KV group
+> 0 5
+> Hidden size
+> 0 5k
+> FFN ratio
+> 0 5
+> Vocab
+> 0 200k
+
+Figure 3. Hyperparameters of the top 126 LLMs ( ≤7B) from Hug-ging Face Open LLM Leaderboard [ 7]. KV group refers to the number of attention heads per KV head, i.e., 𝑛𝑢𝑚 𝑎𝑡𝑡𝑛 _ℎ𝑒𝑎𝑑   
+
+> 𝑛𝑢𝑚 𝐾𝑉 _ℎ𝑒𝑎𝑑
+
+. FFN ratio is equal to 𝑖𝑛𝑡𝑒𝑟𝑚𝑒𝑑𝑖𝑎𝑡𝑒 𝑠𝑖𝑧𝑒 ℎ𝑖𝑑𝑑𝑒𝑛 𝑠𝑖𝑧𝑒 .
+
+key hyperparameters that determine counts and dimensions of all static matrix multiplications: the number of layers ,
+
+hidden (embedding) size , number of attention heads , number of key-value heads , intermediate size , and vocabulary size .Additionally, we derive hyperparameter ranges from the top 126 popular ≤7B LLMs on the Hugging Face Open LLM Leaderboard [7], varying across different LLM families, like LLaMA [ 61 ], Qwen [ 71 ], Gemma [ 59 ], and Phi [ 25 ]. We depict the distribution of each hyperparameter in Figure 3. We use 
+
+KV group to denote the number of attention heads sharing each KV head, which is 1 in multi-head attention (MHA) [ 63 ]and greater than 1 in grouped query attention (GQA) [ 2 ]. We use FFN ratio to represent the ratio between intermediate size and hidden size , which is always 4 in some earlier LLMs, like GPT2 [ 50 ]. We do not directly use them to achieve a broader range of parameter combinations; because many share similar structures, which limits the diversity. Instead, we generate 300 untrained models 0 by randomly selecting the six parameters within the ranges derived from the survey. 
+
+Evaluated LLMs. We evaluate LLMs suitable for on-device inference, including LLaMA2-1.3B/7B [ 61 ]1, LLaMA3-3B [ 36 ], Qwen2-1.5B [ 71 ], and Gemma2-2B [ 59 ]. To generalize our observations to evolving LLMs, we also evaluate the 300 generated untrained models. We derive the following observations from experiments. 
+
+Observation 1: The energy efficiency of on-device in-ferences is highly sensitive to hardware configuration, where even modest throughput reductions can lead to substantial energy efficiency improvement. 
+
+Setting the NPU and Mem to their maximum frequencies results in poor energy efficiency (§2.2). Figure 4 presents the throughput and energy efficiency of Qwen2-1.5B with 4-bit quantization on the phone. Energy efficiency is de-fined as the number of tokens produced per joule , consider-ing only the hardware involved in an inference, i.e., the 
+
+> 0
+
+Not fine-tuned. Used solely for throughput and power measurements. 
+
+> 1
+
+LLaMA2-1.3B refers to the modified version of LLaMA2 [42]. 0.5 1.4                                     
+
+> NPU Frequency (GHz)
+> 0.4  4.2
+> Mem Frequency (GHz)
+> 4.14 4.39 4.64 4.74 4.81
+> 5.59 6.17 6.82 7.10 7.29
+> 6.68 7.50 8.60 9.01 9.41
+> 7.58 8.80 10.51 11.27 11.86
+> 7.81 9.20 11.32 12.22 12.93
+> 8.11 9.62 12.09 13.10 14.13
+> 8.30 10.09 12.75 14.06 15.06
+> 8.45 10.31 13.25 14.65 15.90
+> 8.65 10.81 13.94 15.48 16.75
+> Opt.
+> Def.
+> Imp.
+
+(a) Throughput (tokens/s). 0.5 1.4                                      
+
+> NPU Frequency (GHz)
+> 0.4  4.2
+> Mem Frequency (GHz)
+> 16.13 15.06 12.14 9.99 8.09
+> 18.51 17.54 14.50 12.12 9.98
+> 17.89 17.14 14.64 12.48 10.51
+> 18.30 17.83 15.46 13.32 11.31
+> 16.82 16.67 14.83 12.93 11.10
+> 16.79 16.85 15.17 13.26 11.44
+> 16.84 17.10 15.49 13.63 11.77
+> 16.24 16.62 15.33 13.58 11.78
+> 14.78 15.34 14.47 13.04 11.42
+> Opt.
+> Def.
+> Imp.
+
+(b) Efficiency (tokens/J). 
+
+Figure 4. Decoding throughput and energy efficiency of different frequency settings of NPU and memory under Qwen2-1.5B Q4 on the phone. Def. —default configuration at maximum frequencies; 
+
+Opt. —most energy-efficient configuration; Imp. —configuration that improves efficiency by slightly reducing throughput. The arrows represent the Pareto front of throughput and efficiency. N0         
+
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> N0
+> N1
+> N2
+> N3
+> N4
+> NPU Frequency Level
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> 45
+> Efficiency Ranking  M0 M1 M2 M3 M4 M5 M6 M7 M8
+
+Figure 5. Box plot of energy efficiency rankings (1st, 2nd, etc.) of hardware configurations across LLMs on the phone. Each box summarizes results from 300 LLMs. 𝑀𝑥 and 𝑁 𝑥 denote the 𝑥 -th frequency level of Mem and NPU, where 𝑥 = 0 corresponds to the lowest available frequency level (the same convention applies below). The laptop and the board exhibit similarly large variation. 
+
+NPU and Mem. While the maximum frequencies yield the highest throughput ( Def. ), the most energy-efficient setting (Opt. ) can improve efficiency by 62%. Besides, slightly re-ducing throughput by 21% can improve energy efficiency by 34% ( Imp. ). The efficiency table reveals non-monotonic trends with multiple local optima resulting from complex, non-linear relationships among frequency settings, the in-duced hardware utilization, and the resulting throughput and power. From the tables, we derive a Pareto front balanc-ing throughput and energy efficiency. The arrows in Figure 4 indicate the direction where energy efficiency is traded off for higher throughput. 
+
+Insight 1: Substantial headroom exists to improve energy efficiency by tuning hardware configurations while preserving the minimum QoE (leveraged by our design in §4). 
+
+Observation 2: The energy efficiency ranking, peak and scaled decoding throughput, and power consump-tion of the inference depend not only on the hardware configurations, but also on LLM model architectures. 
+
+Efficiency ranking. Figure 5 presents the rankings—in terms of energy-efficiency—of different configurations across LLMs on the phone. Notably, the most efficient frequency setting (i.e., 𝑟𝑎𝑛𝑘 = 1) generally occurs at lower levels (Mem and NPU)—e.g., 𝑀 1𝑁 0—which is unlikely to meet the QoE target. Once the QoE is satisfied, and excluding a few inferior 
+
+4020 40 60 80 100 120 0.5 1 1.5 2 2.5 3TPOT (ms) Number of Parameters (Billion) Phone-Q4 Laptop-F16 Board-NPU-Q8 Figure 6. Time per output token (TPOT) of LLMs ( ≥0.5B) with varying parameter counts, under the highest NPU and Mem fre-quencies. N0       
+
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> NPU Frequency Level
+> 0.0
+> 0.5
+> 1.0
+> Normalized Throughput  M0 M1 M2 M3 M4 M5 M6
+
+Figure 7. Strip plot of throughput normalized to the highest across LLMs and configurations on the laptop. Each strip contains 300 LLMs. The phone/board show similar trends, thus omitted. 
+
+configurations (e.g., from 𝑀 4 to 𝑀 8, where lowering the NPU frequency consistently degrades both energy efficiency and throughput), models still differ in the configuration that leads to the highest efficiency. For each configuration, energy-efficiency rankings differ markedly across LLMs, as indicated by the wide spread in each box. Considering that LLMs do not share a consistent monotonic efficiency trend, selecting a configuration to maximize the energy efficiency for an untested model is non-trivial. 
+
+Insight 2: The efficiency ranking of hardware configurations is model-dependent and non-monotonic, which necessitates an accurate throughput and power prediction. 
+
+Peak and scaled decoding throughput. As the num-ber of on-device LLMs grows, profiling their throughput across different architectures and hardware configurations becomes impractical. Given the memory -bound nature of the decoding phase [ 70 ], the model’s parameter count serves as a coarse-grained indicator of throughput. Figure 6 shows the time-per-output-token (TPOT, i.e., the reciprocal of through-put) of models with varying parameter counts across plat-forms at the highest frequency combination. We observe that TPOT shows a quasi-linear relationship with parameter counts, whereas models of similar size still exhibit noticeable differences in TPOT, e.g., ranging from 34 ms to 62 ms for 1B models on the laptop. Moreover, scaling down the frequen-cies of NPU and Mem can also have distinct influences on different models. Figure 7 shows the throughput, normalized to peak performance, under various frequency combinations across models. As shown, the throughput reduction ratio varies significantly with frequency choices, e.g., between 0.6 and 0.9 at ( 𝑀 6𝑁 0). N0         
+
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> N0
+> N1
+> N2
+> N3
+> Frequency Combinations (Mem, NPU in GHz)
+> 0
+> 2
+> 4
+> Power of NPU+Mem (W)  M0 M1 M2 M3 M4 M5 M6
+> 025 50
+> Model counts
+> M6, N3
+
+Figure 8. Left: Box plot of average power (NPU+Mem) across models at different frequencies on the laptop, showing significant variation. Each box reflects inter-model variation , not temporal fluctuation. Right: Power distribution across 300 models at setting M6N3. Other platforms show similar trends and thus are omitted. 
+
+Insight 3: Predicting the throughput of an LLM under dif-ferent hardware configurations is essential, and throughput depends on the model’s structure. Hence, the number of model parameters alone is insufficient for accurate predic-tion. 
+
+Power consumption. Due to the lack of component-level on-device power measurement, predicting the power con-sumption is essential for assessing the energy efficiency of unseen models. Although frequency configurations deter-mine fixed static power trends [ 46 ], different LLMs still show notable variations in dynamic power even under the same settings. Figure 8 presents box plots of the average combined power consumption of the NPU and Mem during decoding under various frequency combinations. For instance, even at a fixed setting—e.g., 𝑀 6𝑁 3—power varies widely from 2.6W to 3.8W, with models spread evenly across the range. This trend persists across platforms, primarily due to variations in NPU utilization and memory demands across models. 
+
+Insight 4: Power consumption should be predicted based on both hardware frequencies and utilization, where the latter depends on model architecture (addressed in §4.3). 
+
+Observation 3: The output length (in tokens) is diffi-cult to predict, and hardware configurations that ignore thermal dynamics may fail to preserve user-comfortable temperatures, especially under sustained workloads. 
+
+On-device LLM inference can lead to rapid heat genera-tion due to sustained high load on the NPU, which arises from the auto-regressive decoding process where forward passes over the large model can continue for tens of sec-onds to several minutes especially in case of consecutive inference requests. At the peak frequency setting, the shell temperature can exceed 42 ℃ in 100 s and 45 ℃ in 200 s, de-grading the user experience. Most existing systems throttle computing units only after a higher-temperature threshold is reached [ 18 ], typically by lowering frequencies or pausing inference, which results in poor performance. Even if the most energy-efficient configuration mitigates the temperature rise compared to operating at maximum frequency, the device may still exceed the thermal threshold over time. A better thermal management strategy must re-spond proactively when the shell temperature approaches   
+
+> 5Human Factor -based QoE
+> LLM Service
+> Model Config
+> Session
+> QoE
+> Throughput
+> Predictor
+> Power
+> Predictor
+> Thermal
+> Predictor
+> Hardware
+> Config.
+> NPU Freq.
+> DDR Freq.
+> Best Efficient
+> 1
+> 2
+> 3
+> 4
+> Offline Prediction
+> System Metrics
+> CPU power
+> Shell temp.
+> Online Prediction
+> Exceed
+> threshold ?
+> Thermal -aware
+> controller
+> Yes
+> No
+> Throughput & Efficiency Tables 5
+> Energy -aware controller
+
+Figure 9. Overview of EnerInfer . ML models are employed to pre-dict the throughput and power of unseen LLMs across hardware configurations to choose the most energy efficient one that meets the QoE requirement. A runtime thermal predictor is adopted to dynamically enable or disable a thermal-aware controller. 
+
+the threshold. This necessitates predicting future shell tem-peratures under available hardware configurations while considering current and past states of the device. 
+
+Insight 5: Uncontrolled temperature rise can lead to more se-vere degradation of user experience. A temperature-prediction model enables timely intervention and supports proactive thermal management (addressed in §4.4). 
+
+## 4 Design of EnerInfer 
+
+4.1 Overview 
+
+To enable energy-efficient on-device LLM inference, we pro-pose EnerInfer . It maximizes energy efficiency while meeting QoE requirements, i.e., the decoding speed. Figure 9 illus-trates the overall design of EnerInfer .Given the structural information of the LLM model (i.e., hyperparameters), EnerInfer employs a machine-learning (ML) approach to accurately predict the throughput and power consumption of an unseen model across various hard-ware configurations, i.e., frequency combinations of NPU and Mem ( ❶). The predictions are performed offline during the model’s initialization, and the results are stored in ta-bles. Leveraging the predicted tables, EnerInfer filters out choices that do not meet the throughput QoE requirement at runtime ( ❷, as lower bound). To prevent overheating, Ener-Infer periodically uses a runtime thermal predictor to predict the shell temperature over a given time horizon ( ❸). If the predicted temperature exceeds the thermal threshold, Ener-Infer switches to a thermal-aware control mode in which a customized model predictive control (MPC) mechanism is applied ( ❹). If not, it selects the most energy-efficient, QoE-satisfying hardware configuration ( ❺), using a ranking-driven feedback mechanism. 
+
+4.2 Throughput prediction White-box vs. black-box approaches. An intuitive ap-proach to predict throughput is to use white-box analyses of a model’s computational and memory operations. However, the closed-source nature of most inference engines, opera-tors, and NPU internals makes white-box modeling difficult. Thus, EnerInfer adopts an ML-based black-box approach that takes the structural information of models as input (In-sight 3 in §3). This approach effectively predicts through-put by learning the computational and memory access pat-terns, along with hardware characteristics, of the dominant General Matrix-Vector Multiplication (GEMV) operations— whose behavior is relatively predictable—during decoding. The black-box method relies solely on empirically measured throughput across diverse hardware configurations and mod-els, without requiring any accelerator-internal details. 
+
+Monolithic vs. disaggregated models. As highlighted in Insight 3 in §3, the throughput of different hardware configu-rations should be predicted independently. A straightforward approach is to use a monolithic model that jointly takes the structural information and the specific configuration—NPU and Mem frequencies—as input to predict throughput. While intuitive, this method conflates model-dependent factors, such as internal computation and memory access patterns, with platform-dependent variations, like the hardware’s ca-pability across frequency settings. This coupling increases model complexity and degrades accuracy. Instead, EnerIn-fer proposes disaggregated models: one that predicts the peak throughput at maximum frequencies and another that captures throughput reduction across configurations. Exper-iments (see detailed setup below) show that this decoupling reduces Mean Absolute Percentage Error (MAPE) by up to 7.8% compared to the monolithic model. 
+
+Model selection. We train a throughput-prediction model using the collected throughput measurements of synthetic LLMs with varying hyperparameters and hardware configu-rations, see §3. The nontrivial cost of generating and profiling models across configurations limits the dataset size (e.g., <1k samples), necessitating predictors that achieve high accuracy with limited data. Of the 300 synthetic models generated, 80% are used for training with 5-fold cross-validation, and the remaining 20% are reserved for testing. We evaluate four 
+
+common ML-based regression models, each subjected to 1,000 iterations of random hyperparameter search. Random forest (RF) [ 9] achieves the best accuracy, with a MAPE of 3.27%. In contrast, a simple neural network—specifically a multilayer perceptron (MLP) [ 24 ]—overfits due to the lim-ited dataset and high input dimensionality, resulting in poor generalization (MAPE = 15.98%). A polynomial (Poly) regres-sor [ 45 ] fails to capture the complex non-linear interactions among the model, engine, and hardware (MAPE=33.89%). Although a support vector regressor (SVR) [ 6 ] can model non-linear patterns via kernel functions, its accuracy remains suboptimal (MAPE=13.24%) compared to RF. Therefore, Ener-Infer employs RF for both predictors. The trained RF uses a maximum depth of 20 and no more than 200 trees. With com-putational complexity of O( 𝑇 𝐷 ), the prediction overhead is negligible relative to LLM model loading. More sophisticated                 
+
+> 6020 40 60
+> Ground Truth (tokens/s)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Predicted Throughput (tokens/s)
+> laptop
+> phone
+> board (a) Throughput. 0.00 0.25 0.50 0.75 1.00
+> Normalized Ground Truth Power
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized Predicted Power
+> laptop
+> phone
+> board (b) Power. 0.00 0.25 0.50 0.75 1.00
+> Kendall's Tau Correlation
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Density
+> Laptop
+> Phone
+> Board (c) Efficiency.
+
+Figure 10. Accuracy of throughput and power prediction, the Kendall’s Tau correlation of predicted efficiency (the closer to 1, the better), showing high accuracy in predicting the efficiency ranking. The dotted line shows a 10% error margin. 
+
+prediction techniques [ 76 ] could also be integrated to further improve accuracy, but such enhancements are orthogonal to our framework. 
+
+Input. To predict throughput at maximum frequencies, a 
+
+peak-throughput predictor is built that takes the following inputs: (i) 6 key hyperparameters (see §3) governing com-putation and memory access during decoding, and (ii) the total parameter count, which aids data augmentation. The 
+
+scaled-throughput predictor additionally incorporates NPU and memory frequencies as input and predicts throughput degradation relative to the peak value, and the baseline mono-lithic predictor uses the same set of inputs. 
+
+Accuracy. Figure 10a shows the prediction accuracy of throughput under specific frequency settings, obtained by combining the peak-throughput and scaling-factor predic-tions. EnerInfer accurately forecasts decoding throughput across different models, hardware configurations, and plat-forms. The MAPEs of the combined throughput prediction are 4.2%, 2.3%, and 2.4% on the laptop, phone, and board, respectively, whereas the best corresponding MAPEs of the 
+
+monolithic predictor are 12%, 8.0%, and 7.8% when using the same set of regressors with comparable training effort. 
+
+Design Decision: Employ disaggregated ML models for throughput prediction: one predicting peak throughput and the other predicting relative reduction across configurations. 
+
+4.3 Power prediction 
+
+Since energy-efficiency rankings vary across LLMs (Insight 2 in §3), and power consumption also differs by model (In-sight 4 in §3), accurate power prediction is key to identifying frequency settings that improve efficiency. 
+
+White-box vs. black-box approaches. An intuitive ap-proach to predicting power consumption is to model the underlying hardware. However, as shown in prior work on server accelerators [ 66 ], accurate modeling requires not only low-level implementation details but also fine-grained run-time measurements of power-related parameters— measure-ments that are typically inaccessible on devices such as phones and laptops, including detailed NPU and memory utilization. 
+
+In contrast, ML-based methods are more suited for this set-ting [ 19 ]. Thus, EnerInfer employs an ML-based black-box approach for power prediction, similar to the throughput pre-dictor (§4.2). Using the same structural information—namely the six hyperparameters—and the NPU and Mem frequencies as input, EnerInfer employs an RF to predict the combined power consumption of the NPU and Mem (or the combined power consumption of the whole board when component-wise power measurements are unavailable). Figure 10b shows the prediction accuracy across platforms, with MAPE val-ues of 1.5%, 2.2%, and 1.7% for the laptop, phone, and board, respectively. 
+
+Efficiency prediction. Along with throughput prediction, 
+
+EnerInfer computes energy efficiency—i.e., throughtput power —across configurations and, more importantly, predicts their relative ranking. This capability enables identifying the most efficient configuration among those satisfying both speed and ther-mal constraints. Even when throughput prediction exhibits slight inaccuracies, EnerInfer may still identify the most ef-ficient configuration by relying on the predicted ordering and applying feedback control (§4.5). Figure 10c illustrates the Kendall’s Tau correlation [ 28 ] between the predicted and true energy-efficiency tables in the test set, highlighting the similarity in the ranking . As shown, for both phones and laptops, most correlations are close to 1, indicating that the partial order is largely preserved in the predictions. Notably, the board shows a slightly weaker correlation, primarily be-cause different configurations yield very similar efficiency values. Thus, the energy loss from selecting a suboptimal configuration is negligible (evaluated in §6.2). 
+
+Design Decision: Adopt an ML model to predict power consumption, enabling accurate prediction of the energy-efficiency ranking across configurations. 
+
+4.4 Thermal prediction and management Thermal prediction. The variation in shell temperature is governed by a highly complex and dynamic system. However, the thermal predictor adopted here only needs to operate within LLM-inference scenarios and over a constrained tem-perature range (e.g., 37-45 ℃), relying on recent temperature history and the current frequency settings. Our experiments show that Mem contributes little heat, whereas the NPU is the primary driver of temperature rise. Accordingly, to pre-dict shell temperature over a given time horizon, EnerInfer 
+
+incorporates predicted NPU power consumption together with recent temperature history to account for other system behaviors and environmental effects. The predictor employs a linear regression model with the following inputs: (i) an empirical 20-second history of shell temperature; (ii) the pre-dicted NPU power consumption at the selected frequency; and (iii) the target future time point. Using extensive experi-ments across different LLMs and settings at room tempera-ture, we collect approximately 30k time segments. Figure 11 shows the regression performance on the test dataset. A sim-ple linear regression model achieves high accuracy, with an         
+
+> 737 38 39 40 41 42 43 44 45
+> True temperature (°C)
+> 37
+> 38
+> 39
+> 40
+> 41
+> 42
+> 43
+> 44
+> 45
+> Predicted temperature (°C)
+> Shell Temperature Linear Regressor
+> 6
+> 11
+> 16
+> 21
+> Predicted time delay (s)
+
+Figure 11. Thermal prediction accuracy in the test dataset. Dotted line: 0.5 ℃ error margin. It can accurately predict the temperature over the next 1-21 seconds. 
+
+MAE of 0.16 ◦C and 𝑅 2 of 0.988 for predicting shell tempera-ture 1–21 seconds into the future. 
+
+MPC-based thermal-aware controller. Due to uncer-tainty in the future runtime of one or back-to-back LLM inferences and the dynamic nature of the system, MPC is well-suited for thermal management. We adopt a variant of MPC that assumes a constant control decision over the pre-diction horizon and employs an adaptive control period. The optimization objective is given in (1) , where 𝑢 = (𝑖 𝑛𝑝𝑢 , 𝑖 𝑚𝑒𝑚 )
+
+denotes the NPU and Mem frequency settings, and 𝐽 𝑁 repre-sents the cost accumulated over 𝑁 steps. 
+
+𝑢 ∗ = arg min  
+
+> 𝑢
+
+𝐽 𝑁 (1) One component of the cost function is the negative value of the tokens generated before the temperature threshold, encouraging the controller to maximize token production. However, it is unknown whether the current inference will complete within the next 𝑁 steps or whether another con-versation will follow. To handle this uncertainty, we penalize thermal -threshold violations by adding the expected number of tokens generated after the threshold is exceeded to the cost. The resulting cost function is defined as: 
+
+𝐽 𝑁 (𝑢, T ; R, P𝑛𝑝𝑢 , 𝑓 ) = R [ 𝑢 ] ( 𝑁 𝛿𝑡 − 𝑡 ′) − R [ 𝑢 ]𝑡 ′
+
+s.t. 𝑓 (T , P𝑛𝑝𝑢 [𝑢 ], 𝑡 ′) = 𝑇 𝑚𝑎𝑥 
+
+(2) where T denotes the recent shell - temperature history, R and 
+
+P𝑛𝑝𝑢 are the predicted throughput and NPU-power tables, 𝑓 
+
+is the thermal-prediction model, and 𝑡 ′ is the time at which the temperature reaches the threshold. If the threshold is not reached within the prediction horizon, the cost reduces to 
+
+𝐽 𝑁 (𝑢, T ; R, P𝑛𝑝𝑢 , 𝑓 ) = −R [ 𝑢 ]𝑁 𝛿𝑡 (3) Our thermal-aware control strategy is outlined in Algo-rithm 1. The controller first collects the initial temperature history and sets the initial prediction period (lines 1-2). Upon entering the prediction loop, it resets the counter, retrieves the current configuration, and predicts the temperature over the specified horizon (lines 3-7). To reduce runtime overhead, we introduce a secondary thermal threshold, 𝑇 𝑝𝑟𝑒 , to control the prediction period. If the temperature is estimated to ex-ceed the thermal threshold, the thermal-aware controller is 
+
+Algorithm 1: MPC-based thermal-aware controller 
+
+Parameter: 𝛿𝑡 : Time step for updating the temperature; 
+
+𝑁 : Prediction horizon; 
+
+Input: R ∈ R𝑚 ×𝑛 : Predicted throughput table; 
+
+P𝑛𝑝𝑢 ∈ R𝑚 ×𝑛 : Predicted NPU-power table; 
+
+𝑓 ( T 𝑤 , 𝑃 𝑛𝑝𝑢 , 𝑡 ): Thermal prediction model; 
+
+𝑟 𝑄𝑜𝐸 : Throughput QoE requirement; 
+
+𝑇 𝑚𝑎𝑥 : Thermal threshold; 
+
+𝑇 𝑝𝑟𝑒 : Temperature to trigger faster control; 
+
+𝑆 : Shared flag to indicate thermal-aware control;  
+
+> 1
+
+T ← Initial 20-second temperature window;  
+
+> 2
+
+(𝑁 𝑠𝑡𝑒𝑝 , 𝑛 ) ← ( 𝑁 , 𝑁 ); // Initial control period  
+
+> 3
+
+while Inference service is running do  
+
+> 4
+
+if 𝑛 ≥ 𝑁 𝑠𝑡𝑒𝑝 then  
+
+> 5
+
+𝑛 ← 0; 
+
+> 6
+
+𝑢 𝑐𝑢𝑟 ← Current Mem and NPU frequency levels;  
+
+> 7
+
+𝑇 𝑁 ← 𝑓 ( T , P𝑁 𝑃𝑈 [𝑢 𝑐𝑢𝑟 ], 𝑁 𝛿𝑡 ); // Prediction  
+
+> 8
+
+if 𝑇 𝑁 ≥ 𝑇 𝑚𝑎𝑥 then  
+
+> 9
+
+(𝑁 𝑠𝑡𝑒𝑝 , 𝑆 ) ← ( 1, 𝑡𝑟𝑢𝑒 ); // Thermal control  
+
+> 10
+
+𝑢 ∗ ← arg min 𝑢 𝐽 ( T , 𝑢 ; R, P𝑛𝑝𝑢 , 𝑓 , 𝑟 𝑄𝑜𝐸 ); 
+
+> 11
+
+else if 𝑇 𝑁 ≥ 𝑇 𝑝𝑟𝑒 then  
+
+> 12
+
+(𝑁 𝑠𝑡𝑒𝑝 , 𝑆 ) ← ( 1, 𝑓 𝑎𝑙𝑠𝑒 ); // Period reduced  
+
+> 13
+
+else  
+
+> 14
+
+(𝑁 𝑠𝑡𝑒𝑝 , 𝑆 ) ← ( 𝑁 , 𝑓 𝑎𝑙𝑠𝑒 ); 
+
+> 15
+
+T.𝑢𝑝𝑑𝑎𝑡𝑒 (𝑔𝑒𝑡 _𝑡𝑒𝑚𝑝𝑒𝑟𝑎𝑡𝑢𝑟𝑒 () ) ; // Update temp.  
+
+> 16
+
+𝑛 ← 𝑛 + 1; 𝑠𝑙𝑒𝑒𝑝 (𝛿𝑡 );
+
+activated (lines 8-14); otherwise, the energy-aware controller remains active. At each step, the temperature history is up-dated by appending the current measurement and removing the oldest entry (lines 15-16). 
+
+Design Decision: Use linear regression for thermal pre-diction and an event-triggered, MPC-based thermal-aware controller. 
+
+4.5 Ranking-driven frequency selection 
+
+EnerInfer selects NPU and Mem frequencies at runtime to satisfy the QoE requirement. To reduce the search overhead, we derive a 2D Pareto frontier over energy efficiency and throughput and sort the configurations from most to least energy-efficient. The resulting ordered set is defined as: 
+
+UΠ = argsort 𝑢 
+
+n R ( 𝑢 )
+
+𝑃 (𝑢 ) 𝑢 ∈ U , 𝑢 ′ ∈ U :  R ( 𝑢 ′) > R ( 𝑢 ) ∧ R ( 𝑢 ′)
+
+𝑃 (𝑢 ′) > R ( 𝑢 )
+
+𝑃 (𝑢 )
+
+o
+
+(4) 
+
+where U is the global decision space of 𝑢 . The predicted throughput along the Pareto frontier is then 
+
+RΠ = [R [ 𝑢 ] | 𝑢 ∈ U Π] (5) Algorithm 2 outlines our ranking-driven, energy-aware frequency-selection mechanism integrated with the inference-service workflow. During model initialization, the sorted throughput values and the Pareto -frontier configurations are precomputed using the prediction models. The most                                                        
+
+> 8Algorithm 2: Energy-aware controller.
+> Input: 𝑟 𝑄𝑜𝐸 : Throughput QoE requirement;
+> RΠ: Sorted predicted throughput at the Pareto front;
+> UΠ: Sorted frequency settings at the Pareto front;
+> 𝑆 : Shared flag to indicate thermal-aware control;
+> 1𝑖 ∗←arg min 𝑖 { R Π[𝑖 ]>𝑟 𝑄𝑜𝐸 }
+> 2𝑢 ←Max. NPU and Mem frequency levels; // Peak for prefill.
+> 3𝑢 ← U Π[𝑖 ∗];// Decoding starts
+> 4𝑡 𝑜𝑙𝑑 ←Current time stamp;
+> 5while LLM generates a new token do
+> 6𝑡 𝑛𝑜𝑤 ←Current time stamp;
+> 7𝑡 𝑜𝑙𝑑 ←𝑡 𝑛𝑜𝑤
+> 8𝑟 ←1
+> 𝑡 𝑛𝑜𝑤 −𝑡 𝑜𝑙𝑑
+> 9if not S and 𝑟 <𝑟 𝑄𝑜𝐸 then
+> 10 𝑖 ∗←𝑖 ∗+1;
+> 11 𝑢 ← U Π[𝑖 ∗];// Feedback control
+
+energy - efficient configuration that satisfies the QoE require-ment is then selected (line 1). During prefill, the peak fre-quencies are set (lines 2). Once decoding begins, the selected configuration is applied (line 3). During a decoding iteration, if the speed falls below the QoE requirement, the algorithm selects the next candidate in the sorted list (lines 4-11). Once the system enters thermal-aware mode ( 𝑆 = false ), it no longer needs to choose hardware configurations. 
+
+Design Decision: Adopt a ranking -driven frequency -selection strategy based on the 2D Pareto frontier, complemented by a feedback mechanism and coordination with the thermal-aware controller. 
+
+4.6 Discussion Runtime overhead. Throughput and power predictions in EnerInfer are performed during model initialization, so runtime overhead is limited to table lookups and shell tem-perature prediction. The latter is negligible, relying only on a lightweight linear regression with adaptive prediction and decision periods. 
+
+Co-running LLM with other applications. Unlike LLM serving in the cloud, on-device inference tasks are likely to co-run with foreground apps, such as the voice assistant, note, and browser. Whereas, we observe that daily-use apps have a negligible impact on both throughput and power of inference tasks due to their lower utilization of the mem-ory bandwidth and the NPU. Table 1 shows the impact on throughput and power under several scenarios where the background inference co-runs with other apps. We observe that there are minor impacts on throughput and NPU power, while the increase in the Mem power can be non-negligible in certain cases. Thus, EnerInfer adopts a fallback method. When the memory bandwidth of the foreground app is neg-ligible (the common case), EnerInfer uses Algorithm 2 to set frequencies as it would if the inference were running alone. However, when the foreground app is memory-intensive (the corner case), EnerInfer resorts to a feedback-based strategy 
+
+Table 1. Normalized throughput and power when co-running with foreground apps, w.r.t. a standalone run.                                     
+
+> Apps Note Brow. Video Voice Blog Doc Paint eShop IM
+> Thpt. 0.98 0.89 0.99 0.95 0.96 0.99 0.97 0.92 0.98
+> 𝑃 𝑀𝑒𝑚 1.06 1.32 1.12 1.14 1.16 1.09 1.09 1.16 1.13
+> 𝑃 𝑁 𝑃𝑈 1.03 0.90 1.04 1.01 1.04 1.04 1.01 0.99 1.06
+
+to identify the minimal configuration that meets the QoE, as the power consumption of the inference task and foreground app cannot be easily distinguished. 
+
+Integration with acceleration methods. Model quanti-zation [ 68 ] is a widely used technique for reducing memory and computational requirements, thereby increasing decod-ing speed. Since quantization levels do not linearly affect throughput, EnerInfer trains dedicated prediction models for specific levels—e.g., Q4 for phones and Q8 for boards (§6). Another popular approach to reducing memory usage is the Mixture of Experts (MoE) [ 31 ]. EnerInfer can be extended to support MoE, because each expert maintains a fixed size, resulting in consistent decoding times. Only the number of experts needs to be considered additionally. Certain methods [ 3 ] consider exploiting model sparsity and computing over a varying subset of parameters in each decode iteration, thereby making the throughput and power prediction challenging. Speculative decoding [ 32 ] also leads to a similar scenario. Thus, EnerInfer does not natively sup-port them. Whereas, EnerInfer could potentially support them by incorporating a history-based hit rate for through-put and power prediction, which we leave as future work. 
+
+Adapting to new platforms. EnerInfer has been vali-dated on phones, a laptop, and a development board. Adapt-ing to a new platform only requires collecting throughput and power data for the generated models ( ∼300) to train platform-specific prediction models. For each model, data col-lection requires ∼5 minutes considering available frequency combinations, and it can be automated as well. Hence, Ener-Infer can be tuned for a new platform within a day. 
+
+Adapting to XPUs. Although EnerInfer primarily targets NPUs, as discussed in §2.1, it can be extended to other XPUs— such as GPUs or TPUs—that support DVFS, by capturing their energy efficiency characteristics. We have validated the effectiveness of EnerInfer on the same development board, considering a GPU backend 2 for the LLM inferences. After training on 300 synthetic models and validating on four un-seen real models, EnerInfer achieves average throughput and power prediction MAPEs of 10.90% and 5.27%, respectively, and Kendall’s Tau of 0.78 in efficiency, while the energy efficiency is improved by up to 26.1%. 
+
+## 5 Implementation 
+
+We integrate EnerInfer into (i) an in-house LLM-serving framework (similar to Ollama [ 43 ]) for tests over the phones  
+
+> 2Use MLC LLM [ 39 ] as the inference engine with OpenCL backend to run on ARM Mali-G610 GPU in Orange Pi 5 Pro.
+> 9
+
+and the laptop and (ii) RKLLM [ 52 ] for evaluations on Orange Pi 5 Pro. At model initialization, EnerInfer invokes platform-specific predictors to estimate power consumption and per-formance under all hardware configurations; accordingly, it populates the performance and efficiency tables. The run-time frequency scaling is implemented in the callback func-tion for each token generation (e.g., LLMResultCallback 
+
+of RKLLM). During an LLM inference, EnerInfer performs dynamic frequency control in two phases. During prefill, i.e., the first token generation, it sets the NPU and memory to operate at their maximum frequencies, minimizing time-to-first-token. During decoding, it first sets the frequency selected from the 2D Pareto frontier that meets the QoE requirement. In each decoding iteration, it adapts the fre-quency only when the actual speed falls below the QoE target (Algorithm 2) and the thermal-aware controller is disabled. Thermal management—in particular, periodic temperature monitoring and prediction—is always active during LLM in-ference and sets a flag indicating when the controller should switch from energy -aware to thermal - aware frequency scal-ing. Based on the accuracy of our thermal prediction model, we set the time step 𝛿𝑡 = 1 and the prediction horizon 𝑁 = 21 
+
+to activate thermal-aware control as early as possible. To apply EnerInfer ’s control decisions, a memory frequency governor is implemented that considers frequency requests from multiple voting sources (e.g., via sysfs), similar to PM QoS in Linux [ 60 ]. EnerInfer is added as a new voter and votes for a minimum memory frequency (similar to scaling_ min_freq in the cpufreq subsystem). When the voters issue conflicting requests, the governor enforces the maximum among the requested minimum frequencies. Thus, EnerIn-fer prevails only when its request exceeds others (e.g., from foreground applications), which occurs in most cases (§4.6); otherwise, it defers to preserve foreground performance. Further, it directly sets the operating frequency of the NPU which is exclusively used for running inference tasks. 
+
+## 6 Evaluations 
+
+Our evaluation addresses the following questions. 
+
+• Q1: Does EnerInfer precisely predict the throughput and energy efficiency of unseen models? 
+
+• Q2: Does it consistently meet the decoding speed QoE targets across different models? 
+
+• Q3: By how much does it improve energy efficiency while ensuring QoE? 
+
+• Q4: How does its prediction accuracy influence the ob-tained energy efficiency with respect to the oracle? 
+
+• Q5: Is the thermal-aware controller effective in sustaining the back-shell temperature within acceptable limits for a longer duration? 
+
+• Q6: How much energy does it save in real-world scenarios? 
+
+Platforms. We test EnerInfer on the same platforms as in §3, i.e., a high-end phone (H-phone) [ 22 ], a laptop [ 21 ] and a L1.3B-Q4       
+
+> Q1.5B-Q4
+> H-Phone
+> 0
+> 25
+> 50
+> 75
+> 100
+> MAPE (Percentile)
+> L1.3B-Q4
+> Q1.5B-Q4
+> M-Phone
+> L1.3B-FP16
+> Q1.5B-FP16
+> L3B-FP16
+> Laptop
+> L1B-Q8
+> Q1.5B-Q8
+> G2B-Q8
+> Board
+> 0.0
+> 0.5
+> 1.0
+> Coefficients
+> MAPE Thr. MAPE Power MAPE Eff. Eff.
+> Figure 12. MAPE across frequencies and Kendall’s Tau ( 𝜏 , the closer to 1 the better) between predicted and ground truth in unseen real-world LLMs. G, L, and Q refer to Gemma2, LLaMA2/3.2, and Qwen2.
+
+development board [ 47 ]. Further, we test on a mid-tier phone (M-phone) [ 23 ]. Power consumption for the phones and the laptop is measured with an in-house power monitor that uses an ADC to sample the voltage drop across the current-limiting resistor in each hardware component. We attach a power meter [ 15 ] to the board that measures the total system power. To compute the power consumed by an inference, we subtract the idle power consumption of the board. 
+
+Baselines. We select the Default configuration to reflect the behavior of "on -demand" governors, which drive the NPU and DDR to their maximum frequencies under the sustained high load of LLM inference. To evaluate the energy efficiency, we introduce Oracle to represent the configuration that yields the highest efficiency based on the measured data (i.e., not predicted). Besides, a deadline-driven method ( Deadline ) is selected for a comparison, which selects the minimal config-uration that just meets the speed QoE requirement without considering energy efficiency. To evaluate the effectiveness of the thermal management, we compare it with Default 
+
+and the energy-aware setting without thermal management (Ener ). 
+
+6.1 Prediction accuracy 
+
+We evaluate the accuracy of EnerInfer ’s predictions for open-source , production-ready LLMs; they are not part of the train-ing dataset. Figure 12 reports the MAPE in throughput, power, and efficiency across different frequency combinations. Also, using Kendall’s Tau, we demonstrate the accuracy in the ranking of frequency combinations derived from the pre-dicted energy efficiency values. We see that the throughput, power, and efficiency pre-dictions exhibit high accuracy across platforms and models (Q1 ), with average deviations of 6.5%, 12%, 9.7%, and 5.4% for H-phone, M-phone, the laptop, and the board, respectively. More importantly, the average Kendall’s Tau values are 0.95, 0.90, and 0.96 across models on the first three platforms, respectively. This shows high accuracy in determining the efficiency-based ranking of configurations. A lower value (0.65) on the board is also acceptable considering that it leads to a minor loss in energy efficiency (§6.2), which is because the efficiency values vary marginally across configurations.        
+
+> 10 Throughput (left y-axis) Oracle Efficiency EnerInfer Efficiency 0246810 12 14 16 0246810 12 14 16 036912 15 18 21 24 Decoding Throughput (T/s) Effi ciency (T/J) Target Throughput
+
+(a) Q1.5B Q4 on high-end phone. 0246810 12 14 0 2 4 6 8 10 12 14 036912 15 18 21 Decoding Throughput (T/s) Effi ciency (T/J) Target Throughput (b) Q1.5B Q4 on mid-tier phone. 04812 16 20 0 4 8 12 16 20 123456Decoding Throughput (T/s) Effi ciency (T/J) Target Throughput 
+
+(c) Q1.5B FP16 on the laptop. 036912 15 0 3 6 9 12 15 123456Decoding Throughput (T/s) Effi ciency (T/J) Target Throughput (d) Q1.5B Q8 on the board. 
+
+Figure 13. Actual efficiency and throughput of EnerInfer across speed targets, using predicted results, compared to an oracle with ground-truth measurements. Shaded regions mark a practical QoE 
+
+> 5 tokens/s. EnerInfer closely matches oracle across QoE targets. 
+
+6.2 Energy efficiency 
+
+Figure 13 illustrates the throughput and energy efficiency achieved by EnerInfer under different QoE (decoding through-put) targets across selected LLMs and platforms. The x-axis and the left y-axis represent target and achieved throughput, respectively. Any points on and above the 𝑦 = 𝑥 line meet the target. The right y-axis represents the energy efficiency during the decoding phase. Oracle serves as the upper bound. Table 2 reports results for a wide range of models. 
+
+QoE compliance. As shown in the figure, EnerInfer con-sistently meets QoE targets—the achieved throughput is above the 𝑦 = 𝑥 line—across all platforms and models ( Q2 ). When a relatively lower target is set, e.g., 4 token/s on phones, it selects a frequency combination that achieves a signifi-cantly higher throughput than the target. This is because the lower frequency combination is not energy-efficient (Ob-servation 4 in §3). When the target exceeds the achievable throughput of the most efficient configuration, EnerInfer 
+
+selects a different configuration that offers a higher through-put, above the 𝑦 = 𝑥 line, indicating that it maximizes the efficiency while meeting the throughput target. Efficiency improvement. As given in Table 2, with QoE set to 5 to-kens/s, EnerInfer achieves 50–65%, 26–27%, 10–15%, and 9–24% higher efficiency compared to Default —NPU and Mem are set at maximum frequency—on the high-end phone, the mid-tier phone, the laptop, and the board, respectively ( Q3 ). 
+
+Deadline does not guarantee better energy efficiency and may even reduce it. 0 50 100 150 200 250 300 350       
+
+> Time (s)
+> 37
+> 38
+> 39
+> 40
+> 41
+> 42
+> Temperature (  )
+> 690 t
+> 1784 t
+> 2282 t
+> Thermal Control Effectiveness Comparison
+> Default Temp. Ener Temp. EnerInfer(QoE) Temp. EnerInfer Temp.
+> 0
+> 4
+> 8
+> 12
+> 16
+> 20
+> Decoding speed (t/s)
+> QoE
+> Default Speed Ener Speed EnerInfer(QoE) Speed EnerInfer Speed
+
+Figure 14. The shell temperature and decoding throughput under a back-to-back inference scenario before it reaches thermal threshold. 
+
+Default : default max. frequency setting. Ener : energy-aware setting without thermal management. EnerInfer(QoE) : our method with QoE constraint. EnerInfer : our method without QoE constraint. 
+
+Comparison against the oracle. We examine the ef-ficiency loss due to prediction inaccuracies by comparing 
+
+EnerInfer to the oracle. EnerInfer achieves a near-oracle ef-ficiency across models and platforms ( Q4 ). This tells that the predicted ranking of frequency combinations in terms of energy efficiency mostly follows the ground truth, even when the predicted efficiency values are slightly inaccurate (§4.3). Hence, EnerInfer can always find the most efficient, QoE-satisfying configuration by feedback adjustment.Even when the ranking is wrongly predicted, especially on the board, the efficiency loss remains minimal due to a lower efficiency variation across configurations. 
+
+6.3 Thermal-aware controller evaluation 
+
+To evaluate the effectiveness of our thermal-aware controller— which selects NPU and DDR frequencies—we design a stress test using back-to-back inferences with Qwen2.5-1.5B-Q4, starting from a shell temperature of 37 ℃. The results are illustrated in Figure 14. As shown, the Default configuration has the highest throughput and the steepest temperature rise. It generates only 690 tokens in 40 seconds before reach-ing the threshold. As the most energy-efficient setting that meets the QoE, Ener sustains a longer duration (165 s) and generates 1784 tokens. With our thermal management under the QoE constraint, EnerInfer generates 27.9% more tokens and lasts 32.1% longer ( Q5 ). When the QoE requirement is relaxed, EnerInfer keeps the temperature below 42 ℃ for over 350 s while maintaining an acceptable average speed. 
+
+6.4 Real-world deployment 
+
+Figure 15 reports the total energy reduction (including CPU, display, and other components) achieved by EnerInfer in two typical on-device inference scenarios on the phones and the laptop. On the phones, the text polish task uses the Pangu-𝜋 model [ 65 ] and generates ∼250 tokens, while the conversation task uses a Qwen2-1.5B Q4 model and gener-ates ∼200 tokens. On the laptop, both tasks use Qwen2-1.5B FP16 model and generate ∼400 and ∼180 tokens, respectively. In both cases, LLM inference runs in the background while 
+
+> 11
+
+Table 2. Efficiency increase (rel. increase in "( )" w.r.t. Default ) of EnerInfer and Deadline across models with QoE=5 or 10 tokens/s. Default 
+
+sets NPU and Mem to max frequency. Deadline selects the frequencies that just fulfill QoE. Speed is measured in tokens/s; Effi. denotes energy efficiency in tokens/J. –: unable to meet QoE even at max frequency.                                                                                                                                   
+
+> Plat. Model Default Deadline (5t/s) Deadline (10t/s) EnerInfer (5t/s) EnerInfer (10t/s) Speed Effi. Speed Effi. Speed Effi. Speed Effi. Speed Effi.
+> H-end L1.3B Q4 33.4 19.7 8.3 28.5(44%) 11.7 32.5(65%) 11.7 32.5(65%) 11.7 32.5(65%)
+> Phone Q1.5B Q4 16.8 11.4 5.6 18.5(62%) 10.1 17.1(50%) 5.6 18.5(62%) 10.1 17.1(50%)
+> M-tier L1.3B Q4 28.2 21.2 7.8 22.1(4%) 10.9 24.2(14%) 16.7 26.7(26%) 16.7 26.7(26%)
+> Phone Q1.5B Q4 14.8 12.8 5.9 14.9(16%) 10.0 15.9 (24%) 9.2 16.2(27%) 11.0 16.1(26%)
+> Laptop L1.3B FP16 27.5 6.5 5.4 5.7(-12%) 12.6 6.7(3%) 23.2 7.3(12%) 23.2 7.3(12%)
+> Q1.5B FP16 18.5 4.9 6.2 4.1(-16%) 10.6 4.9 (0%) 15.7 5.3(10%) 15.7 5.3(10%)
+> L3B FP16 8.8 2.0 5.5 2.1(5%) --7.7 2.3(15%) --Board L1B Q8 21.5 5.8 6.2 5.65(-3%) 11.7 5.4(-7%) 6.3 6.6(14%) 20.8 6.3(8.6%)
+> Q1.5B Q8 15.1 4.5 8.1 4.1(-8.9%) 10.1 4.4(-2%) 5.0 5.6(24%) 13.4 4.9(8.9%)
+> G2B Q8 9.3 2.8 5.0 2.7(-4%) --8.1 3.1(11%) --EnerInfer Others NPU+Mem Default Others NPU+Mem Polish Conv
+> 0
+> 30
+> 60
+> 90
+> 120
+> Energy Consumption (J)
+> 77.2 86.7 80.2 86.2
+
+(a) H-end phone. Polish Conv   
+
+> 0
+> 30
+> 60
+> 90
+> 120
+> Energy Consumption (J)
+> 106.2 110.8
+> 79.7 86.4
+
+(b) M-tier phone. Polish Conv  
+
+> 0
+> 100
+> 200
+> 300
+> 400
+> Energy Consumption (J)
+> 439.5 460.8
+> 157.3 176.4
+
+(c) Laptop. 
+
+Figure 15. End-to-end total energy reduction by EnerInfer in real-world scenarios. Long ( ∼50%) post-inference display time dilutes the gains. NPU+Mem shows the inference energy. 
+
+the screen actively renders foreground applications (a notes app and chat interface), adding additional load to CPU and GPU. In the prefill phase, the NPU and Mem are configured to operate at their maximum frequencies, minimizing time-to-first-token. During decoding, EnerInfer enforces a QoE of 10 tokens/s to keep up with the display rate, allowing it to reduce energy while remaining imperceptible to users. More-over, with a fixed display rate, the end-to-end task duration remains constant with or without EnerInfer , allowing a fair comparison of total energy consumption. 
+
+End-to-end improvement. Figure 15 shows that Ener-Infer achieves energy savings between 4.2 – 11% compared to the Default —defined in §6.3—configuration ( Q6 ). This im-provement is less pronounced than when considering only the NPU and Mem, because in an end-to-end application, the display, CPU, and GPU also draw part of the total energy. Further, decoding takes only about 50% of the time, and the remainder is spent on prefill ( ∼3%) and displaying the output. Thus, cutting energy use in decoding contributes moderately to the total end-to-end gain. 
+
+## 7 Related Work 
+
+As discussed in §2.2, while prior work uses DVFS to opti-mize the energy efficiency of conventional workloads [ 29 ,34 , 40 , 67 , 73 ], such existing techniques are ineffective for LLM inferences. A few works target energy -efficient LLM serving in the cloud [ 5 , 27 , 38 , 48 , 53 , 55 , 66 ]. However, differences in workload characteristics (e.g., no batching at the edge), hardware architectures (e.g., unified memory), and requirements (e.g., thermal limits) make these techniques less applicable to on-device inference. For mobile devices, Zhang et al. [ 75 ] recently proposed a unified energy-aware governor spanning CPU, GPU, and memory for on-device LLM inference. However, the approach depends on offline profiling—impractical on production de-vices and unable to generalize to unseen models—and as-sumes a device - specific U -shaped energy -per -token curve, limiting applicability across devices and LLM architectures. MELTing [ 30 ] and M4 [ 72 ] highlight the energy challenges of on-device LLM inference through benchmarking but do not provide solutions for energy savings. Several works also use a black-box prediction. PETET [ 41 ]introduces an online throughput and power predictor based on the RF to identify a suitable backend for executing deep learning tasks. It only considers fixed frequencies. Other works [ 20 , 74 ] estimate program execution time using meth-ods like MLP or polynomial regression, which take syscall sequences or program features as input. EnerInfer employs a disaggregated model for predicting the throughput and power consumption of inference tasks under various config-urations and uses it to guide the frequency selection. Overheating is a common issue in mobile phones. A ther-mal -aware reinforcement learning is used in EdgeEngine [ 1]to optimize hardware frequencies for efficient edge infer-ence. DRLS [ 57 ] mitigates overheating during a deep neural network inference by deciding whether it should run on the GPU or NPU based on thermal prediction. Due to the unpredictability in LLM output lengths, and the potential back-to-back inference requests, EnerInfer adopts an MPC-based approach to keep the temperature under the threshold. 
+
+## 8 Conclusion and Future Work 
+
+On-device inference requires system-level optimization to improve throughput, energy efficiency, and thermal control. 
+
+EnerInfer enhances energy efficiency by accurately predict-ing the throughput and power consumption of an LLM across 
+
+> 12
+
+hardware configurations, and selecting the one that maxi-mizes efficiency while preserving QoE, i.e., speed and ther-mal constraints. The prediction models in EnerInfer can be adapted to other AI workloads, and their outputs can assist in scheduling these workloads across heterogeneous on -device backends to meet performance targets while improving over-all system energy efficiency. Further, we believe that more advanced control algorithms can be explored to optimize hardware-configuration selection as the device temperature approaches the threshold. 
+
+## References 
+
+[1] Amirhossein Ahmadi, Hazem A. Abdelhafez, Karthik Pattabiraman, and Matei Ripeanu. 2023. EdgeEngine: A Thermal-Aware Optimization Framework for Edge Inference. In 2023 IEEE/ACM Symposium on Edge Computing (SEC) . 67–79. [2] Joshua Ainslie, James Lee-Thorp, Michiel De Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. 2023. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. arXiv 
+
+(2023). [3] Keivan Alizadeh, Iman Mirzadeh, Dmitry Belenko, Karen Khatamifard, Minsik Cho, Carlo C Del Mundo, Mohammad Rastegari, and Mehrdad Farajtabar. 2024. LLM in a flash: Efficient Large Language Model Inference with Limited Memory. arXiv:2312.11514 [cs.CL] [4] Apple. 2024. Introducing Apple’s On-Device and Server Foundation Models. https://machinelearning.apple.com/research/introducing-apple-foundation-models . Accessed 7 Feb 2025. [5] Mauricio Fadel Argerich and Marta Patiño-Martínez. 2024. Measur-ing and Improving the Energy Efficiency of Large Language Models Inference. IEEE Access 12 (2024), 80194–80207. [6] Mariette Awad, Rahul Khanna, Mariette Awad, and Rahul Khanna. 2015. Support vector regression. Efficient learning machines: Theories, concepts, and applications for engineers and system designers (2015), 67–80. [7] Edward Beeching, Clémentine Fourrier, Nathan Habib, Sheon Han, Nathan Lambert, Nazneen Rajani, Omar Sanseviero, Lewis Tunstall, and Thomas Wolf. [n. d.]. Open LLM Leaderboard. https://huggingfac e.co/spaces/HuggingFaceH4/open_llm_leaderboard . Accessed 11 Apr 2025. [8] Mulugeta K Berhe. 2007. Ergonomic temperature limits for hand-held electronic devices. In International Electronic Packaging Technical Conference and Exhibition , Vol. 42789. 1041–1047. [9] Leo Breiman. 2001. Random forests. Machine learning 45 (2001), 5–32. [10] Marc Brysbaert. 2019. How many words do we read per minute? A review and meta-analysis of reading rate. Journal of Memory and Language 109 (2019), 104047. [11] Le Chen, Dahu Feng, Erhu Feng, Rong Zhao, Yingrui Wang, Yubin Xia, Haibo Chen, and Pinjie Xu. 2025. HeteroLLM: Accelerating Large Lan-guage Model Inference on Mobile SoCs platform with Heterogeneous AI Accelerators. arXiv:2501.14794 [cs.DC] [12] Marcus Chow and Daniel Wong. 2023. CoFRIS: Coordinated frequency and resource scaling for GPU inference servers. In Proceedings of the 14th International Green and Sustainable Computing Conference . 45–51. [13] Lucian Codrescu, Willie Anderson, Suresh Venkumanhanti, Mao Zeng, Erich Plondke, Chris Koob, Ajay Ingle, Charles Tabony, and Rick Maule. 2014. Hexagon DSP: An architecture optimized for mobile multimedia and communications. IEEE Micro 34, 2 (2014), 34–43. [14] Benj Edwards. 2024. Exponential growth brews 1 million AI models on Hugging Face. https://arstechnica.com/information-technology /2024/09/ai-hosting-platform-surpasses-1-million-models-for-the-first-time/ . Accessed 7 Feb 2025. [15] FNIRSI. 2025. FNB58 USB Fast Charge Tester. https://www.fnirsi.com /products/fnb58 . Accessed 25 Apr 2025. [16] Ricardo Gonzalez, Benjamin M Gordon, and Mark A Horowitz. 1997. Supply and threshold voltage scaling for low power CMOS. IEEE Journal of Solid-State Circuits 32, 8 (1997), 1210–1216. [17] Google. 2025. Chat with Gemini to supercharge your creativity and productivity. https://store.google.com/intl/en/ideas/categories/ai/ .Accessed 7 Feb 2025. [18] Google. 2025. Thermal mitigation. https://source.android.com/docs/ core/power/thermal-mitigation . Accessed 15 May 2025. [19] Joseph L Greathouse and Gabriel H Loh. 2018. Machine learning for performance and power modeling of heterogeneous systems. In 
+
+Proceedings of the International Conference on Computer-Aided Design .1–6. [20] Ling Huang, Jinzhu Jia, Bin Yu, Byung-Gon Chun, Petros Maniatis, and Mayur Naik. 2010. Predicting execution time of computer programs using sparse polynomial regression. In Advances in neural information processing systems (NeurIPS) . 883–891. [21] Huawei. [n. d.]. HUAWEI HarmonyOS Computer. https://consumer.h uawei.com/cn/harmonyos-computer/harmonyos-5/ . Accessed 8 May 2025. [22] Huawei. 2025. HUAWEI Mate70 Pro. https://consumer.huawei.com/ cn/phones/mate70-pro/specs/ . Accessed 7 Feb 2025. [23] Huawei. 2025. HUAWEI Pura 80. https://consumer.huawei.com/cn/p hones/pura80/specs/ . Accessed 7 Feb 2025. [24] Christian Janiesch, Patrick Zschech, and Kai Heinrich. 2021. Machine learning and deep learning. Electronic markets 31, 3 (2021), 685–695. [25] Mojan Javaheripi, Sébastien Bubeck, Marah Abdin, Jyoti Aneja, Se-bastien Bubeck, Caio César Teodoro Mendes, Weizhu Chen, Allie Del Giorno, Ronen Eldan, Sivakanth Gopi, et al . 2023. Phi-2: The sur-prising power of small language models. Microsoft Research Blog 1, 3 (2023), 3. [26] JEDEC. 2023. LOW POWER DOUBLE DATA RATE (LPDDR) 5/5X. 
+
+https://www.jedec.org/standards-documents/docs/jesd209-5c .Accessed 25 Apr 2025. [27] Andreas Kosmas Kakolyris, Dimosthenis Masouros, Sotirios Xydis, and Dimitrios Soudris. 2024. SLO-Aware GPU DVFS for Energy-Efficient LLM Inference Serving. IEEE Computer Architecture Letters 23, 2 (July 2024), 150–153. [28] M. G. KENDALL. 1938. A NEW MEASURE OF RANK CORRELATION. 
+
+Biometrika 30, 1-2 (06 1938), 81–93. [29] Seyeon Kim, Kyungmin Bin, Sangtae Ha, Kyunghan Lee, and Song Chong. 2022. zTT: Learning-Based DVFS with Zero Thermal Throt-tling for Mobile Devices. GetMobile: Mobile Comp. and Comm. 25, 4 (March 2022), 30–34. [30] Stefanos Laskaridis, Kleomenis Katevas, Lorenzo Minto, and Hamed Haddadi. 2024. MELTing Point: Mobile Evaluation of Language Trans-formers. In Proceedings of the 30th Annual International Conference on Mobile Computing and Networking (MobiCom) . 890–907. [31] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. 2021. GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding. In International Conference on Learning Representations .[32] Yaniv Leviathan, Matan Kalman, and Yossi Matias. 2023. Fast Inference from Transformers via Speculative Decoding. In Proceedings of the 40th ICML (Proceedings of Machine Learning Research, Vol. 202) . PMLR, 19274–19286. [33] Yuanchun Li, Hao Wen, Weijun Wang, Xiangyu Li, Yizhen Yuan, Guo-hong Liu, Jiacheng Liu, Wenxing Xu, Xiang Wang, Yi Sun, Rui Kong, Yile Wang, Hanfei Geng, Jian Luan, Xuefeng Jin, Zilong Ye, Guanjing Xiong, Fan Zhang, Xiang Li, Mengwei Xu, Zhijun Li, Peng Li, Yang Liu, Ya-Qin Zhang, and Yunxin Liu. 2024. Personal LLM Agents: Insights and Survey about the Capability, Efficiency and Security. arXiv:2401.05459 [cs.HC] 
+
+> 13
+
+[34] Chengdong Lin, Kun Wang, Zhenjiang Li, and Yu Pu. 2023. A Workload-Aware DVFS Robust to Concurrent Tasks for Mobile Devices. In An-nual International Conference on Mobile Computing and Networking (MobiCom) . Article 19, 16 pages. [35] Jiachen Liu, Jae-Won Chung, Zhiyu Wu, Fan Lai, Myungjin Lee, and Mosharaf Chowdhury. 2024. Andes: Defining and Enhanc-ing Quality-of-Experience in LLM-Based Text Streaming Services. arXiv:2404.16283 [cs.DC] [36] Meta Llama Team. 2024. The Llama 3 Herd of Models. arXiv:2407.21783 [cs.AI] [37] P. Macken, M. Degrauwe, M. Van Paemel, and H. Oguey. 1990. Avoltage reduction technique for digital systems. In IEEE International Conference on Solid-State Circuits . 238–239. [38] Paul Joe Maliakel, Shashikant Ilager, and Ivona Brandic. 2025. Investi-gating Energy Efficiency and Performance Trade-offs in LLM Inference Across Tasks and DVFS Settings. arXiv:2501.08219 [cs.LG] [39] MLC team. 2023-2025. MLC-LLM .[40] Dipayan Mukherjee, Sam Hachem, Jeremy Bao, Curtis Madsen, Tian Ma, Saugata Ghose, and Gul Agha. 2025. CRAVE: Analyzing Cross-Resource Interaction to Improve Energy Efficiency in Systems-on-Chip. In Proceedings of the Twentieth European Conference on Computer Systems (EuroSys ’25) . 59–75. [41] Yang Ni, Yeseong Kim, Tajana Rosing, and Mohsen Imani. 2022. Online performance and power prediction for edge TPU via comprehensive characterization. In 2022 Design, Automation & Test in Europe Confer-ence & Exhibition (DATE) . IEEE, 612–615. [42] Harbin Institute of Technology and iFLYTEK Joint Laboratory (HFL). 2023. Chinese-LLaMA-2-1.3B: A Chinese-Enhanced LLaMA-2 Model. 
+
+https://huggingface.co/hfl/chinese-llama-2-1.3b . Accessed 19 Aug 2025. [43] Ollama. 2025. Ollama: Chat & build with open models. https://ollama .com/ . Accessed 15 May 2025. [44] OPPO. 2024. OPPO Find X8 Series to Debut MediaTek Dimensity 9400 SOC for Global Markets Combining Ultra Performance, Efficiency & AI Experiences. Accessed 25 Apr 2025. [45] Eva Ostertagová. 2012. Modelling using Polynomial Regression. Pro-cedia Engineering 48 (2012), 500–506. Modelling of Mechanical and Mechatronics Systems. [46] Abhinav Pathak, Y. Charlie Hu, Ming Zhang, Paramvir Bahl, and Yi-Min Wang. 2011. Fine-grained power modeling for smartphones using system call tracing. In Proceedings of the Sixth Conference on Computer Systems (Salzburg, Austria) (EuroSys ’11) . Association for Computing Machinery, New York, NY, USA, 153–168. [47] Orange Pi. 2025. Orange Pi 5 Pro. http://www.orangepi.org/ . Accessed 25 Apr 2025. [48] Haoran Qiu, Weichao Mao, Archit Patke, Shengkun Cui, Saurabh Jha, Chen Wang, Hubertus Franke, Zbigniew Kalbarczyk, Tamer Başar, and Ravishankar K. Iyer. 2024. Power-aware Deep Learning Model Serving with 𝜇 -Serve. In 2024 USENIX Annual Technical Conference (USENIX ATC 24) . USENIX Association, Santa Clara, CA, 75–93. [49] Haoran Qiu, Weichao Mao, Archit Patke, Shengkun Cui, Saurabh Jha, Chen Wang, Hubertus Franke, Zbigniew T. Kalbarczyk, Tamer Başar, and Ravishankar K. Iyer. 2024. Efficient Interactive LLM Serving with Proxy Model-based Sequence Length Prediction. In The 5th Interna-tional Workshop on Cloud Intelligence / AIOps at ASPLOS 2024 , Vol. 5. 1–7. [50] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al . 2019. Language models are unsupervised multitask learners. OpenAI blog 1, 8 (2019), 9. [51] Rafael J. Wysocki. 2017. intel pstate CPU Performance Scaling Driver. 
+
+https://www.kernel.org/doc/html/latest/admin-guide/pm/intel_pst ate.html . Accessed 15 May 2025. [52] Rockchip. 2025. RKLLM Project. https://github.com/airockchip/rknn-llm . Accessed 25 Apr 2025. [53] Siddharth Samsi, Dan Zhao, Joseph McDonald, Baolin Li, Adam Michaleas, Michael Jones, William Bergeron, Jeremy Kepner, Devesh Tiwari, and Vijay Gadepally. 2023. From Words to Watts: Benchmark-ing the Energy Costs of Large Language Model Inference. In 2023 IEEE High Performance Extreme Computing Conference (HPEC) . 1–9. [54] Yixin Song, Zeyu Mi, Haotong Xie, and Haibo Chen. 2024. PowerInfer: Fast Large Language Model Serving with a Consumer-grade GPU. In 
+
+ACM SIGOPS 30th Symposium on Operating Systems Principles (SOSP ’24) . 590–606. [55] Jovan Stojkovic, Esha Choukse, Chaojie Zhang, Inigo Goiri, and Josep Torrellas. 2024. Towards Greener LLMs: Bringing Energy-Efficiency to the Forefront of LLM Inference. arXiv:2403.20306 [cs.AI] [56] Jovan Stojkovic, Chaojie Zhang, Íñigo Goiri, Josep Torrellas, and Esha Choukse. 2025. DynamoLLM: Designing LLM Inference Clusters for Performance and Energy Efficiency. In IEEE International Symposium on High Performance Computer Architecture (HPCA) .[57] Tianxiang Tan and Guohong Cao. 2024. Thermal-aware scheduling for deep learning on mobile devices with NPU. IEEE Transactions on Mobile Computing (2024). [58] Zhenheng Tang, Yuxin Wang, Qiang Wang, and Xiaowen Chu. 2019. The Impact of GPU DVFS on the Energy and Performance of Deep Learning: an Empirical Study. In Proceedings of the Tenth ACM Inter-national Conference on Future Energy Systems . 315–325. [59] Gemma Team. 2024. Gemma 2: Improving Open Language Models at a Practical Size. arXiv:2408.00118 [cs.CL] [60] The Linux Kernel Community. 2024. Power Management Quality of Service (PM QoS) Interface. https://www.kernel.org/doc/html/latest/p ower/pm_qos_interface.html . Accessed 15 May 2025. [61] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Alma-hairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xi-ang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open Foundation and Fine-Tuned Chat Models. arXiv:2307.09288 [cs.CL] [62] Susanne Trauzettel-Klosinski, Klaus Dietz, and IReST Study Group. 2012. Standardized assessment of reading performance: The new international reading speed texts IReST. Investigative ophthalmology & visual science 53, 9 (2012), 5452–5461. [63] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. At-tention is all you need. Advances in neural information processing systems (NeurIPS) 30 (2017). [64] Li Wang. 2021. British English-speaking speed 2020. Acad. J. Humanit. Soc. Sci 4 (2021), 93–100. [65] Yunhe Wang, Hanting Chen, Yehui Tang, Tianyu Guo, Kai Han, Ying Nie, Xutao Wang, Hailin Hu, Zheyuan Bai, Yun Wang, Fangcheng Liu, Zhicheng Liu, Jianyuan Guo, Sinan Zeng, Yinchen Zhang, Qinghua Xu, Qun Liu, Jun Yao, Chao Xu, and Dacheng Tao. 2023. PanGu-𝜋 : Enhanc-ing Language Model Architectures via Nonlinearity Compensation. arXiv:2312.17276 [cs.CL] [66] Zibo Wang, Yijia Zhang, Fuchun Wei, Bingqiang Wang, Yanlin Liu, Zhiheng Hu, Jingyi Zhang, Xiaoxin Xu, Jian He, Xiaoliang Wang, Wanchun Dou, Guihai Chen, and Chen Tian. 2025. Using Analytical Performance/Power Model and Fine-Grained DVFS to Enhance AI 
+
+> 14
+
+Accelerator Energy Efficiency. In ACM International Conference on Ar-chitectural Support for Programming Languages and Operating Systems (ASPLOS ’25) . 1118–1132. [67] Rafael J. Wysocki. 2017. CPU Performance Scaling. https://docs.kerne l.org/admin-guide/pm/cpufreq.html . Accessed 25 Apr 2025. [68] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han. 2023. SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models. In International conference on machine learning (ICML) . 38087–38099. [69] Daliang Xu, Hao Zhang, Liming Yang, Ruiqi Liu, Gang Huang, Meng-wei Xu, and Xuanzhe Liu. 2025. Fast On-device LLM Inference with NPUs. In ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS ’25) . 445–462. [70] Zhenliang Xue, Yixin Song, Zeyu Mi, Xinrui Zheng, Yubin Xia, and Haibo Chen. 2024. PowerInfer-2: Fast Large Language Model Inference on a Smartphone. arXiv:2406.06282 [cs.LG] [71] An Yang, Baosong Yang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Zhou, Chengpeng Li, Chengyuan Li, Dayiheng Liu, Fei Huang, Guant-ing Dong, Haoran Wei, Huan Lin, Jialong Tang, Jialin Wang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Ma, Jianxin Yang, Jin Xu, Jingren Zhou, Jinze Bai, Jinzheng He, Junyang Lin, Kai Dang, Kem-ing Lu, Keqin Chen, Kexin Yang, Mei Li, Mingfeng Xue, Na Ni, Pei Zhang, Peng Wang, Ru Peng, Rui Men, Ruize Gao, Runji Lin, Shijie Wang, Shuai Bai, Sinan Tan, Tianhang Zhu, Tianhao Li, Tianyu Liu, Wenbin Ge, Xiaodong Deng, Xiaohuan Zhou, Xingzhang Ren, Xinyu Zhang, Xipin Wei, Xuancheng Ren, Xuejing Liu, Yang Fan, Yang Yao, Yichang Zhang, Yu Wan, Yunfei Chu, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, Zhifang Guo, and Zhihao Fan. 2024. Qwen2 Technical Report. arXiv:2407.10671 [cs.CL] [72] Jinliang Yuan, Chen Yang, Dongqi Cai, Shihe Wang, Xin Yuan, Zeling Zhang, Xiang Li, Dingge Zhang, Hanzi Mei, Xianqing Jia, Shangguang Wang, and Mengwei Xu. 2024. Mobile Foundation Model as Firmware. In Annual International Conference on Mobile Computing and Network-ing (MobiCom) . 279–295. [73] Wanghong Yuan and Klara Nahrstedt. 2003. Energy-efficient soft real-time CPU scheduling for mobile multimedia systems. In Proceedings of the Nineteenth ACM Symposium on Operating Systems Principles 
+
+(Bolton Landing, NY, USA) (SOSP ’03) . Association for Computing Machinery, New York, NY, USA, 149–163. [74] Sangwoon Yun and Kyungtae Kang. 2023. Runtime WCET Estimation Using Machine Learning. In Annual International Conference on Mobile Computing and Networking (MobiCom) . 1–3. [75] Zongpu Zhang, Pranab Dash, Qiang Xu, Y. Charlie Hu, Jian Li, and Haibing Guan. 2026. Rethinking DVFS for Mobile LLMs: Unified Energy-Aware Scheduling with CORE. In MLSys . https://openreview .net/forum?id=PSyHQ8kVUT 
+
+[76] Bohua Zou, Binqi Sun, Yigong Hu, Tomasz Kloda, Marco Caccamo, and Tarek Abdelzaher. 2024. A Performance Prediction-based DNN Partitioner for Edge TPU Pipelining. In IEEE Military Communications Conference (MILCOM) . 1–6.

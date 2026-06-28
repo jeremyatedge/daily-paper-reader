@@ -1,0 +1,1042 @@
+Title: Hierarchical Reinforcement Learning for Neural Network Compression (HiReLC): Pruning and Quantization
+
+URL Source: https://arxiv.org/pdf/2606.26002v1
+
+Published Time: Thu, 25 Jun 2026 01:22:28 GMT
+
+Number of Pages: 32
+
+Markdown Content:
+# Hierarchical Reinforcement Learning for Neural Network Compression (HiReLC): Pruning and Quantization 
+
+Kamar Hibatallah Baghdadi a, ∗, Kawther Guoual Belhamidi a, Sara Belhadj a, Aissa Boulmerka a, Nadir Farhi b
+
+> aNational School of Artificial Intelligence (ENSIA), Sidi Abdellah Campus, Algiers, Algeria
+> bCosys-Grettia, Univ Gustave Eiffel, F-77454 Marne-la-Vallee, France.
+
+Abstract 
+
+We present HiReLC , a hierarchical ensemble-reinforcement learning framework for automated joint quantization and structured pruning of deep neural networks. The framework decom-poses the compression search across two levels of abstraction: low-level agents (LLAs) oper-ate independently per block, selecting per-kernel configurations over a multi-discrete action space spanning bitwidth, pruning keep-ratio, quantization type, and granularity, while high-level agents (HLAs) coordinate global budget allocation via ensemble voting guided by Fisher Information–based sensitivity estimates. To mitigate the computational cost of policy evalua-tion, an iterative active learning loop interleaves surrogate-guided RL optimization with post-compression fine-tuning, using a lightweight MLP surrogate to amortize expensive evaluations and a logit-MSE proxy during cold-start. The surrogate is used for reward shaping rather than as a replacement for final post-compression evaluation. The controller is architecture-agnostic by design, with a modular layer abstraction decoupling the RL environment from the underlying network topology. Experiments across Vision Transformer and CNN benchmarks demonstrate effective parameter-storage compression ratios of 5.99–6.72 × with a 3.83% gain in one setting and 0.55–5.62% accuracy drops elsewhere, supporting hierarchical policy decomposition and sensitivity-aware guidance as practical design choices for joint neural network compression. 
+
+Keywords: Hierarchical reinforcement learning, neural network compression structured pruning, mixed-precision quantization, Fisher Information sensitivity, ensemble agents, Vision Transformers 
+
+1. Introduction 
+
+Deep neural networks have achieved remarkable performance across visual recognition tasks, yet their deployment on resource-constrained platforms remains challenged by high parameter counts, memory footprints, and inference latencies. Vision Transformers (ViTs) exemplify this challenge in modern vision systems (Dosovitskiy et al., 2021; Islam, 2022), and the efficiency gap is pervasive across architectural families, motivating the need for general-purpose compression frameworks. Existing compression approaches, whether based on static heuristics, one-shot mixed-precision assignment, or single-objective optimization, fail to capture cross-layer dependencies and lack adaptive refinement during fine-tuning. Model compression techniques spanning pruning and quantization have been explored broadly (He et al., 2018; Wang et al., 2019; Bondarenko et al., 2021), but reinforcement learning methods still face high variance in large action spaces, coarse granularity, and limited sensitivity-aware guidance.   
+
+> ∗Corresponding author.
+> Email address: kamar.baghdadi@ensia.edu.dz (Kamar Hibatallah Baghdadi)
+> Preprint
+> arXiv:2606.26002v1 [cs.LG] 24 Jun 2026
+
+We note a related but orthogonal line of work that compresses reinforcement-learning agents themselves during training (Graesser et al., 2022; Obando-Ceron et al., 2024; Vincent et al., 2025); HiReLC instead compresses pre-trained target networks as a post-training procedure. To address these limitations, we propose HiReLC , an architecture-agnostic hierarchical ensemble-reinforcement learning framework for joint quantization and structured pruning. Low-level agents (LLAs) operate per block over a multi-discrete action space, while high-level agents (HLAs) coordinate global budget allocation via Fisher Information–based sensitivity estimates. An iterative active learning loop interleaves surrogate-guided RL optimization with post-compression fine-tuning across an ensemble of heterogeneous RL policies. The main contributions of this work are summarized as follows: 
+
+• We propose HiReLC , an architecture-agnostic hierarchical ensemble-RL framework for 
+
+joint structured pruning and mixed-precision quantization. The framework decomposes the search across two tiers: a High-Level Agent ( HLA ) ensemble responsible for global budget allocation, and per-block Low-Level Agent ( LLA ) ensembles operating over a four-dimensional action space (bitwidth, keep-ratio, quantization type, granularity). Unlike single-level controllers targeting a single compression axis (He et al., 2018; Wang et al., 2019), HiReLC achieves 5.99–6.72 × effective parameter-storage compression across four architectures, with 0.55–5.62% drops in loss cases and a 3.83% gain in one setting. 
+
+• We integrate Fisher Information sensitivity scores (Theis et al., 2018) into both hierar-chy levels: initializing LLA observations, contributing to the sensitivity penalty Psens ,and driving HLA budget corrections, ensuring critical blocks receive lighter compression without additional search-time evaluations. Prior RL methods rely on magnitude-based heuristics. Our sensitivity-aware design prop-agates gradient-based block importance through both reward and action-correction, im-proving trade-offs across ViTs (Dosovitskiy et al., 2021) and CNNs (He et al., 2016; Sandler et al., 2018). 
+
+• We introduce a surrogate-augmented active learning loop interleaving RL optimization with post-compression fine-tuning. A lightweight MLP surrogate amortizes expensive evaluations once a minimum number of configurations have been evaluated (see Sec-tion 3.6); a logit-MSE proxy covers the cold-start phase, while reported surrogate MAEs of 3.57–15.20% quantify when the learned proxy is reliable and when it remains noisy. Unlike Hessian-based methods (Dong et al., 2020) that incur high computation costs, our surrogate loop reduces the number of full model evaluations required during search, enabling a practical framework-level study within a small number of cycles. 
+
+2. Related Work 
+
+Vision Transformers have achieved state-of-the-art performance across vision tasks, but their computational and memory demands pose significant deployment challenges (Dosovitskiy et al., 2021; Islam, 2022). Early efficiency efforts focused on token reduction or dynamic computation skipping (Rao et al., 2021; Ryoo et al., 2021), though these do not address parameter-level compression. Compressing ViTs via pruning or quantization is particularly challenging due to the sensitivity of self-attention mechanisms (Lu et al., 2019), motivating adaptive, structure-aware strategies. Post-training quantization often degrades Transformer performance at low bit-widths (Bon-darenko et al., 2021), while quantization-aware training methods such as LSQ (Esser et al., 2020) better adapt to low-precision constraints. Structured pruning (removing attention heads (Michel et al., 2019), feed-forward neurons (Wang et al., 2020), or entire blocks) has become the 2dominant paradigm, as unstructured sparsity yields limited real-world speedups (Gale et al., 2019). Reinforcement learning has been explored for automating compression decisions. AMC (He et al., 2018) and HAQ (Wang et al., 2019) formulate compression as sequential decision-making, using a DDPG agent to select layer-wise pruning ratios or mixed-precision assignments, demonstrating effectiveness on CNNs such as MobileNet and ResNet. However, both employ single-level controllers on a single compression axis. HAWQ-V2 (Dong et al., 2020) uses Hessian trace information to guide mixed-precision quantization, achieving strong compression ratios at minimal accuracy cost, though at significant computational expense. I-ViT (Li and Gu, 2023) demonstrates robust integer-only quantization for ViTs via QAT but does not address struc-tural pruning. DeepCompress-ViT (Ahmed et al., 2025) is orthogonal to structured pruning: it combines an encoder–decoder weight representation with low-bit quantization and unified com-pression training to target ViT storage and edge efficiency, rather than learning a structured channel-selection policy. In contrast, our work introduces a hierarchical ensemble-RL framework that jointly opti-mizes quantization and structured pruning, incorporating sensitivity-aware priors, ensemble-based agents, and an active learning compression loop to overcome the limitations of static policies and unstable training under aggressive compression targets. The term “ensemble” is used deliberately: HiReLC trains independent PPO/A2C policies and combines their proposals by voting, rather than modeling cooperative or competitive multi-agent interaction with com-munication, centralized critics, or value factorization as in MARL methods such as MADDPG and QMIX (Lowe et al., 2017; Rashid et al., 2018). 
+
+3. Methodology 
+
+This section presents the proposed Hierarchical Reinforcement Learning (HiReLC) frame-work for automated neural network compression. The framework is architecture-agnostic at the controller level: the hierarchical agent topology, reward formulations, ensemble voting mech-anism, configuration-controlled quantization type and granularity scheme, and active learning loop are invariant across architectures. Only the layer abstraction module, sensitivity estima-tion pass, and downstream evaluation loader are architecture- or dataset-specific. Figure 1 summarizes the end-to-end pipeline. A pre-trained model is parsed into compress-ible blocks, Fisher sensitivity is computed on a small calibration subset, the HLA ensemble assigns per-block budgets, LLA ensembles refine those budgets into per-kernel compression configurations, and the resulting compressed model is fine-tuned before the replay buffer and surrogate are updated. 
+
+3.1. Problem Formulation 3.1.1. Compression Function Definition 
+
+Let M denote a pre-trained neural network with parameter vector θ ∈ RP , consist-ing of N compressible blocks {Bi}Ni=1 , where block Bi contains Ki parametric kernels and 
+
+Ktot = PNi=1 Ki. Each block Bi groups logically associated Linear /Conv2d modules (e.g., QKV, attention output, MLP projections), described by a KernelConfig and aggregated into a 
+
+LayerConfig that exposes per-kernel fields and summary statistics to higher-level agents. We denote by θ0 the uncompressed baseline after any pre-compression fine-tuning or calibration stage; when no such stage is used, θ0 = θ. A compression configuration is the joint assignment 
+
+c = {ci,k : i = 1 , . . . , N ; k = 1 , . . . , K i}, where each ci,k specifies the compression decisions applied to kernel k in block Bi. Formally, we define a deterministic compression function: 
+
+C : θ × c 7 → θ′ (1) 3Table 1: Notation summary for recurring symbols and table abbreviations. Retained-size fractions are smaller when compression is stronger; compression ratios are larger when compression is stronger. 
+
+Symbol / term Meaning 
+
+M, θ, θ0, θ′, θ∗ Model, original, fine-tuned baseline, compressed, and best parameters 
+
+c, ci,k Full and per-kernel compression configuration 
+
+ρi,k Keep-ratio: fraction of output channels retained 
+
+τi,k Quantization type 
+
+μi,k Granularity 
+
+νi,k Kernel retained-size fraction ( bi,k /b 0)ρi,k 
+
+¯νi Block retained-size fractions ¯ν Global retained-size fractions ¯ν∗ Equivalent retained-size target 
+
+CR 1/¯ν
+
+R(c) Effective parameter-storage compression ratio 
+
+Rtarget Target CR lower bound 
+
+ℓi HLA compression tier 
+
+σi decoded strategy 
+
+pi scalar strategy code 
+
+Bi HLA LayerBudget assigned to block Bi
+
+∆acc , ∆ A(t) Allowed and measured accuracy drops 
+
+rLLA  
+
+> t
+
+, rHLA  
+
+> t
+
+Tier-specific RL rewards 
+
+P, S, U, T , W MDP tuple, state/action spaces, transition, reward 
+
+s, st, at, ah HLA state, LLA state, LLA action, and HLA action 
+
+na, nh LLA/HLA ensemble sizes 
+
+wj LLA vote weight 
+
+Xc Calibration mini-batches 
+
+zbase Cached baseline logits 
+
+Bi, N , k, Ki, Ktot Block/index count, kernel/index count, and total kernels 
+
+bi,k , bmin , bmax , b0 Kernel bitwidth, bitwidth bounds, FP32 reference ( b0 = 32) 
+
+ρprune min , ρprune max Minimum/maximum channel-removal fractions 
+
+Pi,k , Pi, P Kernel, block, and global FP32 parameter counts MSR Model-size reduction, 1 − ¯ν = 1 − 1/CR 
+
+Ri, R, ¯R HLA block target retained-size fraction, vector, and mean 
+
+ρmax ,i , bmin ,i , ∆ acc ,i Block-level pruning, bitwidth, and accuracy-drop limits 
+
+A(·), Abase , A(t) Validation, baseline, and cycle-t accuracies 
+
+si Fisher sensitivity score of block Bi
+
+α, β, γ ; αj , β j , γ j Objective weights; agent-specific reward weights 
+
+γRL , ρ0 RL discount factor and initial state distribution 
+
+δb,i,k , δρ,i,k , δτ,i,k , δμ,i,k Discrete LLA action indices 
+
+Brep , N min rep , ˆf Surrogate replay buffer, activation threshold, MLP 4where θ′ is the parameter vector resulting from compression. Each ci,k jointly specifies: (i) the quantization bitwidth bi,k ∈ { bmin , . . . , b max };(ii) the structural pruning keep-ratio ρi,k ∈ (0 , 1], where ρi,k is the fraction of output channels retained ;(iii) the quantization numeric type τi,k ∈ { INT , FLOAT }, selected per-kernel in the uncon-strained regime, or fixed globally via a type override parameter (see Section 3.4.1); and (iv) the granularity scheme μi,k ∈ { uniform , log , per-channel , learned }, selected per-kernel in the unconstrained regime, or fixed globally via a granularity override parameter (see Section 3.4.1). The four granularity modes are operationally distinct: uniform uses a single per-tensor scale (max-abs), log quantizes in the log domain with sign restoration, per-channel uses an indepen-dent scale per output channel, and learned applies per-channel sign-magnitude quantization (1 sign bit and ( bi,k − 1) magnitude bits), preserving near-zero weights at equal storage. The optimization variable is the compression configuration c, not the deterministic compression operator C. The goal is to identify the optimal joint assignment c∗ according to the multi-objective criterion introduced next. The operator C produces the initial compressed weights; the reported final parameters θ∗ are the best post-compression fine-tuned weights initialized from C(θ0, c∗). 
+
+3.1.2. Multi-Objective Optimization 
+
+c∗ = arg max  
+
+> c
+
+F(c), F(c) = α · A (C(θ0, c)) + β · R (c) − γ · V (c) (2) Here A(ϑ) denotes the top-1 validation accuracy of the network instantiated with parameter vector ϑ. Thus, A(θ0) is the baseline accuracy before compression, while A(C(θ0, c)) is the accuracy after applying configuration c.subject to: 
+
+A(θ0) − A (C(θ0, c)) ≤ ∆acc , R(c) ≥ Rtarget (3) where R(c) is the global effective parameter-storage compression ratio (reported as CR; Eq. (22)); 
+
+V(c) is a variance-based stability regularizer (std. of the LLA reward over the last five steps); and {α, β, γ } are scalar trade-off weights. ∆ acc > 0 is the allowed accuracy drop. Rtarget ≥ 1 is a target lower bound on the global compression ratio, not a retained-size fraction. It is related to the global target retained-size fraction ¯ ν∗ ∈ (0 , 1) by Rtarget = 1 /¯ν∗; e.g., ¯ ν∗ = 0 .25 implies 
+
+Rtarget = 4, so the compressed model should retain at most 25% of the FP32 parameter storage. The configuration space scales as O(|b|Ktot · | ρ|Ktot · | τ |Ktot · | μ|Ktot ) Han et al. (2016); He et al. (2018); Wang et al. (2019), motivating the hierarchical RL decomposition in Section 3.4. 
+
+3.1.3. Markov Decision Process Formulation 
+
+Each MDP instance is associated with one of two agent tiers: the Low-Level Agent 
+
+(LLA ), governing the compression policy of an individual block Bi, and the High-Level Agent 
+
+(HLA ), operating at the network level and allocating compression budgets across all N blocks. 
+
+P = ⟨ S , U, T , W, γ RL , ρ 0 ⟩ (4) 5Figure 1: Overview of the HiReLC compression pipeline. Structural parsing and Fisher sensitivity estimation initialize the hierarchy; the HLA ensemble allocates layer budgets, LLA ensembles produce per-kernel configu-rations, and the active loop alternates compression, fine-tuning, and surrogate updates. 
+
+6Figure 2: Reward-flow schematic for the RL compression environment. Candidate actions are decoded into compression primitives, evaluated with either the surrogate or logit-MSE proxy, and mapped to the LLA/HLA rewards used for policy updates. 
+
+Here, S is the state/observation space, U is the action space, T is the transition rule induced by applying compression actions and updating the environment state, W is the tier-specific reward function, γRL is the RL discount factor, and ρ0 is the initial state distribution. Throughout this subsection, Ri ∈ (0 , 1] denotes the HLA-assigned target retained-size fraction for block Bi
+
+(smaller values imply stronger compression), not the global compression-ratio target Rtarget .The realized block retained-size fraction after an LLA action is ¯ νi, with R = ( R1, . . . , R N ), 
+
+Pi = PKi 
+
+> k=1
+
+Pi,k , and P = P 
+
+> i
+
+Pi. The global proposed target and realized retained-size fractions are parameter-weighted: ¯R = P −1 P 
+
+> i
+
+PiRi and ¯ ν = P −1 P 
+
+> i
+
+Pi ¯νi.The MDP formulation is preferable to a one-step bandit abstraction for three reasons. First, HLA actions are globally coupled: the budget vector R must jointly allocate per-block targets while keeping the mean target ¯R, and ultimately the realized mean retained-size fraction ¯ ν,close to ¯ ν∗ rather than optimizing each block independently. Second, the HLA state contains previous-cycle feedback (∆ A(t−1) , ¯ν(t−1) ), where ∆ A(t−1) is the measured accuracy drop in cycle 
+
+t − 1 and ∆ acc is the allowed accuracy-drop threshold. For the first cycle, we set ∆ A(0) = 0 and ¯ν(0) = 1, corresponding to the uncompressed baseline. Thus, current budget choices influence the feasible LLA search and the next cycle’s state. Third, LLA episodes are short but sequential: each step applies a candidate configuration, updates the realized block retained-size fraction ¯νi and hence the budget deviation ¯ νi − Ri, and contributes to a stability term over a recent reward window. This temporal credit-assignment structure follows the standard MDP view of sequential decision making (Sutton and Barto, 2018). Figure 2 shows how this reward signal is generated during one RL interaction. The action first determines pruning and quantization choices, the temporary compressed model is scored by the surrogate or logit-MSE proxy, and the resulting reward combines accuracy retention, compression, budget compliance, stability, and sensitivity. 
+
+State Space S. The index i ∈ { 1, . . . , N } denotes the compressible block currently controlled by an LLA, after parsing the network into blocks {Bi}Ni=1 . The index k ∈ { 1, . . . , K i} denotes a kernel inside that block. Thus, i/N gives the LLA a normalized indication of the block position in the network, while the remaining state entries describe the current budget, compression, and reward context for that block. The LLA observation vector for block Bi has dimension 12 + Ki:
+
+• [0] normalized block index i/N ; [1] Fisher sensitivity score si; [2] realized block retained-size fraction ¯ νi, initialized to 1 .0 before any compression action is applied. 7• [3] budget deviation ¯ νi − Ri, initialized to 0 .0 at reset and recomputed after each candidate action; [4] estimated accuracy drop divided by 10, obtained from the logit-MSE proxy or surrogate. 
+
+• [5] curriculum-stage indicator, fixed to 1 .0 in the reported experiments; [6] HLA-assigned target retained-size fraction Ri; [7] HLA strategy/preference code pi; [8] block-level allowed drop ∆ acc ,i /10. 
+
+• [9] constant bias entry 1 .0; [10] surrogate-availability flag 1{|B rep | ≥ N min rep }; [11] current-step LLA reward signal rLLA  
+
+> t
+
+/100 in post-transition states, set to zero at reset. 
+
+• [12– 12 + Ki − 1] per-kernel occupancy indicators, initialized to 0 .5 and updated as the LLA evaluates candidate kernel configurations. The HLA observation vector has dimension 5 + 2 N . At the start of an HLA episode, its entries are: 
+
+• [0] previous measured accuracy drop ∆ A(t−1) /10, initialized to 0 when t = 1; [1] previous realized mean retained-size fraction ¯ ν(t−1) , initialized to 1 when t = 1; [2] cycle progress. 
+
+• [3] global target retained-size fraction ¯ ν∗; [4] allowed accuracy drop ∆ acc /10. 
+
+• [5– 5 + 2 N − 1] interleaved block descriptors ( si, R i) for all blocks, so the HLA observes both sensitivity and the current target retained-size proposal for every block. After an HLA action is decoded, the next HLA state reuses entries 3 and 4 for dynamic feedback: entry 3 stores the current global compression gap |¯ν − ¯ν∗|, and entry 4 stores the normalized immediate reward signal. This slot reuse is a compact state-encoding choice: before an action, these entries provide the static global constraints; after the transition, they report how well the current proposal satisfied those constraints without increasing the state dimension. 
+
+Action Space U. For one block Bi, the LLA action is a multi-discrete vector of dimension 4Ki because the block contains Ki kernels and the LLA chooses four discrete decisions per kernel. Equivalently, the block-level action is the concatenation ai = ( ai, 1, . . . , ai,K i ). Across the whole network, the hierarchy therefore produces N such block-level actions, one for each LLA-controlled block. For each kernel k ∈ { 1, . . . , K i}, the LLA selects: 
+
+ai,k =  δb,i,k , δ ρ,i,k , δ τ,i,k , δ μ,i,k 
+
+ (5) where δb,i,k , δ ρ,i,k ∈ { 0, . . . , D } with a shared resolution D = 14 for all blocks and kernels (i.e., 15 discrete levels), δτ,i,k ∈ { 0, 1}, and δμ,i,k ∈ { 0, 1, 2, 3}. The indices are kernel-specific, whereas D is global in the reported implementation. The bitwidth and keep-ratio are decoded by interpolating between the active bounds for block Bi:
+
+bi,k = clip 
+
+
+
+bmin ,i +
+
+
+
+δb,i,k · bmax − bmin ,i 
+
+D
+
+
+
+, b min ,i , b max 
+
+
+
+(6) 
+
+ρi,k = clip 
+
+
+
+1 −
+
+
+
+ρprune min + δρ,i,k 
+
+D ·  ρmax ,i − ρprune min 
+
+
+
+, 1 − ρmax ,i , 1 − ρprune min 
+
+
+
+(7) Here bmax and ρprune min are global bounds, while bmin ,i and ρmax ,i are the active block-level bounds supplied by the HLA LayerBudget ; if no HLA restriction is used, they reduce to the global bmin 
+
+and ρprune max . Thus the integer action indices δb,i,k and δρ,i,k are indexed by both block and kernel, whereas the discretization resolution D is shared. 8For the quantization type τi,k and granularity μi,k , the agent operates in a general per-kernel selection regime. The type index δτ,i,k selects between INT and FLOAT, while the granularity index δμ,i,k selects among uniform, log-scale, per-channel, and learned quantization. Global override parameters may restrict this freedom: when a type override τ ∗ is specified, τi,k = τ ∗
+
+for all ( i, k ) and δτ,i,k is disregarded; when a strategy override μ∗ is specified, μi,k = μ∗ globally and δμ,i,k is disregarded. Without overrides, the agent selects both variables independently per kernel. The HLA action is a multi-discrete vector of dimension 2 N . For each block, it emits a compression-level index ℓi and a strategy index σi:
+
+ℓi ∈ { 0, . . . , 4}, σi ∈ { quantization , pruning , auto }. (8) The five compression levels map to target retained-size fractions 0 .35, 0 .30, 0 .25, 0 .20, and 0 .15, corresponding approximately to 2 .9×, 3 .3×, 4 ×, 5 ×, and 6 .7× compression. The scalar strat-egy code pi stored in the LLA observation is the numeric encoding of σi. The same decoded HLA action forms the block-level LayerBudget fields ( Ri, ρ max ,i , b min ,i , p i, ∆acc ,i ): Ri is read di-rectly from the compression tier, while ρmax ,i , bmin ,i , and ∆ acc ,i are deterministic tier/strategy-dependent bounds used to restrict the downstream LLA search. Thus the HLA action remains 2N -dimensional, and the additional numerical fields are decoded metadata rather than inde-pendent action coordinates. Sensitivity-aware corrections apply deterministically post-decode: blocks with si > 0.70 have their compression level decremented by one tier (lighter budget); blocks with si < 0.30 may have it incremented (more aggressive budget). 
+
+Transition Function. In the LLA environment, executing action at applies the decoded com-pression configuration via C, after which the next state is constructed by re-computing the compression ratio, target deviation, and estimated accuracy drop, with original weights re-stored from a cached reference copy. In the HLA environment, the transition updates per-block allocated targets and reflects current global accuracy–compression feedback. The transition is deterministic given a fixed model state and action; stochasticity arises solely from the RL policy. 
+
+Reward Functions. For the LLA :
+
+rLLA  
+
+> t
+
+= αj · Racc + βj · Rcomp + Rbudget + γj · Rstab − Psens (9) where Racc is a piecewise-linear accuracy retention term (via surrogate or logit-MSE proxy); 
+
+Rcomp = 60 · (1 − ¯νi) rewards higher compression; Rbudget = 20 · exp( −10 · | ¯νi − Ri|) is an exponential compliance term; Rstab = −2 · std( Ht−1) penalizes instability using the previous reward window Ht−1 = {rLLA  
+
+> t−h
+
+: h = 1 , . . . , min(5 , t )}, with Rstab = 0 when the history is empty; and Psens is defined in Eq. (10). The per-agent weights ( αj , β j , γ j ) are configurable hyperparameters of the ensemble: αj
+
+controls the relative emphasis on accuracy retention, βj controls compression aggressiveness, and γj controls stability regularization. The ensemble is deliberately configured with diverse 
+
+βj values so that the weighted vote in Eq. (16) integrates signals from a conservative regime, a moderate regime, and an aggressive regime. 
+
+Psens = 12 · si · (1 − ¯νi), (10) where si ∈ [0 , 1] is the Fisher sensitivity score of block Bi and ¯ νi is the parameter-weighted mean normalized retained-size fraction across its kernels. For the HLA :
+
+rHLA  
+
+> t
+
+= Rbal + Rsens + Rglobal + Rdyn (11) 9where Rbal = −10 · Var( {Ri}Ni=1 ) penalizes high unweighted heterogeneity in per-block tar-get retained-size fractions; Rsens encourages sensitivity-aware budget allocation: it rewards assigning a conservative target ( Ri > 0.3) to high-sensitivity blocks ( si > 0.7) with a higher weight than the low-sensitivity case, proportional to ( Ri − 0.3) × 10, and independently rewards assigning an aggressive target ( Ri < 0.2) to low-sensitivity blocks ( si < 0.3), proportional to (0 .2−Ri)×5; both cases contribute positively to the total reward signal; Rglobal = −50 ·| ¯R − ¯ν∗|
+
+penalizes deviation of the mean proposed target from the global target retained-size fraction; and Rdyn is a cycle-feedback correction term, defined in terms of the previous-cycle mean retained-size fraction ¯ ν(t−1) and accuracy drop ∆ A(t−1) :
+
+Rdyn =
+
+
+
+−50 ·  ∆A(t−1) − ∆acc 
+
+ if ∆ A(t−1) > ∆acc and ¯R < ¯ν(t−1) 
+
++20 if ∆ A(t−1) > ∆acc and ¯R ≥ ¯ν(t−1) 
+
++20 if ¯ ν(t−1) > ¯ν∗ and ¯R < ¯ν(t−1) 
+
+0 otherwise (12) where ¯R = P −1 P 
+
+> i
+
+PiRi is the parameter-weighted mean proposed target retained-size frac-tion. The first case penalizes proposing yet-more-aggressive targets after accuracy has already exceeded the budget; the second rewards relaxing the target in that case; the third rewards increasing aggressiveness when the previous cycle retained more storage than the target while still respecting the accuracy budget. The reward components operate on compatible empirical scales ( Racc ∈ [0 , 100], Rcomp ∈
+
+[0 , 60), Rbudget ∈ (0 , 20], Psens ∈ [0 , 12), Rstab ≤ 0). Episodes are short (20 LLA steps, 10 HLA steps) and γRL is set near 1. The RL objective at each level is identical in form, but the reward symbol is tier-indexed: rℓt denotes the reward at step t for tier ℓ ∈ { LLA , HLA }, with rLLA 
+
+> t
+
+defined in Eq. (9) and rHLA  
+
+> t
+
+defined in Eq. (11): 
+
+π∗ = arg max  
+
+> π
+
+Eπ
+
+" TX
+
+> t=0
+
+γ t 
+
+> RL
+
+· rℓt
+
+#
+
+(13) Maximizing Eq. (13) is an RL relaxation of the constrained objective in Eq. (2), not a guarantee of the global optimum of the integer compression program. In the LLA, Racc tracks accuracy retention and Rcomp tracks storage reduction, while Rbudget constrains the block to the HLA-assigned target Ri. In the HLA, Rglobal directly penalizes deviation from the global target retained-size fraction ¯ ν∗. This mirrors other combinatorial optimization settings where policy gradients provide a practical search heuristic for large discrete spaces (Bello et al., 2016). The stability reward uses a rolling window from the environment’s internal reward history. In principle this can be made exactly Markovian by augmenting the state with the full reward window; HiReLC instead uses a compact state containing the current normalized reward sig-nal, avoiding additional sample complexity while retaining a stabilizing bias toward smooth decisions (Nath et al., 2021; Hessel et al., 2019). 
+
+3.2. Architecture-Agnostic Layer Abstraction 
+
+Each model is parsed into an ordered list of compressible blocks via a layer abstraction mod-ule. A block Bi is defined as a contiguous group of Ki parametric Linear or Conv2d modules that are logically associated (e.g., the QKV projection, attention output projection, and MLP feed-forward projections in a Transformer encoder layer; or the depthwise and pointwise con-volutions within a bottleneck residual unit). Each kernel is described by a KernelConfig object encoding the four compression decisions of Section 3.1.1. The aggregated block-level configu-ration, referred to as a LayerConfig , maintains per-kernel fields alongside summary statistics (average bitwidth, average keep-ratio, normalized retained-size fraction via Eq. (21), and effec-tive compression ratio via Eq. (22)) that serve as state features for higher-level agents. This 10 abstraction decouples the RL environment from the underlying architecture, ensuring that the same agent interfaces, reward signals, and training procedures apply to any target network. 
+
+3.3. Layer Sensitivity Estimation 
+
+A scalar sensitivity score si ∈ [0 , 1] is computed for each block Bi via empirical Fisher information before RL training. For a mini-batch Ds of ns samples: ˆF (θj ) = 1
+
+ns
+
+X 
+
+> (x, y )∈ D s
+
+∂L(x, y ; θ)
+
+∂θ j
+
+2
+
+(14) where L(x, y ; θ) = CrossEntropy( fθ(x), y ) is the cross-entropy loss evaluated at the model output. The block-level score is the sum over Bi’s parameters, max-normalized: 
+
+si =
+
+X 
+
+> θj∈Bi
+
+ˆF (θj )max 
+
+> i′
+
+X 
+
+> θj∈Bi′
+
+ˆF (θj ) (15) These scores {si} serve two roles: (i) they initialize the LLA observation vectors and enter the sensitivity penalty Psens (Eq. (10)), where a block with high si incurs a larger penalty per unit of compression applied; and (ii) they inform HLA budget allocation via the sensitivity-aware action correction and the Rsens reward term. 
+
+3.4. Hierarchical Agent Architecture 
+
+The framework employs a two-tier hierarchical RL structure, motivated by the distinct temporal and spatial scales of the compression decision process. 
+
+3.4.1. Low-Level Agents (LLA) 
+
+Each block Bi is governed by an Ensemble LLA of na parallel RL policies combining PPO and A2C with gradient norm clipping (Schulman et al., 2017; Mnih et al., 2016). PPO is used for stable clipped policy updates under aggressive compression, while A2C provides fast synchronous actor–critic exploration in the same multi-discrete action space. At configuration extraction, a uniform-weighted vote produces the consensus action: 
+
+a∗ 
+
+> i
+
+= round 
+
+> na
+
+X
+
+> j=1
+
+wj · a(j)
+
+> i
+
+!
+
+, wj = 1 /n a (16) The objective is a robust consensus action obtained by averaging across na agents trained with deliberately heterogeneous reward hyperparameters ( αj , β j , γ j ). By configuring the ensemble with βj values spanning conservative, moderate, and aggressive compression emphases, the weighted vote blends diverse policies and reduces the variance of the final compression decision relative to any single policy. 
+
+Agent Weight Policy. Weights {wj } can be fixed uniformly ( wj = 1 /n a, adopted in our exper-iments), set as tuned hyperparameters, or updated online via a confidence-based rule: 
+
+w(t+1)  
+
+> j
+
+=exp 
+
+
+
+λ · r(t)
+
+> j
+
+
+
+> na
+
+X
+
+> j′=1
+
+exp 
+
+
+
+λ · r(t)
+
+> j′
+
+, (17) 11 Figure 3: Two-tier controller used in HiReLC. The HLA ensemble proposes per-block LayerBudget objects, LLA ensembles search within each budget over per-kernel actions, and the weighted vote emits the final KernelConfig 
+
+> assignments.
+
+where r(t) 
+
+> j
+
+= 1
+
+> H
+
+PHh=1 r(j) 
+
+> t−h+1
+
+is the sliding-window average of the most recent H rewards for agent j and λ > 0 is a temperature parameter. Evaluating this online update rule is left as future work. The consensus action is decoded into ( bi,k , ρ i,k , τ i,k , μ i,k ) for all Ki kernels in block Bi,subject to global type and granularity override parameters. An ablation on DeiT-Small/CIFAR-100 confirms that this mixed PPO/A2C ensemble gives a more favorable first-cycle trade-off than a homogeneous A2C ensemble: [PPO, A2C, PPO] achieves 6.38 × compression with 3.28% accuracy drop, whereas [A2C, A2C, A2C] achieves 6.63 × but with a larger 7.19% drop. 
+
+3.4.2. High-Level Agents (HLA) 
+
+The Ensemble HLA of nh agents (PPO and A2C) with heterogeneous reward weights allocates a LayerBudget Bi per block specifying Ri, ρmax ,i , bmin ,i , σi, pi, and ∆ acc ,i . Numerical budget fields are aggregated by arithmetic mean; the preferred strategy σi is the majority-vote mode of per-agent proposals. For cycles t > 1, HLA environments receive real-world feedback (∆ A(t−1) , ¯ν(t−1) ) and the ensemble is re-trained for a short burst of additional timesteps to adapt the budget allocation policy to observed LLA behavior. The final cycle uses deterministic (greedy) HLA actions. The hierarchy is essential rather than cosmetic: removing the HLA and using uniform budgets leaves the LLA to over-compress, yielding 6.80% accuracy drop at 8.87 × CR on DeiT-Small/CIFAR-100, compared with 1.72% at 6.23 × for the full system. This shows that HLA feedback primarily regulates budget feasibility, while the LLA ensemble performs fine-grained per-kernel search. 12 3.5. Compression Primitives 3.5.1. Structured Pruning 
+
+For kernel k in block Bi, let W denote its weight tensor and let Cout be the number of output channels of that tensor (rows for a linear layer and filters for a convolution). The keep-ratio ρi,k ∈ (0 , 1] specifies the fraction of output channels retained, so the number of retained channels is Kkeep = ⌊ρi,k Cout ⌋. We score each output channel by an ℓ2-norm importance value 
+
+ηj and keep the Kkeep most important channels: 
+
+fWpruned = m ⊙ W, mj = 1[rank ↓(ηj ) ≤ ⌊ ρi,k · Cout ⌋] (18) Here fWpruned is the masked weight tensor, m is a binary channel mask broadcast over the corresponding weights, ⊙ denotes elementwise multiplication, mj ∈ { 0, 1} is the mask value for output channel j, and rank ↓(ηj ) = 1 denotes the channel with the largest importance score. For a convolutional kernel, for example, ηj = ∥Wj, :,:,:∥2; for a linear layer, ηj is the norm of row j. Intuitively, Eq. (18) keeps the channels whose filters/rows have the largest energy and zeros the remaining channels. A keep-ratio of ρi,k = 0 .25 therefore retains approximately the top quarter of output channels in kernel ( i, k ). Masks are re-applied after every gradient step during fine-tuning. In the implementation used for the reported experiments, pruning is represented by fixed masks for stable recovery train-ing; the reported model-size reductions count the retained channels under a packed structured representation. On hardware that does not physically remove masked channels, the same config-uration should be interpreted as a storage-compression result rather than a guaranteed latency speedup. A deployment pass could materialize the selected channel subsets into narrower ten-sors, but measured latency is left outside the present objective. 
+
+3.5.2. Mixed-Precision Quantization 
+
+Pruning is applied first; quantization follows. For τi,k = INT (symmetric), each scalar weight w in the pruned kernel is quantized as: ˜w = clip 
+
+
+
+round 
+
+ wsi,k 
+
+
+
+, q min , q max 
+
+
+
+· si,k ,si,k = max( |fWpruned |)
+
+qmax 
+
+, qmax = 2 bi,k −1 − 1, qmin = −qmax .
+
+(19) Here ˜ w is the de-quantized value used by the compressed model, si,k is the quantization scale for kernel ( i, k ), and [ qmin , q max ] is the signed integer range determined by the bitwidth bi,k .Equation (19) first maps w to the nearest integer grid point by dividing by si,k and rounding, then clips the result to the representable integer range, and finally multiplies by si,k to return to the real-valued weight scale. Lower bitwidths reduce qmax and therefore use a coarser grid, increasing quantization error but reducing storage. The displayed scale is the per-tensor uniform case; per-channel variants apply the same operation independently to each output channel with a channel-specific scale. For τi,k = FLOAT, asymmetric quantization is applied (scale from the full [min , max] range). Granularity μi,k selects among four operationally distinct schemes: per-tensor uniform ( uni-form ); log-domain per-tensor, where weights are log-transformed, uniformly quantized, then exponentiated back with sign restoration ( log ); per-output-channel uniform or asymmetric ( per-channel ); and per-channel sign-magnitude ( learned ), where one explicit bit per output channel stores the sign and the remaining ( bi,k − 1) bits uniformly quantize the absolute magnitude: ˜wj,u = sgn( wj,u ) · clip round |wj,u |
+
+s+
+
+> j
+
+!
+
+, 0, 2bi,k −1 − 1
+
+!
+
+· s+ 
+
+> j
+
+, s+ 
+
+> j
+
+= max u |wj,u |
+
+2bi,k −1 − 1 (20) 13 where j indexes the output channel and u indexes scalar weights within that channel. The normalized retained-size fraction of a compressed kernel is: 
+
+νi,k = bi,k 
+
+b0
+
+· ρi,k (21) where b0 = 32 and νi,k ∈ (0 , 1]. This quantity is an effective parameter-storage fraction: it combines low-bit storage with the retained-channel fraction and does not include hardware-specific indexing overheads, activation memory, or kernel launch effects. Let Pi,k be the FP32 parameter count of kernel ( i, k ), Pi = PKi 
+
+> k=1
+
+Pi,k , and P = PNi=1 Pi. The global compression ratio is: 
+
+R(c) ≡ CR = 1¯ν , ¯ν = 1
+
+P
+
+> N
+
+X
+
+> i=1
+
+Pi ¯νi, ¯νi = 1
+
+PiKiX
+
+> k=1
+
+Pi,k νi,k (22) We report CR as the achieved effective parameter-storage compression ratio. The associated model-size reduction is MSR = 1 − ¯ν = 1 − 1/CR; for example, CR = 4 × corresponds to a 75% model-size reduction. Thus Ri, ¯R, and ¯ ν∗ are retained-size fractions, whereas Rtarget and CR are compression-ratio quantities. 
+
+Post-Compression Fine-Tuning. Fine-tuning is performed directly on the compressed weights 
+
+θ′ produced by C. At each optimizer step, AdamW updates the weights via standard backprop-agation, after which the pruning masks from Eq. (18) are re-applied to every masked weight tensor, preserving the sparsity pattern throughout the recovery phase. A cosine-annealing learning rate schedule and patience-based early stopping are used to prevent overfitting. This in-place refinement lets weights adapt to quantization error without allowing pruned chan-nels to regrow, following the common practice of maintaining fixed masks during post-pruning recovery (Han et al., 2015; Anwar et al., 2017). 
+
+3.6. Surrogate Model and Logit-MSE Proxy Logit-MSE Proxy. When fewer than N min rep samples are available in the replay buffer, the learned surrogate is not yet reliable. In this cold-start regime, the LLA uses the logit-MSE below as a cheap proxy for accuracy degradation inside the accuracy-retention reward term Racc in Eq. (9). Here θ0 denotes the fine-tuned uncompressed baseline used to cache reference logits: MSE logit = 1
+
+|X c|
+
+X
+
+> x∈X c
+
+∥fθ′ (x) − fθ0 (x)∥2 (23) where fθ0 (x) and fθ′ (x) are the output logit vectors of the original and compressed model respectively, and Xc is a cached calibration set of a fixed number of mini-batches from the training loader. A smaller MSE logit indicates that the compressed model preserves the original model’s predictions more closely, so it receives a higher accuracy-retention reward during early LLA search. 
+
+Surrogate Model. Trainers may include a surrogate warm-up phase prior to the first RL cycle: a set of random compression configurations are generated, each is applied to a temporary model copy and fine-tuned for a single epoch, and the resulting ( c, A) pair is added to the replay buffer. The surrogate MLP is then trained on this initial dataset before the first RL cycle begins. Let Brep denote the replay buffer of collected ( c, A) pairs. Let N min rep be the minimum replay-buffer size required to activate the surrogate; in this paper, we set N min rep = 3 so that the surrogate can be used after several cycle-level measurements, while CNN warm-up experiments 14 add larger random pools before cycle 1. Once |B rep | ≥ N min rep , the surrogate replaces the logit-MSE proxy for reward shaping, but every reported final accuracy is still obtained by fine-tuning and evaluating the compressed model. Once |B rep | ≥ N min rep , a lightweight MLP ˆf : R5Ktot → R (ReLU activations, dropout) replaces the logit-MSE proxy. Its input encodes five values per kernel: normalized bitwidth ( bi,k /10), keep-ratio ρi,k , type (0 for INT, 1 for FLOAT), granularity ( {0, 0.33 , 0.67 , 1.0} for {uniform, log, per-channel, learned }), and a joint compression indicator in [0 .5, 1.0] (set to 1 .0 when both pruning and sub-8-bit quantization are active, else 0 .5). Training minimizes: 
+
+Lsurr = 1
+
+|B rep |
+
+X
+
+> (c, a )∈B rep
+
+ ˆf (c) − a
+
+2
+
+(24) against ground-truth post-fine-tuning accuracy values a collected in the replay buffer Brep . The surrogate is re-trained at the end of each cycle as new ( c(t), A(t)) pairs are added. The surrogate/proxy split is crucial for tractability: evaluating every candidate by full post-compression fine-tuning would require hundreds of fine-tuning runs per experiment. In our implementation, random warm-up samples use a single epoch and RL steps use either logit-MSE or the MLP prediction, reducing search cost while reserving full fine-tuning for selected cycle-level configurations. Because the surrogate can be noisy for compact CNNs, we interpret it as a coarse ranking signal and report its MAE separately rather than using it as the final performance estimate. 
+
+3.7. Active Learning Compression Loop 
+
+The full framework is orchestrated through an iterative active learning loop that interleaves RL policy optimization with real model fine-tuning. For each cycle t ∈ { 1, . . . , T }:1. HLA Feedback Update. The HLA environments are updated with the accuracy drop ∆A(t−1) and mean retained-size fraction ¯ ν(t−1) measured in the previous cycle, using ∆A(0) = 0 and ¯ ν(0) = 1 in the first cycle. 2. HLA Policy Adaptation. For t > 1, the HLA agents are re-trained for a short burst of additional timesteps to adapt to observed LLA behavior. 3. Budget Allocation. The HLA ensemble proposes a compression budget B(t) 
+
+> i
+
+for each block via weighted ensemble voting (Eq. (16)). Early cycles use stochastic (exploratory) HLA actions; the final cycle uses deterministic exploitation. 4. LLA Training. Each block’s LLA ensemble is trained (or continues from the previous cycle’s state) under the updated budget constraints. 5. Configuration Extraction. The trained LLA agents output consensus configurations 
+
+{c(t)
+
+> i,k
+
+} via ensemble voting (Eq. (16)). 6. Compression Application. The configurations are applied via C(θ0, c(t)): pruning (Eq. (18)) followed by quantization (Eq. (19)) for every kernel. 7. Fine-Tuning. The compressed model is fine-tuned via AdamW with cosine-annealing LR and patience-based early stopping. Pruning masks are re-applied after every gradient step to preserve the sparsity pattern throughout the recovery phase. 8. Surrogate Update. The pair ( c(t), A(t)) is added to Brep , and the surrogate is re-trained if the activation condition is met. 9. Best Configuration Tracking. If A(t) exceeds the current global best, the configuration and model checkpoint are saved. 15 4. Experiments 
+
+We conduct seven experiments across ViT and CNN architectures on CIFAR-10/100 and Tiny ImageNet. Experiments 1–5 use INT uniform symmetric quantization; Experiments 6– 7 ablate mixed INT/FLOAT with log-scale granularity. The first five experiments cover the default INT setting across transformer and CNN families, while the final two isolate the effect of mixed INT/FLOAT quantization with log-scale granularity. 
+
+Experiment 1: DeiT-Small on CIFAR-100 
+
+We employ the deit small patch16 224 model (Touvron et al., 2021) configured with 48 kernels across 12 blocks. Each block undergoes simultaneous structured pruning and INT quantization. The implementation supports surrogate warm-up through randomly sampled compression configurations; when the replay buffer is below the activation threshold, the LLA instead uses the logit-MSE proxy described in Section 3.6. 
+
+Experiment 2: CLIP ViT-B/32 on CIFAR-100 
+
+vit base patch32 clip 224 (Radford et al., 2021) fine-tuned on CIFAR-100 (48 kernels, 12 blocks). Same surrogate schedule as Experiment 1. This setting tests compressibility of vision-language representations on a single-dataset classification task. 
+
+Experiment 3: CLIP ViT-B/32 on CIFAR-10 
+
+vit base patch32 clip 224 (Radford et al., 2021) fine-tuned on CIFAR-10 (10 classes), with 20 fine-tuning epochs per cycle; the surrogate is disabled and the logit-MSE proxy is used throughout. Baseline accuracy is 89.22%; after one compression cycle the model reaches 93.05%, a gain attributable to compression-as-regularization correcting overfitting in an over-parameterized model. 
+
+Experiment 4: ResNet18 on Tiny ImageNet 
+
+resnet18 (He et al., 2016) on Tiny ImageNet (200 classes, 64 × 64), with 17 kernels across 5 block groups. A 100-sample warm-up pool initializes the surrogate from cycle 1. Heterogeneous residual structure yields a surrogate MAE of 15.20% ( ±2.52%). 
+
+Experiment 5: MobileNetV2 on Tiny ImageNet 
+
+mobilenetv2 100 (Sandler et al., 2018) with 51 kernels across 13 inverted residual blocks; warm-up pool as in Experiment 4. Surrogate MAE of 10.37% ( ±0.46%), reflecting the smoother accuracy–compression landscape of the uniform-width design. The already-compact architec-ture leaves little room for compression without accuracy loss. 
+
+Experiment 6: DeiT-Small on CIFAR-100 – Mixed INT/FLOAT + Log Granularity 
+
+Identical to Experiment 1 but with the LLA free to select INT or FLOAT per kernel and log-scale granularity applied uniformly. Surrogate disabled; logit-MSE proxy used throughout. 
+
+Experiment 7: DeiT-Base on CIFAR-100 – Mixed INT/FLOAT + Log Granularity 
+
+deit base patch16 224 (Touvron et al., 2021) ( ≈ 3× the parameters of DeiT-Small) under the same mixed/log configuration as Experiment 6. 
+
+Reproducibility protocol. For multi-seed reporting, DeiT-Small/CIFAR-100 is evaluated over three independent seeds (42, 123, and 456), with agent-level PPO/A2C initializations offset by ensemble index. Single-run rows in the main tables are retained for direct comparison with the original experiment numbering, while Table 3 reports the corresponding seed-averaged uncertainty. All accuracy drops are computed relative to the uncompressed baseline evaluated under the same fine-tuning and validation protocol. 16 5. Quantitative Results 
+
+Tables 2–4 summarize all seven experiment outcomes. In these tables, CR denotes the achieved effective parameter-storage compression ratio in Eq. (22), and MSR denotes model-size reduction 1 −1/CR. Table 3 provides uncertainty quantification for the DeiT-Small/CIFAR-100 setting.     
+
+> Table 2: HiReLC compression results. Drop is signed top-1 change relative to baseline (+ = loss, −= gain). CR is the achieved effective parameter-storage compression ratio; MSR is model-size reduction, MSR = 1 −1/CR. Experiments 6–7 use mixed INT/FLOAT + log granularity.
+
+Experiment Model Dataset Baseline Final Drop CR / MSR 
+
+1 DeiT-Small CIFAR-100 86.88% 85.16% +1.72% 6.23 × / 83.9% 2 CLIP ViT-B/32 CIFAR-100 57.50% 56.95% +0.55% 6.63 × / 84.9% 3 CLIP ViT-B/32 CIFAR-10 89.22% 93.05% −3.83% 6.64 × / 84.9% 4 ResNet18 Tiny ImageNet 75.16% 70.94% +4.22% 5.99 × / 83.3% 5 MobileNetV2 Tiny ImageNet 76.56% 70.94% +5.62% 6.59 × / 84.8% 6 DeiT-Small CIFAR-100 87.42% 86.25% +1.17% 6.27 × / 84.0% 7 DeiT-Base CIFAR-100 90.70% 88.59% +2.11% 6.72 × / 85.1%  
+
+> Table 3: Multi-seed reproducibility on DeiT-Small/CIFAR-100 over seeds 42, 123, and 456. Values are mean
+> ±standard deviation across independent compression runs; CR denotes achieved effective parameter-storage compression ratio.
+
+Setting Baseline Final Drop CR 
+
+HiReLC 87.86% 85.65% 2.21 ± 0.50% 6.30 ± 0.19 ×
+
+Experiment 1 (DeiT-Small / CIFAR-100): From 86.88%, HiReLC yields 85.16% (a 1.72% drop) at 6.23 × CR and 83.9% MSR, with average global sparsity of 19.18%. Best result in cycle 3; per-cycle drops: 3.52%, 2.34%, 1.72%, 2.81%. Figure 4 summarizes the learned per-block allocation for this experiment. The allocation pattern in Figure 4 supports the quantitative result of Experiment 1: HiReLC does not reach its compression ratio by applying a uniform policy across the transformer. Instead, the controller preserves selected early attention projections and mid-depth MLP com-ponents while shifting more aggressive compression toward later blocks. This behavior is con-sistent with the intended role of sensitivity-aware budgeting: components that appear more fragile retain capacity, whereas more redundant later-block components absorb a larger share of the pruning and lower-bit assignments. 
+
+Experiment 2 (CLIP ViT-B/32 / CIFAR-100): Smallest drop of any experiment: 0.55% at 6.63 × CR. The HLA favors pruning (50%), consistent with substantial structural redundancy in CLIP attention heads. Best result in cycle 2; per-cycle drops: 3.12%, 0.55%, 0.86%, 3.36%. 17 Table 4: Per-experiment surrogate and HLA strategy metrics. Experiments 3, 6, and 7 use the logit-MSE proxy with the surrogate disabled.                                         
+
+> Experiment Kernels Blocks Surr. MAE Dominant HLA Strategy Budget Comp.
+> 148 12 3.57% (cycle 4 only) Auto (75.0%), Pruning (16.7%), Quant (8.3%) 59.8% 248 12 N/A (logit-MSE, all) Pruning (50.0%), Auto (25.0%), Quant (25.0%) 59.2% 417 515.20% ( ±2.52%) Quantization (80.0%), Pruning (20.0%) 60.9% 551 13 10.37% ( ±0.46%) Auto (53.8%), Quant (30.8%), Pruning (15.4%) 62.4% 348 12 N/A (disabled) Quantization (33.33%), Auto (50.00%), Pruning (16.67%) N/A 648 12 N/A (disabled) Auto (66.7%), Pruning (16.7%), Quant (16.7%) 58.3% 748 12 N/A (disabled) Pruning (66.7%), Auto (25.0%), Quant (8.3%) 59.7%
+
+Figure 4: Per-block compression allocation heatmap for Experiment 1: rows are kernel types (QKV, AttnProj, FC1, FC2), columns are transformer blocks, and darker cells indicate higher compression. 
+
+Experiment 3 (CLIP ViT-B/32 / CIFAR-10): Accuracy improves from 89.22% to 93.05% (a 3.83% gain) at 6.64 × CR after a single cycle. The compression-plus-fine-tuning acts as a regularizer, correcting overfitting of the large-capacity CLIP model to the 10-class task. 
+
+Experiment 4 (ResNet18 / Tiny ImageNet): From 75.16%, the final model reaches 70.94% (a 4.22% drop) at 5.99 × CR. Monotonically improving per-cycle drops (11.72%, 5.08%, 4.53%, 4.22%). The HLA selects quantization-centric strategies (80%), reflecting ResNet’s pruning sensitivity. 
+
+Experiment 5 (MobileNetV2 / Tiny ImageNet): From 76.56%, the model reaches 70.94% (a 5.62% drop) at 6.59 × CR. Best in cycle 2. Figure 5 shows the HLA progressively shifting toward pruning in mid-to-late blocks across cycles. 
+
+Experiment 6 (DeiT-Small / CIFAR-100 / Mixed+Log): Achieves 86.25% (a 1.17% drop) at 6.27 × CR, a lower drop than the INT uniform Experiment 1 (1.72%) at a comparable CR, suggesting per-kernel type flexibility aids accuracy recovery. Best in cycle 2; per-cycle drops: 4.77%, 1.17%, 2.58%, 1.48%. 
+
+Experiment 7 (DeiT-Base / CIFAR-100 / Mixed+Log): From a 90.70% baseline, one cycle yields 88.59% (a 2.11% drop) at 6.72 × CR and 85.1% MSR, the highest CR and MSR in this work. The HLA strongly favors pruning (66.7%), consistent with greater structural redundancy in the larger model. 18 (a) Cycle 1 
+
+> (b) Cycle 2
+
+Figure 5: MobileNetV2 Tiny ImageNet HLA budget allocation across four HiReLC cycles (cycles 1–2). The vertically stacked plots improve readability of the per-block allocations and show the policy beginning to shift compression pressure toward mid-to-late inverted residual blocks. 
+
+19 (c) Cycle 3 
+
+> (d) Cycle 4
+
+Figure 5: MobileNetV2 Tiny ImageNet HLA budget allocation across four HiReLC cycles (cycles 3–4, contin-ued). Later cycles show the policy shifting more strongly toward pruning in mid-to-late blocks. 
+
+20 Table 5: Ablation studies on DeiT-Small/CIFAR-100. CR denotes achieved effective parameter-storage com-pression ratio. The HLA ablation uses uniform budgets with the LLA only; the RL-algorithm ablation compares the default mixed ensemble against a homogeneous A2C ensemble in the first cycle.                     
+
+> Ablation Configuration Accuracy Drop CR Observation
+> HLA removal LLA only, uniform budgets 6.80% 8.87 ×Over-compresses and weakens budget control Full HiReLC HLA + LLA ensemble 1.72% 6.23 ×Better accuracy retention and controlled CR RL ensemble [PPO, A2C, PPO] 3.28% 6.38 ×Balanced first-cycle trade-off RL ensemble [A2C, A2C, A2C] 7.19% 6.63 ×More aggressive but less stable
+
+Figure 6: Multi-seed sensitivity ablation on DeiT-Small/CIFAR-100. Fisher-guided sensitivity improves accu-racy retention by 1.30 percentage points over the non-sensitivity setting and reduces run-to-run variability. 
+
+Figure 7: Allocation heterogeneity induced by Fisher sensitivity. Sensitivity guidance increases compression-ratio dispersion across blocks (0.000301 vs. 0.000116), producing more differentiated block-wise budget assign-ments. 
+
+21 Figure 8: Representative LLA training return curve for DeiT-Small. Mean episode reward improves during the controller update phase and then stabilizes, indicating that the ensemble learns higher-reward compression configurations before cycle-level fine-tuning. 
+
+6. Contextual Comparison with Prior Compression Methods 
+
+Table 6 gives a contextual comparison with representative compression methods using the metrics reported in their original publications. It is not a same-dataset leaderboard: most prior work reports ImageNet-1K results, while our main HiReLC experiments use CIFAR-10/100 or Tiny ImageNet, and the reported “compression ratio” may denote FLOPs, latency, storage, or combined pruning+quantization depending on the method. The comparison therefore high-lights scope and trade-offs rather than claiming direct numerical dominance. 
+
+Table 6: Contextual comparison with representative compression methods. ⋆ indicates numbers reported on ImageNet-1K in the cited paper; HiReLC rows are our protocol-dependent results on CIFAR-10/100 or Tiny ImageNet. CR / Speedup is not normalized across papers: it denotes FLOPs, latency, storage, or combined pruning+quantization depending on the method. Accuracy ∆ is absolute top-1 change from each method’s own baseline, with (+) denoting a drop and ( −) denoting a gain.                                                                                            
+
+> Method Model Dataset Joint P+Q CR / Speedup Acc. ∆Baseline Search / Protocol
+> AMC (He et al., 2018) MobileNet-V1 ImageNet ⋆No (prune) 2×FLOPs −0.1% 70.3% RL (DDPG) HAQ (Wang et al., 2019) ResNet-50 ImageNet ⋆No (quant.) 1.4–1 .95 ×Latency ≈0% 76.1% RL (DDPG) HAWQ-V2 (Dong et al., 2020) ResNet-50 ImageNet ⋆No (quant.) 13 ×storage +0.65% 76.1% Hessian trace I-ViT (Li and Gu, 2023) DeiT-S ImageNet ⋆No (quant.) 4×INT8 theoretical −0.27% 79.85% QAT (INT8) DeepCompress-ViT (Ahmed et al., 2025) DeiT-S ImageNet ⋆No (storage + quant.) >14 ×storage <0.5% 79.8% UCT + compres. training
+> HiReLC (ours) DeiT-Small CIFAR-100 Yes 6.23 ×size +1.72% 86.88% Hier. RL, ours HiReLC (ours) CLIP ViT-B/32 CIFAR-10 Yes 6.64 ×size −3.83% 89.22% Hier. RL, ours HiReLC (ours) ResNet18 Tiny ImageNet Yes 5.99 ×size +4.22% 75.16% Hier. RL, ours HiReLC (ours) DeiT-Small CIFAR-100 Yes 6.27 ×size +1.17% 87.42% Hier. RL, ours HiReLC (ours) DeiT-Base CIFAR-100 Yes 6.72 ×size +2.11% 90.70% Hier. RL, ours
+
+22 Table 7: Contextual ImageNet-1K comparison. Prior-method rows reproduce reported ImageNet-1K numbers from the cited papers. HiReLC rows are our data-efficient ImageNet-1K protocol and should be read as protocol-dependent evidence rather than matched re-implementations. Accuracy ∆ follows the convention: (+) denotes a drop and ( −) denotes an improvement relative to the corresponding baseline. CR denotes compression ratio or speedup as reported in each work.                                              
+
+> Method Year Base Acc. ∆(%) CR / Speedup Metric Protocol
+> ResNet-50 / ImageNet-1K
+> AMC He et al. (2018) 2018 76.15 +1.81 2.00 ×FLOPs pruning Original HAQ Wang et al. (2019) 2019 76.15 +0.81 1.4–1.95 ×latency quant. Original HAWQ-V2 Dong et al. (2020) 2020 76.13 +0.37 3.70 ×W2–8 size Original
+> HiReLC (ours) †‡ 2026 74.12 ≈0.00 6.32 ×W3–8 + prune size Subset eval.
+> DeiT-Small / ImageNet-1K
+> I-ViT Li and Gu (2023) 2023 79.85 +0.68 (PTQ)
+> −0.27 (QAT) 4.0 ×INT8 quant. Original
+> HiReLC (ours) †‡ 2026 77.18 +2.17 5.59 ×W3–8 + prune size Subset eval.
+> †
+
+HiReLC uses a data-efficient subset of ImageNet-1K (ResNet-50: 50/1024 shards ≈62k images; DeiT-Small: 100/1024 shards ≈125k images), evaluated on ≈39k validation images.  
+
+> ‡
+
+RL budget is 512 timesteps per LLA agent (3 agents × 12–16 blocks). HiReLC accuracy deltas are measured relative to uncompressed baselines under the same subset protocol; prior baselines are reported using values from their original publications without re-implementation. 
+
+Figure 9: Contextual Pareto view of reported compression ratio versus accuracy drop for HiReLC and represen-tative baselines. Points use each paper’s own metric and evaluation protocol, so the figure summarizes trade-off regions rather than a matched benchmark. 
+
+Contextualizing the comparison: AMC demonstrates that RL can find effective pruning policies for MobileNet-V1, HAQ uses RL for hardware-aware mixed-precision quantization, HAWQ-V2 shows that Hessian trace information can guide aggressive low-bit quantization, and I-ViT provides strong integer-only ViT inference through QAT. These methods are strong within their targeted compression axis, but they do not jointly search structured pruning and quantization. DeepCompress-ViT is closest in motivation for ViTs, but its reported gains 23 emphasize storage-oriented weight coding and quantization rather than a structured channel-selection policy. HiReLC should therefore be interpreted as complementary rather than uniformly superior: it achieves effective parameter-storage CRs of 5.99–6.72 × using one hierarchical RL controller across four distinct model families, with 0.55–5.62% drops in most settings and one CIFAR-10 accuracy gain. The main advantage is the unified search space and controller-level architecture agnosticism; the main caveat is that the absolute numbers are not directly comparable to ImageNet-1K, latency-optimized, or storage-coded baselines without a matched benchmark. When contextual ImageNet-1K comparisons are included, HiReLC uses a data-efficient fine-tuning protocol: ResNet-50 uses 50/1024 training shards (approximately 62k images), DeiT-Small uses 100/1024 shards (approximately 125k images), and evaluation is performed on a fixed validation subset of approximately 39k images. Reported HiReLC drops are always relative to the uncompressed baseline under the same protocol; external baselines are reproduced from their original publications when full retraining is infeasible. 
+
+7. Discussion Framework effectiveness. HiReLC achieves effective parameter-storage CRs of 5.99– 6.72 × with MSRs of 83.3–85.1% across all architectures, with accuracy drops of 0.55–5.62% (excluding the CIFAR-10 gain). The per-cycle improvement in Experiment 1 (3.52% →1.72%) indicates that the active loop can improve configurations across cycles, with a mild cycle-4 regression reflecting RL stochasticity and the well-documented redundancy in transformer attention heads (Michel et al., 2019; Voita et al., 2019). 
+
+CLIP compressibility. CLIP’s contrastive pretraining on 400M image–text pairs (Radford et al., 2021) produces representations with substantial downstream redundancy: Experiment 2 achieves the lowest accuracy drop (0.55%) at 6.63 × CR. Experiment 3’s 3.83% accuracy 
+
+gain further shows that compression-plus-fine-tuning can act as a beneficial regularizer for over-parameterized vision-language models on simple tasks. 
+
+CNNs and surrogate accuracy. CNNs incur larger drops (4.22%, 5.62%) than ViTs despite comparable CRs, reflecting their smaller absolute capacity and the harder Tiny Im-ageNet task. The surrogate is active from cycle 1 in CNN experiments: MAEs of 15.20% (ResNet18) and 10.37% (MobileNetV2) are non-negligible, so these values should be viewed as coarse reward-shaping signals rather than calibrated accuracy predictors. The lower MAE for MobileNetV2 is consistent with its more uniform layer structure and smoother optimization landscape. Larger warm-up pools (200–500 samples) would improve surrogate fidelity in future work. 
+
+Logit-MSE proxy. ViT experiments use the logit-MSE proxy for three of four cycles with competitive results, suggesting it is a useful low-cost quality signal for transformer-scale compression. Its usefulness is consistent with the smoother representation spaces of ViTs, where output logit fidelity can track downstream accuracy well enough for reward shaping. 
+
+Budget compliance and HLA dynamics. Budget compliance of 59.2–62.4% across experiments indicates consistent over-compression by the LLA, especially early in training, which is expected behavior for broadly exploring RL agents. Therefore, the reported CRs should be interpreted as achieved effective size reductions rather than exact target-compliant outcomes. Future work can tighten compliance by penalizing target deviation more strongly or adding a deterministic post-processing constraint. 
+
+Sensitivity guidance. The multi-seed sensitivity ablation in Figures 6–7 shows that Fisher guidance improves accuracy by 1.30 percentage points over a non-sensitivity variant and pro-duces more structured compression allocations. The guided policy shifts compression toward later blocks (B8–11: 8.25 × vs. 6.66 × without sensitivity) while preserving mid-depth blocks (B2–7: 6.46 × vs. 5.97 ×), matching the intended role of si as a block-importance prior. 24 Effect of quantization configuration (Experiments 6–7). The mixed INT/FLOAT + log-scale configuration in Experiment 6 achieves a lower drop (1.17%) than the INT uniform Experiment 1 (1.72%) at a comparable CR, suggesting per-kernel type flexibility aids accuracy recovery. The DeiT-Base result in Experiment 7 (2.11% drop at 6.72 × CR, 85.1% MSR) is the highest-compression result in our study and suggests that larger ViTs may tolerate aggressive joint compression under this configuration. Whether the improvement in Experiment 6 is attributable primarily to the mixed type or log granularity remains to be disentangled in future controlled ablations. 
+
+Extensibility and Design Choices. HiReLC is a modular framework rather than a fixed algorithm, and each component can be replaced or expanded without changing the overall structure. In this work, we report a specific instantiation (PPO/A2C LLAs, Fisher-based sensitivity, logit-MSE or MLP surrogate, and a particular goal/budget formulation). These choices can be swapped or augmented: e.g., alternative sensitivity metrics (Fisher, L1, SNIP, GraSP, Hessian trace), additional agent types or critics, or goal functions prioritizing latency, energy, or memory rather than accuracy alone. Current results also reflect practical training budgets. More cycles, larger warm-up pools, or stricter budget-penalty terms can be applied within the same framework to improve compliance and accuracy. Likewise, the surrogate can be strengthened (e.g., with larger pools or better architectures) without altering the core hierarchical RL design. 
+
+Limitations. HiReLC prioritizes effective parameter-storage reduction and does not yet optimize a measured latency or energy objective, so compression ratios do not necessarily trans-late linearly to wall-clock speedups on all hardware. Reported CRs assume packed structured storage or an equivalent channel-materialization pass and exclude backend-specific sparse index-ing overheads. The surrogate can be noisy for compact CNNs, as seen in the ResNet18 MAE, and the logit-MSE proxy is only an indirect accuracy signal. The current budget-compliance term still permits over-compression in early cycles, and the stability reward is implemented as a compact history-dependent shaping term rather than by explicitly augmenting the state with the full reward window. Finally, the comparison tables are contextual rather than matched leaderboards because some baseline numbers rely on originally reported ImageNet-1K results and full matched retraining of every baseline is computationally prohibitive. 
+
+Broader implications. HiReLC demonstrates that a single unified hierarchical controller can compress diverse architectures, including standard ViTs, vision-language models, and com-pact CNNs, without architecture-specific controller redesign. The key enabling design choices are: (1) separating global budget allocation (HLA) from per-kernel optimization (LLA); (2) en-semble LLA diversity via PPO+A2C; (3) logit-MSE proxy as a low-cost quality signal; and (4) an optional MLP surrogate to amortize expensive evaluations. Achieved effective parameter-storage CRs of ≈ 6× with 0.5–6% accuracy drops across all tested architectures suggest HiReLC as a promising starting point for deployment settings where model size is the primary constraint; hardware-specific latency or energy optimization remains future work. 
+
+8. Conclusion 
+
+We introduced HiReLC, a hierarchical ensemble-RL framework that jointly optimizes struc-tured pruning and mixed-precision quantization through sensitivity-aware guidance and an active learning compression loop. Across diverse architecture families spanning Vision Trans-formers and CNNs, the method achieves effective parameter-storage compression ratios of 5.99– 6.72 × with accuracy changes ranging from a 3.83% gain to a 5.62% drop, while using ensemble agents with heterogeneous reward weights to stabilize the discrete compression search. Future work will explore hardware-in-the-loop objectives, broader backbones, matched re-implementations of representative baselines, and tighter integration of latency and energy mod-els into the reward. The existing framework can also support stricter constraint handling by 25 adding a deterministic post-processing step that relaxes compression on the most sensitive blocks when a cycle exceeds the target accuracy drop. 
+
+References 
+
+Sabbir Ahmed, Abdullah Al Arafat, Deniz Najafi, Akhlak Mahmood, Mamshad Nayeem Rizve, Mohaiminul Al Nahian, Ranyang Zhou, Shaahin Angizi, and Adnan Siraj Rakin. DeepCompress-ViT: Rethinking model compression to enhance efficiency of vision transform-ers at the edge. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 30147–30156, 2025. doi: 10.1109/CVPR52734.2025.02806. Sajid Anwar, Kyuyeon Hwang, and Wonyong Sung. Structured pruning of deep convolutional neural networks. ACM Journal on Emerging Technologies in Computing Systems , 13(3): 32:1–32:18, 2017. doi: 10.1145/3005348. Irwan Bello, Hieu Pham, Quoc V. Le, Mohammad Norouzi, and Samy Bengio. Neural combi-natorial optimization with reinforcement learning. arXiv preprint arXiv:1611.09940 , 2016. Yelysei Bondarenko, Markus Nagel, and Tijmen Blankevoort. Understanding and overcoming the challenges of efficient Transformer quantization. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2021. Zhen Dong, Zhewei Yao, Daiyaan Arfeen, Amir Gholami, Michael W. Mahoney, and Kurt Keutzer. HAWQ-V2: Hessian aware trace-weighted quantization of neural networks. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , volume 33, pages 18518– 18529, 2020. Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is worth 16x16 words: Transformers for image recognition at scale. In Proceedings of the International Conference on Learning Represen-tations (ICLR) , 2021. Steven K. Esser, Jeffrey L. McKinstry, Deepika Bablani, Rathinakumar Appuswamy, and Dhar-mendra S. Modha. Learned step size quantization. In Proceedings of the International Con-ference on Learning Representations (ICLR) , 2020. Trevor Gale, Erich Elsen, and Sara Hooker. The state of sparsity in deep neural networks. 
+
+arXiv preprint arXiv:1902.09574 , 2019. URL https://arxiv.org/abs/1902.09574 .Laura Graesser, Utku Evci, Erich Elsen, and Pablo Samuel Castro. The state of sparse training in deep reinforcement learning. In Proceedings of the International Conference on Machine Learning (ICML) , volume 162 of Proceedings of Machine Learning Research , pages 7766– 7792. PMLR, 2022. Song Han, Jeff Pool, John Tran, and William J. Dally. Learning both weights and connec-tions for efficient neural network. In Advances in Neural Information Processing Systems (NeurIPS) , volume 28, pages 1135–1143, 2015. Song Han, Huizi Mao, and William J. Dally. Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding. In Proceedings of the International Conference on Learning Representations (ICLR) , 2016. ICLR 2016 Best Paper Award. 26 Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2016. Yihui He, Ji Lin, Zhijian Liu, Hanrui Wang, Li-Jia Li, and Song Han. AMC: AutoML for model compression and acceleration on mobile devices. In Proceedings of the European Conference on Computer Vision (ECCV) , 2018. Matteo Hessel, Hado van Hasselt, Joseph Modayil, and David Silver. On inductive biases in deep reinforcement learning. arXiv preprint arXiv:1907.02908 , 2019. Khawar Islam. Recent advances in Vision Transformer: A survey and outlook of recent work. 
+
+arXiv preprint arXiv:2203.01536 , 2022. URL https://arxiv.org/abs/2203.01536 .Zhikai Li and Qingyi Gu. I-ViT: Integer-only quantization for efficient Vision Transformer inference. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2023. Ryan Lowe, Yi Wu, Aviv Tamar, Jean Harb, Pieter Abbeel, and Igor Mordatch. Multi-agent actor-critic for mixed cooperative-competitive environments. In Advances in Neural Infor-mation Processing Systems (NeurIPS) , volume 30, 2017. Yiping Lu, Zhuohan Li, Di He, Zhiqing Sun, Bin Dong, Tao Qin, Liwei Wang, and Tie-Yan Liu. Understanding and improving Transformers from a multi-particle dynamic system per-spective. In NeurIPS 2019 Workshop on Machine Learning and the Physical Sciences , 2019. Paul Michel, Omer Levy, and Graham Neubig. Are sixteen heads really better than one? In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2019. Volodymyr Mnih, Adri` a Puigdom` enech Badia, Mehdi Mirza, Alex Graves, Timothy Lillicrap, Tim Harley, David Silver, and Koray Kavukcuoglu. Asynchronous methods for deep rein-forcement learning. In Proceedings of the International Conference on Machine Learning (ICML) , volume 48 of Proceedings of Machine Learning Research , pages 1928–1937. PMLR, 2016. Somjit Nath, Mayank Baranwal, and Harshad Khadilkar. Revisiting state augmentation meth-ods for reinforcement learning with stochastic delays. In Proceedings of the 30th ACM Inter-national Conference on Information and Knowledge Management (CIKM) , pages 1346–1355, 2021. doi: 10.1145/3459637.3482386. Johan Samir Obando-Ceron, Aaron Courville, and Pablo Samuel Castro. In value-based deep reinforcement learning, a pruned network is a good network. In Proceedings of the Inter-national Conference on Machine Learning (ICML) , volume 235 of Proceedings of Machine Learning Research , pages 38495–38519. PMLR, 2024. Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In Proceedings of the International Conference on Machine Learning (ICML) , 2021. Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. Dy-namicViT: Efficient Vision Transformers with dynamic token sparsification. In Advances in Neural Information Processing Systems (NeurIPS) , 2021. 27 Tabish Rashid, Mikayel Samvelyan, Christian Schroeder de Witt, Gregory Farquhar, Jakob Fo-erster, and Shimon Whiteson. QMIX: Monotonic value function factorisation for deep multi-agent reinforcement learning. In Proceedings of the International Conference on Machine Learning (ICML) , volume 80 of Proceedings of Machine Learning Research , pages 4295–4304. PMLR, 2018. Michael S. Ryoo, AJ Piergiovanni, Anurag Arnab, Mostafa Dehghani, and Anelia Angelova. TokenLearner: What can 8 learned tokens do for images and videos? In Advances in Neural Information Processing Systems (NeurIPS) , 2021. Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, and Liang-Chieh Chen. MobileNetV2: Inverted residuals and linear bottlenecks. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2018. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Richard S. Sutton and Andrew G. Barto. Reinforcement Learning: An Introduction . The MIT Press, second edition, 2018. ISBN 9780262039246. Lucas Theis, Iryna Korshunova, Alykhan Tejani, and Ferenc Husz´ ar. Faster gaze prediction with dense networks and Fisher pruning. arXiv preprint arXiv:1801.05787 , 2018. URL 
+
+https://arxiv.org/abs/1801.05787 .Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco Massa, Alexandre Sablayrolles, and Herv´ e J´ egou. Training data-efficient image transformers & distillation through attention. In 
+
+Proceedings of the International Conference on Machine Learning (ICML) , 2021. Th´ eo Vincent, Tim Faust, Yogesh Tripathi, Jan Peters, and Carlo D’Eramo. Eau de q-network: Adaptive distillation of neural networks in deep reinforcement learning. Reinforcement Learn-ing Journal , 6:1094–1119, 2025. Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov. Analyzing multi-head self-attention: Specialized heads do the heavy lifting, the rest can be pruned. In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL) , 2019. Kuan Wang, Zhijian Liu, Yujun Lin, Ji Lin, and Song Han. HAQ: Hardware-aware automated quantization with mixed precision. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2019. Ziheng Wang, Jeremy Wohlwend, and Tao Lei. Structured pruning of large language models. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2020. 28 A - Proofs and Derivations 
+
+A.1 Reward Component Scale Compatibility 
+
+We verify that the five components of the LLA reward (Eq. 9) operate on compatible empirical scales, so that no single term dominates the signal by construction. 
+
+A.1.1. Accuracy reward Racc ∈ [0 , 100] 
+
+Racc is defined as a piecewise-linear function of the estimated accuracy drop ∆ ˆA ≥ 0: 
+
+Racc (∆ ˆA) = 
+
+
+
+100 ∆ ˆA < 195 − 5(∆ ˆA − 1) 1 ≤ ∆ ˆA < 285 − 10(∆ ˆA − 2) 2 ≤ ∆ ˆA < 3max  0, 70 − 10(∆ ˆA − 3)  ∆ ˆA ≥ 3(.1) Since ∆ ˆA ≥ 0 and the function is non-increasing with a floor at 0, we have Racc ∈ [0 , 100] for all inputs. The function is piecewise-linear and non-increasing: at ∆ ˆA = 1, the reward changes from 100 just below the breakpoint to 95 at the breakpoint, and larger drops are penalized more severely by the subsequent slopes ( −5, −10, −10), matching the asymmetric cost of accuracy degradation in compression tasks. 
+
+A.1.2. Compression reward Rcomp ∈ [0 , 60) From Eq. (21), νi,k = ( bi,k /32) · ρi,k , so ¯ νi ∈ (0 , 1] since bi,k ≤ 32 and ρi,k ∈ (0 , 1]. Therefore: 
+
+Rcomp = 60 · (1 − ¯νi) ∈ [0 , 60) (.2) The upper bound of 60 is approached as ¯ νi → 0 (extreme compression); Rcomp = 0 when ¯νi = 1 (no compression). The maximum is strictly less than 60 since ρi,k > 0 by definition. 
+
+A.1.3. Budget compliance reward Rbudget ∈ (0 , 20] Let ϵi = |¯νi − Ri| ≥ 0 be the deviation from the HLA-assigned target. Then: 
+
+Rbudget = 20 · exp( −10 ϵi) (.3) Since exp( −10 ϵi) ∈ (0 , 1] for ϵi ≥ 0, we have Rbudget ∈ (0 , 20]. The maximum of 20 is attained exactly when ¯ νi = Ri (perfect compliance). The reward decays exponentially: at 
+
+ϵi = 0 .1, Rbudget ≈ 7.36; at ϵi = 0 .3, Rbudget ≈ 1.00, providing a sharp but smooth incentive for budget adherence. 
+
+A.1.4. Sensitivity penalty Psens ∈ [0 , 12) Proved in full in Section A.2 below. 
+
+A.1.5. Stability component Rstab ≤ 0
+
+Rstab = −2 · std( Ht−1), where Ht−1 is the previous LLA reward window and the term is set to 0 when the history is empty. Since standard deviation is non-negative, Rstab ≤ 0 always, with equality when all rewards in the window are identical. It acts as a pure regularizer. 
+
+Scale compatibility summary. The five components span ranges [0 , 100], [0 , 60), (0 , 20], ≤ 0, and [0 , 12). The ensemble weights ( αj , β j , γ j ) further modulate the first three terms and the stability component. No single term is structurally dominant: the maximum attainable total reward is bounded by αj · 100 + βj · 60 + 20, and the maximum penalty is γj · | Rstab | + 12, ensuring meaningful gradient signal across all components throughout training. 29 A.2 Bounds and Monotonicity of the Sensitivity Penalty 
+
+Proposition 1. Psens = 12 · si · (1 − ¯νi) ∈ [0 , 12) for all valid compression configurations, and is jointly monotone increasing in si and in (1 − ¯νi).Proof. By definition (Eq. (15)), si ∈ [0 , 1] as it is max-normalized: 
+
+si = X 
+
+> θj∈Bi
+
+ˆF (θj ) / max 
+
+> i′
+
+X 
+
+> θj∈Bi′
+
+ˆF (θj ),
+
+where ˆF (θj ) ≥ 0 (squared gradients), so si ≥ 0, and the numerator is at most the denominator, so si ≤ 1. From Eq. (21), νi,k = ( bi,k /b 0) · ρi,k with bi,k ≤ b0 = 32 and ρi,k ∈ (0 , 1], giving νi,k ∈ (0 , 1]. Since ¯ νi is an average of such values, ¯ νi ∈ (0 , 1], hence (1 − ¯νi) ∈ [0 , 1). Therefore: 
+
+Psens = 12 · si
+
+|{z} 
+
+> ∈[0 ,1]
+
+· (1 − ¯νi)
+
+| {z }
+
+> ∈[0 ,1)
+
+∈ [0 , 12) ⊂ [0 , 12] (.4) The upper bound of 12 is approached as si → 1 and ¯ νi → 0 (maximally sensitive block under maximal compression), but is never attained since ¯ νi > 0 strictly. Monotonicity follows immediately from the product form: holding ¯ νi fixed, ∂P sens /∂s i =12(1 − ¯νi) ≥ 0; holding si fixed, ∂P sens /∂ (1 − ¯νi) = 12 si ≥ 0. Hence Psens penalizes aggressively compressing sensitive blocks (high si, low ¯ νi) and is zero whenever the block is uncompressed (¯ νi = 1) or sensitivity is zero ( si = 0). 
+
+Remark. The design is intentional: a block with si = 1 .0 compressed to ¯ νi = 0 .1 incurs 
+
+Psens = 12 ×0.9 = 10 .8, nearly nullifying Rbudget ’s maximum of 20 and strongly discouraging the policy from aggressively compressing critical blocks without a commensurate accuracy recovery signal. 
+
+A.3 Compression Ratio: Derivation and Theoretical Bounds A.3.1. Derivation of the global CR from per-kernel decisions. The storage cost of a weight tensor under mixed-precision compression is proportional to the number of bits required. For kernel k in block Bi, with Cout output channels and Pi,k total parameters, the compressed storage relative to FP32 is: 
+
+νi,k = bi,k 
+
+32 · ρi,k (.5) where bi,k /32 captures the bitwidth reduction and ρi,k captures the fraction of channels retained after structured pruning. The accounting assumes a packed structured representation, or an equivalent materialization pass that removes masked channels; it intentionally does not claim hardware latency without backend-specific compilation. Taking the block-level parameter-weighted average over the Ki kernels in block Bi:¯νi = 1
+
+PiKiX
+
+> k=1
+
+Pi,k νi,k = 1
+
+PiKiX
+
+> k=1
+
+Pi,k 
+
+bi,k 
+
+32 · ρi,k , (.6) and the global retained-size fraction, again weighted by FP32 parameter counts: ¯ν = 1
+
+P
+
+> N
+
+X
+
+> i=1
+
+Pi ¯νi = 1
+
+P
+
+> N
+
+X
+
+> i=1
+> Ki
+
+X
+
+> k=1
+
+Pi,k 
+
+bi,k 
+
+32 · ρi,k (.7) The global compression ratio is then CR = 1 /¯ν (Eq. (22)). 30 A.3.2. Theoretical bounds given configured ranges. Let bmin , b max and ρprune min , ρ prune max be the glob-ally configured bitwidth and pruning bounds. The keep-ratio satisfies ρi,k ∈ [1 −ρprune max , 1−ρprune min ](Eq. (7)). Then the per-kernel retained-size fraction is bounded by: 
+
+νmin  
+
+> i,k
+
+= bmin 
+
+32 · (1 − ρprune max ), νmax  
+
+> i,k
+
+= bmax 
+
+32 · (1 − ρprune min ) (.8) Since ¯ ν is an average of νi,k values, it inherits these bounds: ¯ ν ∈ [νmin , ν max ], giving achievable CR range: CR ∈
+
+ 1
+
+νmax , 1
+
+νmin 
+
+
+
+=
+
+ 32 
+
+bmax (1 − ρprune min ), 32 
+
+bmin (1 − ρprune max )
+
+
+
+(.9) 
+
+Instantiation for our experiments. With bmin = 4, bmax = 8, ρprune min = 0, ρprune max = 0 .6: 
+
+νmin = 432 · 0.4 = 0 .05 , νmax = 832 · 1.0 = 0 .25 (.10) CR ∈
+
+ 10.25 , 10.05 
+
+
+
+= [4 ×, 20 ×] (.11) The empirically achieved effective parameter-storage CRs of 5 .99–6 .72 × across all experiments fall well within this theoretical range, showing that the HLA and LLA jointly explore a mean-ingful subspace of the achievable compression frontier rather than saturating either extreme. 
+
+A.3.3. Relationship to the target constraint. The global constraint R(c) ≥ Rtarget (Eq. (3)) is equivalent to ¯ ν ≤ ¯ν∗ = 1 /R target . For the constraint to be feasible, we require ¯ ν∗ ≥ νmin , i.e.: 
+
+Rtarget ≤ 32 
+
+bmin (1 − ρprune max ) (.12) With our settings this gives Rtarget ≤ 20, so the configured target of Rtarget = 4 (¯ ν∗ = 0 .25) is well within the feasible region. 
+
+B - Hyperparameters Range 
+
+> Table .8: Shared hyperparameters across all experiments.
+
+Hyperparameter Value Notes 
+
+LLA ensemble size 3 2 PPO + 1 A2C HLA ensemble size 3LLA / HLA training timesteps 256 per block / per cycle Number of cycles ( Ncycles ) 1–4 Max fine-tuning epochs 15–20 patience = 3 Fine-tuning learning rate 5 × 10 −5 AdamW Batch size 64 Quantization bitwidth range b ∈ { 4, . . . , 8} per kernel Target CR lower bound Rtarget = 4 equivalent retained-size target ¯ ν∗ = 0 .25 Surrogate MLP hidden dims [64 , 32] 6,017–11,393 params CNN warm-up pool size 50–100 samples Experiments 4–5 only 
+
+C - Complete Algorithm 
+
+Algorithm 1 provides a unified formal summary of HiReLC. 31 Algorithm 1: HiReLC: Hierarchical RL Framework for Neural Network Compression 
+
+Input : Pre-trained M(θ); G = (∆ acc , R target , b min , b max , ρ prune min , ρ prune max , N min rep ); quantization type ∈ { mixed , int , float }; strategy 
+
+∈ {∅ , uniform , log , per-channel , learned }; cycles T
+
+Output: Best post-compression fine-tuned parameters θ∗ and configuration c∗
+
+1 // Phase 0: Initialisation 2 Parse M into N blocks {Bi}Ni=1 , each with Ki kernels 
+
+3 Fine-tune → θ0; Abase ← Evaluate( θ0)
+
+4 Compute {si} via Eqs. (14)–(15) 
+
+5 Init surrogate MLP ˆf ; Brep ← ∅ 
+
+6 // Phase 1: Agent Initialisation 7 Init nh HLA agents {πHLA 
+
+h } (PPO/A2C) with heterogeneous weights; pre-train on simulated env 
+
+8 Init na LLA agents {πLLA 
+
+i,j } per block with heterogeneous weights; wj ← 1/n a ∀j
+
+9 // Phase 2: Active Hierarchical Compression Loop 10 c∗ ← ∅ ; A∗ ← 0
+
+11 ∆A(0) ← 0; ¯ν(0) ← 1
+
+12 for t ← 1 to T do 
+
+// HLA: update feedback, optionally re-adapt, allocate budgets 
+
+13 Update HLA states with (∆ A(t−1) , ¯ν(t−1) , t/T )
+
+14 if t > 1 then re-train HLA ensemble for a short burst 
+
+15 for each HLA agent h do 16 if t = T then a h ← arg max πHLA 
+
+h (·| s) (exploit) 
+
+17 else a h ∼ πHLA 
+
+h (·| s) (explore) 
+
+18 end 19 for each block Bi do 20 (Ri, ρ max ,i , b min ,i , p i, ∆acc ,i ) ← 1
+
+nh
+
+P
+
+h DecodeNumerical( ah, i )
+
+21 σi ← mode( {DecodeStrategy( ah, i )}h)
+
+22 if si > 0.7 then adjust ( Ri, ρ max ,i , b min ,i ) one tier lighter 
+
+23 else if si < 0.3 then adjust ( Ri, ρ max ,i , b min ,i ) one tier more aggressive 
+
+24 B(t)
+
+i ← LayerBudget( Ri, ρ max ,i , b min ,i , σ i, s i, ∆acc ,i )
+
+25 end 
+
+// LLA: train agents per block, extract configurations 
+
+26 for each block Bi do 27 Cache zbase ← M (Xc; θ0); store W(0) 
+
+i,k ← Wi,k ∀k
+
+28 for each LLA agent j do 29 for each env step (max 20) do 30 Sample at ∼ πi,j (·| st); decode candidate block configuration ci(at) with ( bi,k , ρ i,k )Kik=1 
+
+31 Set τi,k : forced if quantization type ̸ = mixed ; else agent choice 
+
+32 Set μi,k : forced if strategy set; else agent choice 
+
+33 Apply C: prune (Eq. 18), then quantize (Eq. 19) 
+
+34 if |B rep | ≥ N min rep then 35 Racc ← ϕ(Abase − ˆf (ci(at))) surrogate 
+
+36 else 37 Racc ← ϕ(MSE logit ) Eq. 23 
+
+38 end 39 Compute rLLA 
+
+t (Eq. 9); store transition; restore Wi,k ← W(0) 
+
+i,k 
+
+40 end 41 Update πi,j via PPO or A2C; clip gradient norms 
+
+42 end 43 c(t)
+
+i ← round( P
+
+j wj a∗
+
+i,j ); apply type/granularity overrides ⇒ { bi,k , ρ i,k , τ i,k , μ i,k }Kik=1 (Eq. 16) 
+
+44 end 45 c(t) ← { c(t)
+
+i }Ni=1 
+
+// Apply compression, fine-tune, update surrogate, track best 
+
+46 θ(t) ← C (θ0, c(t)) (Eqs. 18, 19) 
+
+47 Fine-tune θ(t) via AdamW; re-apply masks each step; patience early stopping 
+
+48 A(t) ← Evaluate( θ(t))
+
+49 Brep ← B rep ∪ { (c(t), A(t))}; re-train ˆf if |B rep | ≥ N min rep (Eq. 24) 
+
+50 if A(t) > A∗ then 51 c∗ ← c(t); θ∗ ← θ(t); A∗ ← A (t)
+
+52 end 53 ∆A(t) ← A base − A (t); ¯ν(t) ← P −1 P
+
+i Pi ¯ν(t)
+
+i (Eq. 22) 
+
+54 end 55 return (θ∗, c∗)
+
+32

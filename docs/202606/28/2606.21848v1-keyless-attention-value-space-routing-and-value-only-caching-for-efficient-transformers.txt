@@ -1,0 +1,532 @@
+Title: Keyless Attention: Value-Space Routing and Value-Only Caching for Efficient Transformers
+
+URL Source: https://arxiv.org/pdf/2606.21848v1
+
+Published Time: Tue, 23 Jun 2026 01:27:22 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+A PREPRINT - J UNE 23, 2026 
+
+# KEYLESS ATTENTION : V ALUE -S PACE ROUTING AND 
+
+# VALUE -O NLY CACHING FOR EFFICIENT TRANSFORMERS 
+
+Xin Gao 
+
+Department of Mathematics and Statistics York University Toronto, M3J 1P3 
+
+xingao@yorku.ca 
+
+June 23, 2026 
+
+# ABSTRACT 
+
+We propose Keyless Attention, an attention mechanism that eliminates the key projection entirely, operating over queries and values only. This yields a Value-Only Cache that reduces KV cache memory and access overhead by exactly 50% over standard attention, while matching or exceeding standard attention’s decode throughput. Beyond efficiency, we introduce Depth-m Attention Fac-torization : standard attention computes a depth-2 factorization of the attention bilinear form, while Keyless Attention realizes a depth-m instance of this family. At m “ 3, Keyless Attention matches the projection matrix count of standard attention via a value-space routing matrix that replaces the key projection and introduces a coupling between routing and retrieval. Experiments across five models and four architectures (GPT-2 280M, GPT-2 557M, Pythia 410M, Qwen2 1.5B, and Llama 3.2 1B) show that Keyless Attention matches or outperforms standard QKV attention on perplexity in 4 out of 5 models. On downstream zero-shot evaluation (GPT-2 557M), Keyless Attention outperforms on 4 out of 5 commonsense reasoning benchmarks, while achieving 50% KV cache reduction throughout. 
+
+# 1 Introduction 
+
+Transformer architectures have become the foundation of modern natural language processing, driven by the success of the scaled dot-product attention mechanism introduced in “Attention Is All You Need” (Vaswani et al., 2017). The standard formulation—based on query (Q), key (K), and value (V) projections—enables flexible, content-based interactions across tokens and layers, allowing models to capture long-range dependencies and complex contextual relationships. As models scale in depth, width, and context length, a substantial body of work has emerged to improve the efficiency and scalability of this mechanism. A major line of research focuses on mitigating the quadratic complexity of attention with respect to sequence length. Sparse attention methods, such as Sparse Transformers (Child et al., 2019) and Longformer (Beltagy et al., 2020), introduce structured sparsity patterns to reduce pairwise interactions. In parallel, linear attention approaches—including Linear Transformers (Katharopoulos et al., 2020) and Performer (Choromanski et al., 2021)—replace softmax attention with kernel-based formulations to achieve linear scaling. Low-rank approximations such as Linformer (Wang et al., 2020) further reduce computational and memory costs by projecting attention matrices into lower-dimensional spaces. While these methods improve training-time efficiency, they often rely on approximations or impose structural constraints on attention, which can adversely affect performance on tasks requiring fine-grained token-level reasoning. Moreover, they do not directly address the dominant bottleneck in autoregressive inference: the key–value (KV) cache. In autoregressive generation, KV caching is widely adopted to avoid recomputing attention over past tokens (Vaswani et al., 2017; Shazeer, 2019; Chowdhery et al., 2022; Pope et al., 2023; Kwon et al., 2023). By storing previously computed key and value tensors, decoding complexity is reduced from quadratic to linear per token. However, this optimization introduces a new challenge: memory usage grows linearly with sequence length and batch size, scaling proportionally with the number of layers and attention heads. In large-scale models deployed with long context windows, 1
+
+> arXiv:2606.21848v1 [cs.CL] 20 Jun 2026
+
+A PREPRINT - J UNE 23, 2026 the KV cache can exceed the size of model parameters, becoming the primary constraint for long-context inference. Architectural approaches such as Multi-Query Attention (MQA) (Shazeer, 2019) and Grouped-Query Attention (GQA) (Ainslie et al., 2023) reduce redundancy across attention heads by sharing key and value projections. Multi-Head Latent Attention (MLA) (DeepSeek-AI, 2024) takes a more aggressive approach by compressing keys and values into a low-dimensional latent vector before caching, achieving substantially greater memory reduction while maintaining competitive model quality. Recent system-level work has highlighted that KV cache management—rather than attention computation itself—is now a critical bottleneck in real-world deployments. For example, PagedAttention (Kwon et al., 2023) introduces a virtual memory abstraction for KV storage, improving memory utilization and throughput. Subsequent work such as vAttention (Prabhu et al., 2024) further explores dynamic physical memory allocation to reduce kernel overhead, while Zipage (Liao et al., 2026) introduces compression-aware scheduling to increase request concurrency. While these approaches significantly improve system efficiency, they do not reduce the intrinsic size of the KV cache. Beyond system-level improvements, recent research has explored algorithmic approaches to reduce KV cache memory. Quantization methods such as TurboAttention (Kang et al., 2024) combine KV cache quantization with attention approximation to improve both memory efficiency and computational throughput. However, aggressive compression may introduce numerical instability or degrade performance. Several works observe that not all tokens contribute equally to future predictions. Token pruning methods (Wen et al., 2025; Xu et al., 2025) and learned policies such as KV Admission (Huang et al., 2026) aim to selectively retain important tokens in the cache. These methods reduce memory usage but introduce additional complexity and may risk discarding useful long-range dependencies. More recent work such as RazorAttention (Tang et al., 2024) further exploits head-level specialization to reduce KV storage. While effective, these methods still maintain per-token KV representations across all layers. Slim Attention (Graef and Wasielewski, 2025) is proposed to reduce KV cache by 50% by computing the value representations from the cached keys using a learned projection V “ KW KV , without changing the attention formulation. However, the recovery of K or V introduces an Opnd d kq computational overhead that increases with the sequence length n, thereby offsetting the memory savings. Despite substantial progress, existing solutions share a common limitation: they treat the KV cache as an artifact to be optimized rather than questioning its necessity. Compression, pruning, and system-level management all operate “post hoc” on the cache, while structural methods primarily reduce redundancy across heads or layers. As a result, the KV cache continues to impose significant memory overhead in long-context scenarios. This suggests that the standard QKV formulation may be inherently inefficient in how it represents historical context, motivating a reconsideration of the attention mechanism itself. These observations motivate a fundamental question: Can we redesign the attention mechanism to reduce KV cache requirements at the source? In this work, we propose a novel attention mechanism that computes the attention score between queries and values directly and completely removes the construction of keys. Our approach reduces KV cache memory to Value-only cache memory without sacrificing model expressivity and remains compatible with standard transformer training. We evaluate our method on language modeling and downstream reasoning benchmarks, demonstrating competitive performance with significantly reduced memory usage during inference. Our contributions are summarized as follows: 1. Keyless Attention with Value-Only Cache. We propose a novel attention mechanism that computes attention scores directly between queries and values, eliminating the key projection entirely. For autoregressive inference, this yields a Value-Only Cache that reduces KV cache memory and access overhead by exactly 50% over standard attention, without approximation, quantization, or pruning. 2. Value-Space Routing and Depth-m Attention Factorization. We introduce a value-space routing matrix that replaces the key projection, and frame it within a general Depth-m Attention Factorization : standard attention computes a depth-2 factorization of the attention bilinear form, while Keyless Attention realizes a depth-m instance of this family. We instantiate m “ 3 (QVV), matching the projection matrix count of standard attention, and find empirically that this new architecture matches or exceeds standard attention’s performance (Section 5). 3. Empirical Validation. We validate Keyless Attention across five models and four architectures (GPT2 280M, GPT2 557M, Pythia 410M, Qwen2 1.5B, and Llama 3.2 1B), demonstrating that it matches or outperforms standard QKV attention on perplexity in 4 out of 5 models, and outperforms on 4 out of 5 downstream benchmarks. 2A PREPRINT - J UNE 23, 2026 
+
+# 2 Method 
+
+2.1 Attention Rewriting 
+
+Let X P Rnˆd denote the input sequence of n tokens with hidden dimension d. Standard scaled dot-product attention (Vaswani et al., 2017) computes: Attn pXq “ softmax 
+
+ˆ QK J
+
+?dk
+
+˙
+
+V, (1) where Q “ XW Q, K “ XW K , V “ XW V , with projection matrices W Q, W K and W V P Rdˆdk , and dk “ d{Nh
+
+is the per-head dimension with Nh attention heads. The key projection W K serves a dedicated routing role: it maps each token’s hidden state into a key space that is queried by W Q to determine attention weights, independently of what is ultimately retrieved via W V .The motivation for Keyless Attention draws from a cognitive analogy: when generating language, human intelligence retrieves relevant context from memory using a single query against a single store of past representations, rather than maintaining separate routing and retrieval copies of the same sequence. In contrast, standard QKV attention with KV cache stores two separate representations of each past token, the key cache for routing and the value cache for retrieval, suggesting inherent redundancy in the conventional design. We note that the role of the key matrix in standard attention is to facilitate the computation of attention scores: softmax p QK J
+
+?dk
+
+q “ softmax p XW QpW K qJXJ
+
+?dk
+
+q.
+
+Let Ω “ W QpW K qJ, and the matrix XΩXJ can be viewed as an asymmetric bilinear-form-induced similarity matrix between token representations. This raises a natural question: can the same Ω be achieved without a dedicated key projection, by routing through the value space instead? This motivates Keyless Attention: 
+
+Attention pQ, V q “ softmax 
+
+ˆ QV J
+
+?dk
+
+˙
+
+V. (2) 
+
+2.2 Theoretical Equivalence of Keyless and Standard Attention 
+
+In this section, we investigate the relationship between Keyless Attention and standard QKV attention in terms of their expressive power. Specifically, we ask whether a standard attention layer parameterized by pW Q, W K , W V q can be represented by a Keyless Attention layer with parameters p ˜W Q, W V q such that the resulting attention logits are identical for all inputs. We show that the answer is affirmative under a subspace condition on the attention score matrix, which we characterize precisely in the theorems below. We first recall the attention score matrices for both mechanisms. In standard attention, the unnormalized attention logit matrix for a sequence of n tokens is: 
+
+S “ XW QpXW K qJ “ XW QpW K qJXJ. (3) In Keyless Attention, the key projection is eliminated and W Q is replaced by a different projection matrix ˜W Q P Rdˆdk ,giving attention logits: 
+
+˜S “ X ˜W QpXW V qJ “ X ˜W QpW V qJXJ. (4) The following theorem shows that the defining matrix Ω “ W QpW K qJ of standard attention can always be matched by ˜W QpW V qJ in Keyless Attention, which implies S “ ˜S for any input X.
+
+Theorem 1 (Single-Head Equivalence, Nh “ 1). Let W Q, W K P Rdˆd and let W V P Rdˆd be square with full rank 
+
+d. Then there exists a unique ˜W Q P Rdˆd such that: 
+
+˜W QpW V qJ “ W QpW K qJ, (5) 
+
+given explicitly by: 
+
+˜W Q “ W QpW K qJpW V q´J , (6) 
+
+where pW V q´J “ `pW V qJ˘´1 P Rdˆd.
+
+3A PREPRINT - J UNE 23, 2026 
+
+Theorem 2 (Multi-Head Equivalence, Nh ě 1). Let Nh ě 1, dk “ d{Nh, and for each head h P t 1, . . . , N hu, let 
+
+W Qh , W Kh , W Vh P Rdˆdk with W Vh of full column rank dk. Suppose the existence condition holds for each head h:
+
+Ωh “ W Qh pW Kh qJ, col `ΩJ
+
+> h
+
+˘ Ď col pW Vh q. (7) 
+
+Then for each head h independently, there exists ˜W Qh P Rdˆdk satisfying: 
+
+˜W Qh pW Vh qJ “ W Qh pW Kh qJ. (8) 
+
+Corollary 3 (Keyless Attention is Universally Expressive) . Under the conditions of Theorem 2, for any standard multi-head attention layer parametrized by tW Qh , W Kh , W Vh uNh
+
+> h“1
+
+, there exists a Keyless Attention layer parametrized by t ˜W Qh , W Vh uNh 
+
+> h“1
+
+that produces identical attention logits for all inputs X P Rnˆd. The key projections tW Kh uNh
+
+> h“1
+
+are therefore redundant: their role is fully absorbed by the query projections t ˜W Qh uNh
+
+> h“1
+
+, enabling the key cache to be eliminated at inference time without loss of expressive power. 
+
+We emphasize that Keyless Attention is a well-defined attention mechanism in its own right, independent of its theoretical relationship to standard attention. Its validity does not depend on the existence condition required for the equivalence theorems. The equivalence results characterize a regime in which the two mechanisms share the same expressive capacity under mild conditions, providing theoretical grounding for our empirical comparison. Empirically, Section 5 shows that Keyless Attention achieves comparable predictive performance across five models and four architectures. 
+
+2.3 Depth-m Attention Factorization 
+
+For the keyless attention mechanism, we propose different ways of constructing the query and value representations. The weight matrices associated with queries and values affect the parametrization of Ω.
+
+QVV(2) method Let W Q and W V be two learnable matrices. Then Q “ XW Q, V “ XW V and Ω “ W QpW V qJ.
+
+Compared to QKV method, it has one less weight matrix. 
+
+QVV(3) method Let W Q1 , and W Q2 , and W V be three learnable matrices. Then W Q “ W Q1 W Q2 , Q “ XW Q “
+
+XW Q1 W Q2 , V “ XW V , and Ω “ W Q1 W Q2 pW V qJ. Compared to QKV method, it has same number of projection matrices and same number of parameters. The input embedding X is projected twice via W Q1 and W Q2 to obtain the query. We refer to W Q2 as the value-routing projection , as it adapts the query representation to be compatible with the value space. In training, W Q1 and W Q2 are learned as two separate weight matrices. At inference time, we precompute the composed matrix ˜W Q “ W Q1 W Q2 , which serves as the effective query projection against W V . We eliminate the construction and storage of the keys. Thus in inference step, QVV(3) method requires less compute and memory. 
+
+QVV(m) method Let W Q1 , . . . W Qm1 , W V1 , . . . , W Vm2 be m “ m1 ` m2 learnable matrices, with m ě 2 being an integer. Then W Q “ W Q1 . . . W Qm1 , W V “ W V1 . . . W Vm2 , and Q “ XW Q, and V “ XW V . Thus, Ω has a depth-m factorization W Q1 . . . W Qm1 pW Vm2 qJ . . . pW V1 qJ.
+
+For all these different QVV methods, the output is generated via Equation (2). Moreover, during inference, W Q and 
+
+W V can be pre-multiplied, so the increased factorization depth incurs no additional compute. We refer to this family of mechanisms collectively as Keyless Attention .This reveals a previously unexplored axis of attention design: factorization depth m. Prior work can be understood as implicitly fixing m, with Luong et al. (2015) corresponding to m “ 1 and Vaswani et al. (2017) to m “ 2, while our framework treats m as an explicit, tunable hyperparameter. We explore m “ 3 (QVV) in this work and find it matches or exceeds the perplexity and downstream performance of standard depth-2 attention (Section 5), while halving KV cache memory. 
+
+2.4 Value-Space Routing 
+
+The central architectural distinction of Keyless Attention is that routing operates in value space rather than in an independent key space. In standard attention, the routing score between positions i and j is: 
+
+sQKV  
+
+> ij
+
+“ pxiW Qqp xj W K qJ
+
+?dk
+
+, (9) 4A PREPRINT - J UNE 23, 2026 a bilinear form between two independently parametrized projections. The key space carries no direct semantic obligation, it need only produce vectors that correlate with queries in a way that is useful for routing, independently of what is ultimately retrieved. In Keyless Attention QVV(3), the routing score is: 
+
+sKL  
+
+> ij
+
+“ pxiW Q1 W Q2 qp xj W V qJ
+
+?dk
+
+, (10) where xj W V is the same representation that will be aggregated in the output. This coupling between routing and retrieval imposes a meaningful inductive bias: the model learns to attend to tokens whose value content is directly relevant to the query, rather than tokens that match in an auxiliary key space. We argue this constitutes a more semantically grounded routing signal. The composition W Q1 W Q2 P Rdˆdk acts as a rank-constrained routing matrix with rank pW Q1 W Q2 q ď dk, constrain-ing the attention distribution to a lower-dimensional manifold. The role of W Q2 is to learn a value-space-compatible remapping of the query within the dk-dimensional subspace, aligning the routing signal directly with what is retrieved. 
+
+2.5 Gradient Entanglement in Value-Space Routing 
+
+A key consequence of value-space routing is gradient entanglement between W Q2 and W V . Let S “ QV J{?dk
+
+denote the pre-softmax attention score matrix, where Q “ XW Q1 W Q2 and V “ XW V . By the chain rule, the gradient of the loss L with respect to W Q2 is: 
+
+∇W Q2 L “ 1
+
+?dk
+
+`XW Q1
+
+˘J ¨ BL
+
+BS ¨ V, (11) where V “ XW V appears explicitly. Symmetrically, the gradient with respect to W V is: 
+
+∇W V L “ 1
+
+?dk
+
+XJ ¨ BL
+
+BS
+
+> J
+
+¨ Q ` XJ ¨ BL
+
+BV , (12) where Q “ XW Q1 W Q2 appears in the first term. The two matrices are therefore mutually coupled throughout training: 
+
+∇W Q2 L depends on W V through V , and ∇W V L depends on W Q2 through Q. Each gradient step for one matrix changes the effective target for the other. In contrast, the gradient of W K in standard attention is: 
+
+∇W K L “ 1
+
+?dk
+
+XJ ¨ p BL
+
+BS qJ ¨ Q, (13) where Q “ XW Q but W V does not appear. The routing matrix W K and the retrieval matrix W V evolve independently — their gradients are fully decoupled. This allows W K to specialize rapidly to corpus-specific routing patterns, beneficial for optimization speed but a potential liability for generalization. The resulting optimization dynamics couple routing and retrieval, preventing the routing parameters from evolving independently of the value representations. We hypothesize that this coupling acts as an implicit regularizer by reducing the capacity of the routing mechanism to specialize to corpus-specific co-occurrence patterns. This interpretation is consistent with the reduced overfitting observed in our experiments. 
+
+2.6 Keyless Cross-Attention and Multimodal Attention 
+
+Cross-attention extends self-attention by allowing one sequence to attend to another. This mechanism is central to encoder–decoder architectures and multimodal models. Let Xpaq P RNaˆd and Xpbq P RNbˆd denote two input sequences. The proposed keyless attention can be generalized to cross-attention in encoder-decoder and multi-modal models: CrossAttn pXpaq, X pbqq“softmax 
+
+ˆ pXpaqW Qqp XpbqW V qJ
+
+?dk
+
+˙
+
+pXpbqW V q, (14) where Ω “ W QpW V qJ contains m learnable weight matrices. 5A PREPRINT - J UNE 23, 2026 
+
+# 3 Value-only Cache in Autoregressive Inference 
+
+Transformer-based autoregressive language models employ a Key-Value (KV) cache during inference (Pope et al., 2023; Kwon et al., 2023). The cache grows linearly with sequence length and is maintained per attention layer, making memory consumption a critical bottleneck in long-context and large-scale deployments . To reduce the KV cache memory requirement, we propose to only store value representations from previous steps. At step n ` 1, let the new query be denoted as qn`1 and the new value be denoted as vn`1. The matrix V includes value representations cached from previous steps and obtained from current step. The ith row of V matrix is vi, i “ 1, . . . n ` 1. Then the output embedding is computed using the keyless attention computation as follows: 
+
+On`1 “ Attention pqn`1, V q “ 
+
+> n`1
+
+ÿ
+
+> i“1
+
+αn`1,i vi,
+
+where 
+
+αn`1,i “ exp t λăqn`1,v ią?dk
+
+u
+
+řn`1 
+
+> i1“1
+
+exp t λăqn`1,v i1 ą?dk
+
+u ,
+
+and ă . ą denotes the dot product between two vectors. The proposed method introduces a Value-Only Cache that eliminates the need to construct and store key representations. Compared to conventional KV caching, this reduces both memory footprint and memory access overhead by 50%. Furthermore, the Value-Only Cache is orthogonal to existing KV cache reduction methods such as Multi-Query Attention (Shazeer, 2019), Grouped-Query Attention (Ainslie et al., 2023), and Multi-Head Latent Attention (DeepSeek-AI, 2024), and can be combined with them to achieve further memory reduction. 
+
+Multi-Head Keyless Attention (MHA) with Value-only Cache: For each head h, we construct Qh “ XW Qh , and 
+
+Vh “ XW Vh . The attention output from head h is 
+
+Attn h pQh, V hq “ softmax 
+
+ˆ QhV J
+
+> h
+
+?dk
+
+˙
+
+Vh,
+
+and the outputs from all the heads are concatenated to form the overall output states. Each head stores its own Vh for Value-only cache. 
+
+Multi-Query Keyless Attention (MQA) with Value-only Cache: Each head has separate Qh “ XW Qh and all heads share the same V “ XW V . For each head, Attn h pQh, V q “ softmax 
+
+´ QhV J
+
+> ?dk
+
+¯
+
+V is computed and concatenated. All heads share the same Value-only cache V. 
+
+Grouped Query Keyless Attention (GQA) with Value-only Cache: We use G Value groups, where 1 ă G ă H. 
+
+Each head has separate Qh “ XW Qh and all the heads in the same group share the same Vg “ XW Vg . Each head computes Attn h pQh, V g q “ softmax 
+
+´ QhV J
+
+> g
+> ?dk
+
+¯
+
+Vg . All heads in the same group share the same Value-only cache Vg .
+
+Multihead with Latent Value-only Cache: We can introduce a low-rank bottleneck into the value factorization of Ω. Let Qh “ XW Q1 
+
+> h
+
+¨ ¨ ¨ W Qm1 
+
+> h
+
+and Vh “ XW V1 
+
+> h
+
+¨ ¨ ¨ W Vm2 
+
+> h
+
+, where a bottleneck of column dimension r ! dk is introduced at position i in the value chain, compressing and then expanding the representation through an r-dimensional subspace. Let W Vh, pre “ W V1 
+
+> h
+
+¨ ¨ ¨ W Vi 
+
+> h
+
+denote the compression path and W Vh, post “ W Vi`1 
+
+> h
+
+¨ ¨ ¨ W Vm2 
+
+> h
+
+denote the expansion path. The latent cache representation is V ˚ “ XW Vh, pre and the absorbed query is Q˚ 
+
+> h
+
+“ QhpW Vh, post qJ.For each head, the output is: 
+
+softmax 
+
+ˆ Q˚
+
+> h
+
+pV ˚qJ
+
+?r
+
+˙
+
+V ˚W Vh, post . (15) Only V ˚ needs to be stored in the cache, reducing memory from Opnd kq to Opnr q per head. The compression and expansion paths can each independently be head-specific, group-specific, or shared across all heads, and the bottleneck position i is a tunable hyperparameter. A simple special case is m2 “ 2, i “ 1.6A PREPRINT - J UNE 23, 2026 
+
+# 4 Experimental Setup 
+
+In our experiments, we focus on the depth-3 variant QVV(3), which matches the projection matrix count of standard QKV attention, and evaluate it across five models and four architectures. For the primary comparison, we train GPT-2 style (Radford et al., 2019) 12-layer (280M) and 36-layer (557M) decoder-only Transformers on WikiText-103 (Merity et al., 2017), using a 30M-token subset due to GPU memory constraints. To assess cross-architecture generalisation, we additionally evaluate on Pythia 410M (Biderman et al., 2023), Qwen2 1.5B (Yang et al., 2024), and Llama 3.2 1B (AI at Meta, 2024), covering three positional encoding schemes (learned absolute, partial RoPE, full RoPE), two residual designs (sequential, parallel), and two attention grouping strategies (MHA, GQA). Full architecture and implementation details are given in Appendix B. All models are implemented via Hugging Face Transformers (Wolf et al., 2020) and trained from scratch with AdamW (Loshchilov and Hutter, 2019) ( η “ 10 ´4, weight decay “ 0.01 ), differing only in the attention mechanism. GPT-2 models use a linear learning rate schedule with 5% warmup; Pythia 410M, Qwen2 1.5B, and Llama 3.2 1B use cosine decay with 5% linear warmup. GPT-2 experiments report means and standard deviations over three random seeds. All experiments are conducted on a single NVIDIA A100-SXM4-80GB GPU. We additionally evaluate zero-shot commonsense reasoning on five benchmarks using the 36-layer GPT-2 model: Hel-laSwag (Zellers et al., 2019), ARC-Challenge (Clark et al., 2018), StoryCloze (Mostafazadeh et al., 2016), SciQ (Welbl et al., 2017), and BoolQ (Clark et al., 2019). All training conditions, hyperparameters, and preprocessing pipelines are held identical across models; the attention mechanism is the sole variable. The goal is to isolate the effect of Keyless Attention relative to the standard baseline, not to achieve state-of-the-art performance. 
+
+# 5 Results 
+
+5.1 Training Dynamics and Validation Performance 
+
+Figure 1 and Table 1 summarize training dynamics and validation performance across depths of the GPT-2 architecture. Both methods exhibit similar optimization behavior with low variance across seeds, but differ in overfitting and generalization as depth increases. In the 12-layer setting, QKV achieves a slightly lower best validation loss (3.5180 vs. 3.5216) and perplexity (33.71 vs. 33.84), differences that are minimal relative to metric scale. QVV(3) is more robust in later epochs, with a smaller overfitting gap (+0.0519 vs. +0.0778) and lower final validation loss. In the 36-layer setting, QVV(3) outperforms QKV across all metrics: lower best validation loss (3.5044 vs. 3.5116), lower perplexity (33.26 vs. 33.50), and substantially reduced overfitting (+0.6866 vs. +0.8404). This indicates that QVV(3) scales more favourably with depth, mitigating the overfitting commonly observed in deeper Transformers trained on limited data. A consistent pattern across both depths is that QVV(3) matches standard attention at peak performance while showing meaningfully better robustness thereafter, suggesting preserved expressivity with improved training stability.                                                         
+
+> Depth Method Best Val Loss ÓBest PPL ÓEpoch Final Loss Ó∆Overfit 12-layer QKV 3.5180 ˘0.0005 33.71 ˘0.02 63.5958 ˘0.0015 +0.0778 QVV(3) 3.5216 ˘0.0083 33.84 ˘0.28 63.5734 ˘0.0101 +0.0519
+> 36-layer QKV 3.5116 ˘0.0007 33.50 ˘0.03 44.3520 ˘0.0154 +0.8404 QVV(3) 3.5044 ˘0.0053 33.26 ˘0.18 44.1910 ˘0.0148 +0.6866
+
+Table 1: QKV vs. QVV(3) across GPT-2 model depths (mean ˘ std, three seeds). ∆Overfit: increase in validation loss from the best epoch to the final epoch. 
+
+5.2 Downstream Task Performance 
+
+Table 2 reports zero-shot accuracy on five benchmarks using the 36-layer GPT-2 model. QVV(3) matches or outperforms QKV on four of five tasks, with notable gains on HellaSwag ( `0.9 points) and StoryCloze ( `1.9 points). Performance is comparable on BoolQ and ARC-Challenge. QVV(3) underperforms on SciQ by approximately 2–3 points, suggesting a modest trade-off on factual recall tasks. In all cases, QVV(3) achieves these results while reducing KV cache memory by 50% , confirming that explicit key representations are not necessary for competitive downstream performance. 7A PREPRINT - J UNE 23, 2026 
+
+Figure 1: Training dynamics of QKV and QVV(3) across GPT-2 model depths. Top row: 12-layer (280M parameters); bottom row: 36-layer (557M parameters). Left: training loss; right: validation perplexity. Curves are means over three seeds; shaded regions indicate one standard deviation.                                             
+
+> Dataset QKV Acc QVV(3) Acc KV Cache (MB) QVV(3) Cache (MB) HellaSwag 0.2460 ˘0.0019 0.2550 ˘0.0007 5.569 2.784 ARC-Challenge 0.2352 ˘0.0043 0.2355 ˘0.0063 12.881 6.441 BoolQ 0.6190 ˘0.0030 0.6226 ˘0.0002 50.288 25.144 SciQ 0.3563 ˘0.0033 0.3300 ˘0.0043 5.737 2.869 StoryCloze 0.5398 ˘0.0059 0.5584 ˘0.0039 11.869 5.934
+
+Table 2: Zero-shot accuracy (mean ˘ std, three seeds) and KV cache memory for the GPT-2 36-layer (557M) model. QVV(3) matches or improves QKV on 4 of 5 benchmarks while reducing cache memory by 50%. 
+
+5.3 Ablation: Factorization Depth m
+
+Figure 2 compares QVV(2), QVV(3), QVV(4), QVV(4ReLU), QKV(2), and QKV(3) on the 12-layer GPT-2 model. QKV(2) refers to the standard attention, whereas QKV(3) refers to the standard attention method with one extra projection matrix for the query representations. QVV(4ReLU) performs worst, confirming that a nonlinear ReLU insertion disrupts the implicit regularization of the linear factorization. QVV(2) achieves slightly worse validation loss than the QKV(2) baseline, while QVV(3) and QVV(4) match QKV(2) and QKV(3) at best validation loss. After the best epoch, QKV(2) and QKV(3) exhibit more pronounced overfitting than QVV(3) and QVV(4), consistent with the gradient entanglement regularization described in Section 2.5. Since QVV(3) and QVV(4) perform comparably while QVV(4) requires one additional weight matrix, QVV(3) offers the best efficiency–performance trade-off for this dataset. As m increases, both QVV and QKV yield lower validation loss with diminishing marginal gains; we recommend treating m as a tunable hyperparameter. 
+
+Figure 2: Validation loss comparison of QVV and QKV variants across factorization depths m (12-layer GPT-2 model, WikiText-103). 8A PREPRINT - J UNE 23, 2026 
+
+5.4 Comparison on Pythia, Qwen2, and Llama 3.2 Architectures 
+
+To assess cross-architecture generalisation, we evaluate on Pythia 410M (Biderman et al., 2023), Qwen2 1.5B (Yang et al., 2024), and Llama 3.2 1B (AI at Meta, 2024), using the same dataset and optimiser as the GPT-2 experiments, with a cosine decay schedule with 5% linear warmup. 
+
+Pythia 410M. Pythia is a 24-layer decoder-only model (hidden size 1,024, 16 heads, head dim 64) with partial RoPE (Su et al., 2024) and a parallel residual connection. Keyless Attention achieves a best validation loss of 3.6692 
+
+(PPL “ 39 .22 ) versus 3.7133 (PPL “ 40 .99 ) for the baseline — a reduction of 0.0441 in loss and 1.77 in perplexity, the largest gain across all models evaluated. Notably, Keyless Attention continues to improve through epoch 3 while the baseline plateaus after epoch 2, suggesting that the gradient entanglement between W Q2 and W V introduced by value-space routing slows convergence but ultimately reaches a substantially lower minimum (Figure 3a). 
+
+Qwen2 1.5B. Qwen2 employs GQA (Ainslie et al., 2023) with 12 query heads and 2 KV heads ( 6ˆ grouping ratio). Our keyless implementation uses 2 value-routing heads following the GQA format, with W Q2 made head-specific to preserve query-head-specific routing. Keyless Attention achieves a best validation loss of 3.5201 (PPL “ 33 .79 )versus 3.5376 (PPL “ 34 .38 ) for the baseline — a reduction of 0.0175 in loss and 0.59 in perplexity. Standard attention achieves a lower validation loss in epoch 1, but Keyless Attention closes the gap by epoch 2 and reaches a better best checkpoint. From epoch 3 onward, both models overfit while Keyless Attention maintains a consistently lower validation loss than the baseline (Figure 3b). 
+
+> (a) Pythia 410M. Keyless: 39.22 vs. QKV: 40.99.
+> (b) Qwen2 1.5B. Keyless: 33.79 vs. QKV: 34.38.
+> (c) Llama 3.2 1B. Keyless: 38.59 vs. QKV: 39.09.
+
+Figure 3: Perplexity over 4 epochs across three GQA architectures. Keyless Attention matches or outperforms standard QKV attention at the best epoch in all three models, and degrades more slowly after the best epoch, indicating greater robustness to overfitting. 
+
+Llama 3.2 1B. Llama 3.2 1B (AI at Meta, 2024) is a decoder-only model with 16 layers, hidden size 2,048, employing GQA with 32 query heads and 8 KV heads ( 4ˆ grouping ratio) and full RoPE positional embeddings. Our keyless implementation follows the same GQA adaptation as Qwen2, with value-routing heads matching the KV head count and W Q2 made head-specific. Keyless Attention achieves a best validation loss of 3.6529 (PPL “ 38 .59 ) versus 3.6805 
+
+(PPL “ 39 .09 ) for the baseline — a reduction of 0.0276 in loss and 0.50 in perplexity. Standard attention converges faster in epoch 1, but Keyless Attention surpasses it by the end of epoch 2 and maintains a consistently lower validation loss throughout the overfitting regime from epoch 3 onward. (Figure 3c). 
+
+5.5 Cross-Architecture Summary 
+
+Results across all five models are summarized in Table 3. The five models span three distinct positional encoding schemes, two residual connection designs, and two attention grouping strategies, providing a broad cross-architecture validation of Keyless Attention. Keyless Attention wins on perplexity in 4 out of 5 models and on 4 out of 5 downstream benchmarks, with the 50% KV cache reduction holding exactly across all architectures regardless of head count or grouping ratio. Beyond the best-epoch results, the post-peak validation trajectories (Figure 3) reveal a consistent pattern: across all five models, Keyless Attention’s validation loss degrades more slowly after the best epoch than standard attention’s, indicating greater robustness to overfitting. This pattern holds regardless of architecture, head configuration, or model scale. The consistent improvements are particularly compelling given the breadth of architectural variation summarized in Table 4, underscoring that the gains are not specific to any single design choice. 
+
+5.6 Inference Efficiency 
+
+We benchmark decode-time throughput and KV cache memory for Keyless attention against standard QKV attention under grouped-query attention (GQA), using the Qwen2-1.5B architecture (28 layers, 2 KV heads) as a testbed. Both 9A PREPRINT - J UNE 23, 2026 Table 3: Best validation loss and perplexity across all five models. : Qwen2 1.5B and Llama 3.2 1B use GQA; cache reduction applies to the value cache.                                        
+
+> Model Method Val Loss PPL Cache
+> GPT-2 280M QKV 3.5180 33.71 100% Keyless 3.5216 33.84 50%
+> GPT-2 557M QKV 3.5116 33.50 100% Keyless 3.5044 33.26 50%
+> Pythia 410M QKV 3.7133 40.99 100% Keyless 3.6692 39.22 50%
+> Qwen2 1.5B :QKV 3.5376 34.38 100% Keyless 3.5201 33.79 50%
+> Llama 3.2 1B :QKV 3.6805 39.09 100% Keyless 3.6529 38.59 50%
+
+Table 4: Architectural properties of the five models evaluated. pRoPE: partial RoPE (Su et al., 2024). GQA: Grouped Query Attention (Ainslie et al., 2023). MHA: Multi-Head Attention. Par.: parallel residual; Seq.: sequential residual.                                                  
+
+> Property GPT-2 GPT-2 Pythia Qwen2 Llama 3.2 280M 557M 410M 1.5B 1B
+> Parameters 280M 557M 410M 1.5B 1B Layers 12 36 24 28 16 Hidden size 1,024 1,024 1,024 1,536 2,048 Heads (Q/KV) 8/8 8/8 16/16 12/2 32/8 Head dim 128 128 64 128 64 Positional emb. Abs. Abs. pRoPE RoPE RoPE Attention MHA MHA MHA GQA ( 6ˆ)GQA ( 4ˆ)Residual Seq. Seq. Par. Seq. Seq.
+
+attention variants use real incremental caching during decoding, storing only value states for Keyless and key and value states for QKV, rather than recomputing attention over the full sequence at each step. For Keyless, we exploit the fact that its two sequential query projections, W Q1 and W Q2 , can be fused into a single matrixprior to inference, eliminating any additional projection cost relative to QKV’s single query projection. We measure decode throughput at prefill context lengths of 512 , 2048 , and 8192 tokens (batch size 1, 256 generated tokens per run), averaged over 3 random seeds. As shown in Figure 4 (left panel), Keyless attention exceeds QKV decode throughput across all tested context lengths (e.g., 24 .05 ˘ 0.14 vs. 22 .27 ˘ 0.02 tokens/sec at 512 tokens), consistent with Keyless eliminating the key projection (d ˆ dkv ) at no additional cost from the fused query projection. Figure 4 (right panel) shows the corresponding KV cache size: since Keyless stores only value states, it reduces cache memory by exactly 50% at every context length (e.g., 
+
+0.118 vs. 0.236 GB at 8192 tokens), with the absolute savings growing linearly in sequence length. At batch size 1, decoding remains compute-bound, so this memory reduction has limited effect on wall-clock throughput; we expect the speedup to grow substantially at larger batch sizes, where decoding becomes memory-bandwidth-bound and KV cache reads dominate per-step latency, the same regime that motivates GQA itself in production serving. 
+
+# 6 Conclusion 
+
+We revisit a central assumption in the transformer architecture: that attention requires distinct query, key, and value projections. Through theoretical analysis and empirical evaluation, we show that the key projection is not strictly necessary. Our proposed Keyless Attention mechanism matches or outperforms standard attention across five models and four architectures, while reducing KV cache memory by 50%. When combined with existing KV-cache compression methods, this reduction compounds, offering a simple and complementary approach to more memory-efficient inference. Beyond efficiency, Keyless Attention introduces value-space routing : attention scores are computed directly against value representations, coupling routing and retrieval within a single projection space. Across all five models, Keyless Attention’s validation loss degrades more slowly after the best epoch than standard attention’s, indicating greater robustness to overfitting (Section 5). We hypothesize that this stems from a coupling between routing and value 10 A PREPRINT - J UNE 23, 2026 
+
+Figure 4: Decode throughput and KV cache size for Keyless vs. QKV attention under GQA. Left: decode throughput (mean ˘ std over 3 seeds) as a function of context length; Keyless exceeds QKV. Right: KV cache size vs Value-Only Cache size; Keyless reduces cache memory by exactly 50% at every context length, since it stores only value states. parameters induced by value-space routing, though we leave a direct mechanistic analysis to future work. We further introduce depth-m attention factorization as a theoretical framework for analyzing this parameterization, revealing a new axis in attention design. Together, these results challenge the necessity of explicit key construction in attention and suggest an alternative parametrization for transformer architectures. 
+
+# Limitations and Future Work 
+
+Experiments are conducted on WikiText-103 and five benchmark datasets; broader evaluation across more datasets, domains, and long-context industrial settings remains an important direction for future work. 
+
+# Assets and Data 
+
+All datasets used in this work are publicly available for research purposes. WikiText-103 is released under CC BY-SA 3.0. BoolQ is released under CC BY-SA 3.0. SciQ is released under CC BY-NC 3.0. ARC Challenge is released under CC BY-SA 4.0. HellaSwag is released under the MIT License. StoryCloze was accessed via the official UW data request process. The GPT-2 architecture and Hugging Face Transformers library are released under the MIT License and Apache 2.0 License respectively. The Pythia model suite (EleutherAI) is released under the Apache 2.0 License. Qwen2 1.5B (Alibaba Cloud) is released under the Apache 2.0 License. Llama 3.2 1B (Meta) is released under the Llama 3.2 Community License Agreement ( https://www.llama.com/llama3_2/license/ ). 
+
+# References 
+
+AI at Meta (2024). Llama 3.2: Revolutionizing edge AI and vision with open, customizable models. Meta AI Blog. Ainslie, J., Lee-Thorp, J., de Jong, M., Zemlyanskiy, Y., Lebrón, F., and Sanghai, S. (2023). GQA: Training generalized multi-query transformer models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 4895–4901, Singapore. Association for Computational Linguistics. Beltagy, I., Peters, M. E., and Cohan, A. (2020). Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150 .Biderman, S., Schoelkopf, H., Anthony, Q., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., Skowron, A., Sutawika, L., and van der Wal, O. (2023). Pythia: A suite for analyzing large language models across training and scaling. In Proceedings of the 40th International Conference on Machine Learning ,volume 202 of Proceedings of Machine Learning Research , pages 2397–2430. PMLR. 11 A PREPRINT - J UNE 23, 2026 Child, R., Gray, S., Radford, A., and Sutskever, I. (2019). Generating long sequences with sparse transformers. arXiv preprint arXiv:1904.10509 .Choromanski, K., Likhosherstov, V., Dohan, D., Song, X., Gane, A., Sarlos, T., Hawkins, P., Davis, J., Mohiuddin, A., Kaiser, L., Belanger, D., Colwell, L., and Weller, A. (2021). Rethinking attention with performers. In International Conference on Learning Representations (ICLR) .Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H. W., Sutton, C., Gehrmann, S., Schuh, P., Shi, K., Tsvyashchenko, S., Maynez, J., Rao, A., Barnes, P., Tay, Y., Shazeer, N., Prabhakaran, V., Reif, E., Du, N., Hutchinson, B., Pope, R., Bradbury, J., Austin, J., Isard, M., Gur-Ari, G., Yin, P., Duke, T., Levskaya, A., Ghemawat, S., Dev, S., Michalewski, H., Garcia, X., Misra, V., Robinson, K., Fedus, L., Zhou, D., Ippolito, D., Luan, D., Lim, H., Zoph, B., Spiridonov, A., Sepassi, R., Dohan, D., Agrawal, S., Omernick, M., Dai, A. M., Pillai, T. S., Pellat, M., Lewkowycz, A., Moreira, E., Child, R., Polozov, O., Lee, K., Zhou, Z., Wang, X., Saeta, B., Diaz, M., Firat, O., Catasta, M., Wei, J., Meier-Hellstern, K., Eck, D., Dean, J., Petrov, S., and Fiedel, N. (2022). Palm: Scaling language modeling with pathways. arXiv preprint arXiv:2204.02311 .Clark, C., Lee, K., Chang, M.-W., Kwiatkowski, T., Collins, M., and Toutanova, K. (2019). Boolq: Exploring the surprising difficulty of natural yes/no questions. In NAACL .Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. (2018). Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv:1803.05457v1 .DeepSeek-AI (2024). DeepSeek-V2: A strong, economical, and efficient mixture-of-experts language model. arXiv preprint arXiv:2405.04434 .Graef, N. and Wasielewski, A. (2025). Slim attention: cut your context memory in half without loss of accuracy – k-cache is all you need for mha. arXiv preprint arXiv:2503.05840 .Huang, Y.-C., Hsiu, P.-C., Fang, R., and Chen, M.-S. (2026). Kv admission: Learning what to write for efficient long-context inference. arXiv preprint arXiv:2512.17452 .Kang, H., Bharadwaj, S., Hensman, J., Krishna, T., Ruhle, V., and Rajmohan, S. (2024). TurboAttention: Efficient attention approximation for high throughputs LLMs. arXiv preprint arXiv:2412.08585 .Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F. (2020). Transformers are RNNs: Fast autoregressive transformers with linear attention. In Proceedings of the 37th International Conference on Machine Learning (ICML) ,volume 119 of Proceedings of Machine Learning Research , pages 5156–5165. PMLR. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., and Stoica, I. (2023). Efficient memory management for large language model serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP) .Liao, M., Wang, L., Zhang, C., Qiao, B., Qin, S., Lin, Q., Rajmohan, S., Zhang, D., and Wan, H. (2026). Zi-page: Maintain high request concurrency for LLM reasoning through compressed PagedAttention. arXiv preprint arXiv:2603.08743 .Loshchilov, I. and Hutter, F. (2019). Decoupled weight decay regularization. In International Conference on Learning Representations .Luong, M.-T., Pham, H., and Manning, C. D. (2015). Effective approaches to attention-based neural machine translation. In Proceedings of the 2015 Conference on Empirical Methods in Natural Language Processing , pages 1412–1421, Lisbon, Portugal. Association for Computational Linguistics. Merity, S., Xiong, C., Bradbury, J., and Socher, R. (2017). Pointer sentinel mixture models. In International Conference on Learning Representations .Mostafazadeh, N., Chambers, N., He, X., Parikh, D., Batra, D., Vanderwende, L., Kohli, P., and Allen, J. (2016). A corpus and cloze evaluation for deeper understanding of commonsense stories. In Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies ,pages 839–849, San Diego, California. Association for Computational Linguistics. Pope, R., Douglas, S., Chowdhery, A., Devlin, J., Bradbury, J., Heek, J., Xiao, K., Agrawal, S., and Dean, J. (2023). Efficiently scaling transformer inference. In Proceedings of Machine Learning and Systems , volume 5. Prabhu, R., Nayak, A., Mohan, J., Ramjee, R., and Panwar, A. (2024). vAttention: Dynamic memory management for serving LLMs without PagedAttention. arXiv preprint arXiv:2405.04437 .Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. (2019). Language models are unsupervised multitask learners. OpenAI Blog , 1(8):9. Shazeer, N. (2019). Fast transformer decoding: One write-head is all you need. arXiv preprint arXiv:1911.02150 .12 A PREPRINT - J UNE 23, 2026 Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y. (2024). RoFormer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063. Tang, H., Lin, Y., Lin, J., Han, Q., Hong, S., Yao, Y., and Wang, G. (2024). RazorAttention: Efficient KV cache compression through retrieval heads. arXiv preprint arXiv:2407.15891 .Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., and Polosukhin, I. (2017). Attention is all you need. In Advances in Neural Information Processing Systems .Wang, S., Li, B. Z., Khabsa, M., Fang, H., and Ma, H. (2020). Linformer: Self-attention with linear complexity. arXiv preprint arXiv:2006.04768 .Welbl, J., Liu, N. F., and Gardner, M. (2017). Crowdsourcing multiple choice science questions. In Proceedings of the 3rd Workshop on Noisy User-generated Text , pages 94–106. Association for Computational Linguistics. Wen, Z., Gao, Y., Li, W., He, C., and Zhang, L. (2025). Token pruning in multimodal large language models: Are we solving the right problem? arXiv preprint arXiv:2502.11501 .Wolf, T., Debut, L., Sanh, V., Chaumond, J., Delangue, C., Moi, A., Cistac, P., Rault, T., Louf, R., Funtowicz, M., Davison, J., Shleifer, S., von Platen, P., Ma, C., Jernite, Y., Plu, J., Xu, C., Le Scao, T., Gugger, S., Drame, M., Lhoest, Q., and Rush, A. M. (2020). Transformers: State-of-the-art natural language processing. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations , pages 38–45. Association for Computational Linguistics. Xu, Y., Jie, Z., Dong, H., Wang, L., Lu, X., Zhou, A., Saha, A., Xiong, C., and Sahoo, D. (2025). ThinK: Thinner key cache by query-driven pruning. In The Thirteenth International Conference on Learning Representations .Yang, A., Yang, B., Hui, B., Zheng, B., Yu, B., Zhou, C., Li, C., Li, C., Liu, D., Huang, F., Dong, G., Wei, H., Lin, H., Tang, J., Wang, J., Yang, J., Tu, J., Zhang, J., Ma, J., Xu, J., Zhou, J., Bai, J., et al. (2024). Qwen2 technical report. 
+
+arXiv preprint arXiv:2407.10671 .Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. (2019). Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics .
+
+# A Proofs of Theorems 
+
+A.1 Theoretical Equivalence of Keyless and Standard Attention 
+
+Proof of Theorem 1 
+
+Proof. Since W V P Rdˆd has full rank d, the matrix pW V qJ is invertible. Define ˜W Q “ W QpW K qJpW V q´J .Then: 
+
+˜W QpW V qJ “ W QpW K qJpW V q´J pW V qJ
+
+“ W QpW K qJ ¨ Id “ W QpW K qJ. (16) Uniqueness follows from the invertibility of pW V qJ: if ˜W Q 
+
+> 1
+
+pW V qJ “ ˜W Q 
+
+> 2
+
+pW V qJ, then p ˜W Q 
+
+> 1
+
+´ ˜W Q 
+
+> 2
+
+qp W V qJ “ 0,and right-multiplying by pW V q´J gives ˜W Q 
+
+> 1
+
+“ ˜W Q 
+
+> 2
+
+.
+
+Remark 4. In the single-head case with dk “ d, the value projection W V P Rdˆd is square and generically invertible under standard random initialization. The result is therefore unconditional: for any W Q and W K , a unique equivalent Keyless Attention parametrization always exists. The multi-head case below requires an additional condition because 
+
+W Vh P Rdˆdk is rectangular with dk ă d and is no longer invertible. Proof of Theorem 2 
+
+Proof. Fix head h. Let Bh “ p W Vh qJ P Rdk ˆd. Since W Vh has full column rank dk, the Gram matrix pW Vh qJW Vh is invertible and Bh admits a right pseudoinverse B` 
+
+> h
+
+“ W Vh pp W Vh qJW Vh q´1 P Rdˆdk .
+
+Setting ˜W Qh “ ΩhB` 
+
+> h
+
+and expanding: 
+
+˜W Qh pW Vh qJ “ ΩhB` 
+
+> h
+
+Bh “ ΩhPW Vh , (17) where 
+
+PW Vh “ B` 
+
+> h
+
+Bh “ W Vh pp W Vh qJW Vh q´1pW Vh qJ
+
+13 A PREPRINT - J UNE 23, 2026 is the orthogonal projector onto col pW Vh q. By condition (7) , col pΩJ 
+
+> h
+
+q Ď col pW Vh q, so ΩhPW Vh “ Ωh, giving 
+
+˜W Qh pW Vh qJ “ Ωh “ W Qh pW Kh qJ.For the general solution: any ˜W Qh satisfying ˜W Qh Bh “ Ωh can be written as ˜W Qh “ ΩhB` 
+
+> h
+
+` N where N B h “ 0, i.e. 
+
+N pW Vh qJ “ 0. The proof is independent for each head h; no relationship between heads is assumed. 
+
+# B Architecture and Implementation Details 
+
+B.1 Pythia 410M 
+
+Pythia 410M uses 24 layers, hidden size 1,024, 16 attention heads (head dim 64), intermediate size 4,096, GELU activations, partial RoPE ( θ “ 10 ,000 , factor “ 0.25 ), and a parallel residual connection. Both models are initialised from scratch using the official GPTNeoXConfig . Training uses AdamW with η “ 10 ´4, weight decay 0.01, cosine decay with 5% linear warmup, gradient accumulation 2, and early stopping with patience 2 on validation loss. 
+
+B.2 Qwen2 1.5B 
+
+Qwen2 1.5B uses 28 layers, hidden size 1,536, 12 query heads and 2 KV heads (GQA, 6ˆ grouping, head dim 128), and full RoPE. In our Keyless Attention implementation, we use 2 value-routing heads following the GQA format, with 
+
+W Q2 made head-specific (one matrix per query head) to preserve query-head-specific routing. The causal mask is constructed on-the-fly to avoid pre-registering large buffers at sequence length 32,768. Training hyperparameters are identical to Pythia 410M above. 
+
+B.3 Llama 3.2 1B 
+
+Llama 3.2 1B (AI at Meta, 2024) uses 16 layers, hidden size 2,048, 32 query heads and 8 KV heads (GQA, 4ˆ grouping, head dim 64), intermediate size 8,192, SiLU activations, and full RoPE with the Llama3-scaled variant ( θ “ 500 ,000 ,original maximum position length 8,192, scaled to 131,072 via high-frequency and low-frequency factors). Input and output embeddings are tied ( tie_word_embeddings = true ). In our Keyless Attention implementation, we follow the same GQA adaptation as Qwen2: we use 8 value-routing heads matching the KV head count, with W Q2 made head-specific (one matrix per query head) to preserve query-head-specific routing across the 4ˆ grouping. Training hyperparameters are identical to Pythia 410M and Qwen2 1.5B. 14
