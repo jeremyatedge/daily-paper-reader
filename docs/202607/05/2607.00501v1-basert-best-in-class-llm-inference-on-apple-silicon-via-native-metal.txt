@@ -1,0 +1,249 @@
+Title: BaseRT: Best-in-Class LLM Inference on Apple Silicon via Native Metal
+
+URL Source: https://arxiv.org/pdf/2607.00501v1
+
+Published Time: Thu, 02 Jul 2026 00:34:24 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# BaseRT: Best-in-Class LLM Inference on Apple Silicon via Native Metal 
+
+## Prabod Rathnayaka ∗ Fabian Waschkowski Lukas Wesemann 
+
+## Base Compute, Melbourne, Australia 
+
+Abstract 
+
+We present BaseRT, a native Metal inference runtime for large language models (LLMs) on Apple Silicon, and report the highest inference throughput on this hardware to date. Existing runtimes, including llama.cpp and MLX-based frameworks, incur overhead from abstractions not designed for Metal’s execution model or Apple Silicon’s unified memory topology. By building natively on Metal with chip-specific kernel fusion, unified memory-aware optimisation, and custom dispatch logic, BaseRT recovers performance that framework-based approaches leave on the table. BaseRT supports a wide range of model families across eight quantisation formats (Q2 to FP16) on all Apple M-series devices. In this paper, we evaluate the Qwen3, Llama 3.2, and Gemma 4 families at Q4 and Q8 quantisation on M3 and M4 Pro devices. BaseRT achieves up to 1 .56 × higher decode throughput than llama.cpp and up to 1 .35 × higher than MLX, with substantially larger margins on prefill for mixture-of-experts models, delivering consistent best-in-class throughput from sub-1B to 30B parameter models. These results establish Apple Silicon as a more capable inference platform than previously reported, with direct implications for the emerging edge inference paradigm: as privacy requirements, latency constraints, and cloud cost pressures drive inference toward on-device deployment, performance-optimised local runtimes are a critical enabling layer for this transition. BaseRT is publicly available at https://github.com/basecompute/baseRT .
+
+# 1 Introduction 
+
+AI inference demand is growing at a rate that challenges the scalability of centralised cloud infrastructure. Token usage across major providers has grown by roughly an order of magnitude year-on-year as evidenced by token usage via Google Cloud API and a broader mix of providers on Open Router [1, 2]. However, the majority of enterprise adoption is still nascent and this trend is likely to continue [ 3]. Global inference compute is projected to overtake training compute for the first in 2027, with AI inference expected to make up 40% of global data center compute by 2030 [ 4]. This trajectory places increasing pressure on the economic and architectural assumptions underlying cloud-only inference, and makes a compelling case for a structural shift toward edge inference: running LLMs locally on consumer and professional hardware. The case for this shift rests on four independent drivers. 
+
+Privacy and Data Residency : Prompts processed in the cloud are subject to multi-tenancy, third-party infrastructure risk, and complex legal jurisdictions [ 5], risks that Gartner projects will cause over 40% of AI-related data breaches by 2027 through insufficient oversight of cross-border prompt routing [ 6]. Local inference keeps all data within controlled environments, enabling compliance with air-gapped and zero-trust requirements. 
+
+Latency : Cloud inference adds request handling, queueing, and GPU scheduling overhead that can push time-to-first-token (TTFT) into the hundreds of milliseconds, especially under load [ 7]. On-device inference 
+
+> ∗Correspondence: prabod@basecompute.co
+
+1         
+
+> arXiv:2607.00501v1 [cs.CL] 1 Jul 2026 Qwen3-0.6B Llama-3.2-1B Llama-3.2-3B
+> 0
+> 200
+> 400 +35%
+> Model
+> Decode throughput (tok/s)
+> 128 256 512 1024 2048
+> 400
+> 600
+> 800
+> +78%
+> Prompt length (tokens)
+> Prefill throughput (tok/s)
+> BaseRT MLX llama.cpp
+
+Figure 1: BaseRT delivers best-in-class throughput on Apple Silicon. Decode throughput (left) is improved by 1 .15–1 .56 × over llama.cpp and up to 1 .35 × over MLX across the Q4 models tested on Apple M4 Pro. For prefill throughput (right), BaseRT leads across all prompt lengths for the Qwen3-30B-A3B model in 4-bit quantisation with up to 1 .78 × improvement over MLX. avoids network and queueing delays, often reducing latency enough to support sub-100 ms interactive responses and making real-time robotic [8] and responsive agentic workflows [9, 10] feasible. 
+
+Connectivity : A hard dependency on external network availability means that failures in networking, authen-tication, or shared cloud infrastructure can render AI systems entirely unavailable, regardless of whether the underlying model is functioning. Local inference removes this dependency, enabling deterministic operation in low-connectivity or air-gapped environments and ensuring continuity for latency-sensitive applications in the field. Recent cloud outages underscore the potential impact of this [11, 12]. 
+
+Cost : Cloud inference pricing scales linearly with usage, whereas local inference converts this into a fixed hardware cost, with marginal cost per inference approaching zero at scale [13]. The hardware precondition for this shift has largely been met. Across consumer and professional de-vice categories, purpose-built AI accelerators now support useful on-device LLM inference: Qualcomm’s Snapdragon X Elite includes a Hexagon NPU and is positioned to run LLMs over 13B parameters on-device, while Intel’s Core Ultra Series 2 and AMD’s Ryzen AI platforms also integrate dedicated NPUs, with runtimes such as OpenVINO and ONNX Runtime providing execution paths for quantized models on these devices [14–16]. Among these platforms, Apple Silicon stands out for its combination of high memory bandwidth, large unified memory capacity, and a mature GPU compute stack [ 17 ]. Memory has historically been the primary limiting factor for local LLM inference: model weights must be streamed from memory to compute units for every generated token, placing a hard capacity and bandwidth constraint on which models can run locally. Apple’s unified memory architecture removed the traditional segregation between CPU and GPU memory pools, giving the GPU direct access to the full system memory at high bandwidth, a structural change that made it practical to run large models locally. Modern M-series devices can run quantised 7B–70B parameter models at interactive speeds, and recent open-weight models have compressed state-of-the-art capabilities into parameter counts suitable for local deployment [ 18 ]. Recent analysis additionally indicates that locally-run models can handle a substantial fraction of common queries as accurately as cloud models while consuming significantly less energy [19]. The focus of this work is on maximising inference throughput on Apple Silicon specifically, where the unified memory architecture and Metal GPU API present distinct optimisation opportunities not present on other platforms. Despite this hardware potential, existing inference runtimes for Apple Silicon each carry 2constraints that limit achievable throughput. We present BaseRT, a LLM inference runtime built directly on Apple’s Metal GPU API, without any intermediate framework. By implementing chip-specific kernel fusion, unified memory-aware data layout, and custom GPU dispatch logic, we recover performance that framework-based approaches leave on the table. Across a suite of open-source LLMs, BaseRT achieves higher throughput than any previously reported runtime on Apple Silicon, establishing a new performance baseline for on-device inference on this hardware. 
+
+## 1.1 Contributions 
+
+Our contributions are as follows: 
+
+• A native Metal LLM inference runtime designed specifically for Apple Silicon’s unified memory architec-ture, built without reliance on MLX or any intermediate framework. 
+
+• Chip-specific kernel fusion strategies that eliminate dispatch overhead present in framework-based runtimes. 
+
+• A unified memory optimisation scheme that exploits the shared CPU-GPU memory topology of Apple Silicon. 
+
+• A comprehensive benchmark evaluation across multiple open-source LLMs, establishing new state-of-the-art throughput figures on Apple Silicon and demonstrating that prior runtimes have systematically underutilised this hardware. 
+
+# 2 Related Work 
+
+The dominant open-source runtimes for Apple Silicon each carry architectural constraints that limit how fully they exploit this topology. The llama.cpp [ 20 ] framework was originally developed as a cross-platform, CPU-first codebase and subsequently extended with a Metal backend. Its architecture reflects these origins. MLX [ 21 ], while purpose-built for Apple Silicon, is a general-purpose array framework whose lazy evaluation and framework-level scheduling introduce overhead not present in a dedicated inference runtime [ 21 , 22 ]. Approaches building on top of MLX including vllm-mlx have demonstrated strong results within these constraints, reporting 21-87% higher throughput than llama.cpp [23]. More recently, native Metal approaches have emerged that bypass these frameworks entirely. MetalRT [ 24 ](RunAnywhere) targets Metal directly with no intermediate abstraction layer. The open source runtime uzu (Mirai) takes a hybrid approach, routing workloads across GPU kernels and MPSGraph to access both the GPU and Apple Neural Engine [ 25 ]. Both demonstrate that framework abstraction carries a measurable performance cost. With BaseRT we build on this direction: through chip-specific kernel fusion, unified memory-aware optimisation, and custom dispatch logic, we report throughput beyond what these prior native approaches have achieved. 
+
+# 3 BaseRT Runtime Design 
+
+BaseRT is a C++ inference runtime that targets Apple’s Metal GPU API directly, with no dependency on MLX, PyTorch, CoreML, or any intermediate array framework. The runtime exposes a C API for cross-language interoperability and supports transformer-based decoder models in BaseRT’s native base weight format. The design is organised around four principles, described below, each motivated by a specific source of overhead observed in existing runtimes. In addition, BaseRT incorporates two innovations that directly target CPU-side overhead on the decode hot path: a low-overhead command dispatch mechanism that removes the per-operator scheduling, allocation, and graph-evaluation work present in framework-based runtimes, and a decode scheduling scheme that amortises CPU–GPU synchronisation across multiple generated tokens. 33.1 Data-Driven Architecture Descriptors 
+
+Adding support for a new model architecture in a framework-based runtime typically requires modifying the inference loop, adding conditional branches, and wiring new operator sequences. This coupling makes the core engine brittle and difficult to optimise uniformly. BaseRT instead captures all per-architecture variation as data: the points at which architectures differ, such as activation and normalisation variants, mixture-of-experts specifics, and attention and positional-encoding conventions, are expressed through a compact architecture descriptor rather than encoded as control flow. The core engine consumes this descriptor and never branches on architecture identity, so the hot path is identical across models. BaseRT currently supports the LLaMA, Qwen3, Gemma, Whisper, and BERT families, and an extension to a new architecture is a self-contained, declarative change that leaves the inference loop untouched. 
+
+## 3.2 Zero-Allocation Decode Loop 
+
+After model loading completes, the decode loop allocates zero bytes. All intermediate buffers used by the forward pass, namely the residual, attention, and feed-forward scratch, together with the logits and token buffers, are pre-allocated at load time and reused across every token. The KV cache is likewise pre-allocated to the maximum context length at load time, in a layout chosen to maximise coalesced GPU memory access during attention. Even error handling uses a static thread-local buffer. The result is that the hot path consists entirely of GPU command dispatch and lightweight CPU-side patching, with no allocator contention or memory management overhead. 
+
+## 3.3 Kernel Fusion and Specialisation 
+
+BaseRT implements a large library of hand-written Metal shaders organised across matmul, attention, normalization, RoPE, embedding, activation, and sampling categories. The matmul kernels account for the majority, with dedicated GEMV (decode, M = 1) and GEMM (prefill, M > 1) variants for each supported quantisation format, spanning 2-bit to 16-bit widths. Each kernel integrates dequantisation directly into the inner loop rather than materialising dequantised weights to global memory, reducing memory traffic proportionally to the compression ratio. Beyond per-kernel optimisation, BaseRT fuses operator sequences that are typically dispatched as separate kernels in other runtimes, both along the attention path and within the feed-forward block. Each fusion removes one kernel launch and one global memory round-trip, which is particularly impactful during decode, where individual kernel runtimes are short and launch overhead is proportionally large. Kernel selection is hardware-adaptive: a per-chip configuration derived from GPU core count and family (M1 through M5) determines threadgroup sizes, kernel-selection thresholds, and fusion decisions. Each quantisation format is mapped to its specialised kernel and launch geometry. 
+
+## 3.4 Prefill 
+
+Prompt processing (prefill) uses GEMM rather than GEMV, operating on activation tensors of shape [seq len × dim ]. Arithmetic intensity scales with sequence length, making prefill compute-bound rather than memory-bound. BaseRT implements tiled GEMM kernels using Metal’s simdgroup matrix intrinsics, with tile geometries tuned to the sequence-length regime, and applies chunked prefill with a bounded maximum chunk size to cap scratch buffer memory. A FlashAttention kernel computes attention in tiles using online softmax with running statistics, achieving O(n) memory complexity rather than materialising the full O(n2)attention matrix. 
+
+# 4 Evaluation 
+
+## 4.1 Experimental Setup 
+
+BaseRT supports a wide range of model families, eight quantisation formats (Q2, Q3, Q4, Q5, Q6, Q8, BF16, and FP16), and every Apple M-series generation (M1 to M5). To keep the evaluation tractable, we investigate 4a representative subset: the Qwen3, Llama 3.2, and Gemma 4 model families at Q4 and Q8 quantisation levels on M3 and M4 Pro devices. We evaluate BaseRT against three baselines: llama.cpp [ 20 ], the most widely deployed open-source inference runtime for Apple Silicon using GGUF-format weights; MLX [ 21 ], Apple’s purpose-built array framework, using MLX SafeTensors-format weights; and uzu [ 25 ] (Mirai), a native Metal runtime that routes workloads across GPU kernels and MPSGraph. The first two comparisons isolate BaseRT’s performance against the dominant cross-platform runtime and the leading Apple-native framework. The uzu comparison positions BaseRT against the closest architectural competitor in the native Metal space. 
+
+Hardware. Our primary benchmark platform is an Apple M4 Pro (16 GPU cores, 24 GB unified memory, 273 GB/s memory bandwidth). We additionally report results on an Apple M3 base (8 GPU cores, 16 GB unified memory, 100 GB/s memory bandwidth) to evaluate cross-generation consistency. 
+
+Models. We benchmark six models spanning the Qwen3, Llama 3.2, and Gemma 4 families: the dense models Qwen3-0.6B, Llama-3.2-1B, Llama-3.2-3B, and Gemma-4-E2B, and two mixture-of-experts models, Gemma-4-26B-A4B and Qwen3-30B-A3B. 
+
+Metrics. We report prompt processing throughput (pp, tokens/s) at prompt lengths of 128, 256, 512, 1024, and 2048 tokens, and token generation throughput (tg128, tokens/s) measuring autoregressive decode over 128 generated tokens. Standard deviations are omitted from tables for readability; they are generally below 3% for decode and below 10% for prefill. 
+
+Baselines. We compare against llama.cpp (commit b9630, June 2026) using its Metal backend with default settings, and MLX (v0.31.2) using mlx-lm with default generation settings. BaseRT loads the same model checkpoints converted to its native base weight format at quantisation levels matched to the baseline. 
+
+## 4.2 Decode Throughput on M4 Pro 
+
+Table 1 reports decode throughput (tg128) on the M4 Pro. Against llama.cpp, BaseRT is faster on all six models, with speedups of 1 .04–1 .56 ×. The advantage is largest on the smaller dense models, where fixed per-token overhead is a greater fraction of latency: 56% improvement on Qwen3-0.6B. It narrows on the larger mixture-of-experts models, namely to 1 .04–1 .07 × on the Qwen3-30B-A3B and Gemma-4-26B-A4B MoE models, as decode becomes increasingly memory-bandwidth-bound. Against MLX, BaseRT leads on four of the five models supported by MLX (1 .01–1 .35 ×); the exception is Gemma-4-26B-A4B, where MLX is faster (0 .90 × ratio). Similar to the trend with parameter count, the relative advantage of BaseRT is larger at Q4 than at Q8, as the smaller Q4 weights make each decode step faster and leave fixed per-token overheads, where BaseRT’s low-overhead dispatch helps most, a larger share of the budget. 5Table 1: Decode throughput (tg128, tok/s) on Apple M4 Pro for BaseRT, llama.cpp, and MLX. Note: Gemma 4 E2B is not supported in MLX, and 20B+ models in Q8 exceed the M4 Pro’s 24 GB unified memory.                                                          
+
+> vs. llama.cpp vs. MLX Model Quant BaseRT llama.cpp Ratio MLX Ratio
+> Qwen3 0.6B
+> Q4 464.5 297.4 1.56 ×343.6 1.35 ×
+> Q8 321.2 219.8 1.46 ×255.3 1.26 ×
+> Llama 3.2 1B
+> Q4 295.4 230.4 1.28 ×257.8 1.15 ×
+> Q8 183.8 160.7 1.14 ×159.2 1.15 ×
+> Llama 3.2 3B
+> Q4 117.3 102.4 1.15 ×112.1 1.05 ×
+> Q8 70.9 65.1 1.09 ×65.5 1.08 ×
+> Gemma 4 E2B
+> Q4 127.7 107.0 1.19 ×——Q8 84.5 59.5 1.42 ×——
+> Gemma 4 26B-A4B
+> Q4 62.2 58.0 1.07 ×69.3 0.90 ×
+> Qwen3 30B-A3B
+> Q4 84.1 80.7 1.04 ×83.1 1.01 ×
+
+## 4.3 Prefill Throughput on M4 Pro 
+
+Tables 2 and 3 report prompt processing throughput at prompt lengths from 128 to 2048 on the M4 Pro, for the measured configurations: Q4 and Q8 on the smaller dense models and Q4 on the larger mixture-of-experts models. Against llama.cpp (see Table 2), BaseRT trails by a few percent on most dense configurations, i.e. roughly 5–10% on Qwen3-0.6B, 1–6% on Llama-3.2-1B, and within ±6% on Llama-3.2-3B at both Q4 and Q8, with no systematic shift as the prompt grows from 128 to 2048. Gemma-4-E2B is the exception: BaseRT trails by 3–7% at Q4 but leads by 19–23% at Q8. On the MoE models the ordering reverses sharply: BaseRT leads by up to 1 .59 × on Gemma-4-26B-A4B and 1 .81 × on Qwen3-30B-A3B at pp128, with the margin narrowing at longer contexts as the GEMM workload saturates the GPU. Against MLX (see Table 3), the dense models again run close at both Q4 and Q8: BaseRT tends to lead at the shortest prompt (pp128) while MLX pulls ahead from pp512 onward, across both the Qwen3 and Llama models. The MoE models again favour BaseRT, i.e. up to 1 .42 × on Gemma-4-26B-A4B and 1 .78 × on Qwen3-30B-A3B at pp128, with the advantage shrinking toward parity by pp2048. Overall, the two model classes diverge. On the smaller dense models, prefill is closely matched across all three engines: GEMM-based prefill is compute-bound, so each runtime saturates the GPU’s matmul units and the throughputs converge. On the larger mixture-of-experts models, by contrast, BaseRT holds a clear and consistent lead at every prompt length. 6Table 2: Prefill throughput (tok/s) on Apple M4 Pro, BaseRT vs. llama.cpp, at prompt lengths 128–2048. Bold indicates the faster runtime at each prompt length. Note: 20B+ models in Q8 exceed the M4 Pro’s 24 GB unified memory. 
+
+pp128 pp256 pp512 pp1024 pp2048 Model Quant BaseRT llama.cpp BaseRT llama.cpp BaseRT llama.cpp BaseRT llama.cpp BaseRT llama.cpp 
+
+Qwen3 0.6B 
+
+Q4 4,331 4,796 4,496 4,987 4,690 4,993 4,399 4,638 3,680 4,075 
+
+Q8 4,288 4,537 4,434 4,914 4,623 4,933 4,354 4,605 3,648 4,045 
+
+Llama 3.2 1B 
+
+Q4 2,490 2,612 2,577 2,714 2,615 2,728 2,577 2,671 2,453 2,489 
+
+Q8 2,438 2,555 2,517 2,673 2,564 2,702 2,531 2,643 2,418 2,520 
+
+Llama 3.2 3B 
+
+Q4 888 919 906 916 899 871 888 887 835 864 
+
+Q8 866 907 888 928 893 932 874 896 792 840 
+
+Gemma 4 E2B 
+
+Q4 1,146 1,238 1,193 1,281 1,208 1,292 1,198 1,268 1,169 1,209 
+
+Q8 1,125 916 1,167 976 1,187 983 1,179 977 1,153 971 
+
+Gemma 4 26B-A4B 
+
+Q4 659 414 704 525 721 609 681 586 626 558 
+
+Qwen3 30B-A3B 
+
+Q4 738 407 809 550 838 668 810 652 721 601 
+
+Table 3: Prefill throughput (tok/s) on Apple M4 Pro, BaseRT vs. MLX, at prompt lengths 128–2048. Bold indicates the faster runtime at each prompt length. Note: Gemma 4 E2B is not supported in MLX and 20B+ models in Q8 exceed the M4 Pro’s 24 GB unified memory. 
+
+pp128 pp256 pp512 pp1024 pp2048 Model Quant BaseRT MLX BaseRT MLX BaseRT MLX BaseRT MLX BaseRT MLX 
+
+Qwen3 0.6B 
+
+Q4 4,331 3,843 4,496 4,263 4,690 4,658 4,399 4,742 3,680 4,439 
+
+Q8 4,288 3,742 4,434 4,255 4,623 4,654 4,354 4,748 3,648 4,447 
+
+Llama 3.2 1B 
+
+Q4 2,490 2,451 2,577 2,698 2,615 2,817 2,577 2,851 2,453 2,714 
+
+Q8 2,438 2,342 2,517 2,620 2,564 2,766 2,531 2,828 2,418 2,783 
+
+Llama 3.2 3B 
+
+Q4 888 879 906 901 899 919 888 942 835 934 
+
+Q8 866 815 888 897 893 943 874 894 792 900 
+
+Gemma 4 26B-A4B 
+
+Q4 659 464 704 576 721 639 681 664 626 644 
+
+Qwen3 30B-A3B 
+
+Q4 738 415 809 571 838 664 810 726 721 720 
+
+74.4 Cross-Generation: M3 Base 
+
+Table 4 reports decode throughput (tg128) on the M3 base for the four dense models at Q4 and Q8. Against llama.cpp, BaseRT leads on all eight configurations (1 .13–1 .34 ×), and against MLX on all six supported configurations (1 .01–1 .22 ×). As on the M4 Pro, the advantage is largest on Qwen3-0.6B and Gemma-4-E2B and narrows on the larger Llama models, confirming that BaseRT’s decode advantage carries across chip generations. Table 4: Decode throughput (tg128, tok/s) on Apple M3 base for BaseRT, llama.cpp, and MLX. Note: Gemma 4 E2B is not supported in MLX.                                                
+
+> vs. llama.cpp vs. MLX Model Quant BaseRT llama.cpp Ratio MLX Ratio
+> Qwen3 0.6B
+> Q4 223.0 180.5 1.24 ×182.3 1.22 ×
+> Q8 124.6 99.8 1.25 ×113.6 1.10 ×
+> Llama 3.2 1B
+> Q4 125.6 106.3 1.18 ×112.6 1.12 ×
+> Q8 65.1 57.5 1.13 ×62.4 1.04 ×
+> Llama 3.2 3B
+> Q4 44.5 39.0 1.14 ×43.9 1.01 ×
+> Q8 24.2 21.2 1.14 ×22.2 1.09 ×
+> Gemma 4 E2B
+> Q4 59.0 47.1 1.25 ×——Q8 35.4 26.5 1.34 ×——
+
+## 4.5 Comparison with uzu 
+
+Tables 5 and 6 compare decode and prefill throughput between BaseRT and uzu [ 25 ], a native Metal runtime that routes workloads across GPU kernels and MPSGraph. Both runtimes are evaluated at matching quantisation levels on the M4 Pro. On decode (Table 5), BaseRT is faster on five of the six configurations, with the largest advantage on Qwen3-0.6B by 1 .17–1 .19 × and narrower margins on the Llama models (0 .99–1 .06 ×). The pattern mirrors the llama.cpp and MLX comparisons: BaseRT’s low-overhead dispatch and decode scheduling yield the greatest benefit on smaller models where per-token overhead is a larger fraction of total latency, while the gap narrows as model size increases and inference becomes memory-bandwidth-bound. On prefill (Table 6), uzu leads on most configurations, by 4–13% on Qwen3-0.6B and 1–3% on the Llama models, with its advantage generally widening at longer prompt lengths; the exceptions are the 8-bit Llama models at the shortest prompt (pp128), where BaseRT is marginally faster. uzu’s use of MPSGraph, which can dispatch to the Apple Neural Engine, likely accounts for this prefill advantage: the ANE provides additional compute bandwidth for the GEMM-dominated prefill phase that BaseRT’s GPU-only path does not currently exploit. 8Table 5: Decode throughput (tg128, tok/s) on Apple M4 Pro, BaseRT vs. uzu [ 25 ]. Bold indicates the faster runtime.                       
+
+> Model Quant BaseRT uzu Ratio
+> Qwen3 0.6B
+> 4-bit 465 398 1.17 ×
+> 8-bit 321 271 1.19 ×
+> Llama 3.2 1B
+> 4-bit 295 290 1.02 ×
+> 8-bit 184 173 1.06 ×
+> Llama 3.2 3B
+> 4-bit 117 119 0.99 ×
+> 8-bit 71 68 1.04 ×
+
+Table 6: Prefill throughput (tok/s) on Apple M4 Pro, BaseRT vs. uzu [ 25 ], at prompt lengths 128, 256, and 512. Bold indicates the faster runtime at each prompt length.                                              
+
+> pp128 pp256 pp512 Model Quant BaseRT uzu BaseRT uzu BaseRT uzu
+> Qwen3 0.6B
+> 4-bit 4,331 4,684 4,496 5,063 4,690 5,128
+> 8-bit 4,288 4,466 4,434 4,887 4,623 5,001
+> Llama 3.2 1B
+> 4-bit 2,490 2,519 2,577 2,604 2,615 2,642
+> 8-bit 2,438 2,426 2,517 2,545 2,564 2,597
+> Llama 3.2 3B
+> 4-bit 888 903 906 923 899 929
+> 8-bit 866 863 888 895 893 905
+
+# 5 Discussion 
+
+## 5.1 Limitations 
+
+BaseRT currently supports single-device inference only. It does not implement continuous batching, parallel decoding across multiple requests, or tensor parallelism across multiple GPUs. These are essential for server-class workloads but less critical for the single-user edge inference scenarios that are the focus of this work. The runtime targets Metal exclusively, limiting deployment to Apple hardware. While the internal device abstraction is designed with future multi-backend support in mind, no CUDA or Vulkan backend exists at present. 
+
+## 5.2 Future Work 
+
+Extending architecture coverage to include vision-language models and (hybrid) state space models would increase the practical utility of the runtime. Beyond Apple Silicon, the device abstraction layer is designed to support additional backends. A CUDA backend would enable direct comparison with GPU-class inference servers, while a Vulkan backend would extend coverage to Android and Linux platforms. Both would require backend-specific kernel implementations but no changes to the core dispatch mechanism or inference loop. On the serving side, continuous batching and speculative decoding are natural extensions that would improve throughput in multi-request and latency-sensitive scenarios respectively. 96 Conclusion 
+
+We presented BaseRT, a LLM inference runtime built natively on Apple’s Metal GPU API without reliance on intermediate frameworks. Through chip-specific kernel fusion, unified memory-aware optimisation, and custom dispatch logic, BaseRT achieves the highest reported inference throughput for open-source LLMs on Apple Silicon. Our results establish that the performance ceiling of Apple Silicon for LLM inference is higher than previously reported, and that framework abstraction is a meaningful source of overhead on this platform. We release BaseRT to the public via the following repository: https://github.com/basecompute/baseRT .
+
+# References 
+
+[1] Alphabet Inc. 2025 Q4 Earnings Call. https://abc.xyz/investor , 2026. [2] OpenRouter. Model Rankings. https://openrouter.ai/rankings , 2026. Accessed: 3 April 2026. [3] Alex Singla, Alexander Sukharevsky, Lareina Yee, and Michael Chui. The State of AI in 2025: Agents, Innovation, and Transformation. Technical report, McKinsey & Company, QuantumBlack, November 2025. URL https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai .[4] Chhavi Arora, Marc Sorel, Pankaj Sachdeva, et al. The next big shifts in AI workloads and hyperscaler strategies. McKinsey & Company, December 2025. URL https://www.mckinsey.com/industries/te chnology-media-and-telecommunications/our-insights/the-next-big-shifts-in-ai-workloa ds-and-hyperscaler-strategies . Accessed: April 2026. [5] National Institute of Standards and Technology. Artificial intelligence risk management framework: Generative artificial intelligence profile. Technical Report NIST AI 600-1, U.S. Department of Commerce, July 2024. URL https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf .[6] Joerg Fritsch and Gartner, Inc. Gartner predicts 40% of AI data breaches will arise from cross-border GenAI misuse by 2027. Gartner Newsroom, February 2025. URL https://www.gartner.com/en/new sroom/press-releases/2025-02-17-gartner-predicts-forty-percent-of-ai-data-breaches-w ill-arise-from-cross-border-genai-misuse-by-2027 . Accessed: April 2026. [7] SiYoung Jang and Roberto Morabito. Edge-First Language Model Inference: Models, Metrics, and Tradeoffs. In 45th IEEE International Conference on Distributed Computing Systems (ICDCS) , 2025. URL https://arxiv.org/abs/2505.16508 .[8] Xuan Huang et al. DaDu-Corki: Algorithm-Architecture Co-Design for Embodied AI-powered Robotic Manipulation. In Proceedings of the 52nd Annual International Symposium on Computer Architecture (ISCA) , 2025. URL https://arxiv.org/abs/2407.04292 .[9] Tula Masterman et al. Agentic Artificial Intelligence: Architectures, Taxonomies, and Evaluation of Large Language Model Agents. arXiv preprint arXiv:2601.12560 , 2026. URL https://arxiv.org/abs/ 2601.12560 .[10] others. Sherlock: Reliable and Efficient Agentic Workflow Execution with Selective Verification and Speculative Execution. arXiv preprint arXiv:2511.00330 , 2025. URL https://arxiv.org/abs/2511.0 0330 .[11] Anthropic. Anthropic Status Page: Incident History. https://status.anthropic.com , 2026. Accessed: April 2026. Documented 167 incidents between October 2025 and April 2026. [12] OpenAI. OpenAI Status Page: Incident History. https://status.openai.com , 2026. Accessed: April 2026. [13] McKinsey & Company. The New Economics of Enterprise Technology in an AI World. https: //www.mckinsey.com/capabilities/tech-and-ai/our-insights/ , May 2025. 10 [14] Qualcomm. Snapdragon X Elite. https://www.qualcomm.com/laptops/products/snapdragon-x-e lite .[15] Intel. Intel Achieves First, Only Full NPU Support in MLPerf Client v0.6. https://newsroom.intel.com ,2025. [16] ONNX Runtime. Vitis AI Execution Provider. https://onnxruntime.ai/docs/execution-provide rs/ .[17] Afsara Benazir and Felix Xiaozhu Lin. Profiling Large Language Model Inference on Apple Silicon: A Quantization Perspective. arXiv preprint arXiv:2508.08531 , 2025. [18] Nestor Maslej et al. Artificial Intelligence Index Report 2025. Technical report, Stanford Institute for Human-Centered Artificial Intelligence (HAI), 2025. arXiv:2504.07139. [19] Jon Saad-Falcon, Avanika Narayan, Hakki Orhun Akengin, J. Wes Griffin, Herumb Shandilya, Adrian Gamarra Lafuente, Medhya Goel, Rebecca Joseph, Shlok Natarajan, Etash Kumar Guha, Shang Zhu, Ben Athiwaratkun, John Hennessy, Azalia Mirhoseini, and Christopher R´ e. Intelligence per Watt: Measuring Intelligence Efficiency of Local AI. arXiv preprint arXiv:2511.07885 , 2025. [20] Georgi Gerganov et al. llama.cpp: LLM inference in C/C++. https://github.com/ggml-org/llama .cpp , 2023. [21] Awni Hannun, Jagrit Digani, Angelos Katharopoulos, and Ronan Collobert. MLX: Efficient and flexible machine learning on Apple silicon. https://github.com/ml-explore/mlx , 2023. [22] Apple Machine Learning Research. MLX documentation. https://ml-explore.github.io/mlx/bui ld/html/index.html , 2023. [23] Wayner Barrios. Native LLM and MLLM inference at scale on Apple Silicon. arXiv preprint arXiv:2601.19139 , 2026. URL https://arxiv.org/abs/2601.19139 .[24] RunAnywhere, Inc. MetalRT: The fastest LLM decode engine for Apple Silicon. https://www.runany where.ai/blog/metalrt-fastest-llm-decode-engine-apple-silicon , 2026. [25] Mirai. uzu: A high-performance inference engine for AI models. https://github.com/trymirai/uzu ,2025. 11

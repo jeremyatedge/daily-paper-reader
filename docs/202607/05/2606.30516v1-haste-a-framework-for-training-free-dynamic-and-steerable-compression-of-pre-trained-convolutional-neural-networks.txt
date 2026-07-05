@@ -1,0 +1,585 @@
+Title: HASTE: A Framework for Training-Free, Dynamic, and Steerable Compression of Pre-Trained Convolutional Neural Networks
+
+URL Source: https://arxiv.org/pdf/2606.30516v1
+
+Published Time: Tue, 30 Jun 2026 02:46:06 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# HASTE: A Framework for Training-Free, Dynamic, and Steerable Compression of Pre-Trained Convolutional Neural Networks 
+
+## Lukas Meiner 1,2* , Jens Mehnert 1 and Alexandru Paul Condurache 1,2 
+
+1Robert Bosch GmbH, Leonberg, Germany. 
+
+2Universit¨ at zu L¨ ubeck, L¨ ubeck, Germany. *Corresponding author(s). E-mail(s): Lukas.Meiner@bosch.com; 
+
+Abstract 
+
+Deploying large convolutional neural networks (CNNs) on resource-constrained devices is challenging due to their high computational cost. While dynamic exe-cution methods are promising, existing approaches for CNNs typically require specialized training or fine-tuning, limiting their effectiveness when applied to pre-trained models and requiring data access. To address this gap, we propose HASTE ( Has hing for Tractable Efficiency), a plug-and-play convolution mod-ule that enables training-free, dynamic compression of large pre-trained CNNs. At inference time, HASTE uses locality-sensitive hashing to identify and merge redundant channels of latent feature maps on a patch-wise basis. This process simultaneously compresses the depth of both input features and their corre-sponding filters, resulting in computationally cheaper convolutions. We conduct extensive experiments on CIFAR-10 and ImageNet across a range of architec-tures, demonstrating a 46.2% FLOPs reduction in a ResNet34 on CIFAR-10 with only a 1.25% drop in accuracy, without any retraining. We support our claims by comprehensive ablation studies to validate our core design choices, an anal-ysis of the method’s properties and limitations, and a discussion that connects our channel merging scheme to the conceptually related task of token merging in Vision Transformers. Our results demonstrate that HASTE provides an effective solution for steerable compression of pre-trained CNNs at runtime, opening new possibilities for the deployment of efficient deep learning methods. 
+
+Keywords: Steerable model compression, Dynamic execution, Locality-sensitive hashing, Training-free, Convolutional neural networks 
+
+1
+
+> arXiv:2606.30516v1 [cs.CV] 29 Jun 2026
+
+# 1 Introduction Training    
+
+> Fine-Tuning
+> HASTE Module Untrained Network Trained Network Compressed Network (a) Training-Based (b) Tuning-Based (c) Instant Compression (Ours)
+
+Fig. 1 Overview of related compression approaches. Existing methods require train-ing with specialized sparsity losses (a) or fine-tuning to restore accuracy after the compression step (b). Our method (c) instantly compresses the network and maintains performance entirely without training. Adapted from [1] With the widespread availability of powerful deep learning hardware, it has become feasible to train increasingly larger models, enabling significant breakthroughs in com-puter vision tasks. Concurrently, concerns associated with computational requirements of these models, notably the high energy consumption and environmental impact, have grown considerably. These factors are particularly critical at the scale of automotive applications, where models are potentially deployed across millions of vehicles. In response to these challenges, a variety of carefully crafted efficient architectures have been proposed [2–4], tailored explicitly for embedded applications. These models achieve computational efficiency by integrating inductive biases into their architecture. Despite these developments, more scalable architectures [5–7] remain popular due to their superior performance and ability to generalize across diverse tasks and domains, despite the higher resource demands in terms of training time, data, and energy. To balance the trade-off between performance and computational cost, consider-able research has emerged in model compression, including unstructured [8–10] and structured pruning [11–17], dynamic routing [18–24], quantization [25–27], mixtures of experts [28–31], and knowledge distillation [32, 33]. Structured pruning, in particu-lar, has garnered significant attention due to its direct resource savings. However, two practical limitations restrict the broader application of existing pruning methodolo-gies, as shown in Figure 1. Firstly, many pruning approaches [14, 17, 19, 21, 22, 34, 35] depend on actively learning which channels to prune during training. This increases the complexity of the optimization process through additional parameters and sup-plementary loss functions, and requires training the model from scratch to achieve any reduction in inference cost. Secondly, approaches operating on pre-trained mod-els typically require fine-tuning after pruning to restore performance [12, 16, 36, 37], requiring access to the original training data to prevent catastrophic forgetting [38]. In addressing these limitations, we propose HASTE (Hashing for Tractable Effi-ciency), a plug-and-play convolutional module designed for training-free and dynamic compression of CNN architectures. HASTE leverages locality-sensitive hashing (LSH) [39] to identify and cluster redundant channels dynamically within latent feature repre-sentations. By exploiting the distributive property of convolutions, HASTE efficiently 2compresses input and filter channels by merging approximately similar ones, substan-tially reducing the number of floating-point operations (FLOPs) required at inference. The resulting compression ratio and performance trade-off can be directly controlled via a single hyperparameter, simplifying experimentation and deployment. Our experiments demonstrate that HASTE significantly reduces the computational demands of various pre-trained CNNs, maintaining high accuracy without additional training or fine-tuning. Crucially, our method does not require access to the original training dataset, making it suitable for scenarios with strict data privacy and avail-ability constraints. Furthermore, the adaptability of our approach addresses common restrictions in edge computing, such as limited energy budgets, thermal management requirements, and varying computational resources. To our knowledge, HASTE repre-sents the first entirely training-free, dynamically adaptable CNN compression method, enabling real-time adjustments to model complexity based on hardware availability. This manuscript is an extended and revised version of our VISAPP 2025 con-ference paper [1], expanding on theoretical foundations, additional experiments and ablations, as well as adding broader contextual analysis and conceptual links to token compression methods in Vision Transformers [7]. Our main contributions can be summarized as follows: 
+
+• We identify locality-sensitive hashing as a suitable approach for dynamically iden-tifying structural redundancies in latent features of CNNs, incurring minimal computational overhead and not relying on any training or calibration data. 
+
+• Based on these findings, we propose HASTE, a plug-and-play replacement for con-volutional modules, enabling steerable FLOPs reduction at test time without any training requirements. 
+
+• We evaluate our method across popular CNN architectures and benchmark vision datasets. We expand on our conference paper by providing extensive ablations for our design choices, additional experiments and analysis, and a discussion on the limitations of our method. 
+
+• Additionally, we contextualize our contributions with emerging trends, such as efficiency-oriented CNN architectures and token reduction techniques for Vision Transformers, highlighting both challenges and opportunities for future work. 
+
+# 2 Background And Related Work 
+
+Model compression has long been an active area of research, especially as the size and computational demands of deep neural networks continue to grow. While a wide range of compression techniques have emerged, our focus lies on the dynamic compression of latent features at inference time. This field closely aligns with structured pruning and dynamic gating approaches, which aim to eliminate structural components such as filters or feature channels, resulting in hardware-friendly speed-ups. Recently, the idea of dynamically compressing intermediate representations has also gained traction in the context of Vision Transformers (ViTs) [7], where features take the form of token embeddings. In this domain, techniques like token pruning and token merging reduce the number of tokens passed through subsequent layers, reducing the computational load based on input redundancy. 3Among these diverse approaches to model compression, a key consideration lies in whether training or fine-tuning is required to utilize the method effectively. The ability to compress models without any additional training steps is attractive to practitioners and researchers alike, as it enables the use of large, publicly available pre-trained models even on constrained hardware platforms. 
+
+Static Pruning and Dynamic Gating. Traditional pruning approaches often rely on static criteria to determine which components of a network can be removed. These methods typically require fine-tuning after pruning to restore model performance, or train a model from scratch with additional losses. For example, PFEC [12] prunes filters based on their L1 norm in a one-shot fashion, while DCP [16] equips models with multiple loss terms before fine-tuning to promote highly discriminative channels to be formed. Approaches like Network Slimming [14] and DMCP [17] introduce additional sparsity-promoting losses during model training to facilitate the selection of structures which are suitable for pruning. In contrast to static compression, dynamic gating approaches [18–20, 22, 24] allow for input-dependent paths through the network, selectively using structural compo-nents dependent on active gates. However, these gating modules must be trained alongside the model, limiting their applicability to pre-trained architectures. A handful of approaches eliminate the need for access to the training dataset entirely, but either use synthetic data to retrain the model [40] or generate a static model [41, 42] that is unable to adapt its compression to the availability of hardware resources or the level of redundancy in the input dynamically. Our proposed method targets on-the-fly compression of models at inference time. 
+
+Hashing-Based Compression. Locality-sensitive hashing [39, 43] has found increasing use in efficient inference pipelines, particularly for high-dimensional data. Reformer [44] applies LSH to attention mechanisms to reduce complexity in Trans-formers [45]. SLIDE and MONGOOSE [46, 47] apply LSH to feedforward networks, selectively activating only a subset of neurons for each input. M¨ uller et al. [48] extend this concept to neural radiance fields using multiresolution hash encodings. Other (approximate) nearest neighbor search approaches have also been explored for model compression, such as count sketches to approximate forward passes in mul-tilayer perceptrons (MLPs) [49], or k-means clustering for redundancy detection in CNN input channels [50]. However, these efforts result in static models or are limited to fixed pruning ratios. In contrast, our method integrates LSH directly into the convo-lution operation to detect and compress redundant channels dynamically at runtime, without any training or fixed compression target. 
+
+Token Reduction in Vision Transformers. A particularly promising approach for lowering inference cost in Vision Transformers [7] is reducing the number of tokens processed throughout the network. This form of dynamic feature compression reduces both the computational cost of self-attention layers and the subsequent MLP blocks, helping to alleviate the quadratic complexity of attention mechanisms. Two dominant strategies have emerged: token pruning [51–53], which removes uninformative tokens entirely, and token merging [54–57], which combines similar token embeddings into a single representation. Notably, both approaches have demonstrated strong empirical 4performance and can, in some cases, function without requiring additional training [53, 55, 57]. More recent advances have introduced input-adaptive techniques that control the number of tokens merged based on token similarity thresholds [55], enabling finer control over the computational budget in response to input complexity. We will return to these strategies in Section 5 to highlight both their conceptual overlap with and differences from our proposed method. 
+
+# 3 Methodology 
+
+In this section, we present HASTE a plug-and-play convolutional module that reduces inference-time computational cost through a training-free compression mechanism, leveraging locality-sensitive hashing for approximate similarity search. The section begins with a theoretical introduction to LSH. We then describe how it is used to iden-tify redundancies in latent CNN features, and follow with an overview of the HASTE module and its integration into convolutional model architectures. We conclude with the presentation of a design choice that further increases the efficiency of our method. 
+
+## 3.1 Locality-Sensitive Hashing via Random Projections 
+
+Locality-sensitive hashing is a probabilistic way for performing efficient approximate nearest neighbor search in high-dimensional spaces. The key property of LSH is that two similar inputs are mapped to the same hash bucket with high probability, while dissimilar inputs are unlikely to collide. This is in contrast to regular hashing schemes, which try to reduce hash collisions to a minimum by widely scattering the input data across hash buckets. More formally, a family of hash functions H = {h : Rd → N} is called ( r1, r 2, p 1, p 2)-sensitive, if for any two vectors x, y ∈ Rd, we have that: 
+
+• if Sim (x, y ) ≥ r1, then P[h(x) = h(y)] ≥ p1,
+
+• if Sim (x, y ) ≤ r2, then P[h(x) = h(y)] ≤ p2, (1) where we require p1 > p 2 and r1 > r 2 to hold [39, 46]. For use in neural network architectures, cosine similarity is a particularly suitable measure. The dot product between an arbitrary row Wi ∈ Rd of a weight matrix W
+
+and an input vector x ∈ Rd, which is a fundamental operation in both convolutional and fully connected layers, can be expressed as: 
+
+Wi · x = ∥Wi∥ ∥ x∥ cos θ, (2) where θ is the angle between Wi and x, and cos θ represents their cosine similarity. A common LSH family for cosine similarity is based on random hyperplanes, also called random projections (RP) [46, 58]. By generating a set of L random hyperplanes in d-dimensional space, we partition the input space into at most 2 L hash buckets. The position of an input vector x ∈ Rd relative to the l-th hyperplane, defined by the 5hyperplane’s normal vector vl ∈ Rd, l ∈ { 1, . . . , L }, is determined by: 
+
+hl : Rd → { 0, 1}, hl(x) := 
+
+(
+
+1, if vl · x > 0,
+
+0, else. (3) We can construct vl by sampling its components independently from a standard normal distribution N (0 , 1). Each hl returns a binary decision, representing whether the input 
+
+x lies above ( hl(x) = 1) or below ( hl(x) = 0) the l-th hyperplane. By concatenating the L binary decisions of all hyperplanes, we receive the hash function: 
+
+h : Rd → { 0, 1}L, h(x) = ( h1(x), . . . , h L(x)) . (4) This L-bit binary code acts as a unique identifier of a single hash bucket, and can equivalently be transformed into an integer: 
+
+h : Rd → 0, . . . , 2L − 1 ,h(x) = 2 L−1hL(x) + · · · + 2 0h1(x). (5) The computation of L dot products with the normal vectors of random hyperplanes allow us to effectively partition high-dimensional spaces into distinct identifiable regions, in which points are similar with respect to the chosen similarity measure. 
+
+## 3.2 Finding Redundancies with LSH 
+
+Having established LSH with random projections as an efficient method for group-ing vectors by cosine similarity, we now detail its application to identify redundant computations within convolutional neural networks. A standard convolutional layer processes an input feature map X ∈ RCin ×H×W
+
+with a set of learned filters Fj ∈ RCin ×K×K , j ∈ { 1, . . . , C out }. We denote the input and output channel dimensions as Cin and Cout , respectively, the kernel size as K,and the spatial dimensions of the input as H and W . At a specific spatial location, the output Yj of the j-th filter is computed by convolving the filter with the corresponding input patch. For a given input channel c ∈ { 1, . . . , C in }, this involves the dot product between the filter’s c-th channel slice Fj,c and the input’s c-th channel slice Xc, both flattened to vectors. Then, we take the sum of contributions from all Cin channels. Therefore, the output Yj at that location is: 
+
+Yj =
+
+> Cin
+
+X
+
+> c=1
+
+Fj,c · Xc. (6) Using Equation 2, this can be rewritten as: 
+
+Yj =
+
+> Cin
+
+X
+
+> c=1
+
+∥Fj,c ∥ ∥ Xc∥ cos θc , (7) 6Extract Patch Input Patch 
+
+> Input Feature Map
+> Convolutional Filters
+> Redundancy-Free Patch
+> Redundancy-Free Convolutional Filters
+> Output Feature Map
+> Hash Channels to Find Redundancies
+> Compute Mean per Bucket
+> Convolve
+> Sum Corresponding Channels on Copy of Filters
+> Buckets
+> Empty
+
+Fig. 2 Overview of our proposed HASTE module. Each patch of the input feature map is processed to find redundant channels. Detected redundancies are then merged together, dynamically reducing the depth of each patch and the convolutional filters. Adapted from [1] where θc = ∠(Fj,c , X c). This formulation highlights that the output depends on the cosine similarity between filter channel slices and corresponding input channel slices. Our core idea is that if multiple input channel slices Xc are highly similar in terms of their orientation (i.e., high cosine similarity with each other), they will interact similarly with their respective filter channel slices Fj,c . LSH allows us to identify such groups of similar input channel slices. In particular, the random projection LSH scheme guarantees [46, 58] that the collision probability p for two input channel slices is: 
+
+p =
+
+
+
+1 − θπ
+
+L
+
+, (8) where θ ∈ [0 , π ] is the angle between the slices, expressed in radians. Channels with high cosine similarity (and thus, low θ) are therefore highly likely to collide. 
+
+## 3.3 The HASTE Module 
+
+Suppose a set of input slices {Xc1 , X c2 , X c3 } at a specific spatial position are grouped into the same hash bucket. We can approximate their contribution to the convolution by a single representative channel slice ¯XC , by taking the average over the channels 
+
+C = {c1, c 2, c 3}. The contribution of this group in the output Yj in Equation 6 can then be approximated by: 
+
+X
+
+> ci∈C
+
+Fj,c i · Xci ≈ X
+
+> ci∈C
+
+Fj,c i · ¯XC = X
+
+> ci∈C
+
+Fj,c i
+
+!
+
+· ¯XC . (9) This approximation allows computation to be performed in a compressed representa-tion. The terms P Fj,c i and ¯XC can be pre-computed once per group. This reduces the number of dot products in the sum, leading to computational savings. Since the grouped filter P Fj,c i is applied over many spatial locations with similarly grouped 7input channel averages, the cost of pre-computation of the filter sum and channel mean is offset by the savings. To leverage this approximation inside of a convolutional module, we first process the input feature map X. We start by rasterizing the (padded) input features into patches X(p) 
+
+> c
+
+∈ R(K+2) ×(K+2) for c ∈ { 1, . . . , C in }, leaving an overlap of two pixels on each side to neighboring patches. Each patch p represents the context window for hashing. We employ patches slightly larger than the kernel size K, such that the pre-computed compression is re-used for multiple convolution operations. To identify similar channels for every patch p, their representation X(p) 
+
+> c
+
+is flattened into vectors of dimension ( K + 2) 2 and centered by the mean along the channel dimension. By applying the LSH scheme described in Section 3.1 to these vectors, channels with high cosine similarity are grouped in hash buckets. The convolution operation in each group can then be approximated as shown in Equation 9. The entire procedure is summarized in Algorithm 1. In effect, this means that the we dynamically reduce the size of each input context window X(p) by compressing redundant channels. As a result, the number of remaining input channels of a given patch is reduced to ˜Cin ≤ Cin , which lets us define a compression ratio r = 1 − ( ˜Cin /C in ) ∈ [0 , 1). Note that the compression ratio can vary from patch to patch, as it is based on the redundancy in feature channels at that location. This reduction step is performed on-the-fly for every patch p, retaining the original filter weights for the next patch. Since we do not remove entire filters, but only reduce their channel depth, the output feature map retains the same spatial dimension and number of channels as with a regular convolution module. In summary, our proposed HASTE module addresses the key design considerations for training-free and dynamic model compression: 
+
+• Computational Overhead. A main concern is that the method must efficiently detect and compress redundancies at inference time while keeping overhead cost negligible to not undermine FLOPs savings. HASTE achieves this through random projections, offering a low computational overhead compared to pairwise distance computation or iterative approaches such as k-nearest neighbors, as it only requires the computation of L dot products with hyperplane normal vectors. 
+
+• Accuracy. Without training or fine-tuning, the method must maintain the accuracy of the underlying model. The LSH approach in HASTE is designed to only group and merge channels with high cosine similarity (see Equation 8) and thus, high redundancy. It also retains the original input and output dimensions of the model, only compressing repeated features and minimally disrupting information flow. 
+
+• Adjustability. Real-world deployment scenarios require the method to be adapt-able to handle limited energy or compute availability, or constraints related to thermal management. By adjusting the number of hyperplanes L at runtime, we can control the number of hash buckets and thus collisions, directly steering the trade-off between accuracy and computational cost. 8Algorithm 1 Pseudocode overview of the HASTE module. Adapted from [1] 
+
+Input: Feature map X ∈ RCin ×H×W , Filters F ∈ RCout ×Cin ×K×K
+
+Output: Y ∈ RCout ×H×W 
+
+> 1:
+
+Initialize: h : R(K+2) 2
+
+→ { 0, . . . , 2L − 1} 
+
+> 2:
+
+for every patch p do ▷ Iterate over every patch in the spatial grid.  
+
+> 3:
+
+HashCodes = [ ]  
+
+> 4:
+
+for c = 1 , . . . , C in do  
+
+> 5:
+
+x(p) 
+
+> c
+
+= Center(Flatten( X(p) 
+
+> c
+
+))  
+
+> 6:
+
+HashCodes.Append( h(x(p) 
+
+> c
+
+)) ▷ Hash the flattened input patch.  
+
+> 7:
+
+end for  
+
+> 8:
+
+¯X(p) = MergeInput( X(p), HashCodes) ▷ Take mean of redundant channels.  
+
+> 9:
+
+˜F = MergeFilters( F , HashCodes) ▷ Take sum of redundant channels.  
+
+> 10:
+
+Y (p) = ¯X(p) * ˜F ▷ Approximate convolution as in Equation 9.  
+
+> 11:
+
+end for  
+
+> 12:
+
+return Y
+
+## 3.4 Efficient Hashing with Sparse Hyperplanes 
+
+Locality-sensitive hashing significantly reduces computational overhead compared to exact nearest neighbor searches by using random hyperplanes to generate binary code identifiers. However, using a typical LSH implementation in a HASTE module still incurs some overhead computational cost. Specifically, it requires L · d multiplications and L · (d − 1) additions per input, where d is the dimensionality of the input vectors. To address this remaining overhead, we employ sparse random projections as pro-posed by Achlioptas [43] and Li et al. [59]. Instead of generating hyperplane normal vectors vl from standard normal distributions, we construct very sparse vectors ˜ vl
+
+whose entries are constrained to the set {1, 0, −1}. We control their degree of sparsity using a hyperparameter s ∈ (0 , 1), representing the expected fraction of zero entries. Non-zero entries are randomly assigned values of +1 or −1 with equal probability. Using sparse hyperplanes lowers the computational requirements further: dot prod-uct calculations now consist solely of additions, eliminating multiplications entirely. Specifically, each hyperplane computation requires only L·(d(1 −s)−1) additions. This enhances runtime efficiency, as computationally expensive multiplications are replaced by cheaper additions. Our method introduces two hyperparameters: the number of hyperplanes L and their sparsity s. By adjusting L, we can directly steer the trade-off between the degree of compression and model accuracy. Therefore, practitioners can adjust this parameter based on the application’s needs in a flexible manner, targeting either high computa-tional efficiency or accuracy retention. On the other hand, the sparsity parameter s
+
+does not need intensive tuning. It can typically be set consistently across all models trained on a specific dataset. The theoretical insights provided by Achlioptas [43] and Li et al. [59] provide good starting choices for s. We further detail these hyperparameter choices in Section 4.1 and analyze the impact of s in Section 4.5.2. 9Latent Feature Map Detected Redundancies in Patches Extracted from Feature Map Compute Mean per Bucket 
+
+> Patch Projected onto Input Image
+> Remaining Channels after Merging Redundancies
+
+(a) A patch from a low-complexity background region. Our method detects high redundancy, allowing us to merge many channels. Here, the input channel dimension is reduced from 64 to 24, resulting in a compression ratio of 62 .50% Latent Feature Map Detected Redundancies in Patches Extracted from Feature Map Compute Mean per Bucket 
+
+> Patch Projected onto Input Image
+> Remaining Channels after Merging Redundancies
+
+(b) A patch containing more complex textures. Fewer redundancies are detected, as the features are more varied. Here, the input channel dimension is reduced from 64 to 54, resulting in a compression ratio of 15 .63% 
+
+Fig. 3 Visualization of the dynamic, input-dependent channel compression per-formed by the HASTE module in a ResNet18 model on CIFAR-10. For two different patches from the same input image, our method identifies varying degrees of redun-dancy in the latent features based on LSH. Channels sharing the same outline color fall into the same hash bucket and are merged by averaging. Patches with no match-ing hash code (and therefore, no outline) are left unchanged. Adapted from [1] 
+
+# 4 Experiments 
+
+In this section, we evaluate the effectiveness of our plug-and-play compression approach on standard convolutional neural network architectures, focusing on both the reduction in floating point operations and the preservation of model accuracy. We begin by detailing the experimental setup in Section 4.1, followed by a verifica-tion of the design principles of HASTE in Section 4.2. Next, we present our results on the CIFAR-10 [60] and ImageNet ILSVRC 2012 (ImageNet-1K) [61] datasets in 10 Table 1 Overview of related pruning approaches. While other methods require either fine-tuning or a specialized training procedure to achieve notable FLOPs reduction, our method is completely training-free and uniquely offers adjustable compression ratios at runtime. Adapted from [1]                                             
+
+> Method Dynamic Inference No Training No Fine-Tuning Adaptable at Runtime DGNet [22] ✓✗✓✗
+> DMCP [17] ✓✗✓✗
+> DynConv [21] ✓✗✓✗
+> FBS [35] ✓✗✓✗
+> FPGM [15] ✗✗✓✗
+> FTWT [24] ✓✗✓✗
+> LCCN [34] ✓✗✓✗
+> PFEC [12] ✗✓✗✗
+> SSL [36] ✗✓✗✗
+> HASTE (ours) ✓✓✓✓
+
+Sections 4.3 and 4.4, respectively, where we also compare our method to related approaches. We also examine the adjustability of our method with respect to the hyperparameter L as well as its scaling behavior with larger model architectures. Fur-thermore, we extend on [1] by conducting ablations on the context patch size, the hyperplane sparsity setting s as well as the choice of starting layer for HASTE applica-tion in Section 4.5. We close our analysis by evaluating the out-of-the-box performance of HASTE on lightweight CNN architectures in Section 4.6. 
+
+## 4.1 Experiment Settings 
+
+For our experiments, we use publicly available pre-trained models [62, 63]. In these models, we replace standard, non-strided convolutions with our HASTE module. In ResNet architectures [6], we exclude downsampling layers from this process. We adapt the hyperplane sparsity s and the starting layer for the use of HASTE based on the dataset. For CIFAR-10 [60], we use a high sparsity setting of s = 2 /3as suggested by Achlioptas [43] and apply HASTE early, from the first convolutional layer in VGG models [5] and the first residual block after max pooling in ResNet architectures [6]. For the more complex ImageNet [61] dataset, we lower the sparsity to 
+
+s = 1 /2 and apply HASTE later in the models, starting from the third convolution in VGG and the second layer in ResNets and WideResNets [64]. This strategy accounts for the lower redundancy in the latent features of the initial layers in ImageNet models. We provide an ablation of these settings in Section 4.5. Crucially, our method requires no training or fine-tuning, so models are evaluated on a single NVIDIA Tesla T4 GPU immediately after inserting the HASTE modules. We report the mean top-1 accuracy and FLOPs reduction over three random seeds, including standard deviations. To evaluate our approach, we use the CIFAR-10 test set and the ILSVRC 2012 validation set for ImageNet. Additionally, we provide latency 11 estimates derived from measurements on an Intel i7-11850H CPU (see Table 4 and Section 4.3.2). As, to our knowledge, HASTE is the first entirely training-free CNN compression technique adjustable at runtime, direct comparisons are not possible. We therefore test it against related, state-of-the-art channel pruning and dynamic gating methods that require dedicated training or tuning stages (see Table 1 for an overview). 
+
+## 4.2 Analysis of the HASTE Module 
+
+To isolate the contributions of our method’s key components, we conduct experi-ments comparing HASTE against several training-free baseline configurations. These baselines are constructed by varying three core design choices: 1. Compression Scope. Compression is either applied globally to entire input channels or on a patch-wise basis, as proposed in our method (see Section 3.3). 2. Compression Criterion. The decision of which channels to compress is based on either the channel’s L1 norm [12] or our proposed LSH scheme for detecting redundancies (see Section 3.2). 3. Compression Operation. Selected channels are either completely removed or grouped and merged into a single representation. Our HASTE module uniquely combines the patch-wise scope, an LSH-based com-pression criterion and channel merging. We create four baseline variants using the 
+
+L1 norm criterion and systematically explore the other two settings: global channel removal, global channel merging, patch-wise removal and patch-wise merging. For a fair comparison, all methods are configured to achieve a similar compression ratio per model on the CIFAR-10 dataset without any fine-tuning. The results presented in Table 2 demonstrate the benefits of our approach. While baselines using patch-wise operations improve over global pruning or merging, only the full HASTE configuration, which uses LSH to detect redundant channels, consistently maintains near-baseline accuracy. The naive L1 norm-based methods, even with patch-wise operation, result in a significant degradation in performance. 
+
+## 4.3 Results on CIFAR-10 
+
+We evaluate HASTE on a range of ResNet and VGG-BN architectures on the CIFAR-10 dataset. Our training-free method demonstrates the ability to deliver significant computational savings while preserving high model accuracy, without any fine-tuning. For instance, on ResNet34, HASTE reduces FLOPs by 46.72% with only a 1.25 percentage point drop in top-1 accuracy. The results are visualized in Figure 4. Table 3 presents a comparative analysis against state-of-the-art pruning methods for CNN architectures. Despite its training-free nature, HASTE achieves performance competitive with techniques that require data-dependent training or fine-tuning after the compression step. While the accuracy of baseline models differs due to different pre-trained checkpoints, our results for ResNet18 and VGG19-BN are comparable with methods that require training, such as DMCP [17] and SSL [36]. For the ResNet18 model, we provide visualizations of the resulting channel clusters in Figure 3. 12 Table 2 Comparing our full HASTE method against four training-free baseline vari-ants on CIFAR-10. The baselines are constructed by varying the Compression Scope 
+
+(Global vs. Patch-wise), the Compression Criterion (L1 norm vs. LSH), and the Com-pression Operation (Remove vs. Merge). HASTE combines the patch-wise scope, LSH criterion, and merge operation. For each model, we report top-1 accuracy (%) and accuracy drop (∆) after compression. We highlight the best accuracy score after com-pression and lowest accuracy drop (∆) in bold . Adapted from [1]                                         
+
+> Method ResNet18 ResNet34 VGG11-BN VGG19-BN (Scope + Criterion + Op.) (93.07) (93.34) (92.39) (93.95) Compression Target 40% 50% 40% 40% Global + L1+ Remove 71.07 (-22.00) 48.42 (-44.92) 41.77 (-50.62) 34.89 (-59.06) Global + L1+ Merge 65.31 (-27.76) 40.52 (-52.82) 73.87 (-18.52) 42.23 (-51.72) Patch + L1+ Remove 88.70 (-4.37) 80.04 (-13.30) 65.94 (-25.45) 65.84 (-28.11) Patch + L1+ Merge 86.53 (-6.54) 72.10 (-21.24) 87.39 (-5.00) 82.51 (-11.44)
+> Ours (HASTE) 91.18 (-1.89) 90.45 (-2.89) 89.36 (-3.03) 91.19 (-2.76) ResNet18 ResNet34 VGG11-BN VGG13-BN VGG16-BN VGG19-BN
+
+(a) Overview of CIFAR-10 results 12 14 16 14 16 16 18 18 20 18 20 20 22 16 18 20 22 18 20 22 24 18 20 22 24 (b) Influence of hyperparameter L
+
+Fig. 4 Results of our method on the CIFAR-10 dataset. (a) shows the achieved FLOPs reduction for all tested models, using L = 14 for ResNets and L = 20 for VGG-BN models. (b) depicts the influence of the chosen number of hyperplanes L
+
+(shown in gray) on compression rates and accuracy. Reproduced from [1] 
+
+4.3.1 Adjustable Accuracy-FLOPs Trade-off 
+
+A key feature of HASTE is the ability to adjust the trade-off between compression and retained accuracy at inference time. By varying the hyperparameter L, the number of hyperplanes used in our LSH scheme, we can navigate the Pareto front of performance, as depicted in Figure 4b. A larger L leads to more conservative compression, preserving more accuracy at the cost of lower FLOPs savings. For example, on ResNet34, the accuracy drop can be tuned from 2.89 points (for 51.09% FLOPs reduction with 
+
+L = 12) to only 0.38 points (for 39.07% FLOPs reduction with L = 20). 13 Table 3 Selected results on CIFAR-10. ”FLOPs Red.” denotes the percentage decrease of FLOPs after pruning compared to the base model. Reproduced from [1] 
+
+Model Method Top-1 Accuracy (%) FLOPs Red. (%) Training-Free Baseline Pruned ∆ResNet18  PFEC ∗ 91.38 89.63 1.75 11.71 ✗
+
+SSL ∗ 92.79 92.45 0.34 14.69 ✗
+
+DMCP 92.87 92.61 0.26 35.27 ✗
+
+Ours (L = 14) 93.07 91.18 ( ±0.38) 1.89 41.75 ( ±0.28) ✓
+
+Ours (L = 20) 93.07 92.52 ( ±0.10) 0.55 35.73 ( ±0.09) ✓
+
+> VGG16-BN
+
+PFEC ∗ 91.85 91.29 0.56 13.89 ✗
+
+SSL ∗ 92.09 91.80 0.29 17.76 ✗
+
+DMCP 92.21 92.04 0.17 25.05 ✗
+
+FTWT 93.82 93.73 0.09 44.00 ✗
+
+Ours (L = 18) 94.00 92.03 ( ±0.21) 1.97 37.15 ( ±0.47) ✓
+
+Ours (L = 22) 94.00 93.00 ( ±0.12) 1.00 33.25 ( ±0.44) ✓
+
+> VGG19-BN
+
+PFEC ∗ 92.11 91.78 0.33 16.55 ✗
+
+SSL ∗ 92.02 91.60 0.42 30.68 ✗
+
+DMCP 92.19 91.94 0.25 34.14 ✗
+
+Ours (L = 18) 93.95 92.32 ( ±0.35) 1.63 38.83 ( ±0.36) ✓
+
+Ours (L = 22) 93.95 93.22 ( ±0.14) 0.73 34.11 ( ±0.99) ✓ 
+
+> *Results taken from Xu et al. [17].
+
+4.3.2 Latency and Memory Analysis 
+
+Beyond theoretical FLOPs, we assess the practical performance of HASTE in terms of inference latency and memory usage. 
+
+Latency. Directly measuring the latency of HASTE in standard deep learning frame-works is misleading, as they are optimized for dense, static computations without native support for the dynamic, conditional operations [65] found in our method. 
+
+Table 4 Latency estimates for HASTE on CIFAR-10 and ImageNet. We report base-line and compressed latencies in milliseconds (ms). The numbers in brackets denote the speedup compared to the baseline. The realistic setting assumes hardware sup-port for patch-wise operations. The theoretical speedup is derived from the achieved FLOPs reduction. Adapted from [1] 
+
+Dataset CIFAR-10 ImageNet Model ResNet18 ResNet34 ResNet34 VGG19-BN (L = 14) (L = 14) (L = 16) (L = 20) Baseline 8.73 ms 15 .54 ms 103 .50 ms 476 .96 ms Realistic 5.88 ms (1 .48 ×) 10 .60 ms (1 .47 ×) 84 .56 ms (1 .22 ×) 371 .59 ms (1 .28 ×)Theoretical 5.09 ms (1 .72 ×) 8.28 ms (1 .88 ×) 80 .06 ms (1 .29 ×) 329 .91 ms (1 .45 ×)
+
+14 conv1 
+
+> layer1_0_conv1
+> layer1_0_conv2
+> layer1_1_conv1
+> layer1_1_conv2
+> layer2_0_conv1
+> layer2_0_conv2
+> layer2_1_conv1
+> layer2_1_conv2
+> layer3_0_conv1
+> layer3_0_conv2
+> layer3_1_conv1
+> layer3_1_conv2
+> layer4_0_conv1
+> layer4_0_conv2
+> layer4_1_conv1
+> layer4_1_conv2
+> Convolution Module
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Input Tensor Size in Kilobyte (kB)
+> 1.23
+> 6.55
+> 6.55
+> 6.55
+> 6.55
+> 6.55
+> 3.28
+> 3.28
+> 3.28
+> 3.28
+> 1.64
+> 1.64
+> 1.64
+> 1.64
+> 0.82
+> 0.82
+> 0.82
+> 1.23
+> 3.78
+> 4.69
+> 5.16
+> 4.77
+> 6.55
+> 2.42
+> 2.22
+> 1.94
+> 3.28
+> 0.73
+> 0.47
+> 0.42
+> 1.64
+> 0.02
+> 0.01
+> 0.03
+> Input Tensor Size
+> Compressed Input Size
+> No HASTE Module
+
+Fig. 5 Memory requirements for input tensors in ResNet18 ( L = 14) on CIFAR-10 Therefore, we choose to provide estimates for the potential speedup, which we report in Table 4. The realistic setting denotes an estimate derived from a latency-per-FLOP mea-surement of the baseline model, and extrapolating it to the FLOPs of each individual component (hashing, merging, reduced convolution). This assumes the existence of optimized hardware or software than can efficiently execute dynamic, patch-wise oper-ations, and accounts for the overhead of our hashing scheme. The theoretical scenario provides a simpler upper-bound estimate by reducing the baseline model’s latency proportionately to the total measured FLOPs reduction. As shown in Table 4, we calculate that our method accelerates ResNet18 and ResNet34 by a factor of approximately 1.5 ×, assuming realistic hardware support for the patch-wise operations on a CPU. This demonstrates a practical benefit that closely follows the theoretical speedup derived from FLOPs reduction. 
+
+Memory. Regarding memory, HASTE offers an advantage in reducing activation memory while incurring negligible parameter overhead. While the base model weights are retained (unlike in static pruning), our method compresses the intermediate feature maps before the convolution. This dynamic compression is crucial for reducing memory bus traffic, a key bottleneck on embedded hardware [66]. The average compression ratio achieved directly translates to an equivalent reduction in memory required for these latent tensors. Figure 5 visualizes this effect, showing that input tensor sizes are drastically reduced, especially in deeper layers. Furthermore, we note that the parameter storage overhead of the HASTE mod-ules is minimal. The additional parameters consist only of the sparse, ternary-valued normal vectors that define the hyperplanes used for LSH. The relative memory cost of a HASTE module compared to its corresponding convolution is: Mem(HASTE) Mem(Conv) = 1 + 3 · L · (K + 2) 2
+
+32 · Cout · Cin · K2 . (10) 15 ResNet18 ResNet50 ResNet34 ResNet101 ResNet152 WideResNet50 WideResNet101 VGG11-BN VGG13-BN VGG16-BN 
+
+> VGG19-BN
+
+(a) Overview of ImageNet experiments 0 5 10 15 20 25 30 35   
+
+> Convolution Module
+> 0%
+> 25%
+> 50%
+> 75%
+> 100%
+> Percentage
+> Remaining Channels Pruned Channels
+
+(b) Distribution of compressed channels 
+
+Fig. 6 Visualization of results on the ImageNet dataset. (a) depicts the trade-off between FLOPs reduction and number of parameters for all tested architectures. Results are shown with L = 16 for basic ResNet models, L = 28 for bottleneck ResNets, L = 32 for WideResNets, and L = 20 for VGG-BN models. (b) shows the achieved compression rate per convolution module in a ResNet50, starting from the second bottleneck layer. Reproduced from [1] For a typical configuration (ResNet18, L = 20), this results in an average parameter storage memory overhead of just 0.04% per module, making our approach highly suitable for memory-constrained environments. 
+
+## 4.4 Results on ImageNet 
+
+We benchmark HASTE on the large-scale ImageNet dataset using a variety of ResNet, WideResNet, and VGG-BN models. The increased complexity of ImageNet, featuring 100 × more classes and approximately 26 × more images than CIFAR-10, results in latent features with less redundancy. Consequently, while our method still provides notable computational savings, the achievable compression rates are more modest compared to those on CIFAR-10. This highlights a fundamental trade-off: as a model’s learned representations become richer and less redundant, training-free compression becomes inherently more challenging. Table 5 compares HASTE against several prominent data-dependent pruning and dynamic execution methods. While approaches that leverage training data for exten-sive tuning achieve higher FLOPs reduction, our approach provides a strong, data-free baseline. For instance, on ResNet34, HASTE reduces FLOPs by 18.69% with only a 1.25 percentage point accuracy drop, without requiring access to a single data sample. 
+
+4.4.1 Scaling with Model Size and Width 
+
+A key finding is that the effectiveness of HASTE scales positively with model size and width, as shown in Figure 6a. Larger models tend to exhibit greater redundancy, which our method successfully exploits. This trend is particularly noticeable in the WideResNet family. For example, we achieve up to a 31.54% FLOPs reduction on 16 Table 5 Selected results on ImageNet. ”FLOPs Red.” denotes the percentage reduc-tion of FLOPs after pruning compared to the baseline. Reproduced from [1]                                                                                                             
+
+> Model Method Top-1 Accuracy (%) FLOPs Red. (%) Training-Free Baseline Pruned ∆ResNet18 LCCN 69.98 66.33 3.65 34.60 ✗
+> DynConv ∗69.76 66.97 2.79 41.50 ✗
+> FPGM 70.28 68.34 1.94 41.80 ✗
+> FBS 70.71 68.17 2.54 49.49 ✗
+> FTWT 69.76 67.49 2.27 51.56 ✗
+> Ours (L= 16) 69.76 66.97 ( ±0.21) 2.79 18.28 ( ±0.19) ✓
+> Ours (L= 20) 69.76 68.64 ( ±0.56) 1.12 15.10 ( ±0.18) ✓
+> ResNet34
+> PFEC 73.23 72.09 1.14 24.20 ✗
+> LCCN 73.42 72.99 0.43 24.80 ✗
+> FPGM 73.92 72.54 1.38 41.10 ✗
+> FTWT 73.30 72.17 1.13 47.42 ✗
+> DGNet 73.31 71.95 1.36 67.20 ✗
+> Ours (L= 16) 73.31 70.31 ( ±0.07) 3.00 22.65 ( ±0.45) ✓
+> Ours (L= 20) 73.31 72.06 ( ±0.05) 1.25 18.69 ( ±0.30) ✓
+> ResNet50  FPGM 76.15 74.83 1.32 53.50 ✗
+> DGNet 76.13 75.12 1.01 67.90 ✗
+> Ours (L= 28) 76.13 73.04 ( ±0.07) 3.09 18.58 ( ±0.33) ✓
+> Ours (L= 36) 76.13 74.77 ( ±0.10) 1.36 15.68 ( ±0.16) ✓
+> *Results taken from [22].
+
+WideResNet101. This suggests that HASTE is especially well-suited for compressing highly overparameterized models. Analyzing the per-layer compression rates in a ResNet50, as depicted in Figure 6b, reveals that our method dynamically adapts to varying degrees of redundancy in latent features. We observe more aggressive compression in deeper layers, where feature representations tend to capture more high-level global information [67]. 
+
+4.4.2 Impact of Pointwise Convolutions and Latency 
+
+Our analysis also reveals the impact of network architecture on performance. A notice-able dip in FLOPs reduction occurs when moving from standard residual blocks (ResNet34) to bottleneck blocks (ResNet50). This is not necessarily because 1 ×1 con-volutions are harder to compress. In fact, Figure 6b shows they can be compressed effectively. Instead, we mainly relate this issue to the fact that our LSH scheme is pro-portionately more expensive for pointwise convolutions. While the number of FLOPs required to perform a 1 ×1 convolution is 9 × lower than for 3 ×3 convolutions of the same channel dimensions, the hashing cost is only 2.8 × lower, making LSH relatively costly. Thereby, the fixed computational overhead of hashing and merging operations constitutes a larger portion of the total cost, lowering the percentage of FLOPs saved. 17 (a) Influence of patch size on FLOPs (b) Influence of patch size on compression 
+
+Fig. 7 Evaluation of trade-offs between compression and accuracy for different patch sizes. Reproduced from [68] Despite this, the theoretical savings still hint at practical gains. As detailed in Table 4, our method has potential to deliver tangible inference speedup on a CPU, accelerating a ResNet34 by a factor of 1.22 × and a VGG19-BN by 1.28 ×.
+
+## 4.5 Ablation Studies 
+
+4.5.1 Patch Size 
+
+The patch size is a core design choice in HASTE, not a tunable hyperparameter. For a given convolution module with kernel size K × K, we set the patch size to (K + 2) × (K + 2). This is the minimal size that allows the filter kernel to perform nine convolution operations per patch, reusing the pre-computed compressed input and filter representations (see Section 3.3). This localized context also increases channel-wise redundancies, which our LSH-based merging is designed to leverage. To validate this design, we evaluated alternative patch sizes for a ResNet18 on ImageNet, where the base kernel size is 3 ×3. The results, visualized in Figure 7, confirm that our default 5 ×5 patches provide the best balance of compression and accuracy. Larger patches (7 ×7, 9 ×9) disproportionately lose compression efficiency, as depicted in Figure 7a. The best trade-off between accuracy and FLOPs is achieved by using the default patch size of ( K + 2) × (K + 2) and adjusting the hyperparameter L to the desired point on the Pareto frontier. 
+
+4.5.2 Hyperplane Sparsity 
+
+The degree of sparsity s in the LSH hyperplanes is a hyperparameter that balances hashing quality and computational cost. We favor sparse, ternary projections over dense Gaussian ones, as they replace expensive floating-point multiplications with simple additions during the hashing step, while offering similar performance [43, 59]. Our analysis on ResNet18 (Figure 8) shows that the optimal sparsity is primarily dependent on dataset complexity. On CIFAR-10, which is less complex, the model is robust to a wide range of settings for s. Since performance is stable even high 18 None 0 0.2 0.333333 0.5 0.666666 0.8      
+
+> Sparsity s
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Accuracy Reduction / FLOPs Reduction
+> L= 14
+> L= 16
+> L= 18
+> L= 20
+> Mean
+
+(a) Results for CIFAR-10 None 0 0.2 0.333333 0.5 0.666666 0.8         
+
+> Sparsity s
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> Accuracy Reduction / FLOPs Reduction
+> L= 16
+> L= 18
+> L= 20
+> L= 22
+> L= 24
+> L= 26
+> Mean
+
+(b) Results for ImageNet 
+
+Fig. 8 Influence of the sparsity setting s on different datasets. We plot the ratio of accuracy reduction (∆) per percentage point of FLOPs reduction for each hyperpa-rameter choice. The setting s = None denotes the use of dense Gaussian hyperplanes, whereas s = 0 denotes normal vectors densely filled with entries sampled from {− 1, 1}
+
+sparsity, we use s = 2 /3 to maximize computational efficiency. On ImageNet, where latent features are more complex and less redundant, a lower sparsity (i.e., denser hyperplanes) is needed to maintain hashing quality. We found s = 1 /2 to be a robust choice that prevents the performance degradation observed with higher sparsity values. 
+
+4.5.3 Starting Layer Choice 
+
+The decision of which layer to begin applying HASTE is guided by the well-known principle that early network layers learn general, fundamental features, while later layers learn more high-level and often redundant features [67]. Compressing early layers therefore tends to negatively impact the model’s accuracy. We evaluate this trade-off on a ResNet18 (see Table 6). As expected, starting the compression at later layers reduces the overall potential for FLOPs reduction. However, it also lessens the impact on accuracy, allowing us to use a less precise hashing scheme (smaller L) for the remaining layers, enabling higher compression. Based on this, we adopt a simple, data-dependent policy, as stated in Section 4.1. For CIFAR-10 models, which exhibit higher redundancy in their features, we begin compression from the first block. For ImageNet models, we begin compression starting from the second layer, preserving the critical early-layer features. This approach enables high compression while retaining model performance, based on the complexity of the dataset the models were trained on. 
+
+## 4.6 Performance on Lightweight Architectures 
+
+While our primary focus is on the compression of large, often overparameterized models like ResNets, it is crucial to understand the boundaries of our method’s appli-cability. To this end, we test HASTE on MobileNetV2 [2], an architecture explicitly 19 Table 6 Comparison of different starting layer choices for a ResNet18 on CIFAR-10                                                      
+
+> Starting Layer LTop-1 Accuracy (%) FLOPs Reduction (%) Baseline Pruned ∆116 93.07 91.75 ( ±0.24) 1.32 38.95 ( ±0.37) 18 93.07 92.43 ( ±0.16) 0.64 37.00 ( ±0.79) 20 93.07 92.52 ( ±0.24) 0.55 35.73 ( ±0.09) 214 93.07 92.32 ( ±0.03) 0.75 34.00 ( ±0.32) 16 93.07 92.50 ( ±0.06) 0.57 32.90 ( ±0.17) 18 93.07 92.60 ( ±0.19) 0.47 31.43 ( ±0.15) 312 93.07 92.10 ( ±0.18) 0.97 29.12 ( ±0.31) 14 93.07 92.44 ( ±0.10) 0.63 27.99 ( ±0.08) 16 93.07 92.55 ( ±0.09) 0.52 27.45 ( ±0.31) 410 93.07 93.06 ( ±0.01) 0.01 17.13 ( ±0.04) 12 93.07 93.03 ( ±0.02) 0.04 17.05 ( ±0.07) 14 93.07 92.96 ( ±0.04) 0.11 16.90 ( ±0.06)
+
+designed for computational efficiency through the use of depthwise-separable convolu-tions. Such lightweight models inherently possess less feature redundancy, presenting a challenging test case for our compression scheme. The results on CIFAR-10, presented in Table 7, confirm this hypothesis and highlight the conditions under which HASTE operates effectively. 
+
+Ineffectiveness of Sparse Hyperplanes. When applying our standard sparse hyperplanes (setting s = 2 /3), the model’s retained accuracy collapses. Combined with the high variance, this indicates that sparse hashing does not find truly redundant channels. Compression of these channels then leads to a disruption of the information flow in the MobileNetV2 architecture, lowering its task performance. 
+
+Computational Overhead vs. Savings. While switching to dense hyperplanes (s = None) with entries sampled from N (0 , 1) mitigates the accuracy loss after compression, it significantly increases the computational overhead of our HASTE module. As discussed in Section 4.4.2, the cost of hashing and merging channels shrinks disproportionately to the cost of the underlying convolution module as the kernel size decreases from 3 ×3 to 1 ×1, increasing the relative cost of HASTE. With MobileNetV2’s reliance on pointwise convolutions, the baseline cost is already very low. Applying HASTE on top and using dense hyperplanes can therefore easily out-weigh the savings. We find that a modest benefit is only achieved under a conservative configuration: using dense hyperplanes, only starting the compression scheme in the later layers and using a high number of hash buckets ( L = 32) allows us to save 7.84% of FLOPs, while losing 1.59 percentage points of accuracy. 20 Table 7 Results for MobileNetV2 on CIFAR-10. ”Starting Layer” denotes at which layer we start replacing the convolution modules with our HASTE modules. The set-ting ” s = None” denotes the use dense hyperplanes (floating-point values) instead of sparse ones (ternary values). ”FLOPs Red.” denotes the percentage decrease of FLOPs after compression compared to the base model                                                        
+
+> Model Starting Layer sLTop-1 Accuracy (%) FLOPs Red. (%) Baseline Pruned ∆MobileNetV2  22/3 16 93.91 26.68 ( ±5.04) 67.23 34.85 ( ±0.51) 24 93.91 70.35 ( ±7.28) 23.56 26.97 ( ±0.25) 32 93.91 84.33 ( ±1.92) 9.58 22.67 ( ±0.16) None 16 93.91 68.45 ( ±5.33) 25.46 17.38 ( ±0.19) 24 93.91 89.63 ( ±0.35) 4.28 3.31 ( ±0.17) 32 93.91 92.04 ( ±0.16) 1.87 -7.56 ( ±0.25) 10 2/3 16 93.91 35.67 ( ±8.56) 58.24 26.42 ( ±0.13) 24 93.91 69.91 ( ±4.35) 24.00 22.08 ( ±0.24) 32 93.91 82.07 ( ±2.93) 11.84 20.05 ( ±0.14) None 16 93.91 74.41 ( ±2.25) 19.50 18.63 ( ±0.19) 24 93.91 90.09 ( ±0.57) 3.82 12.20 ( ±0.16) 32 93.91 92.32 ( ±0.21) 1.59 7.84 ( ±0.04)
+
+# 5 Discussion and Outlook 
+
+## 5.1 Method Analysis and Limitations 
+
+While HASTE introduces a new paradigm for training-free dynamic model compres-sion, it is not without limitations. In this section, we aim to provide an overview of the challenges associated with our method and suggest avenues for future work. 
+
+Architectural Sensitivity to Pointwise Convolutions. The effectiveness of HASTE is reduced on architectures which rely heavily on 1 ×1 (pointwise) convolu-tions. As covered in Sections 4.4.2 and 4.6, the computational overhead of our hashing and merging operations is expensive compared to the very low baseline FLOPs of a 1×1 convolution. This results in diminished net computational savings when applying HASTE. We observed this effect in the performance dip from ResNet34 to ResNet50 on ImageNet (Section 4.4.2) and in our analysis of MobileNetV2 (Section 4.6), where the method struggled to provide a benefit. Consequently, HASTE is most effective on standard architectures dominated by larger spatial kernels. Adapting the method to be more efficient for 1 ×1 convolutions is a key direction for future research, which would unlock its potential for modern lightweight architectures. 
+
+Randomness in Hashing. As an LSH-based method, our approach is inherently stochastic. While our experiments consistently show low performance variance across different random seeds, the quality of the channel clustering depends on the randomly initialized hyperplanes. This means that performance can be sensitive to the random seed, particularly at aggressive compression ratios. However, a key advantage of our 21 training-free approach is that exploring multiple seeds is computationally inexpensive. A user can evaluate several seeds in a short time frame to select the best-performing one, mitigating the impact of this randomness in practice. 
+
+Common Implementation Challenges. HASTE can be categorized as a con-ditional execution strategy for neural networks, where operations are dynamically selected based on the input. This field of methods faces the challenge that main-stream deep learning frameworks like PyTorch [63] are heavily optimized for dense, static computations [65]. Efficiently implementing dynamic or sparse operations often requires custom kernels to achieve theoretical speedups, as standard library functions may not be optimized for such data access patterns. This is not a limitation unique to HASTE, but rather a broader challenge for the research community. The growing body of work on conditional execution [29–31, 44, 47, 65] underscores the need for future software and hardware advancements to support and leverage these methods. 
+
+## 5.2 Connection to Transformers: From Channels to Tokens 
+
+Our work on training-free channel compression in CNNs shares strong conceptual sim-ilarities with recent methods for token pruning and merging for Vision Transformers [7], such as EViT [53], ToMe [57], ToFu [56] and other similar works [51, 52, 54, 55]. At a high level, both strategies utilize the same core principle: identify and compress redundant information in the latent feature representations of a pre-trained model to reduce computational cost, all without requiring retraining to achieve good perfor-mance. The primary distinction between both approaches lies in how redundancy is identified and what is ultimately compressed. In CNNs, similarities between features are not natively computed or utilized by the architecture. Our method therefore introduces an explicit and efficient approximate nearest neighbor search mechanism via locality-sensitive hashing to identify redun-dant channels. In contrast, ViTs possess a built-in mechanism for discovering feature similarity, namely the self-attention mechanism. Token reduction methods typically leverage this built-in capability, using attention scores [53] or the similarity of key vectors [56, 57] as a signal to identify tokens with redundant information. The second fundamental difference is the dimension of features which is com-pressed. HASTE operates on the channel dimension of a feature map. It merges similar channels to reduce the feature depth for the convolution operation, but keeps the original output channel dimension. This is necessary to maintain compatibility with the rigid input dimension of subsequent convolutional layers. Conversely, token com-pression operates on the sequence dimension, a flattened representation of the spatial domain. It permanently removes or merges entire tokens from the set, reducing the sequence length for all subsequent transformer blocks. This is possible because the self-attention mechanism and, more generally, the transformer block, is inherently agnostic to the number of input tokens, offering a level of flexibility that CNNs lack. This analysis raises the question of whether HASTE could be extended to ViTs. However, a direct application is not straightforward. Using LSH to find similar tokens would be redundant, as self-attention and its components already provide a more powerful and direct similarity measure. 22 A more logical extension would be to apply our channel compression scheme to the embedding dimension within a ViT’s linear and MLP layers, analogous to our work on CNNs. However, this approach would face the same challenges with relative cost overhead which we identified with 1 ×1 convolutions (see Sections 4.4.2 and 4.6). Since each single linear layer operating on tokens is fundamentally equivalent to a 1×1 convolution operating on pixels, the same cost overhead of hashing and merging would apply and likely outweigh the computational savings. This highlights that the working principle of HASTE is best suited to computationally expensive operations with inherent redundancy, such as standard spatial convolutions in large CNNs. This analogy strengthens the emphasis for future work on an efficient extension of HASTE to pointwise convolutions. As both linear layers and 1 ×1 convolutions share the same core principle, such an extension could readily be used in architectures which mostly rely on linear transformations, such as Transformers. 
+
+# 6 Conclusion 
+
+In this work, we introduced HASTE, a novel paradigm for dynamic, training-free compression of convolutional neural networks. By leveraging a patch-wise locality-sensitive hashing scheme, our method identifies and merges redundant feature channels at inference time, significantly reducing the computational cost of convolutions without requiring access to any training data. This plug-and-play nature allows for instant compression of publicly available pre-trained models, and even enables changes to the compression ratio in real time. Our extensive experiments on CIFAR-10 and ImageNet demonstrate that HASTE provides a compelling trade-off between computational savings and model perfor-mance across various standard architectures. A key finding is that the effectiveness of our approach scales with model size and width, making it an especially suitable for compressing large, overparameterized models. Furthermore, we conducted a thorough analysis of our method’s design principles, including ablation studies on patch size, hyperplane sparsity, and the impact of the starting layer. This analysis also highlighted the method’s current limitations, particularly the limited applicability to architectures relying heavily on pointwise convolutions, such as MobileNetV2. We also contextualized our contributions by drawing parallels to token pruning and merging techniques for Vision Transformers, highlighting both shared principles and unique challenges. Our findings suggest that follow-up work should focus on making HASTE more efficient for pointwise convolutions, which would directly unlock the method’s potential for a wider range of modern architectures, including Transformers. We hope our work encourages further research into the promising direction of dynamic, training-free model compression that is adaptable at runtime. 
+
+# Statements and Declarations 
+
+Funding. This research was funded entirely by Robert Bosch GmbH through an industrial PhD contract for Lukas Meiner. All authors conducted this work as part of their full-time employment at Robert Bosch GmbH. No external funding was received. 23 Competing Interests. All authors are employed by Robert Bosch GmbH. The research presented in this manuscript was conducted for non-commercial, academic purposes, in adherence with the licensing terms of the public datasets used. While the research activity itself is non-commercial, Robert Bosch GmbH may have a future commercial interest in the application of the knowledge gained from this work. The authors declare no other financial or non-financial competing interests. 
+
+Author Contribution. All authors contributed to the study’s conception and design. The methodology, software implementation, experimental analysis and writing of the original draft were performed by Lukas Meiner. Jens Mehnert and Alexandru Paul Condurache provided supervision and critical review of the work. 
+
+Data Availability. The datasets and pre-trained models used in the study are publicly available. This work utilizes the CIFAR-10 dataset, available from https: //www.cs.toronto.edu/ ∼kriz/cifar.html, and the ImageNet dataset, available from https://www.image-net.org. Models pre-trained on CIFAR-10 were sourced from the public GitHub repository https://github.com/huyvnphan/PyTorch CIFAR10 pro-vided by Phan [62]. Models pre-trained on ImageNet are available via the official PyTorch [63] torchvision library. 
+
+Ethics Approval and Consent to Participate. Not applicable. 
+
+Consent for Publication. Not applicable. 
+
+# References 
+
+[1] Meiner, L., Mehnert, J., Condurache, A.: Data-Free Dynamic Compression of CNNs for Tractable Efficiency. In: Proceedings of the 20th International Joint Conference on Computer Vision, Imaging and Computer Graphics Theory and Applications, pp. 196–208. SCITEPRESS - Science and Technology Publications, S´ etubal, Portugal (2025). https://doi.org/10.5220/0013301000003912 [2] Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., Chen, L.-C.: MobileNetV2: Inverted Residuals and Linear Bottlenecks. In: IEEE/CVF Conference on Com-puter Vision and Pattern Recognition (CVPR), pp. 4510–4520. IEEE Computer Society, Los Alamitos, CA, USA (2018). https://doi.org/10.1109/CVPR.2018. 00474 [3] Tan, M., Le, Q.: EfficientNetV2: Smaller Models and Faster Training. In: Pro-ceedings of the 38th International Conference on Machine Learning. Proceedings of Machine Learning Research, vol. 139, pp. 10096–10106. PMLR, Online (2021) [4] Ma, N., Zhang, X., Zheng, H.-T., Sun, J.: ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design. In: Proceedings of the European Confer-ence on Computer Vision (ECCV), pp. 122–138 (2018). https://doi.org/10.1007/ 978-3-030-01264-9 8 24 [5] Simonyan, K., Zisserman, A.: Very Deep Convolutional Networks for Large-Scale Image Recognition. In: International Conference on Learning Representations (ICLR) (2015) [6] He, K., Zhang, X., Ren, S., Sun, J.: Deep Residual Learning for Image Recogni-tion. In: IEEE Conference on Computer Vision and Pattern Recognition (CVPR), pp. 770–778 (2016). https://doi.org/10.1109/CVPR.2016.90 [7] Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner, T., Dehghani, M., Minderer, M., Heigold, G., Gelly, S., Uszkoreit, J., Houlsby, N.: An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale. In: International Conference on Learning Representations (ICLR) (2021) [8] Wimmer, P., Mehnert, J., Condurache, A.: COPS: Controlled Pruning Before Training Starts. In: International Joint Conference on Neural Networks (IJCNN), pp. 1–8 (2021). https://doi.org/10.1109/IJCNN52387.2021.9533582 [9] Han, S., Mao, H., Dally, W.J.: Deep Compression: Compressing Deep Neural Net-work with Pruning, Trained Quantization and Huffman Coding. In: International Conference on Learning Representations (ICLR) (2016) [10] Wimmer, P., Mehnert, J., Condurache, A.: Interspace Pruning: Using Adaptive Filter Representations To Improve Training of Sparse CNNs. In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 12527– 12537 (2022). https://doi.org/10.1109/CVPR52688.2022.01220 [11] Anwar, S., Hwang, K., Sung, W.: Structured Pruning of Deep Convolutional Neural Networks. J. Emerg. Technol. Comput. Syst. 13 (3) (2017) https://doi. org/10.1145/3005348 [12] Li, H., Kadav, A., Durdanovic, I., Samet, H., Graf, H.P.: Pruning Filters for Efficient ConvNets. In: International Conference on Learning Representations (ICLR) (2017) [13] Yeom, S.-K., Seegerer, P., Lapuschkin, S., Binder, A., Wiedemann, S., M¨ uller, K.-R., Samek, W.: Pruning by explaining: A novel criterion for deep neural net-work pruning. Pattern Recognition 115 , 107899 (2021) https://doi.org/10.1016/ J.PATCOG.2021.107899 [14] Liu, Z., Li, J., Shen, Z., Huang, G., Yan, S., Zhang, C.: Learning Efficient Convolutional Networks through Network Slimming. In: IEEE International Con-ference on Computer Vision (ICCV), pp. 2755–2763. IEEE Computer Society, Los Alamitos, CA, USA (2017). https://doi.org/10.1109/ICCV.2017.298 [15] He, Y., Liu, P., Wang, Z., Hu, Z., Yang, Y.: Filter Pruning via Geometric Median for Deep Convolutional Neural Networks Acceleration. In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 4335–4344 (2019). 25 https://doi.org/10.1109/CVPR.2019.00447 [16] Zhuang, Z., Tan, M., Zhuang, B., Liu, J., Guo, Y., Wu, Q., Huang, J., Zhu, J.: Discrimination-Aware Channel Pruning for Deep Neural Networks. In: Pro-ceedings of the 32nd International Conference on Neural Information Processing Systems, pp. 883–894 (2018) [17] Xu, Z., Sun, J., Liu, Y., Sun, G.: An Efficient Channel-level Pruning for CNNs without Fine-tuning. In: International Joint Conference on Neural Networks (IJCNN), pp. 1–8 (2021). https://doi.org/10.1109/IJCNN52387.2021.9533397 [18] Cakaj, R., Mehnert, J., Yang, B.: CNN Mixture-of-Depths. In: Proceedings of the Asian Conference on Computer Vision (ACCV), pp. 3480–3498 (2024). https: //doi.org/10.1007/978-981-96-0963-5 9 [19] Bejnordi, B.E., Blankevoort, T., Welling, M.: Batch-Shaping for Learning Con-ditional Channel Gated Networks. In: International Conference on Learning Representations (ICLR) (2020) [20] Hua, W., Zhou, Y., De Sa, C., Zhang, Z., Suh, G.E.: Channel Gating Neural Networks. In: Advances in Neural Information Processing Systems, vol. 32 (2019) [21] Verelst, T., Tuytelaars, T.: Dynamic Convolutions: Exploiting Spatial Sparsity for Faster Inference. In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 2317–2326. IEEE Computer Society, Los Alamitos, CA, USA (2020). https://doi.org/10.1109/CVPR42600.2020.00239 [22] Li, F., Li, G., He, X., Cheng, J.: Dynamic Dual Gating Neural Networks. In: IEEE/CVF International Conference on Computer Vision (ICCV), pp. 5310–5319 (2021). https://doi.org/10.1109/ICCV48922.2021.00528 [23] Liu, L., Deng, L., Hu, X., Zhu, M., Li, G., Ding, Y., Xie, Y.: Dynamic Sparse Graph for Efficient Deep Learning. In: International Conference on Learning Representations (ICLR) (2019) [24] Elkerdawy, S., Elhoushi, M., Zhang, H., Ray, N.: Fire Together Wire Together: A Dynamic Pruning Approach with Self-Supervised Mask Prediction. In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 12444–12453 (2022). https://doi.org/10.1109/CVPR52688.2022.01213 [25] Meiner, L., Mehnert, J., Condurache, A.P.: PROM: Prioritize Reduction of Multiplications Over Lower Bit-Widths for Efficient CNNs. arXiv preprint arXiv:2505.03254 (2025) https://doi.org/10.48550/arXiv.2505.03254 [26] Kim, H.-B., Park, E., Yoo, S.: BASQ: Branch-wise Activation-clipping Search Quantization for Sub-4-bit Neural Networks. In: ECCV (2022). https://doi.org/ 10.1007/978-3-031-19775-8 2 26 [27] Zhu, F., Gong, R., Yu, F., Liu, X., Wang, Y., Li, Z., Yang, X., Yan, J.: Towards Unified INT8 Training for Convolutional Neural Network. In: IEEE/CVF Con-ference on Computer Vision and Pattern Recognition (CVPR), pp. 1966–1976 (2020) [28] Berisha, U., Mehnert, J., Condurache, A.P.: Efficient Data Driven Mixture-of-Expert Extraction from Trained Networks. In: Proceedings of the Computer Vision and Pattern Recognition Conference (CVPR), pp. 20082–20091 (2025) [29] Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q.V., Hinton, G.E., Dean, J.: Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer. In: International Conference on Learning Representations (ICLR) (2017) [30] Fedus, W., Zoph, B., Shazeer, N.: Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity. J. Mach. Learn. Res. 23 
+
+(2022) [31] Belcak, P., Wattenhofer, R.: Fast Feedforward Networks. arXiv preprint arXiv:2308.14711 (2023) https://doi.org/10.48550/arXiv.2308.14711 [32] Hinton, G., Vinyals, O., Dean, J.: Distilling the Knowledge in a Neural Net-work. arXiv preprint arXiv:1503.02531 (2015) https://doi.org/10.48550/arXiv. 1503.02531 [33] Gou, J., Yu, B., Maybank, S.J., Tao, D.: Knowledge distillation: A survey. Inter-national Journal of Computer Vision 129 (6), 1789–1819 (2021) https://doi.org/ 10.1007/S11263-021-01453-Z [34] Dong, X., Huang, J., Yang, Y., Yan, S.: More is Less: A More Complicated Net-work with Less Inference Complexity. In: IEEE Conference on Computer Vision and Pattern Recognition (CVPR), pp. 1895–1903. IEEE Computer Society, Los Alamitos, CA, USA (2017). https://doi.org/10.1109/CVPR.2017.205 [35] Gao, X., Zhao, Y., Dudziak, L., Mullins, R., Xu, C.-Z.: Dynamic Channel Prun-ing: Feature Boosting and Suppression. In: International Conference on Learning Representations (ICLR) (2019) [36] Wen, W., Wu, C., Wang, Y., Chen, Y., Li, H.: Learning Structured Sparsity in Deep Neural Networks. In: Proceedings of the 30th International Conference on Neural Information Processing Systems, pp. 2082–2090 (2016) [37] He, Y., Lin, J., Liu, Z., Wang, H., Li, L.-J., Han, S.: AMC: AutoML for Model Compression and Acceleration on Mobile Devices. In: Computer Vision – ECCV 2018, pp. 815–832 (2018). https://doi.org/10.1007/978-3-030-01234-2 48 [38] Goodfellow, I.J., Mirza, M., Da, X., Courville, A.C., Bengio, Y.: An Empirical Investigation of Catastrophic Forgeting in Gradient-Based Neural Networks. In: 27 International Conference on Learning Representations (ICLR) (2014) [39] Indyk, P., Motwani, R.: Approximate Nearest Neighbors: Towards Removing the Curse of Dimensionality. In: Proceedings of the Thirtieth Annual ACM Symposium on Theory of Computing. STOC ’98, pp. 604–613. Association for Computing Machinery, New York, NY, USA (1998). https://doi.org/10.1145/ 276698.276876 [40] Yin, H., Molchanov, P., Alvarez, J.M., Li, Z., Mallya, A., Hoiem, D., Jha, N.K., Kautz, J.: Dreaming to Distill: Data-free Knowledge Transfer via Deepin-version. In: IEEE/CVF Conference on Computer Vision and Pattern Recogni-tion (CVPR), pp. 8715–8724 (2020). https://doi.org/10.1109/CVPR42600.2020. 00874 [41] Yvinec, E., Dapogny, A., Cord, M., Bailly, K.: RED++ : Data-Free Pruning of Deep Neural Networks via Input Splitting and Output Merging. IEEE Trans-actions on Pattern Analysis & Machine Intelligence 45 (03), 3664–3676 (2023) https://doi.org/10.1109/TPAMI.2022.3179616 [42] Bai, S., Chen, J., Shen, X., Qian, Y., Liu, Y.: Unified Data-Free Compres-sion: Pruning and Quantization without Fine-Tuning. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pp. 5876–5885 (2023). https://doi.org/10.1109/ICCV51070.2023.00540 [43] Achlioptas, D.: Database-friendly random projections: Johnson-Lindenstrauss with binary coins. Journal of Computer and System Sciences 66 (4), 671–687 (2003) https://doi.org/10.1016/S0022-0000(03)00025-4 [44] Kitaev, N., Kaiser, L., Levskaya, A.: Reformer: The Efficient Transformer. In: International Conference on Learning Representations (ICLR) (2020) [45] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., Kaiser, L., Polosukhin, I.: Attention is All you Need. In: Advances in Neural Information Processing Systems, vol. 30 (2017) [46] Chen, B., Medini, T., Farwell, J., Gobriel, S., Tai, C., Shrivastava, A.: SLIDE : In Defense of Smart Algorithms over Hardware Acceleration for Large-Scale Deep Learning Systems. In: Proceedings of Machine Learning and Systems, vol. 2, pp. 291–306 (2020) [47] Chen, B., Liu, Z., Peng, B., Xu, Z., Li, J.L., Dao, T., Song, Z., Shrivastava, A., Re, C.: MONGOOSE: A Learnable LSH Framework for Efficient Neural Net-work Training. In: International Conference on Learning Representations (ICLR) (2021) [48] M¨ uller, T., Evans, A., Schied, C., Keller, A.: Instant Neural Graphics Primitives with a Multiresolution Hash Encoding. ACM Trans. Graph. 41 (4) (2022) https: 28 //doi.org/10.1145/3528223.3530127 [49] Liu, Z., Coleman, B., Shrivastava, A.: Efficient Inference via Universal LSH Kernel. arXiv preprint arXiv:2106.11426 (2021) https://doi.org/10.48550/arXiv. 2106.11426 [50] Liu, Z., Wang, P., Li, Z.: More-Similar-Less-Important: Filter Pruning VIA Kmeans Clustering. In: IEEE International Conference on Multimedia and Expo (ICME), pp. 1–6 (2021). https://doi.org/10.1109/ICME51207.2021.9428286 [51] Yin, H., Vahdat, A., Alvarez, J., Mallya, A., Kautz, J., Molchanov, P.: A-ViT: Adaptive Tokens for Efficient Vision Transformer. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (2022). https://doi.org/10.1109/CVPR52688.2022.01054 [52] Rao, Y., Zhao, W., Liu, B., Lu, J., Zhou, J., Hsieh, C.-J.: DynamicViT: Efficient Vision Transformers with Dynamic Token Sparsification. In: Advances in Neural Information Processing Systems (NeurIPS) (2021) [53] Liang, Y., Ge, C., Tong, Z., Song, Y., Wang, J., Xie, P.: Not All Patches are What You Need: Expediting Vision Transformers via Token Reorganizations. In: International Conference on Learning Representations (ICLR) (2022) [54] Chen, M., Shao, W., Xu, P., Lin, M., Zhang, K., Chao, F., Ji, R., Qiao, Y., Luo, P.: DiffRate: Differentiable Compression Rate for Efficient Vision Transformers. In: IEEE/CVF International Conference on Computer Vision (ICCV), pp. 17164– 17174 (2023). https://doi.org/10.1109/ICCV51070.2023.01574 [55] Lee, J., Choi, D.-W.: Lossless Token Merging Even Without Fine-Tuning in Vision Transformers. arXiv preprint arXiv:2505.15160 (2025) https://doi.org/10. 48550/arXiv.2505.15160 [56] Kim, M., Gao, S., Hsu, Y.-C., Shen, Y., Jin, H.: Token Fusion: Bridging the Gap between Token Pruning and Token Merging. In: IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), pp. 1372–1381. IEEE Computer Society, Los Alamitos, CA, USA (2024). https://doi.org/10.1109/WACV57701. 2024.00141 [57] Bolya, D., Fu, C.-Y., Dai, X., Zhang, P., Feichtenhofer, C., Hoffman, J.: Token Merging: Your ViT but Faster. In: International Conference on Learning Representations (ICLR) (2023) [58] Gionis, A., Indyk, P., Motwani, R.: Similarity Search in High Dimensions via Hashing. In: Proceedings of the 25th International Conference on Very Large Data Bases. VLDB ’99, pp. 518–529. Morgan Kaufmann Publishers Inc., San Francisco, CA, USA (1999) 29 [59] Li, P., Hastie, T., Church, K.: Very Sparse Random Projections. In: Proceedings of the 12th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining. KDD ’06, vol. 2006, pp. 287–296 (2006). https://doi.org/10.1145/ 1150402.1150436 [60] Krizhevsky, A.: Learning Multiple Layers of Features from Tiny Images. Univer-sity of Toronto (2009) [61] Russakovsky, O., Deng, J., Su, H., Krause, J., Satheesh, S., Ma, S., Huang, Z., Karpathy, A., Khosla, A., Bernstein, M., Berg, A., Fei-Fei, L.: ImageNet Large Scale Visual Recognition Challenge. International Journal of Computer Vision 
+
+115 (3), 211–252 (2015) https://doi.org/10.1007/s11263-015-0816-y [62] Phan, H.: PyTorch Models Trained on CIFAR-10 Dataset. https://doi.org/10. 5281/zenodo.4431043 . https://github.com/huyvnphan/PyTorch CIFAR10 [63] Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., Chanan, G., Killeen, T., Lin, Z., Gimelshein, N., Antiga, L., Desmaison, A., K¨ opf, A., Yang, E.Z., DeVito, Z., Raison, M., Tejani, A., Chilamkurthy, S., Steiner, B., Fang, L., Bai, J., Chintala, S.: PyTorch: An Imperative Style, High-Performance Deep Learning Library. In: Advances in Neural Information Processing Systems, pp. 8024–8035 (2019) [64] Zagoruyko, S., Komodakis, N.: Wide Residual Networks. In: Proceedings of the British Machine Vision Conference (BMVC) (2016) [65] Belcak, P., Wattenhofer, R.: Exponentially Faster Language Modelling. arXiv preprint arXiv:2311.10770 (2023) https://doi.org/10.48550/arXiv.2311.10770 [66] Vogel, S., Schorn, C., Guntoro, A., Ascheid, G.: Guaranteed Compression Rate for Activations in CNNs using a Frequency Pruning Approach. In: Design, Automa-tion & Test in Europe Conference & Exhibition (DATE), pp. 296–299 (2019). https://doi.org/10.23919/DATE.2019.8715210 [67] Zeiler, M.D., Fergus, R.: Visualizing and Understanding Convolutional Networks. In: European Conference on Computer Vision (ECCV), pp. 818–833 (2014). https: //doi.org/10.1007/978-3-319-10590-1 53 [68] Meiner, L., Mehnert, J., Condurache, A.P.: Instant Complexity Reduction in CNNs using Locality-Sensitive Hashing. arXiv preprint arXiv:2309.17211 (2023) https://doi.org/10.48550/arXiv.2309.17211 30

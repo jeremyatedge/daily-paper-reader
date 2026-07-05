@@ -1,0 +1,270 @@
+Title: FlexViT: A Flexible FPGA-based Accelerator for Edge Vision Transformers
+
+URL Source: https://arxiv.org/pdf/2606.31938v1
+
+Published Time: Wed, 01 Jul 2026 01:40:47 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# FlexViT: A Flexible FPGA-based Accelerator for Edge Vision Transformers 
+
+Hubert Dymarkowski, Xingjian Fu, Rappy Saha, Jude Haris, Jos´ e Cano 
+
+School of Computing Science, University of Glasgow, Scotland, UK 
+
+Abstract —Deploying Vision Transformer (ViT) models on edge platforms remains challenging due to their high computational demands and the architectural heterogeneity of modern hybrid ViT models, which incorporate both fully connected and convolu-tional layers. This heterogeneity leads to significant variation in tensor shapes, requiring flexible and efficient FPGA-based accel-eration. In this paper, we present FlexViT, a reconfigurable FPGA accelerator for efficient ViT inference on resource-constrained edge devices. Built on the SECDA-TFLite framework, FlexViT employs a hardware–software co-design approach that maps both fully connected and convolutional layers onto a unified high-throughput INT8 GEMM engine using a runtime im2col 
+
+transformation. To efficiently support diverse layer configu-rations, we propose a dual-mode dataflow that dynamically switches between input and weight reuse by reconfiguring the compute array at runtime. We further introduce a depth-first tiling strategy that completes accumulation in a single pass, eliminating off-chip partial-sum transfers and reducing memory bandwidth requirements. We implement FlexViT on a PYNQ-Z2 FPGA and evaluate it across a representative set of ViT models. FlexViT achieves up to 2.74 × speedup on accelerator-executed layers, translating into up to 1.40 × end-to-end speedup compared to CPU-only execution. The code is available at: https://github.com/gicLAB/FlexViT 
+
+Index Terms —Vision Transformers, FPGA, Edge AI. 
+
+I. I NTRODUCTION 
+
+The rapid evolution of intelligent edge devices has increased the demand for on-device processing of complex visual data, avoiding the latency and bandwidth limitations of cloud-centric solutions. Field-Programmable Gate Arrays (FPGAs) are a compelling platform for such workloads due to their fine-grained parallelism and reconfigurability, enabling customized datapaths that improve latency and energy efficiency for com-puter vision (CV) applications. However, deploying modern Vision Transformers (ViTs) on edge platforms remains challenging [1]. ViTs achieve superior performance in tasks such as detection and segmentation by capturing long-range dependencies, but their high com-putational complexity and memory requirements make them difficult to deploy on resource-constrained devices. Furthermore, modern edge-oriented ViT models exhibit significant architectural diversity. Early compact models, such as Vision Transformer Tiny (ViT-T) and Data-efficient Image Transformers Tiny (DeiT-T), are dominated by fully connected (FC) operations, whereas recent hybrid architectures, such as MobileViT and EfficientViT, incorporate both convolu-tional (CONV) and FC components. This diversity creates a challenge for FPGA accelerator design: architectures op-timized for a single computational pattern often suffer from TABLE I: Comparison of ViT Accelerators. 
+
+Paper Standard ViT Hybrid ViT Open Source 
+
+Nag et al. [2] ✓ ✗ ✗
+
+Shao et al. [3] ✗ ✓ ✗
+
+Cao et al. [4] ✓ ✗ ✗
+
+Liang et al. [5] ✗ ✓ ✗
+
+Ours (FlexViT) ✓ ✓ ✓
+
+poor generality as ViT models continue to evolve. Existing FPGA accelerators typically target either FC-dominated or convolution-dominated workloads, leaving a gap in flexible designs capable of supporting the full spectrum of modern ViT architectures, as summarized in Table I. To address this diverse and evolving landscape, we identify three key challenges for efficient edge deployment:  
+
+> •
+
+Layer Heterogeneity: hybrid ViT models combine FC and CONV layers, each with distinct dataflows and memory access patterns, complicating efficient hardware support.  
+
+> •
+
+Dimensional Variance: layer dimensions vary signifi-cantly across and within models, causing underutilization in monolithic accelerators when processing irregular ma-trix shapes (e.g., short–wide or tall–narrow tensors).  
+
+> •
+
+Resource Constraints: edge FPGA systems-on-chip (SoCs) provide limited block RAM (BRAM) and digital signal processor (DSP) resources compared with data-center-class devices. Existing ViT accelerators often rely on large on-chip buffers, making them unsuitable for resource-constrained platforms. In this paper, we address these challenges by proposing 
+
+FlexViT , a flexible FPGA-based accelerator for edge devices that efficiently supports both standard and hybrid ViT models using the SECDA-TFLite toolkit [6]. FlexViT adopts a hard-ware–software co-design approach to address the following key features:  
+
+> •
+
+Layer heterogeneity : it employs a unified computation strategy that maps FC and CONV layers onto a single General Matrix–Matrix Multiplication (GEMM) engine.  
+
+> •
+
+Dimensional variance : it dynamically reconfigures the compute array to exploit input or weight reuse, improving utilization for irregular workloads.  
+
+> •
+
+Resource constraints : it combines streaming execution with depth-first tiling to enable single-pass accumulation and reduce memory bandwidth requirements. 
+
+> arXiv:2606.31938v1 [cs.AR] 30 Jun 2026
+
+The main contributions of this work are as follows:  
+
+> •
+
+A systematic analysis of modern edge-oriented ViT mod-els, highlighting key challenges for efficient acceleration on resource-constrained FPGA platforms.  
+
+> •
+
+FlexViT , a flexible FPGA-based accelerator for Vision Transformers capable of efficiently supporting both stan-dard and hybrid ViT architectures through a unified and reconfigurable design.  
+
+> •
+
+A comprehensive evaluation on a PYNQ-Z2 platform, demonstrating 1.77 × to 2.74 × speedup on accelerator-offloaded 8-bit integer (INT8) quantized FC and CONV layers, and up to 1.40 × end-to-end latency improvement compared to CPU-only execution across five representa-tive ViT models. II. B ACKGROUND 
+
+A. Standard Vision Transformers (ViTs) 
+
+Dosovitskiy et al. [7] introduced the idea of using the transformer architecture [8] on sequences of image patches [7], so they can be used in CV tasks such as image recognition and object detection. ViT models not only outperform many state-of-the-art CNNs, their direct competitors, but also require substantially less data and computational time to train [9]. In ViTs, as shown in Figure 1, the transformer architecture is applied directly to visual data, with the input image being divided into fixed-size patches, and each patch being treated as a token with a positional encoding. Positional encodings are then added to these tokens to capture the spatial information where the patch is in the image. The sequence of tokens then goes through N encoder layers, with the multi-head attention mechanism allowing the model to capture relationships be-tween image patches and the multi-layer perceptron (MLP) further capturing intricate patterns. The output of the encoder is then a representation of the input sequence that captures its essential features, which can be used in CV tasks such as image classification and object detection. A notable evolution of this architecture is the Swin Trans-former (Swin-T) [10], which introduces a hierarchical struc-ture and performs self-attention within shifted local windows rather than across the entire image. This design significantly reduces attention complexity while preserving cross-window interaction. This family of ViT models, which we will refer to as “Stan-dard ViT” models, quickly became incredibly popular [11], [12], [13] with their ability to understand global context, often outmatching CNNs in their ability to handle complex visual relationships. However, Standard ViTs have a large amount of parameters and high computation costs [14], with memory- and computationally- straining calculations being the core of the architecture, primarily because their execution is heavily dominated by parameter-dense FC layers. This makes it challenging to run them on resource-constrained edge devices, which would greatly benefit from their strong representational power and state-of-the-art performance in CV tasks [15]. 
+
+Fig. 1: Vision Transformer Architecture. 
+
+B. Hybrid Vision Transformers 
+
+The Hybrid family of ViT models merges a different set of computational patterns. These models, such as MobileViT [16] and EfficientViT [17] were designed specifically to maximize efficiency for on-device inference. They achieve this by com-bining two types of operations: i) convolutions to extract local, low-level features; and ii) lightweight transformer blocks to capture global context. As a result, their computational profile is not dominated by one operation type. Instead, they present a balanced and heterogeneous mix of both CONV and various types of FC layers found in transformers. Therefore, we refer to these architectures as Hybrid ViTs. Because FC and CONV layers have distinct memory access and data reuse patterns, static accelerators suffer severe underutilization across these diverse workloads, necessitating a flexible hardware design. 
+
+C. Hardware Accelerators for Edge ViTs 
+
+The need for flexible, high-performance acceleration is par-ticularly critical in the domain of edge computing [18]. To this end, FPGAs, with their reprogrammable architecture and abil-ity to enhance performance efficiently, are particularly well-suited for accelerating ViT models on power and resource-constrained edge devices. On highly resource-constrained de-vices, such as the PYNQ-Z2 board used in this work, which are often based on low-cost SoCs like the AMD Zynq-7000, the FPGA fabric provides a critical capability for parallel, power-efficient computation that on-chip ARM processors cannot match. Therefore, the critical design challenge is to architect a solution that operates with maximum efficiency within the limited logic and on-chip memory constraints inherent to these edge-FPGAs. To design and implement our FlexViT accelerator, we use 
+
+SECDA-TFLite [6], a toolkit based on the SECDA methodol-ogy [19] that reduces the design time of specialized FPGA-based accelerators for DNN inference on edge devices. To achieve this, the SECDA-TFLite employs the TensorFlow Lite (TFLite) delegate system, enabling the execution of model components or the entire model on specialized hardware. This is particularly advantageous as it enables end-to-end evaluation with real model graphs and runtime operator shapes, which is crucial for accurately profiling the irregular dimensions of Hybrid ViTs. III. A CCELERATION OF HETEROGENEOUS VIT MODELS 
+
+This section presents the unified hardware–software co-design strategy underlying our flexible FPGA-based accel-erator, and describes the key architectural optimizations that enable efficient support for modern hybrid ViT models. 
+
+A. Layer Heterogeneity 
+
+The architectural diversity of edge ViT models is quantita-tively confirmed by profiling five models using the SECDA-TFLite [6] benchmarking tool, as can be seen in Table II. This data illustrates a stark contrast in computational require-ments: Standard ViT models like ViT-T and DeiT-T spend the majority of their runtime in FC layers, with CONV layers being negligible, while Hybrid models like MobileViT-S and EfficientViT-b1 show a much more balanced profile. To support all these ViT models, we created a custom TFLite delegate that intercepts FC and CONV operations at runtime. At this stage, we perform an im2col (image-to-column) transformation on the CPU which linearizes the 3D convolution input into a 2D matrix format. Consequently, both standard FC layers and CONV layers map to a single, unified GEMM primitive (Input × Weights + Bias). While the “Other” category in Table II accounts for a significant portion of inference time, particularly in hybrid models, we deliberately exclude these operations from FPGA offloading to preserve generality and maximize resource uti-lization. Implementing diverse non-linear operators such as Softmax and LayerNorm in hardware would require dedicated special function units, consuming valuable logic and DSP resources on the edge FPGA on the PYNQ-Z2 board. We would consider doing such an architectural trade-off if a specific non-linear operation constituted a dominant, consistent bottleneck across all ViT variants (standard and hybrid). By restricting the accelerator to a GEMM primitive, we avoid over-specializing the datapath from specific model archi-tectures. This design choice strictly decouples the workload: the CPU manages the irregular, memory-bound activations and control flow, allowing the FPGA resources to be dedicated en-tirely to maximizing the parallelism of the compute-intensive FC and CONV layers. 
+
+B. Dimensional Variance 
+
+Standard and hybrid ViT models contain massive variance in layer dimensions. For example, the sequence length in Ef-ficientViT plummets from 12,000 tokens in early stem blocks down to just 49 in later stages, while channel widths across the models range anywhere from 16 in early MobileViT layers up to 1536 in EfficientViT. After the im2col transformation (for CONV layers), each delegated layer is represented as a GEMM with dimensions (N, M, K ), where N is the number of input rows (often from the spatial image patches), M is the number of output columns (filters or neurons) and K is the reduction dimension. Standard ViT projection (i.e., FC) layers typically yield large, balanced matrices with substantial width (M ).Conversely, the CONV layers in hybrid models like MobileViT frequently generate ”tall and skinny” matrices where the TABLE II: Total inference time (%) on the ZYNQ-7000 CPU.                       
+
+> Type Model FC (%) CONV (%) Other (%)
+> Standard ViT-T 45.14 1.22 53.64 Standard DeiT-T 45.14 1.23 53.63 Standard Swin-T 50.45 0.33 49.22 Hybrid MobileViT-S 16.20 29.93 53.87 Hybrid EfficientViT-b1 0.54 40.29 59.17
+
+spatial dimension N is dominant, but the channel width M
+
+is comparatively narrow. A static dataflow (e.g., fixed weight-stationary) suffers from severe hardware underutilization and bandwidth bottlenecks when executing across such diverse shapes. To address this, our custom TFLite delegate incorporates a host driver that manages a dynamic, dual-mode dataflow. We denote the per-core tile sizes along the row and column dimensions as TN and TM , respectively, and the number of parallel cores as C. The host driver pads the layer dimen-sions to ( ˜N , ˜M , ˜K), selects one of the two execution modes (i.e., Input-Broadcast or Weight-Broadcast) before launching each delegated layer. The hardware scheduler then realizes that choice by changing both the tile traversal order and the operand broadcast pattern to maximize data reuse and bandwidth efficiency. 
+
+Input-Broadcast Mode (input broadcast, weight partition-ing): It is used when the output width is large enough to keep all cores busy (i.e., ˜M ≥ CT M ), or when the Input-Broadcast schedule yields lower estimated DMA traffic. In this mode, the outer loop advances along ˜N in steps of TN , so one input tile is loaded once and broadcast to all cores. The inner loop then advances along ˜M in steps of CT M , and each core receives a different weight tile. This schedule maximizes activation reuse and is especially effective for FC-dominant layers. 
+
+Weight-Broadcast Mode (weight broadcast, input parti-tioning): It is used when the layer is too narrow to fully utilize the output-width parallelism of the Input-Broadcast mode, or when the Weight-Broadcast schedule yields lower estimated DMA traffic. The outer loop advances along ˜M in steps of 
+
+TM , so one weight tile is loaded once and broadcast to all cores. The inner loop then advances along ˜N in steps of CT N ,and each core receives a different input tile. This schedule maximizes weight reuse and is more suitable for CONV layers with a large spatial extent. The logic for this adaptable dataflow is formalized in Algorithm 1. By selecting the optimal dataflow per layer, our accelerator ensures high utilization of the processing elements regardless of whether the model is FC- or CONV-dominated. 
+
+C. Resource Limitations 
+
+To sustain single-pass accumulation on a resource-constrained edge FPGA, FlexViT fixes the execution granu-larity of each core and sizes the on-chip buffers accordingly. We denote the per-core tile sizes by TN and TM , the maximum buffered reduction depth by TK , and the single-instruction multiple-data (SIMD) width inside each core by Kf . This Algorithm 1 Dynamic Per-Layer Mode Selection                                                                       
+
+> 1: Input: layer type L∈ { FC ,CONV }
+> 2: Input: padded dimensions ( ˜N , ˜M , ˜K)
+> 3: Const.: per-core tile sizes (TN, T M)and core count C
+> 4: Const.: hardware dense width Wdense ←C×TM
+> 5: if L=FC then
+> 6: // Spatial heuristic for projection layers
+> 7: if ˜M≥Wdense then
+> 8: mode ←Input-Broadcast
+> 9: else
+> 10: mode ←Weight-Broadcast
+> 11: else
+> 12: // Analytical DMA estimation for high-variance CONV layers
+> 13: bIB ←ESTIMATE TRANSFER BYTES (IB ,˜N , ˜M , ˜K)
+> 14: bW B ←ESTIMATE TRANSFER BYTES (WB ,˜N , ˜M , ˜K)
+> 15: if bIB ≤bW B then
+> 16: mode ←Input-Broadcast
+> 17: else
+> 18: mode ←Weight-Broadcast
+> 19: Return mode
+
+implements single-pass accumulation where the input and weight buffers are sized to hold the full depth of a tile, allowing the PE array to accumulate the full dot-product in local registers. Because this accumulation is completely local, we never write 32-bit partial sums to main memory; only the final, quantized 8-bit values are written out. To support this strategy within the specific constraints of the PYNQ-Z2 board, we design the hardware accelerator with the following parameters, selected to maximize throughput while fitting within the resources:  
+
+> •
+
+Per-core tile size (TN = 64 , TM = 64 ): each core computes a 64 × 64 output tile. With C = 3 cores, the Input-Broadcast mode covers up to 3TM = 192 output columns per inner-loop step, while the Weight-Broadcast mode covers up to 3TN = 192 input rows per inner-loop step. This granularity is large enough to expose useful parallelism on FC-heavy layers while keeping loop-control overhead manageable for CONV layers.  
+
+> •
+
+Buffer Depth (TK = 1024) : Crucially, we size the on-chip input and weight buffers to store a depth of 
+
+TK =1024. This capacity covers 100% of the layers in ViT, DeiT, Swin and MobileViT models. In EfficientVIT, it accommodates the entire feature extraction backbone (44 layers), excluding only the single final classification layer (with TK = 1536 ). This ensures that for four out of the five evaluated ViT models, the accelerator executes without any depth-wise tiling, completely eliminating partial-sum swapping.  
+
+> •
+
+Parallelism (C=3): We instantiate 3 parallel compute cores to maximize compute density on the PYNQ-Z2 board. While scaling to 4 cores would exceed the device’s BRAM capacity, 3 cores optimally utilize the available on-chip memory. To support this configuration, the local buffer width is sized to maximize the BRAM bandwidth, ensuring simultaneous, high-throughput access to weights and inputs without stalling the compute engines. TABLE III: FlexViT architectural parameters.             
+
+> Symbol Value Description
+> TN64 Per-core row tile size
+> TM64 Per-core output-channel tile size
+> TK1024 Maximum buffered reduction depth
+> C3Number of parallel GEMM cores
+> Kf16 SIMD width along the reduction dimension
+
+IV. F LEX VIT A CCELERATOR 
+
+We now describe the FlexViT hardware accelerator shown in Figure 2a. FlexViT is implemented with six customized hardware units: the scheduler; the read units (ReadInp for inputs, ReadWgt for weights, and ReadBias for the bias and re-quantization parameters); the high-throughput GEMM engine; and the post-processing unit for processing, requantizing and sending data back to the host driver. Table III summarizes the architectural parameters used throughout this section. 
+
+A. Scheduler 
+
+The operation of the accelerator is controlled by a central Scheduler unit (“Scheduler” in Figure 2a), which orchestrates all the accelerator units. Unlike static accelerators that follow a fixed dataflow, the FlexViT scheduler implements dynamic control logic to support both Input-Broadcast and Weight-Broadcast dataflows. Execution begins by reading a layer configuration packet from a dedicated AXI-stream channel containing the layer dimensions, mode flags and quantization parameters. Control flow is enforced via a decoupled handshake proto-col. The scheduler asserts dedicated validity signals to trigger specific pipeline stages. Each stage operates autonomously and acknowledges completion only when its local task is finished. This decentralized synchronization allows the scheduler to dynamically mask the variable latency of DRAM access, preventing the entire pipeline from stalling due to a single delayed memory transaction. Once configured, the scheduler operates at tile granularity exactly as described in Algorithm 1. In the Input-Broadcast mode, it iterates over ˜N -tiles in the outer loop and over ˜M -tiles in the inner loop; in the Weight-Broadcast mode, this loop order is reversed. The arithmetic datapath is unchanged across the two modes. Instead, the scheduler changes whether an incoming tile is broadcast to all C cores or partitioned across them. The scheduler triggers the input, weight and bias reading units concurrently, using separate AXI streams for each re-source and thus allowing the units to operate without read contention. The PPU processes the results of the current tile 
+
+t while the read units simultaneously fetch the data for tile 
+
+t+1 ; this overlapping minimizes the latency of data movement, ensuring the compute cores remain saturated. 
+
+B. Read Units 
+
+Prior to inference, FlexViT employs a data preloading mechanism that stages all model weights from off-chip DRAM directly into DMA buffers. By decoupling this bulk memory (a) FlexViT Hardware Accelerator. 
+
+> (b) Computational flow within the GEMM Engine.
+
+Fig. 2: FlexViT architecture and computational flow. transfer from the active execution phase, FlexViT masks the initialization latency and minimizes the runtime overhead of copying data. To maximize throughput, the accelerator is designed to exploit task-level parallelism by managing data dependencies. It achieves this by first using four different AXI streams, each for its own resource: one stream for layer metadata, one for inputs, one for weights, and one for bias data. This allows us to maximize overlap by allowing inputs, weights, and biases to be read concurrently. To efficiently read contiguous data blocks from main memory, the read units are configured to issue AXI4 burst transactions of 32 bits. The ReadInp and ReadWgt units are responsible for fetching data from main memory to populate the accelerator’s on-chip and weight buffers. To support the distinct schedul-ing strategies defined in 1, which dictate whether inputs or weights are reused, these units dynamically adjust how they fill and distribute data from these buffers to the compute array. The two units are similar in design and behavior. In Input-Broadcast mode, ReadInp fills a shared buffer where one input tile is replicated across all C cores, while ReadWgt populates partitioned buffers so that each core receives a different weight tile. In Weight-Broadcast mode, ReadWgt fills a shared buffer where one weight tile is replicated across all C
+
+cores, while ReadInp populates partitioned buffers so that each core receives a different input tile. Therefore, the difference between the two modes lies in how the on-chip buffers are managed and routed, rather than in the compute core itself. Simultaneously, the ReadBias thread reads the bias if it is available for a layer. Subsequently, it also reads and processes the necessary requantization variables, such as the quantization offsets (zero-point correction terms) for the layer, which will be required for the PPU. To support the concurrent access of the multi-core archi-tecture, the on-chip memory hierarchy is banked. We utilize a cyclic partitioning strategy for both the input and weight buffers, interleaving consecutive data elements across sepa-rate physical memory banks in a round-robin fashion. This alignment ensures that the vector processing units can fetch contiguous data blocks in a single clock cycle, effectively eliminating the bank conflicts that could otherwise stall the pipeline during high-bandwidth parallel access. 
+
+C. GEMM Engine 
+
+The computational core of FlexViT is the GEMM engine, instantiated as three parallel cores. Each core is a vector processing unit designed to execute a tiled dot-product over the common dimension, K, using an output-stationary dataflow, where intermediate partial sums remain fixed within the processing elements while inputs and weights are streamed through, eliminating partial-sum traffic to on-chip memory. To minimize the limited memory port contention, interme-diate accumulators are maintained in local registers rather than BRAM. The datapath executes a continuous, pipelined accumulation along the K dimension, retiring MAC operations on every clock cycle to resolve the full dot-product within the local register files. To optimize resource usage on the PYNQ-Z2, the PE unit employs a hybrid arithmetic split architecture. The inner compute loop is structurally divided: the 8 bits of the dot-product are synthesized onto the FPGA’s logic fabric (LUTs), while the upper 8 bits map to the hardened DSP slices. This heterogeneity allows FlexViT to increase its effective MAC density per clock cycle. Consequently, FlexViT increases its effective local MAC density, retiring more MAC operations per clock cycle than a standard DSP-only implementation could on the same resource-constrained SoC. Internally, all partial sums are accumulated into 32-bit wide registers, en-suring that precision is maintained across the depth of the dot-product before the final quantization step. 
+
+Computational Flow : As shown in Figure 2b, computation is distributed across parallel PEs, with each core operating as a SIMD vector engine whose inner loop is unrolled along the K dimension by the SIMD width Kf = 16 . At each cycle, a PE reads Kf activations and the corresponding weight vector from the banked buffers and performs a fully pipelined INT8 MAC, with a latency of 7 cycles and an initiation interval of 1 cycle. Repeating this process for TK iterations completes the tile-depth traversal while keeping all inter-mediate partial sums in local registers, thereby realizing an output-stationary dataflow that avoids partial-sum traffic to on-chip memory. Because the software-side im2col transformation already normalizes heterogeneous layers into GEMMs, Input-Broadcast and Weight-Broadcast modes differ only in operand distribution and partitioning, rather than in the arithmetic datapath. D. Post-Processing Unit (PPU) 
+
+The PPU is the final component that serves as a convergence point for the accelerator’s parallel architecture. To maintain throughput while processing requantization, the PPU is deeply pipelined with a latency of 29 cycles and an initiation in-terval of 2 cycles, due to the several contending read/write operations. A key architectural optimization of this design is decoupling the bias and quantization offset (i.e., a quantization parameter) calculations from the main compute path. A naive, sequential datapath would create a long data dependency, forcing the compute engine to stall while bias and quantization offset data are fetched from memory. Our design overcomes this by splitting the operation into two concurrent datapaths: one for the PE and one for the Bias, which are executed in parallel. Within the PPU, we handle quantization for both CONV and FC layers. This can be dynamically selected based on the layer 
+
+control signal from the scheduler, and this selection is the core of our “flexible” accelerator. The quantization parameters that were read through the ReadBias unit are used in this step. If the layer is FC , the value is routed to a per-tensor requantization block, which uses the single scaling factor required for FC layers in TFLite. If the layer is CONV , the value is routed to a per-channel requantization block, which accesses an array of scaling factors to handle the quantization parameters required by CONV layers in TFLite. Finally, the output from this flexible quantization gets packed into 32-bit packets, written back through the AXI-Stream and sent back to the host. Finally, to scale the 32-bit accumulated outputs from the GEMM engine down to the required 8-bit precision, the PPU performs fixed-point rescaling. This is efficiently executed using a 32-bit integer multiplication mapped to standard DSP slices, followed by a bitwise right-shift (S ≈ M · 2−n).V. E VALUATION 
+
+A. Experimental Setup 
+
+To design and evaluate our FlexViT accelerator, we utilized the SECDA-TFLite toolkit [6] and the PYNQ-Z2 board, which contains an AMD Zynq-7000 edge SoC with an edge FPGA and an ARM Cortex-A9 CPU [20]. For performance and power comparisons, we evaluate against the on-board CPU with NEON SIMD instructions enabled, over an average of 100 runs. The design is synthesized with a clock frequency of 200MHz. To ensure a fair comparison and avoid potential static power overhead from the FPGA fabric, CPU-only power measurements were were collected without programming the FlexViT hardware logic onto the FPGA. Instead, the FPGA was configured with a minimal baseline bitstream containing only the system design required to benchmark the CPU. Consequently, the static power overhead introduced by the FPGA fabric during CPU-only execution remains negligible. FlexViT was evaluated using five ViT models converted to fully quantized INT8 TFLite format. ViT-T [21] is pre-trained on the ImageNet-21k dataset [15], whereas DeiT-T [9], TABLE IV: ViT models under study.                           
+
+> Model Params (M) Size (MB) Image Size
+> ViT-T 5.7 5.7 224 ×224
+> DeiT-T 5.7 5.7 224 ×224
+> Swin-T 28 27.7 224 ×224
+> MobileViT-S 5.6 5.7 256 ×256
+> EfficientViT-b1 9.1 9.6 224 ×224
+
+Swin-T [10], MobileViT-S [16], and EfficientViT-b1 [17] are pretrained on the ImageNet-1k dataset [15]. The parameter counts and model sizes of the five models are summarized in Table IV. The evaluated input resolutions ( 224 × 224 and 
+
+256 × 256 ) are highly practical for edge applications such as industrial IoT systems like automated defect detection or smart-home platforms. Note that FlexViT executes unmodified INT8 TFLite models and therefore preserves the inference accuracy of the software baseline. To validate functional correctness, we verify that the inference outputs produced by the hardware accelerator for all five models match those from CPU execution within TFLite’s acceptable tolerance (cosine similarity > 99%). Therefore, we evaluate the proposed accelerator using three metrics: resource utilization (%), end-to-end latency (s), and average energy per inference (J). 
+
+B. Results 1) Latency and Energy: The latency results are presented in Table V. As we can see, FlexViT accelerates the offloaded layers by up to 2.74 ×. By efficiently offloading the most compute-intensive FC and CONV layers, the hardware dras-tically reduces the inference bottleneck across a diverse spec-trum of ViT families. This efficient local execution translates to consistent and verifiable speedups of up to 1.40 × across evaluated models. The variation in end-to-end speedups is a direct reflection of the underlying model architecture rather than a limitation in the accelerator’s throughput. Specifically, the speedups align closely with the computational profiles established in our layer heterogeneity analysis (Table II). For standard ViT models like ViT-T and DeiT-T, where over 45% of the baseline execution is dominated by dense FC layers, the accelerator can sustain long periods of uninterrupted execution. This results in significant layer-wise speedups ( 2.61 × for ViT-T and 2.74 × for DeiT-T), driving the highest end-to-end gains ( 1.40 ×). Crucially, the accelerator proves equally adept at handling the complex, heterogeneous layers of hybrid ViT models. At the layer level, FlexViT achieves speedups of 1.77 ×
+
+and 2.00 × for MobileViT-S and EfficientViT-b1, respectively. However, these strong layer-wise gains translate into more modest end-to-end speedups of 1.25 × and 1.24 ×. Such system-level improvements are naturally bounded by Amdahl’s law [22], since more than 50% of the original runtime of these models is spent on non-offloaded operations (such as SoftMax, LayerNorm and memory reshaping) that remain strictly executed on the CPU. We note that the execution time of these non-offloaded “Other” operations remains practically identical across baseline and accelerated runs; the marginal differences fall well within standard measurement variance across our 100 runs and reflect the negligible software-side overhead of the runtime driver transitioning. This demonstrates that as hybrid ViT models fragment their execution graphs with diverse scalar operations, the CPU’s sequential execution becomes the overriding system bottleneck, regardless of the accelerator’s efficiency. Energy measurements can also be seen in Table V. We gather energy metrics by using a Makerfire USB power me-ter [23]. Again, the energy efficiency of our system is closely tied to the percentage of layers offloaded to the accelerator. En-couragingly, the design delivers consistent end-to-end latency improvements while keeping the total energy per inference nearly identical to, or better than, the CPU baseline. The energy outcomes highlight the trade-offs of hardware-software co-design on edge SoCs. For compute-intensive models like DeiT-T, the significant reduction in overall execution time directly yields net-positive energy savings ( 1.09 ×). In the worst-case scenarios (such as EfficientViT-b1), where 
+
+∼41% of the runtime is offloaded to the FPGA, the dynamic power of the FPGA fabric results in a slight increase in average energy per inference compared with the CPU-only baseline (0.93 ×). This minimal energy overhead represents a trade-off for achieving a 1.24 × speedup. This energy penalty in hybrid architectures arises because both the CPU and FPGA fabric remain active throughout inference: the FPGA sustains baseline power during CPU-dominated phases, whereas the CPU remains active during FPGA execution. This highlights the power overhead of het-erogeneous workloads with limited FPGA utilization. 
+
+2) Resource Utilization(%): Figure 3 shows the resource utilization of FlexViT on the FPGA fabric of the PYNQ-Z2 board. The proposed design consumes 83 .9% of the avail-able BRAM, 71 .8% of the DSPs, and 69 .3% of the LUTs, indicating a dense and efficient mapping to the target device. This resource utilization reflects a deliberate design strategy to maximize computational throughput within the strict logic and memory constraints of an edge-class FPGA, while maintaining a balanced allocation across the available resources. The role of each resource is discussed below:  
+
+> •
+
+BRAM: The near-full BRAM utilization (83.9%) con-firms that our tiling strategy maximizes the on-chip tile size, enabling single-pass accumulation. By capturing the largest possible working set on-chip, the design actively minimizes the latency overhead associated with off-chip memory transactions.  
+
+> •
+
+DSP: The high DSP utilization (71.8%) reflects the dense parallelism of the GEMM core. This deliberate mapping confirms that the architecture is optimized to extract the maximum available computational throughput from the limited resources of an edge platform.  
+
+> •
+
+LUT: The substantial LUT utilization (69.3%) is primar-ily driven by two factors: the logic required for the dual-mode scheduler to dynamically route data between cores, 
+
+Fig. 3: FlexViT resource utilization on PYNQ-Z2 board. and the split architecture, which offloads a portion of the arithmetic operations to LUTs, increasing the effective MAC throughput beyond the physical DSP limit. This illustrates a balanced mapping strategy that leverages general logic to supplement scarce arithmetic resources without causing routing congestion. 
+
+C. Comparison with State-of-the-Art 
+
+While prior ViT accelerators [3], [5], [24] have demon-strated performance on powerful FPGA platforms, such as the ZCU102 and Alveo U50, these evaluations typically as-sume higher resource availability and power budgets, with reported power consumption ranging from 18.2 to 39 W. This leaves a gap in understanding the practicality of ViT acceleration under resource-constrained edge devices. FlexViT addresses this deployment scenario by targeting measured, end-to-end inference on a resource-constrained edge platform, the PYNQ-Z2 board. FlexViT achieves execution at only 2.19 to 2.29 W while reporting end-to-end CPU+FPGA system-level performance. Furthermore, through a unified FC/CONV GEMM-based accelerator architecture, FlexViT supports both standard and hybrid ViT models, demonstrating its suitability for practical edge AI deployment. Because raw quantitative metrics alone may not capture these practical deployment con-siderations, we compare FlexViT with state-of-the-art works along three critical system-level dimensions: (1) end-to-end verifiability, (2) resource efficiency under edge constraints, and (3) architectural coverage. 
+
+End-to-end verifiability vs. simulation: A key distinction of FlexViT is that all reported performance results are mea-sured on a deployed PYNQ-Z2 platform, inherently capturing system-level overheads such as DRAM latency, AXI bus con-tention, and CPU-FPGA synchronization. In contrast, works targeting similar hardware, such as ViTA [2], report throughput estimates derived from synthesis results rather than physi-cal execution. Their methodology relies on estimated power consumption and analytically derived frame rates based on idealized datapath behavior. Consequently, these evaluations do not capture system-level effects encountered during real deployment. Furthermore, works such as Cao et al. [4] omit key implementation details, including memory mapping and driver interfaces, limiting the reproducibility of their results. By leveraging the SECDA-TFLite framework [6], FlexViT provides a transparent, fully deployable, and reproducible evaluation methodology based on measured end-to-end per-formance. TABLE V: Latency and energy results on CPU and CPU + Accelerator (100 runs).                                                                           
+
+> Model HW FC (s) CONV (s) Other (s) Total (s) Acc. Speedup E2E Speedup Energy (J/inference) Energy Gain ViT-T CPU 0.92 0.02 1.10 2.04 2.61 ×1.40 ×3.53 1.07 ×
+> CPU+Acc 0.35 0.01 1.10 1.46 3.31
+> DeiT-T CPU 0.93 0.03 1.08 2.04 2.74 ×1.40 ×3.56 1.09 ×
+> CPU+Acc 0.34 0.01 1.11 1.46 3.28
+> Swin-T CPU 3.87 0.03 3.77 7.67 2.05 ×1.35 ×12.96 1.03 ×
+> CPU+Acc 1.88 0.02 3.78 5.68 12.56
+> Mobile ViT-S
+> CPU 0.69 1.28 2.30 4.27 1.77 ×1.25 ×7.31 0.98 ×
+> CPU+Acc 0.27 0.84 2.31 3.42 7.49
+> Efficient ViT-b1
+> CPU 0.01 0.69 1.01 1.71 2.00 ×1.24 ×2.95 0.93 ×
+> CPU+Acc 0.01 0.34 1.027 1.377 3.16
+
+Resource efficiency vs. hardware scaling: Prior accelerators targeting hybrid ViT models frequently rely on high-end FPGA platforms that are impractical for cost-sensitive edge deployment. For example, Shao et al. [3] and M 2ViT [5] target the Xilinx ZCU102, which provides more than 10 × the logic resources of the PYNQ-Z2. Although Shao et al. [3] report a DSP utilization of only 40 .6% , this corresponds to more than 1,000 DSP slices on the ZCU102; nearly 5 × the total DSP capacity of our target platform. Moreover, these devices accommodate substantially larger on-chip buffers, reducing off-chip memory traffic and alleviating the bandwidth bottle-necks that characterize resource-constrained edge platforms. Consequently, direct comparisons based solely on conventional efficiency metrics can be misleading across such disparate hardware targets. 
+
+Architectural coverage: Existing accelerators are often tai-lored to specific ViT model families. ViTA [2] is tightly coupled to the matrix-vector multiplication (MVM) operations of attention blocks, preventing support for CONV layers found in modern hybrid ViTs. Conversely, M2ViT [5] is highly specialized for EfficientViT and therefore offers limited applicability to other architectures. In contrast, FlexViT adopts a unified execution model that maps both FC and CONV layers onto a single GEMM primitive, enabling efficient support for both standard and hybrid ViT models requiring separate compute engines. To the best of our knowledge, FlexViT is the first end-to-end FPGA accelerator demonstrated on an edge-class platform to provide verified performance improvements across both standard and hybrid ViT families within a unified architecture. VI. R ELATED WORK 
+
+Compression-based Accelerators: FPGA accelerators aim to improve computational throughput and energy efficiency by leveraging algorithmic techniques to minimize model size. Auto-ViT-Acc [25] applies fixed-point and power-of-two quan-tization to the compute-intensive linear (FC) layers of ViT models to enable efficient acceleration. VAQF [26] is a frame-work that automatically generates FPGA inference accelerators for ViT models with binary weights and low-precision activa-tions, significantly reducing memory requirements for model parameters and intermediate data. Several ViT works also employ token pruning [27], [28], [29] and token merging [30], [31] techniques to reduce input sequence length and ViT model complexity, often improving throughput and energy efficiency. DRViT [32] combines token merging, token pruning, and INT8 quantization with a specialized hardware accelerator. While these approaches demonstrate impressive efficiency improvements, they typically require substantial model modi-fications and additional hardware specialization. In contrast, FlexViT avoids such modifications by relying on standard INT8 quantization, enabling the acceleration of off-the-shelf ViT models without custom retraining or complex pruning. 
+
+Dataflow-based Accelerators: Prior FPGA accelerators for ViT models have primarily explored dataflow optimization and operator specialization [33], [24], [34], [35], [36]. However, many designs target narrow workload patterns, such as FC-dominant Standard ViTs, Swin-specific execution [37], [10], or individual hybrid architectures implemented on larger FPGA platforms. In contrast, FlexViT enables unified and practical edge deployment by mapping both FC and CONV layers onto a single GEMM engine and validating the complete system end-to-end on a resource-constrained PYNQ-Z2 platform. VII. C ONCLUSION 
+
+We presented FlexViT, a lightweight and flexible FPGA accelerator for Vision Transformer inference on resource-constrained edge devices. FlexViT employs a hardware-software co-design approach that unifies FC and CONV layers found in modern ViT models into a single GEMM primitive, enabling broad support for standard and hybrid ViT architectures. By integrating INT8 quantization, hardware optimizations, and a flexible post-processing pipeline, FlexViT achieves up to 2.74 × layer-level acceleration and up to 1.40 ×
+
+end-to-end speedup across a range of ViT models deployed on a Zynq-7000 SoC. As future work, we plan to explore deeper system-level optimizations to alleviate memory bottlenecks in the current layer-by-layer execution model. ACKNOWLEDGMENTS 
+
+This work was partially supported by the EU Project dAIEDGE (GA Nr 101120726) and the Innovate UK Horizon Europe Guarantee (GA Nr 10090788). REFERENCES [1] P. Gibson, J. Cano, E. Crowley, A. Storkey, and M. O’boyle, “DLAS: A Conceptual Model for Across-Stack Deep Learning Acceleration,” ACM Transactions on Architecture and Code Optimization (TACO) , 2025. [2] S. Nag, G. Datta, S. Kundu, N. Chandrachoodan, and P. A. Beerel, “ViTA: A vision transformer inference accelerator for edge applica-tions,” in 2023 IEEE International Symposium on Circuits and Systems (ISCAS) , 2023, pp. 1–5. [3] H. Shao, H. Shi, W. Mao, and Z. Wang, “An fpga-based reconfigurable accelerator for convolution-transformer hybrid efficientvit,” in 2024 IEEE International Symposium on Circuits and Systems (ISCAS) , 2024, pp. 1–5. [4] J. Cao, J. Guo, W. Xiong, H. Luo, J. Wang, and J. Lai, “An energy-efficient fpga-based vision transformer accelerator via software-hardware co-design,” in 2025 IEEE 33rd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) , 2025, pp. 272–272. [5] Y. Liang, H. Shi, and Z. Wang, “M2-vit: Accelerating hybrid vision transformers with two-level mixed quantization,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 33, no. 5, pp. 1492– 1496, 2025. [6] J. Haris, P. Gibson, J. Cano, N. Bohm Agostini, and D. Kaeli, “SECDA-TFLite: A toolkit for efficient development of FPGA-based DNN accelerators for edge inference,” Journal of Parallel and Distributed Computing , vol. 173, pp. 140–151, 2023. [7] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly, J. Uszkoreit, and N. Houlsby, “An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale,” Jun. 2021, arXiv:2010.11929 [cs]. [Online]. Available: http://arxiv.org/abs/2010.11929 [8] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, “Attention is all you need,” in Advances in Neural Information Processing Systems , ser. NIPS’17. Curran Associates Inc., 2017, p. 6000–6010. [9] H. Touvron, M. Cord, M. Douze, F. Massa, A. Sablayrolles, and H. Jegou, “Training data-efficient image transformers & distillation through attention,” in Proceedings of the 38th International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, M. Meila and T. Zhang, Eds., vol. 139. PMLR, 18–24 Jul 2021, pp. 10 347–10 357. [10] Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin, and B. Guo, “Swin transformer: Hierarchical vision transformer using shifted windows,” in 2021 IEEE/CVF International Conference on Computer Vision (ICCV) , 2021, pp. 9992–10 002. [11] K. Han, Y. Wang, H. Chen, X. Chen, J. Guo, Z. Liu, Y. Tang, A. Xiao, C. Xu, Y. Xu, Z. Yang, Y. Zhang, and D. Tao, “A Survey on Vision Transformer,” IEEE Transactions on Pattern Analysis and Machine Intelligence , vol. 45, no. 1, pp. 87–110, Jan. 2023. [12] X. Dong, J. Bao, D. Chen, W. Zhang, N. Yu, L. Yuan, D. Chen, and B. Guo, “CSWin Transformer: A General Vision Transformer Backbone With Cross-Shaped Windows,” in Proceedings of the IEEE/CVF Con-ference on Computer Vision and Pattern Recognition , 2022, pp. 12 124– 12 134. [13] A. Arnab, M. Dehghani, G. Heigold, C. Sun, M. Luˇ ci´ c, and C. Schmid, “ViViT: A Video Vision Transformer,” in Proceedings of the IEEE/CVF International Conference on Computer Vision , 2021, pp. 6836–6846. [14] G. Xu, Z. Hao, Y. Luo, H. Hu, J. An, and S. Mao, “Devit: Decomposing vision transformers for collaborative inference in edge devices,” IEEE Transactions on Mobile Computing , vol. 23, no. 5, p. 5917–5932, May 2024. [15] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Imagenet: A large-scale hierarchical image database,” in 2009 IEEE Conference on Computer Vision and Pattern Recognition , 2009, pp. 248–255. [16] S. Mehta and M. Rastegari, “Mobilevit: Light-weight, general-purpose, and mobile-friendly vision transformer,” in International Conference on Learning Representations , 2022. [17] X. Liu, H. Peng, N. Zheng, Y. Yang, H. Hu, and Y. Yuan, “Efficientvit: Memory efficient vision transformer with cascaded group attention,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2023, pp. 15 094–15 104. [18] W. Shi, J. Cao, Q. Zhang, Y. Li, and L. Xu, “Edge computing: Vision and challenges,” IEEE Internet of Things Journal , vol. 3, no. 5, pp. 637–646, 2016. [19] J. Haris, P. Gibson, J. Cano, N. B. Agostini, and D. Kaeli, “SECDA: Efficient Hardware/Software Co-Design of FPGA-based DNN Acceler-ators for Edge Inference,” in SBAC-PAD , 2021, pp. 1–8. [20] TUL Corporation, PYNQ-Z2 User Manual v1.0 , TUL Corporation, May 2018. [21] A. P. Steiner, A. Kolesnikov, X. Zhai, R. Wightman, J. Uszkoreit, and L. Beyer, “How to train your vit? data, augmentation, and regularization in vision transformers,” Transactions on Machine Learning Research ,2022. [22] G. M. Amdahl, “Validity of the single processor approach to achieving large scale computing capabilities,” in Proceedings of the April 18-20, 1967, spring joint computer conference , 1967, pp. 483–485. [23] Makerfocus. (2025) USB Power Meter Digital Display - Voltage Current Amps Capacity Time Temperature Meter. [24] T. Wang, L. Gong, C. Wang, Y. Yang, Y. Gao, X. Zhou, and H. Chen, “ViA: A novel vision-transformer accelerator based on FPGA,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 41, no. 11, pp. 4088–4099, 2022. [25] Z. Li, M. Sun, A. Lu, H. Ma, G. Yuan, Y. Xie, H. Tang, Y. Li, M. Leeser, Z. Wang, X. Lin, and Z. Fang, “Auto-vit-acc: An fpga-aware automatic acceleration framework for vision transformer with mixed-scheme quantization,” in 2022 32nd International Conference on Field-Programmable Logic and Applications (FPL) , 2022, pp. 109–116. [26] M. Sun, H. Ma, G. Kang, Y. Jiang, T. Chen, X. Ma, Z. Wang, and Y. Wang, “VAQF: Fully automatic software-hardware co-design framework for low-bit vision transformer,” 2022. [Online]. Available: https://arxiv.org/abs/2201.06618 [27] P. Dong, M. Sun, A. Lu, Y. Xie, K. Liu, Z. Kong, X. Meng, Z. Li, X. Lin, Z. Fang, and Y. Wang, “Heatvit: Hardware-efficient adaptive token pruning for vision transformers,” in 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2023, pp. 442–455. [28] D. Parikh, S. Li, B. Zhang, R. Kannan, C. Busart, and V. Prasanna, “Accelerating vit inference on fpga through static and dynamic prun-ing,” in 2024 IEEE 32nd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) , 2024, pp. 78–89. [29] H. You, Z. Sun, H. Shi, Z. Yu, Y. Zhao, Y. Zhang, C. Li, B. Li, and Y. Lin, “Vitcod: Vision transformer acceleration via dedicated algorithm and accelerator co-design,” in 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2023, pp. 273–286. [30] D. Bolya, C.-Y. Fu, X. Dai, P. Zhang, C. Feichtenhofer, and J. Hoffman, “Token merging: Your vit but faster,” in The Eleventh International Conference on Learning Representations , 2023. [31] S. Yoo, H. Kim, and J.-Y. Kim, “Adaptiv: Sign-similarity based image-adaptive token merging for vision transformer acceleration,” in 2024 57th IEEE/ACM International Symposium on Microarchitecture (MI-CRO) , 2024, pp. 64–77. [32] X. Sun, Y. Zhang, Q. Wang, X. Zou, Y. Liu, Z. Zeng, and H. Zhuang, “DRViT: A dynamic redundancy-aware vision transformer accelerator via algorithm and architecture co-design on FPGA,” Journal of Parallel and Distributed Computing , vol. 199, p. 105042, 2025. [33] S. Nag, L. Liberty, A. Sivakumar, N. J. Yadwadkar, and L. K. John, “Lightweight vision transformers for low energy edge inference,” in 
+
+Machine Learning for Computer Architecture and Systems 2024 , 2024. [34] Z. Zhao, R. Cao, K.-F. Un, W.-H. Yu, P.-I. Mak, and R. P. Martins, “An FPGA-based transformer accelerator using output block stationary dataflow for object recognition applications,” IEEE Transactions on Circuits and Systems II: Express Briefs , vol. 70, no. 1, pp. 281–285, 2023. [35] Y. Zhang, L. Feng, H. Shan, and Z. Zhu, “A 109-gops/w fpga-based vision transformer accelerator with weight-loop dataflow featuring data reusing and resource saving,” IEEE Transactions on Circuits and Sys-tems for Video Technology , vol. 34, no. 12, pp. 13 596–13 610, 2024. [36] K. Marino, P. Zhang, and V. K. Prasanna, “Me- vit: A single-load memory-efficient fpga accelerator for vision transformers,” in 2023 IEEE 30th International Conference on High Performance Computing, Data, and Analytics (HiPC) , 2023, pp. 213–223. [37] Q. Dong, X. Xie, and Z. Wang, “SWAT: An efficient swin transformer accelerator based on FPGA,” in Proceedings of the 29th Asia and South Pacific Design Automation Conference (ASPDAC) , 2024, pp. 515–520.

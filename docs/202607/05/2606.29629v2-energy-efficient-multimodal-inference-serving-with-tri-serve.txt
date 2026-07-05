@@ -1,0 +1,426 @@
+Title: Energy-Efficient Multimodal Inference Serving with Tri-serve
+
+URL Source: https://arxiv.org/pdf/2606.29629v2
+
+Published Time: Wed, 01 Jul 2026 01:26:51 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Energy-Efficient Multimodal Inference Serving with Tri-serve 
+
+Ziyang Jia ∗, Sara Rashidi Golrouye ∗, Laxmi Bhuyan ∗, Benjamin Kubwimana †
+
+Devashree Tripathy ‡, Zexin Li ∗, Cong Liu ∗, Daniel Wong ∗∗University of California, Riverside †NVIDIA ‡Indian Institute of Technology Bhubaneswar 
+
+{zjia016, srash034, bhuyan, zli536, congl, dwong}@ucr.edu bkubwimana@nvidia.com , devashreetripathy@iitbbs.ac.in 
+
+Abstract —Multimodal model inference creates substantial en-ergy demand with growing performance requirements. Within GPUs, power is autonomously managed by an on-board power management unit (PMU), which makes frequency boost-ing/throttling decisions. However, we find that these hardware-managed frequency decisions can cause significant power ineffi-ciency. This work identifies three classes of power inefficiencies within modern multimodal inference serving: (1) inter-stage dependency stalls runs at near maximum frequency despite being idle; (2) anti-correlation between auto-boost frequency and arithmetic intensity (A.I.), results in compute-bound phases (e.g., prefill) running at lower frequency and vice versa; and (3) thermal throttling degrades SM frequency and throughput. We propose Tri-serve, a software-based DVFS controller that jointly accounts for three classes of inefficiency—inter-stage Dependency stalls, the Arithmetic-intensity effect on fre-quency and power, and the Thermal-throttling effect of high A.I. phases—to deliver energy-efficient multimodal serving on commodity GPUs. We show that Tri-serve achieves 22% energy efficiency improvement with no latency or throughput impacts. 
+
+Index Terms —GPU, DVFS, energy efficiency, multimodal in-ference, LLM serving, thermal throttling, arithmetic intensity. 
+
+I. I NTRODUCTION 
+
+Multimodal model inference now powers production tools such as coding/general agents (Claude Code [1], Cursor [2], Codex [3], OpenClaw [4], etc.) and conversational assistants (ChatGPT [5], Gemini [6], etc.). However, it creates substan-tial energy demand alongside ever-growing performance re-quirements. Recent multimodal inference serving stacks, such as vLLM-Omni [7], have improved job completion time for multimodal inference by fully disaggregating each modality stage across GPUs. However, reducing energy per generated token and power consumption has remained a secondary pri-ority in the rapid evolution of ML systems and infrastructure. Many prior works have explored GPU Dynamic Voltage-Frequency Scaling (DVFS) for deep-learning inference [8]– [11] with the aim of selecting a lower frequency to satisfy service level objectives (SLO). These efforts primarily target unimodal LLM serving as a black box and select the best frequency level given workload properties, such as batch size, sequence length, etc. However, these prior works do not address the unique challenges in multi-stage, multi-modality pipelines that dominate modern multimodal serving, where heterogeneous stages exhibit distinct workload characteristics. In this work, we explore opportunities for GPU power management for modern multimodal inference serving. By profiling vLLM-Omni serving Qwen-Omni [12]–[14] on com-modity datacenter GPUs, we reveal three classes of power inefficiency that are inherent to the GPU’s hardware power management unit (PMU) and its management of DVFS auto-boosting capabilities. 
+
+Inefficiency 1) Inter-stage dependency stalls waste idle power. Qwen-Omni adopts a multi-stage architecture consist-ing of a Thinker, Talker, and Vocoder model. Due to memory limits, these stages are typically mapped onto separate GPUs, forming a producer-consumer pipeline in which downstream stages routinely stalls and wait on upstream stages. During these dependency stalls, we observed that the core and memory clocks remain pinned near the auto-boost ceiling, drawing unnecessary power while performing no useful work. 
+
+Inefficiency 2) Auto-boost frequency is anti-correlated with arithmetic intensity. We observe that compute-bound prefill consistently runs at a lower core frequency than memory-bound decode and idle dependency stall phases. That is, the GPU’s frequency levels are typically lower when more performance is necessary (higher arithmetic intensity), and frequency is higher when performance is not necessary (lower arithmetic intensity). 
+
+Inefficiency 3) Thermal throttling cause frequency degra-dation in compute-intensive phases. We observe that the prefill phase of the Thinker and Talker stages suffer from a monotonic decay of core frequency over time. We identified that this is due to thermal throttling of the SMs (GPU cores) where compute-heavy phases run hotter. The GPU PMU man-ages auto-boost frequencies based on the power and thermal headroom that is available [15]–[17] . Therefore, compute-heavy phases tend to deplete the thermal headroom the longer they run, resulting in the frequency decrease over time. We observe that this thermal throttling phenomena is universal across multiple GPU models. Based on these observations, we overcome the limitations of hardware PMU-managed frequency scaling by propos-ing Tri-serve , a software-based end-to-end DVFS controller that jointly accounts for three classes of inefficiency—inter-stage Dependency stalls, the Arithmetic-intensity effect on frequency and power, and the Thermal-throttling effect of the PMU—to deliver energy-efficient multimodal serving. Our    
+
+> arXiv:2606.29629v2 [cs.DC] 30 Jun 2026 Stall
+> Stall Stall
+> Stall Stall
+> Stall
+> Thinker
+> Talker
+> Vocoder
+> Init Prompt 0 Prompt 2
+> Prompt 0,1 arrive Prompt 2 arrive
+> Prompt 1
+> Init
+> Stall Init
+> Prompt 0
+> Prompt 0
+> Prompt 1
+> Prompt 1
+> Prompt 2
+
+Fig. 1: Pipeline of the three Qwen-Omni stages and their SM frequency, power, tensor activity profile. contributions are:  
+
+> •
+
+We perform a characterization of dependency-induced idle power inefficiency in multimodal inference pipelines. To solve this, we propose stall-aware idle frequency scaling 
+
+that minimizes both core and memory clocks whenever a GPU is blocked due to inter-stage dependency stalls.  
+
+> •
+
+We introduced a frequency-locked roofline microbench-mark that enables us to characterize the behavior of the GPU’s PMU frequency management policy. We found that workload arithmetic intensity and SM frequency are anti-correlated, resulting in high frequency when performance is not necessary, and vice versa. To solve this, we propose an Arithmetic intensity-aware frequency scaling policy that selects an optimal frequency given the A.I.  
+
+> •
+
+We observe strong coupling between the die temperature, core frequency, and TFLOPS. We observe that this thermal throttling phenomena is ubiquitous across many GPUs. The magnitude of the losses is amplified with higher A.I., compounding the aforementioned anti-correlation effect. To overcome this, we introduce a thermal-aware frequency scaling policy that identifies sustainable frequencies to avoid thermal throttling of compute-heavy phases.  
+
+> •
+
+Finally, we introduce Tri-serve, a software-based DVFS solution for inference serving of multimodal models that integrates the aforementioned three optimizations. Through a real implementation on a GPU cluster, we show that Tri-serve can achieve ∼20% improvement to energy per output token without impacting latency or throughput. The remainder of the paper is organized as follows. Sec-tion II characterizes the three inefficiencies in detail. Sec-tion III presents the design of Tri-serve. Section IV evaluates the benefits of Tri-serve. Section V covers related works, and finally we conclude in Section VI. II. C HARACTERIZING ENERGY INEFFICIENCIES IN 
+
+MULTIMODAL SERVING 
+
+A. Multimodal Model Architecture Background 
+
+Multimodal Large Language Models (MLLMs), such as the Qwen-Omni series [14], [18], extend generative AI to text, image, and audio inputs and outputs [19]. Unlike text-based LLMs, MLLMs adopt pipelined architectures whose stages handle modality-specific encoding, reasoning, and gen-eration in sequence. vLLM-Omni [7], a representative high-throughput multimodal serving framework, executes each stage as an independent worker process on top of PagedAt-tention [20] memory management. In this work, we will use Qwen-Omni as the representative multimodal model. The Qwen-Omni pipeline is disaggregated into three dis-tinct stages: Thinker, Talker, and Code2Wav/Vocoder. The first stage, Thinker, is the core multimodal LLM responsible for reasoning. Front-end vision and audio encoders convert image/video and waveform inputs into a token stream that, together with the text prompt, is consumed by the Thinker in a compute-bound prefill phase. Thinker then emits text tokens and per-token hidden states in an autoregressive decode loop. The next stage, Talker, is another autoregressive transformer that consumes the Thinker hidden states one at a time and emits discrete acoustic tokens (RVQ codes). Each Thinker hidden state triggers a short Talker step, so the Talker inherits the prefill–decode structure of unimodal LLMs. The last stage, Code2Wav/Vocoder, is a non-autoregressive synthesis model (Diffusion Transformer/DiT + codec) that converts batches of Talker acoustic codes into the final audio waveform in chunked, one-shot bursts. It activates sparingly only when the Talker has accumulated enough tokens to fill a chunk. 
+
+Pipeline parallelism: Figure 1 shows an illustrative ex-ample where each stage in Qwen-Omni maps onto an in-dividual GPU 1. vLLM-Omni organizes these stages in aclassic pipeline-parallel configuration (one functional stage per device) and connects adjacent stages with a Python pro-ducer/consumer queue. The mapping is dictated by the stages’ divergent memory footprints (each stage holds its own model weights and KV cache, which together exceed a single 48 GB device) with overlapping compute. For example, Thinker decode for re-quest r runs concurrently with Talker decode for request r−1
+
+and Vocoder synthesis for request r−2. Data is exchanged between stages through queues and not tensor-parallel collec-tives. 
+
+B. Inter-Stage Dependency Stalls Waste Idle Power 
+
+To explore the inefficiencies in multimodal serving, we profile the execution of vLLM-Omni using Nsight System on Nvidia A6000 GPUs. See Section IV-A for more details on our experimental setup. The disaggregated Thinker–Talker–Vocoder pipeline intro-duces a producer-consumer queue between every pair of          
+
+> 1Note that multiple stages can also be mapped to the same GPU, which we also explored in Evaluation IV-C with Thinker and Vocoder sharing a GPU. 10 −1 10 010 110 210 310 410 5
+> Stall duration (ms, log scale)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> CDF
+> 1 ms
+> 1 s
+> 1 min
+> Thinker (Stage-0)
+> n=6,066, Σt=1450.1s
+> Talker (Stage-1)
+> n=78,679, Σt=2495.2s
+> Vocoder (Stage-2)
+> n=164, Σt=2084.6s
+
+Fig. 2: Per-stage CDF of sem_wait stall durations. 1
+
+> 2
+> 3
+> 4
+> 5
+
+Fig. 3: Frequency-locked roofline benchmark results. stages, as shown in Figure 1 (top). As autoregressive mod-ules, both Thinker and Talker consist of prefill and decode phases, while Vocoder is a diffusion-based, non-autoregressive synthesis stage. Since the Thinker waits on incoming requests and each individual stage exhibit different execution times, these inter-stage dependencies results in significant GPU stalls. Whenever a downstream stage drains its queue and waits for the next request, it blocks on a sem_wait() call and the SMs (GPU cores) go idle. Figure 2 reports the CDF of sem_wait() durations ex-tracted from the same Nsight Systems trace from the bottom of Figure 1. In a concurrent online serving scenario, across the three stages, total stall time accounts for roughly 16% of total GPU time, while vocoder suffers from 34% stall time. In addition, these stall periods are fairly long, typically at least 20ms for thinker and talker and above 10 seconds for vocoder, as shown in Figure 2. Although continuous batching allows concurrent requests to interleave, the inherent execution time disparity between the slower autoregressive upstream stages and the faster non-autoregressive downstream stages causes downstream queues to rapidly drain, making these dependency stalls impossible to fully hide. 
+
+Observation 1: Inter-stage dependency leads to long-running stalls with high SM frequency. The bottom of Fig 1 shows the compute clock frequency, power and the corresponding tensor utilization as measured by Nsight Sys-tems of the GPU at different phases of each stage. Looking at the idle period of the GPU load with Vocoder, the GPU does not lower frequency during these idle periods. The SM clock stays pinned at ∼2500Mhz, and the per-GPU package power remains above 60W even when the SMs are inactive. 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75         
+
+> Time [s]
+> 0
+> 1000
+> 2000
+> 3000
+> GPC clock
+> [MHz]
+> Thinker prefill (0.9 s)
+> Δf≈ 285 MHz
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Time [s]
+> 0
+> 1000
+> 2000
+> 3000 Talker prefill (0.1 s)
+> Δf≈ 265 MHz
+
+(a) Zoom-in on a single Thinker/Talker prefill window. 40 50 60 70 
+
+> Temperature (°C)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> TFLOPS
+> 10 0
+> 10 1
+> 10 2Arithmetic Intensity (FLOPs/B)
+
+(b) TFLOPS vs. temperature, col-ored by A.I. 1 10 20 25 30 40 50 60 70 80 90 90 100 100 120 150 170 200   
+
+> Arithmetic Intensity (FLOPs/B)
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> Frequency Drop (MHz)
+> Mem  Bal Comp
+
+(c) Steady-state frequency drop vs. A.I. 
+
+Fig. 4: A.I.-centric thermal-throttling effect by PMU. The frequency at idle is far above the frequency in the P8 idle state of 210MHz and causing the active-idle power to be higher than static power, thus, there exist significant potential for saving power during these stall periods. A prior work [21] also observes these inefficient frequencies during "execution-idle" phases, validating our findings. 
+
+C. PMU-managed Frequency Decisions Are Not Optimized for Varying Arithmetic Intensity 
+
+Observation 2: High tensor activity coincides with lower SM frequency, and vice versa. From the bottom of Fig 1, we observe that for Thinker, during prefill phase (with high arithmetic intensity dense GEMM kernels), the SM frequency 
+
+decreases to ∼1000 – 1200MHz, and during decode phase (with low A.I. GEMV-like operators) the SM frequency in-creases to the auto-boost ceiling. Essentially, the SM clock frequency is highest when compute performance is unneces-sary, and frequency is lowest when compute performance is critical. We observe this anti-correlation pattern across both autoregressive stages in Thinker and Talker. This observation is also consistent with prior observations during ML training collective communication phases (which has low A.I.) [22]. 
+
+1) Frequency-locked Roofline Benchmarking: To explore 
+
+why the PMU exhibit this anti-correlated frequency pol-icy, we introduce a frequency-locked roofline benchmark that aims to demystify the PMU’s auto-boost arith-metic intensity-dependent behavior. We sweep a synthetic roofline kernel (based on matrix multiply) across A.I. ∈{1, 25 , 50 , 100 , 200 } FLOPs/B and lock the SM clock at f ∈{450 , . . . , 3000 } MHz, comparing against the PMU-managed auto-boost reference. Figure 3 shows the throughput, power, and core clock across a range of A.I. 
+
+Observation 2a: The achievable frequency ceiling under PMU-guided frequency scaling varies depending on A.I. 
+
+As shown in Figure 3 (bottom), A.I. less than 10 Flop/B is considered memory-bound and A.I. greater than 60 Flop/B is considered compute-bound. We observe that during low A.I. periods (i.e. Decode), the PMU’s auto-boost (dashed line) is able to achieve the maximum frequency ( 1 ). As the A.I. increases towards the ridge, where the workload is compute and memory balanced, the GPU’s power hits the maximum observed power level and the core clock gradually begins to reduce ( 2 ) [23]. Then at even higher A.I. levels (i.e. Prefill), the core frequency raises slightly as the workload exhibits less memory activity and reallocates power towards the SMs ( 3 ). However, this frequency level is still lower than that achieved at lower A.I. levels ( 1 ). As we will show later, this is because frequency is bounded by power and thermal headrooms at higher A.I. 
+
+Observation 2b: There exist lower frequencies that achieve the same throughput, thus, auto-boost can waste energy. As shown in Figure 3 (middle, top), at low A.I. the auto-boost controller selects the maximum frequency ( 1 ). However, that same throughput is achievable with the lowest clock ( 4 ), thus, wasting power. As A.I. increases, the low-est required frequency to achieve the maximum throughput begins to increase slowly, with the balanced A.I. region requiring 450MHz to 1800MHz ( 5 ), still significantly lower than the auto-boost frequency. These results demonstrate the inefficiency of auto-boost and shows the necessity for DVFS controllers to be arithmetic intensity aware to save power. 
+
+D. Thermal Throttling Limits Performance During Compute-heavy Phases 
+
+Observation 3: Thermal throttling degrades frequency during high arithmetic intensity phases. Figure 4a shows the frequency behavior during the compute-heavy prefill phases for both Thinker and Talker. Over the course of prefill execution, the clock frequency begins at a higher frequency (~1300 MHz), then begins to decrease (down to ~1000 MHz) gradually as prefill progresses; essentially losing ~20% in performance over the course of prefill. As we will show, this is due to thermal throttling by the PMU as auto-boost frequencies are dependent on the thermal headroom that exists. 
+
+Benchmarking Thermal Throttling. To understand how the hardware PMU handles thermal throttling and arithmetic intensity, we sweep a range of arithmetic intensity kernels, running each for 240s allowing the GPU to reach steady state temperature As shown in Figure 4b, for low A.I. kernels (lower data points), the performance remains relatively stable as the GPU reaches steady state temperature. However, as the arithmetic intensity increases (higher data points), there is a clear negative correlation with TFLOPS as the GPU’s temperature increase. Figure 4c shows the average frequency drop observed across a range of A.I. For compute-heavy kernels, we observe fre-quency drops of ~400-800 MHz due to thermal throttling. Compute-heavy kernels tend to generate more heat, resulting in less thermal headroom for the hardware PMU to leverage for auto-boosting, resulting in this thermal throttling effect. User Request vLLM-omni   
+
+> Autoregressive (Thinker, Talker)
+> DiT (Vocoder)
+> Encoders
+> vLLM
+> vLLM v1 EngineCore
+> Tri-serve
+> Server
+> Frequency-locked Roofline Benchmark
+> GPU
+> GPU
+> GPU
+> GPU Power/Performance Model
+> EngineCore.step()
+> Reset on Queue() get work
+> Stall Detection: sem_wait() Phase Detection
+> Arithmetic Intensity Characterization
+> Thermal Characterization
+> Frequency Optimizer
+> Nvml Control
+> Nvml Control
+> Dependency Stall-aware Frequency Scaling A.I.- and Thermal-aware Frequency Scaling
+
+Fig. 5: Tri-serve architecture. III. T RI -SERVE : D EPENDENCY -, A.I.-, AND 
+
+THERMAL -AWARE MANAGEMENT 
+
+We now present Tri-serve , a software-coordinated DVFS controller for multimodal serving that resolves the PMU-guided auto-boost inefficiency of dependency stalls, anti-correlation of arithmetic intensity and frequency selection, and compute-heavy thermal throttling. Figure 5 shows an overview of our Tri-serve framework. Tri-serve consist of three main components: 1) Stall-aware idle frequency scaling: Resolves dependency stall inefficiencies, by minimizing SM/memory frequencies whenever all stages sharing a physical GPU has entered a blocking wait. 2) A.I.-aware frequency scaling: Resolves unnecessarily high frequencies by detecting phase windows (stages, pre-fill/decode) and select the energy-optimal frequency based on the A.I. of that phase with our analytical performance and power models. 3) Thermal-aware frequency scaling: Avoids thermal-throttling effects and frequency degradation by initially run-ning at a lower frequency to conserve thermal headroom (pacing) and then running at a higher sustainable frequency to expend that thermal headroom (racing). Together, Stall-aware scaling and A.I.-aware scaling saves power during dependency stalls and decode phases, while 
+
+Thermal-aware scaling improves the performance of prefill phases; all collectively working together towards improving the energy efficiency of multimodal inference serving. 
+
+A. Implementation Details 
+
+Each Tri-serve component is designed with a trigger event, a frequency policy, and actuation of frequency change. All three components share a single NVML-backed actuation primitive (nvmlDeviceSetGpuLockedClocks ) to set the desired SM and memory clock. The remainder of this Section details the frequency policy for each component. 
+
+1) Phase Detection: Trigger events are phases, such as stalls, prefill, and decode. Phases are detected through a single phase tag derived from the vLLM v1 
+
+EngineCore scheduler. From the scheduler’s per-request 
+
+num_scheduled_tokens plan, a step is labeled decode 
+
+or prefill or mixed . In vLLM-Omni, chunked prefill is not supported, so there is no mixed phase. Boundaries are anchored by torch.cuda.Event markers injected at the beginning and end of the phases, which we use as trigger events for A.I-aware Scaling and Thermal-aware Scaling .Dependency stall trigger events are sem_wait() calls. 
+
+B. Dependency Stall-aware Idle Frequency Scaling 
+
+This component is triggered by dependency stalls. Dependency stalls occur when the stages wait on a Python Queue object being blocked at a
+
+sem_wait() call, which trigger frequency scaling via 
+
+nvmlDeviceSetGpuLockedClocks() , and restore auto-boost on exiting the sem_wait() . During stalls, we set the SM and memory frequency to 210 and 810 MHz, respectively, which are the frequencies for the lowest-level P8 performance state. Due to the coarse-grain nature of dependency stalls (as shown in Figure 2, this policy presents a low-complexity, yet highly effective, solution towards power inefficiencies of dependency stalls. 
+
+C. Arithmetic Intensity-Aware Frequency Scaling 
+
+The frequency-locked roofline of Figure 3 shows that auto-boost is not energy-optimal. The PMU picks high clock frequencies for memory-bound decode when compute perfor-mance is not necessary, and throttles frequency on compute-bound prefill when compute performance matters. To address this, A.I.-aware frequency scaling aims to first identify the lowest power that achieves the best throughput given a certain arithmetic intensity, then selects the highest frequency that achieves that power level. This Tri-serve component specif-ically targets decode periods where frequencies are unneces-sarily high and is triggered when the vLLM EngineCore is instrumented to detect when we enter a decode phase. 
+
+Modeling A.I.-aware Throughput and Power. This compo-nent requires both a throughput model, Θ( A.I., f ), to estimate performance given an A.I. and frequency level, and a power model, P (A.I., f ), to estimate power to capture trends in Figure 3. Throughput exhibits a piece-wise behavior where the memory-bound component can be modeled separately from the compute-bound component. Therefore Θ( A.I., f ) is mod-eled as: 
+
+Θ( A.I., f ) = min( η · f, β · A.I. ) (1) , where memory bandwidth or memory coefficient is β [24], so the performance in memory bounded section is β · A.I. 
+
+and the frequency-capped performance in the compute bound section is η · f , where η is peak ops per clock. Power is modeled as: 
+
+P (A.I., f ) = min ( Pidle (f ) + Pdyn (f ) · Φ( A.I., f ), P T DP )
+
+(2) , where PT DP is the maximum power consumption of the GPU, Pidle (f ) is the active idle power drawn when all SM cores are idle for a given frequency and Pdyn (f ) is the 10 0 10 1 10 2   
+
+> Arithmetic Intensity [Flop/B]
+> 10 0
+> 10 1
+> 10 2
+> Throughput [TFLOPS]  Model prediction
+> Real measurement
+> βAI (mem ceiling)
+> Locked f
+> 450 MHz
+> 1050 MHz
+> 1500 MHz
+> 2100 MHz
+> 2700 MHz
+> 3000 MHz
+
+(a) Throughput model Θ( A.I., f )
+
+vs measured. 0 100 200   
+
+> Arithmetic Intensity [Flop/B]
+> 100
+> 150
+> 200
+> 250
+> 300
+> Package power [W]  PTDP = 300 W
+
+(b) Power model P (A.I., f ) vs measured. 
+
+Fig. 6: Throughput and power on RTX A6000 Ada, modeled vs. measured. dynamic power that scales with the compute and memory utilization factor, Φ( A.I., f ). The utilization factor is: 
+
+Φ( A.I., f ) = min 
+
+ η · fβ · A.I. , β · A.I. η · f
+
+
+
+(3) Notice in Figure 3, the power tends to increase as A.I. increase, until the point where compute and memory is balanced, then the power begins to decrease again (assuming it is not power limited by the TDP). This is because in the memory-bound phase, as A.I. increase, we begin to add more compute activity in addition to the existing memory activity. Power is at the peak where both are balanced because both memory and compute are stressed equally. Then as A.I. increases further into the compute-bound phase, memory activity decreases and compute power dominates, resulting in a drop in the power. Φ( AI, f ) captures this transition between memory and compute utilization. 
+
+Model Fitting and Extended Throughput Models. Equa-tions 1 and 2 are too idealized to fit the measured data. As shown in Fig. 3, throughput (TFLOPS) still increases slightly with arithmetic intensity in the compute-bound regime. This suggests that, as the workload moves from the balanced region into the compute-bound region, the SMs do not immediately reach their saturation limit. In other words, the vanilla through-put model does not fully reflect the observed performance behavior, motivating the modified model: 
+
+Θ( AI, f ) = min 
+
+
+
+η · f ·
+
+ AI AI + ω · f γ
+
+
+
+, β · AI 
+
+
+
+(4) In Eq 4, the new term on the compute bounded region represent the saturation model of arithmetic intensity. It slowly converge to 1 when A.I. increase to infinite, thus reaching the real roofline. Using the roofline benchmark data we collected on A6000ada GPUs, we validate the fit of the improved throughput and power model in Fig. 6a and Fig. 6b, respec-tively. This model lays the foundation for our optimal selection of frequency based on the workload and GPU characteristics. 
+
+Selecting Optimal A.I.-aware Frequency. At runtime, we first obtain an effective time-weighted A.I. of a phase, A.I. phase :
+
+A.I. phase =
+
+PNi=1 di A.I. i
+
+PNi=1 di
+
+(5) , where di is the duration of the kernel i that have A.I. i. The individual kernel’s arithmetic intensity is obtained with NCU [25]. Figure 7 illustrates the A.I. of each phase and stages of Qwen2.5-Omni-7B, showing how A.I. varies throughout an inference pass. The light band of the same color around each line is the 10th–90th percentile spread of per-kernel A.I. within each window. Given AI phase , the controller then aims to identify the lowest power that achieves the highest throughput and the highest frequency that achieves this lower power through the following optimization: 
+
+f ∗ 
+
+> phase
+
+= arg min   
+
+> f∈[fmin ,f limit ]
+
+P  AI phase , f 
+
+s.t. Θ AI phase , f  ≥ (1 − ϵ) Θ  AI phase , f max 
+
+.
+
+(6) , where ϵ is a performance trade off factor. For example 
+
+ϵ = 5% means we can tolerate 5% loss in throughput. We define flimit as the maximum frequency that is supported for a given A.I., as shown by the Auto-boost line in Figure 3. The maximum supported frequency varies by A.I. due to the PMU dynamically allocating power between the GPU cores and memory. When compute and memory is balanced, significant power is allocated to the memory resulting in the GPU core throttling frequency. Since we need to solve for the above optimization formula-tion for every decode period, we require a low-overhead solver algorithm. Given our problem formulation, we can solve it using sequential quadratic programming, however, that would be relatively heavy to solve. Since the frequency levels are discrete and monotonic with power and performance (as shown in Figure 3), we can solve the above optimization formulation through binary search, enabling fast convergence of an optimal A.I-aware frequency level. 
+
+D. Thermal Headroom-aware Frequency Scaling for High Arithmetic Intensity Phases 
+
+To avoid the frequency degradation due to thermal throttling of compute-heavy phases, we propose a two-phase pace-and-race frequency scaling policy that aims to pace the SM initially by selecting a lower frequency to conserve thermal headroom, then race by enabling auto-boost to use a higher frequency due to the conserved thermal headroom of pacing. To achieve this, we need to determine the pace and race frequency and the duration of pacing and racing. To select the pace frequency, we select the highest frequency that can run sustainably across all A.I., thus indicating that this frequency does not exhaust the thermal headroom requiring the hardware PMU to intervene. As shown in Figure 3 (bottom), we select a pace frequency of ∼1800MHz. For the racing frequency, we default to PMU-guided auto-boosting to take advantage of the extra thermal headroom. We empirically select a pacing duration of 10% of the prefill duration, with the remaining 90% racing, achieves the best balance. Time [s] 
+
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Arithmetic intensity
+> [FLOPs/Byte]
+> Thinker
+> Time [s]
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Talker
+> Time [s]
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Vocoder
+
+Fig. 7: Arithmetic Intensity of kernel by phases and stages. IV. E VALUATION 
+
+A. Evaluation Methodology 1) Hardware Platforms: We evaluate on a workstation with 8 NVIDIA RTX A6000 Ada GPUs with 48 GB GDDR6 and a TDP of 300 W. The host infrastructure is powered by a dual-socket AMD EPYC 7543 processor configuration running at a total of 64 physical cores (32 cores per socket) with Simulta-neous Multithreading (SMT) disabled to ensure deterministic execution baselines. The system is provisioned with 2.0 TiB of total system RAM to comfortably eliminate host-side memory bottlenecks during heavy continuous batching workloads. 
+
+2) Software Stack: Our evaluation uses an instrumented vLLM-Omni serving stack running Qwen2.5-Omni-7B, whose pipeline is composed of Thinker, Talker, and Code2Wav stages. The serving system is running with PyTorch 2.5.1 and Python 3.12.7. 
+
+3) Workloads: We run Qwen2.5-Omni-7B on our instru-mented vLLM-Omni serving engine with either a 3-GPU stage configuration (one stage per GPU) or 2-GPU stage configu-ration (Thinker and Vocoder shares a GPU), as indicated in the experiment. Queries are drawn from MME-Unify [19] (mixed-modality: text-to-audio, image-to-text, video-to-text) and SeedTTS [26] datasets. As previously discussed in Section II-C, we also devel-oped a microbenchmark compute kernel to sweep across A.I. 
+
+∈ { 1, 25 , 50 , 100 , 200 } FLOPs/B and SM frequency across the supported SM-clock range. This microbenchmark run contin-uously until steady-state power and temperature are reached. 
+
+4) Baseline Policy Definitions: We evaluate Tri-serve against different baselines. Auto-boost (default) uses NVIDIA’s default auto-boost mechanism that’s guided by the hardware PMU. Fixed frequency (medium) locks the GPU at 75% of maximum frequency. throttL’eM [11] is a state-of-the-art predictive frequency throttling policy for text-based LLMs. throttLL’eM is designed for unimodal LLMs, thus, in our evaluation, we only apply throttLL’eM to prefill and decode phases of Thinker and Talker. 
+
+5) Metrics: We evaluate Tri-serve and the baselines on several metrics of interest. We measure throughput as tokens per second, service quality as time-to-first-token (TTFT) and time-per-output-token (TPOT). Energy efficiency is evaluated as total energy in Joules over output tokens to obtain Joules per output token. TABLE I: Ablation Study of Tri-serve Components. Measured on Qwen2.5-Omni-7B using a 3 × RTX 6000 Ada disaggregated pipeline. Energy is normalized to output tokens to reflect generative efficiency.                               
+
+> Configuration Energy / Output Tok (J) Mean TTFT (ms) Mean TPOT (ms) Throughput (tok/s) Peak Temp ( ◦C)
+> Auto-boost (Baseline) 4.12 185 48.2 181.7 74 Stall-aware scaling only 3.58 (-13.1%) 186 48.3 181.5(-0.1%) 72 A.I.-aware scaling only 3.85 (-6.5%) 192 51.5 178.2(-1.9%) 68 Thermal-aware scaling only 4.05 (-1.7%) 188 47.8 184.3 (+1.4%) 65
+> Tri-serve (All components) 3.21 (-22.1%) 190 49.1 183.1 (+0.8%) 64
+
+TABLE II: System Performance and Energy Efficiency Analysis. Comparison of Tri-serve against Auto-boost , Fixed-frequency , and throttLL’eM . Energy ( E) is Joules per output token. TTFT ( T F ) and TPOT ( T P ) report P90 /P 99 tail latencies in milliseconds. Offline scenarios report mean TTFT and throughput ( T hr , tok/s). Percentages in parentheses indicate energy reduction relative to the Auto-boost baseline. Evaluated on Qwen2.5-Omni-7B with 50 prompts per run.                                                                                              
+
+> 2-GPU Configuration 3-GPU Configuration Scenario Metric Auto-boost Fixed-Med throttLL’eM Tri (Ours) Auto-boost Fixed-Med throttLL’eM Tri (Ours) Offline
+> E(J/tok) 5.24 4.85 (-7.4%) 4.89 (-6.7%) 4.15 (-20.8%) 4.12 3.90 (-5.3%) 3.94 (-4.4%) 3.21 (-22.1%)
+> T F (mean) 210 245 218 215 185 220 189 190
+> T hr (tok/s) 142 128 138 141 182 162 178 183 Online ( λ= 0 .5)
+> E(J/tok) 5.65 5.15 (-8.8%) 5.18 (-8.3%) 4.38 (-22.5%) 4.48 4.15 (-7.4%) 4.18 (-6.7%) 3.42 (-23.7%)
+> T F (P90 /99 )235 / 250 295 / 305 255 / 270 242 / 258 185 / 190 230 / 238 195 / 205 191 / 195
+> T P (P90 /99 )50.8 / 52.4 54.2 / 56.1 53.5 / 55.2 51.5 / 53.2 47.9 / 49.2 49.5 / 51.4 48.8 / 50.5 48.8 / 50.2 Online ( λ= 1 .0)
+> E(J/tok) 5.41 4.95 (-8.5%) 4.99 (-7.8%) 4.22 (-22.0%) 4.25 4.02 (-5.4%) 4.05 (-4.7%) 3.30 (-22.4%)
+> T F (P90 /99 )240 / 255 302 / 310 265 / 285 248 / 262 188 / 192 235 / 240 205 / 215 194 / 198
+> T P (P90 /99 )51.2 / 53.1 55.4 / 58.0 54.2 / 56.5 52.1 / 54.5 48.2 / 50.5 50.8 / 52.6 49.5 / 51.8 49.1 / 51.2
+
+B. Ablation Results 
+
+We evaluate Qwen2.5-Omni-7B on three Nvidia A6000 Ada GPUs, with one stage per GPU. Table I shows the ablation results of how each component benefits multimodal inference energy efficiency. 
+
+Stall-aware idle frequency scaling only. Our stall-aware idle scaling policy accurately identifies dependency stalls and reduce the stall frequency to 210 MHz for SMs and 810 MHz for memory, yielding a -13.1% reduction in energy per output token with no change to TTFT, TPOT, or Throughput. 
+
+A.I.-aware frequency scaling only. Our A.I.-aware frequency scaling policy selectively reduces the frequency of memory-bound decode phases by selecting a frequency level that achieves the lowest power at baseline throughput levels. The A.I.-aware frequency policy is able to achieve -6.5% reduction in energy per output token with minor impact on TTFT, TPOT, and throughput. Due to the longer decode phases, we also see a more drastic reduction in peak GPU temperature, from 74 ◦Cin baseline to 68 ◦C with this technique. 
+
+Thermal-aware frequency scaling only. Our Thermal-aware 
+
+pacing mechanism selects a sustainable frequency level that conserves thermal headroom to enable a higher frequency auto-boosting racing period to achieve better performance during compute-intensive periods. This achieves a -1.7% 
+
+improvement to energy per output token, with 1.4% higher throughput, and the lowest temperature at 65 ◦C. 
+
+Full Tri-serve. Combined, Tri-serve minimizes unnecessarily high frequency during dependency stalls and low A.I. decode periods, and avoids thermal throttling during compute-heavy prefill. Compared to the hardware PMU-managed auto-boost baseline, Tri-serve is able to achieve -22.1% reduction in en-ergy per output token, with 0.8% improvement to throughput, while having the lowest peak temperature of only 64 ◦C. This demonstrates that being thermal-aware, GPUs can run cooler, at lower power, with sustained performance levels. 
+
+C. Baseline Comparison Results 
+
+In Table II, we evaluate Tri-serve against a baseline of hardware PMU-guided auto-boosting and a fixed static fre-quency of 1500MHz that can run sustainably without thermal throttling. We also evaluate against an implementation of SOTA throttLL’eM [11] which aims to select the lowest power that satisfies SLO. We evaluate both a 3-GPU scenario (as mapped in Figure 1) and a 2-GPU scenario where the Thinker and Vocoder share a single GPU. We tested under an offline scenario and online scenarios with varying request arrival rates (λ) of 0.5 and 1 RPS. In all scenarios, across energy, TTFT, and TPOT, a fixed frequency achieves 5.3% – 16.6% better en-ergy efficiency than auto-boost at the cost of slower TTFT and TPOT. Because throttLL’eM was designed for unimodal LLMs and have limited coverage of multimodal model pipelines, its energy savings are limited to only 4.4% – 16.0% improvement, but with better TTFT and TPOT than the fixed frequency scenario. Tri-serve is able to universally achieve the best energy efficiency with 20.8% – 23.7% improvement, while nearly matching the baseline auto-boost TTFT and TPOT metric. This demonstrates Tri-serves benefits across a range of baseline scenarios and is a low-complexity, yet effective and practical strategy towards energy efficient multimodal serving. V. R ELATED WORKS 
+
+Multimodal and large-model serving. Prior serving systems focus on throughput and latency for continuous LLM requests. Orca [27], vLLM [20], Sarathi [28], AlpaServe [29], and Dist-Serve [30] improve batching, memory management, or stage disaggregation for text-only serving, while vLLM-Omni [7] extends disaggregated serving to multimodal pipelines. In con-trast, Tri-serve exploits dependency stalls, arithmetic intensity, and thermal headroom as control inputs for DVFS. 
+
+Power and energy-aware inference. Energy-aware uni-modal LLM inference methods include POLCA [8], throt-tLL’eM [11], μ-Serve [10], and PowerInfer [31]. Related characterization work studies cluster-level energy and power behavior [22], [32], while execution-idle behavior in GPU clusters has also been observed [21]. These systems typically optimize a single phase or treat thermal effects reactively; Tri-serve instead combines stall-aware, A.I.-aware, and thermal-aware control in one controller. 
+
+Thermal modeling and pacing. Our thermal model follows classic thermal and leakage-power work [15], [17], [33], and the roofline-based A.I. model follows prior roofline stud-ies [16], [24], [34]. Pace-then-race style controllers have been used in other systems, but here we specialize the idea to multimodal prefill and integrate it with A.I.-aware and stall-aware scaling. VI. C ONCLUSION 
+
+We identified three sources of GPU power inefficiency in modern multimodal serving: (1) dependency stalls that leave SM and memory clocks near boost levels while the GPU makes no progress; (2) an anti-correlation between auto-boost frequency and arithmetic intensity, which raises frequency in low-intensity phases and lowers it in compute-intensive ones; and (3) thermal throttling that steadily reduces SM frequency during compute-heavy prefill. To address these inefficiencies, we introduced Tri-serve, a software-level DVFS controller that combines stall-aware idle scaling, A.I.-aware decode locking, and thermal-aware pace-and-race scaling. Across Qwen2.5-Omni-7B workloads, Tri-serve reduces energy per output token by 20%–23% relative to auto-boost, while keeping throughput within 3% and TPOT within 2%. REFERENCES [1] Anthropic, “Claude code: Agentic coding in the terminal,” https://www. anthropic.com/claude-code, 2025, accessed: 2026-04-30. [2] Anysphere, “Cursor: The AI code editor,” https://www.cursor.com, 2024, accessed: 2026-04-30. [3] OpenAI, “Openai codex: A cloud-based software engineering agent,” https://openai.com/codex, 2025, accessed: 2026-04-30. [4] OpenClaw, “OpenClaw: An open-source conversational AI assistant,” https://openclaw.ai, 2024, accessed: 2026-04-30. [5] OpenAI, “Introducing ChatGPT,” https://openai.com/blog/chatgpt, 2022, accessed: 2026-04-30. [6] Google DeepMind, “Gemini: A family of highly capable multimodal models,” https://deepmind.google/technologies/gemini/, 2023, accessed: 2026-04-30. [7] P. Yin, J. Zhu, H. Gao, C. Zheng, Y. Huang et al. , “vllm-omni: Fully disaggregated serving for any-to-any multimodal models,” arXiv preprint arXiv:2602.02204 , 2026. [8] P. Patel, E. Choukse, C. Zhang, I. n. Goiri, B. Warrier et al. , “Char-acterizing power management opportunities for llms in the cloud,” in 
+
+Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 3 ,ser. ASPLOS ’24, 2024, p. 207–222. [9] A. K. Kakolyris, D. Masouros, S. Xydis, and D. Soudris, “Slo-aware gpu dvfs for energy-efficient llm inference serving,” IEEE Computer Architecture Letters , vol. 23, pp. 150–153, 2024. [10] H. Qiu, W. Mao, A. Patke, S. Cui, S. Jha et al. , “Power-aware deep learning model serving with μ-Serve,” in 2024 USENIX Annual Technical Conference (USENIX ATC 24) , Jul. 2024, pp. 75–93. [11] A. K. Kakolyris, D. Masouros, P. Vavaroutsos, S. Xydis, and D. Soudris, “throttll’em: Predictive gpu throttling for energy efficient llm inference serving,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) , 2025, pp. 1363–1378. [12] B. Hui, J. Yang, Z. Cui, J. Yang, D. Liu et al. , “Qwen2. 5-coder technical report,” arXiv preprint arXiv:2409.12186 , 2024. [13] A. Yang, A. Li, B. Yang, B. Zhang, B. Hui et al. , “Qwen3 technical report,” arXiv preprint arXiv:2505.09388 , 2025. [14] J. Xu, Z. Guo, H. Hu, Y. Chu, X. Wang et al. , “Qwen3-omni technical report,” arXiv preprint arXiv:2509.17765 , 2025. [15] S. Hong and H. Kim, “An integrated gpu power and performance model,” in Proceedings of the 37th Annual International Symposium on Computer Architecture , ser. ISCA ’10, 2010, p. 280–289. [16] J. Guerreiro, A. Ilic, N. Roma, and P. Tomas, “Gpgpu power modeling for multi-domain voltage-frequency scaling,” in 2018 IEEE International Symposium on High Performance Computer Architecture (HPCA) , 2018, pp. 789–800. [17] H. Huang, G. Quan, and J. Fan, “Leakage temperature dependency mod-eling in system level analysis,” in 2010 11th International Symposium on Quality Electronic Design (ISQED) , 2010, pp. 447–452. [18] Q. Team, “Qwen3.5-omni technical report,” arXiv preprint arXiv:2604.15804 , 2026. [19] W. Xie, Y.-F. Zhang, C. Fu, Y. Shi, B. Nie et al. , “Mme-unify: A comprehensive benchmark for unified multimodal understanding and generation models,” arXiv preprint arXiv:2504.03641 , 2025. [20] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng et al. , “Efficient memory management for large language model serving with pagedattention,” in 
+
+Proceedings of the 29th Symposium on Operating Systems Principles ,ser. SOSP ’23, 2023, p. 611–626. [21] Y. Lei, J. Fernandez, V. Kypriotis, D. Skarlatos, E. Strubell et al. ,“The energy cost of execution-idle in gpu clusters,” arXiv preprint arXiv:2604.04745 , 2026. [22] Z. Jia, L. N. Bhuyan, and D. Wong, “Pccl: Energy-efficient llm training with power-aware collective communication,” in 2024 IEEE 42nd Inter-national Conference on Computer Design (ICCD) , 2024, pp. 84–91. [23] P. Patel, Z. Gong, S. Rizvi, E. Choukse, P. Misra et al. , “Towards improved power management in cloud gpus,” IEEE Comput. Archit. Lett. , vol. 22, p. 141–144, Jul. 2023. [24] S. Williams, A. Waterman, and D. Patterson, “Roofline: an insightful visual performance model for multicore architectures,” Communications of the ACM , vol. 52, pp. 65–76, 2009. [25] NVIDIA, “Nvidia nsight compute: Gpu profiler,” https://docs.nvidia.com/nsight-compute/, 2024. [26] P. Anastassiou, J. Chen, J. Chen, Y. Chen, Z. Chen et al. , “Seed-tts: A family of high-quality versatile speech generation models,” arXiv preprint arXiv:2406.02430 , 2024. [27] G.-I. Yu, J. S. Jeong, G.-W. Kim, S. Kim, and B.-G. Chun, “Orca: A distributed serving system for Transformer-Based generative models,” in 
+
+16th USENIX Symposium on Operating Systems Design and Implemen-tation (OSDI 22) , Jul. 2022, pp. 521–538. [28] A. Agrawal, N. Kedia, A. Panwar, J. Mohan, N. Kwatra et al. , “Taming Throughput-Latency tradeoff in LLM inference with Sarathi-Serve,” in 
+
+18th USENIX Symposium on Operating Systems Design and Implemen-tation (OSDI 24) , Jul. 2024, pp. 117–134. [29] Z. Li, L. Zheng, Y. Zhong, V. Liu, Y. Sheng et al. , “AlpaServe: Statistical multiplexing with model parallelism for deep learning serving,” in 17th USENIX Symposium on Operating Systems Design and Implementation (OSDI 23) , Jul. 2023, pp. 663–679. [30] Y. Zhong, S. Liu, J. Chen, J. Hu, Y. Zhu et al. , “DistServe: Disaggre-gating prefill and decoding for goodput-optimized large language model serving,” in 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) , 2024, pp. 193–210. [31] Y. Song, Z. Mi, H. Xie, and H. Chen, “Powerinfer: Fast large language model serving with a consumer-grade gpu,” in Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles , ser. SOSP ’24, 2024, p. 590–606. [32] A. Tabbakh, L. Al Amin, M. Islam, G. I. Mahmud, I. K. Chowdhury 
+
+et al. , “Towards sustainable ai: a comprehensive framework for green ai,” Discover Sustainability , vol. 5, p. 408, 2024. [33] W. Huang, S. Ghosh, S. Velusamy, K. Sankaranarayanan, K. Skadron 
+
+et al. , “Hotspot: a compact thermal modeling methodology for early-stage vlsi design,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 14, pp. 501–513, 2006. [34] C. Nugteren, G.-J. van den Braak, and H. Corporaal, “Roofline-aware dvfs for gpus,” in Proceedings of International Workshop on Adaptive Self-tuning Computing Systems , 2014, pp. 8–10.

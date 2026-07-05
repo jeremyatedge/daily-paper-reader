@@ -1,0 +1,510 @@
+Title: LASER: Load-Aware Serving with Early-Exit for Reasoning LLMs at the Edge
+
+URL Source: https://arxiv.org/pdf/2606.31580v1
+
+Published Time: Wed, 01 Jul 2026 01:05:11 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# LASER: Load-Aware Serving with Early-Exit for Reasoning LLMs at the Edge 
+
+Zhiqing Tang 1,2, Size Li 2,1, Hanshuai Cui 1,2, Zilan Huang 2,1, Jianxiong Guo 1,3,Tian Wang 1, Yuan Wu 4⋆, and Weijia Jia 1,3⋆ 
+
+> 1
+
+Institute of AI and Future Networks, Beijing Normal University, Zhuhai, China  
+
+> 2
+
+Faculty of Arts and Sciences, Beijing Normal University, Zhuhai, China  
+
+> 3
+
+Guangdong Key Lab of AI and Multi-Modal Data Processing, Beijing Normal-Hong Kong Baptist University, Zhuhai, China  
+
+> 4
+
+State Key Lab of IoT for Smart City, University of Macau, SAR Macau, China 
+
+{zhiqingtang, jianxiongguo, tianwang, jiawj}@bnu.edu.cn, {sizeli, hanshuaicui, zilanhuang}@mail.bnu.edu.cn, yuanwu@um.edu.mo 
+
+Abstract. Large reasoning models (LRMs) such as DeepSeek-R1 have achieved strong performance through extended chain-of-thought (CoT) generation. However, deploying them on edge devices raises a conflict be-tween long CoT sequences and constrained resources. Recent confidence-based early exit methods reduce CoT length for individual requests, yet they apply fixed thresholds from a single-request perspective, ignoring multi-request concurrency and load fluctuation in edge serving. To bridge this gap, we propose Load-Aware Serving with Early-exit for Reasoning (LASER). LASER couples two complementary designs: (1) a load-aware adaptive exit threshold that adjusts the confidence bar based on real-time system load within an empirically validated robust range, and (2) a difficulty- and load-aware reasoning budget pre-allocation that assigns compute resources by request difficulty and system capacity. We formu-late the problem as a joint optimization of reasoning quality and service latency. Experiments on two reasoning models, four benchmarks, and diverse load conditions show that LASER reduces average latency by 17–38% and improves service-level objective (SLO) satisfaction by 3–6% over fixed-threshold baselines, at an average accuracy cost of only 1%. 
+
+Keywords: Edge computing · LLM serving · Reasoning model · Dy-namic early exit · Load-aware scheduling 
+
+1 Introduction 
+
+The growing demand for local intelligence is driving the deployment of large language models (LLMs) to edge devices, where low latency and data privacy are essential. Large reasoning models (LRMs) such as DeepSeek-R1 [10] and Qwen3 [12] push this frontier further by generating extended chain-of-thought (CoT) sequences to achieve strong performance on complex tasks [17]. Distilled  
+
+> ⋆
+
+Corresponding authors.  
+
+> arXiv:2606.31580v1 [cs.DC] 30 Jun 2026 2Z. Tang et al.
+
+variants with 1.5B–8B parameters make edge deployment technically feasible. Yet CoT sequences average 3,000–14,000 tokens per query, creating a sharp tension between the reasoning depth that accuracy demands and the limited compute budget that edge hardware can afford. An overthinking problem [5] further aggravates this cost. LRMs frequently produce verbose, redundant reasoning steps that consume resources without im-proving, and sometimes even harming, answer quality. Recent confidence-based early exit methods address this from a single-request perspective. DEER [21] and Dynasor [9] monitor model confidence during CoT generation and terminate reasoning once the model is sufficiently certain, achieving reduction in reasoning length while preserving accuracy. These training-free approaches suit edge de-ployment well because they require no model retraining or weight modification. Existing early exit methods do not account for the serving context, applying a fixed confidence threshold to each request. At the edge, a single GPU serves requests sequentially or with minimal batching, so one request’s continued rea-soning directly delays those behind it. A fixed threshold may exit too early under light load or allow excessive reasoning under heavy load, hurting latency targets. Because the threshold is applied per request, the early exit decision has system-wide consequences. Therefore, a load-aware mechanism that jointly manages reasoning depth and service performance is required. To this end, two challenges must be addressed. 
+
+The first challenge is how to adaptively adjust the early exit threshold based on real-time system load while preserving reasoning quality. The confidence thresh-old governs the trade-off between reasoning depth and latency [21,9]: higher values usually improve accuracy but increase delay, while lower values reduce latency at the risk of premature termination [5,17]. Unlike cloud systems with elastic scaling [24,18], edge servers have fixed capacity, so the threshold must adapt online. Moreover, confidence polarization means that only 2–6% of scores fall in the intermediate range [21], leaving a narrow but usable tuning space for smooth load-aware adjustment. 
+
+The second challenge is how to pre-allocate per-request reasoning budgets con-sidering both request difficulty and system capacity. Requests differ in the reason-ing depth that they need: simple problems gain little from extra computation, whereas hard ones benefit more from longer reasoning [17]. Existing methods such as Reinforcement Learning (RL)-based length control, budget forcing, and concise-reasoning prompting largely apply uniform policies [1,3,19], without ac-counting for the request difficulty and system load. In edge serving, such uniform budgets waste capacity and can hurt both throughput and accuracy. A practical allocator should therefore estimate difficulty with minimal overhead and adapt budgets to current load, complementing the adaptive threshold with a hard cap on reasoning depth [2,22]. To address these challenges, we propose a Load-Aware Serving method with Early-exit for Reasoning (LASER), which elevates confidence-based early exit from a single-request optimization to a system-level scheduling mechanism for edge LLM serving. LASER couples two complementary mechanisms to jointly LASER: Load-Aware Early-Exit Serving at the Edge 3
+
+manage reasoning depth under varying load: a load-aware adaptive exit threshold that offers fine-grained soft control over when to stop reasoning, and a difficulty-aware reasoning budget allocator that imposes a coarse-grained hard cap on maximum reasoning depth. We evaluate LASER on two edge-deployed reasoning models (i.e., DeepSeek-R1-Distill-Qwen-7B and Qwen3-4B) across four bench-marks under five load levels using discrete-event simulation on an NVIDIA RTX 4090. The main contributions are summarized as follows. 1. Load-aware adaptive exit threshold. We exploit the confidence polar-ization phenomenon in reasoning models to establish a safe tuning space. We design a tanh -based threshold function driven by exponential moving average (EMA) smoothed load signals that decreases the threshold under high load and raises it under low load. 2. Difficulty- and load-aware reasoning budget allocator. We propose a lightweight budget pre-allocation mechanism that uses prompt token count as a difficulty proxy and scales budgets proportionally with system load, providing a hard reasoning cap that complements the threshold’s soft control. 3. Comprehensive evaluation. Experiments on two reasoning models show that LASER reduces average latency by 17–38% and improves service-level objective (SLO) satisfaction by 3–6 percentage points over fixed-threshold baselines, with only 1 percentage point average accuracy loss. 
+
+2 Related Work 
+
+Efficient Reasoning for Large Language Models. Existing methods reduce redundant reasoning in LRMs through three main approaches. Post-training methods adapt reasoning length with variable-length CoT data or reinforcement learning [13,1,3], but require retraining. Prompt-based methods such as Chain-of-Draft and budget forcing [19] are lightweight yet may hurt quality on hard tasks. Training-free methods perform early exit during inference, for example by monitoring intermediate-answer consistency or confidence [9,21,7]. However, these methods optimize each request independently and do not account for sys-tem load or queueing effects. 
+
+Edge LLM Inference and Serving. Prior work improves edge LLM de-ployment through model compression, partitioning, speculative inference, and scheduling optimizations [10,4,15,23,8,20]. LLM serving systems further improve efficiency with optimized KV-cache management, continuous batching, disaggre-gated execution, and runtime rescheduling [14,22,2,24,18]. These approaches im-prove model- or system-level efficiency, but generally treat generation length as fixed. In contrast, LASER treats reasoning depth itself as a controllable serving variable and adapts it to system load. 
+
+3 System Model and Problem Formulation 
+
+We consider an edge serving system where a single GPU-equipped server hosts a reasoning LLM to serve requests from local users, as illustrated in Fig. 1. 4 Z. Tang et al. User  
+
+> Request
+> 1.Request Manager &
+> Dynamic Scheduling
+> Request Queue
+> Prompt Length
+> Load Monitor
+> 2.Control Logic
+> Budget Allocator
+> Hard Control
+> Adaptive Threshold
+> Soft Control
+> Fast Reasoning
+> Deep Inference
+> 3.Adaptive
+> Reasoning Loop
+> Token Generation
+> Confidence Score
+> Calculation
+> Early Exit
+> Decision NO YES
+> Post -
+> processing
+> Generated
+> Responses
+
+Fig. 1. LASER system architecture. 
+
+3.1 System Model Reasoning Model Generation Pattern. A reasoning LLM generates output in two phases [21]. It first performs slow thinking, enclosed in <think> . . . </think> 
+
+delimiters, then produces a conclusion. The slow thinking phase consists of Ki
+
+reasoning chunks separated by action transition points (ATPs), typically marked by linguistic cues such as Wait or Alternatively .
+
+[Prompt ]+ <think> +T1 +ATP 1 +T2 +ATP 2 +· · · +TKi +</think> +[ Conclusion ]
+
+(1) where Tk denotes the k-th reasoning chunk. Each ATP is a candidate early-exit point. At ATP k, the model is prompted to generate a trial answer, and a confidence score C(k) 
+
+> i
+
+is computed from the token probabilities. If C(k) 
+
+> i
+
+exceeds the threshold λ, reasoning terminates early and the model proceeds to generate the conclusion. 
+
+Cost Model. For each request ri, the total response latency li consists of two parts: li = wi + tinf  
+
+> i
+
+. wi is the queueing delay and tinf  
+
+> i
+
+is the inference time. The inference time is determined by the reasoning depth si, i.e., the number of reasoning steps executed before exit. 
+
+tinf  
+
+> i
+
+= tprefill  
+
+> i
+
++
+
+> si
+
+X
+
+> k=1
+
+τ (i) 
+
+> k
+
++ tconclu  
+
+> i
+
+(2) where tprefill  
+
+> i
+
+is the prompt prefill time, τ (i) 
+
+> k
+
+is the time to generate the k-th reasoning chunk and evaluate trial answer confidence, and tconclusion  
+
+> i
+
+is the con-clusion generation time. In existing early exit methods, the reasoning depth si is determined solely by a fixed confidence threshold λ. Reasoning terminates at the first ATP k where 
+
+C(k) 
+
+> i
+
+> λ , or when the maximum step limit is reached. A lower λ leads to earlier exits, reducing tinf  
+
+> i
+
+but potentially decreasing accuracy ai.The accuracy ai ∈ { 0, 1} of request ri depends on the reasoning depth si,jointly controlled by the exit threshold λi and the reasoning budget Bi. A deeper reasoning chain increases the probability of reaching a correct answer, but with diminishing returns due to the overthinking phenomenon [5]. Because ai is a stochastic function of the model’s internal state, we treat it as an empirical black-box mapping ai(λi, B i) in the optimization below. LASER: Load-Aware Early-Exit Serving at the Edge 5Load -Aware Controller            
+
+> Soft Control
+> Hard Control
+> Inference
+> Case 1 ：Soft Early Exit
+> Request
+> !!
+> Chunk1
+> "!# !!""!# "!#"!# #
+> Saved Final
+> Answer
+> Case 2 ：Hard Forced Exit
+> Request
+> !!"!# !!""!# "
+> Final
+> Answer
+> !#"!# #
+> No more
+> Chunks!
+> Chunk2
+> Chunk1 Chunk2 Chunk3
+
+Fig. 2. Algorithm overview. 
+
+3.2 Problem Formulation 
+
+Given a request stream R, LASER jointly determines the exit threshold λi and reasoning budget Bi for each request to balance reasoning quality and service latency. We formulate this as the following optimization problem. 
+
+P : max 
+
+> {λi},{Bi}
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+
+
+ω · ai(λi, B i) − (1 − ω) · li(λi, B i)
+
+di
+
+
+
+(3) subject to: 
+
+λmin ≤ λi ≤ λmax , si ≤ Bi, Bi ≥ Bmin , ∀i (4) where ω ∈ [0 , 1] balances accuracy and latency. The constraints require the exit threshold to remain within the empirically validated robust range [λmin , λ max ] [21], the executed reasoning depth to stay within the assigned budget, and each re-quest to receive at least the minimum reasoning budget Bmin .
+
+4 Algorithm Design 
+
+4.1 Overview 
+
+LASER adds two mechanisms to the confidence-based early exit pipeline (Al-gorithm 1). Before inference begins, the budget allocator assigns a per-request reasoning limit Bi based on prompt difficulty and current load. During inference, the system updates the smoothed load signal at each ATP and computes a load-responsive exit threshold λi. Reasoning terminates when confidence exceeds λi
+
+or the budget Bi is exhausted. With both mechanisms disabled, LASER reduces to standard fixed-threshold early exit. 
+
+4.2 Load-Aware Adaptive Exit Threshold 
+
+LASER replaces the fixed threshold used in existing methods [21,9] with a load-responsive function. At each confidence evaluation point, the adaptive threshold is computed as: 
+
+λi = λbase − β · tanh 
+
+
+
+γ · ¯L(t) − Ltarget 
+
+Ltarget 
+
+
+
+(5) 6 Z. Tang et al. 
+
+Algorithm 1 LASER 
+
+Require: LRM M , request stream R, base threshold λbase , target load Ltarget , pa-rameters β, γ, α, B base 
+
+Ensure: Generated responses for all requests 1: Initialize EMA load ¯L ← 0
+
+2: for each request ri with prompt pi do 
+
+3: Bi ← AllocateBudget (|pi|, L (t)) ; k ← 0 ▷ Eq. (6) 4: while k < B i and not finished do 
+
+5: Generate Tk+1 until the next ATP; compute confidence C(k+1) 
+
+> i
+
+6: Update ¯L using EMA smoothing; set λi ← AdaptiveThreshold ( ¯L) by Eq. (5) 7: if C(k+1)  
+
+> i
+
+> λ i then 
+
+8: Terminate reasoning, generate conclusion, and mark ri as early-exited 
+
+9: else 
+
+10: k ← k + 1 
+
+11: end if 
+
+12: end while 
+
+13: if k = Bi and not finished then 
+
+14: Force conclusion generation ▷ Budget exhausted 15: end if 
+
+16: end for 
+
+Here λbase = 0 .95 is the default threshold, ¯L(t) is the EMA-smoothed load signal, and Ltarget is the target load level. β controls the maximum adjustment amplitude and γ controls sensitivity to load deviations. When ¯L(t) > L target ,the threshold decreases to accelerate exits; when ¯L(t) < L target , it increases to preserve quality. The final value is clamped to [λmin , λ max ].We choose tanh over linear or sigmoid mappings for two reasons. First, its bounded range (−1, 1) helps keep λi within a safe interval and limits the mag-nitude of load-driven adjustments. Second, its S-shaped curve produces gentle adjustment near the target load and saturates under extreme deviation, prevent-ing overreaction to transient spikes. To prevent threshold jitter from instantaneous load fluctuations, we apply EMA smoothing: ¯L(t) = α · L(t) + (1 − α) · ¯L(t − 1) . L(t) is the current active request count and directly available as the size of the active request set in the vLLM batch processing framework. 
+
+4.3 Difficulty- and Load-Aware Reasoning Budget Pre-Allocation 
+
+While the adaptive threshold provides soft control over exit timing, LASER also assigns a hard reasoning budget Bi to each request before inference begins: 
+
+Bi = max {Bmin , ⌊Bbase · fdiff (pi) · fload (L(t)) ⌋} (6) where Bbase is the default maximum reasoning steps and Bmin ≥ 2 ensures every request receives at least minimal reasoning. 
+
+Difficulty factor (line 3). The difficulty factor fdiff uses prompt token count |pi| as a lightweight complexity proxy, linearly mapping it to a budget LASER: Load-Aware Early-Exit Serving at the Edge 7
+
+scaling factor clamped to [fmin , f max ]:
+
+fdiff (pi) = clip 
+
+
+
+fmin + |pi| − pmin 
+
+pmax − pmin 
+
+· (fmax − fmin ), f min , f max 
+
+
+
+(7) where we set fmin = 0 .6, fmax = 1 .5, pmin = 50 , pmax = 275 by default. Empirical evidence shows that shorter prompts exhibit higher early exit rates and require fewer reasoning steps [21,17], supporting prompt length as a difficulty proxy. 
+
+Load factor (line 3). The load factor compresses budgets proportionally when the system is overloaded: 
+
+fload (L(t)) = min 
+
+
+
+1.0, Ltarget 
+
+max(1 , L (t)) 
+
+
+
+(8) When L(t) ≤ Ltarget , fload = 1 .0 and budgets are unmodified; under overload, budgets shrink proportionally. The adaptive threshold thus provides soft control over exit timing, while the budget imposes a hard cap on reasoning depth. 
+
+4.4 Complexity Analysis 
+
+At each ATP, LASER performs one EMA update, one tanh computation (Eq. 5), and one comparison, all in O(1) . Budget allocation (Eq. 6) also runs in O(1) per request. The total added cost for N requests is O(PNi=1 si), dominated by LLM inference itself. LASER maintains only a single scalar ¯L and a fixed set of hyper-parameters, so the additional memory is O(1) . No extra neural network inference is required; the added latency per request is on the order of microseconds, several orders of magnitude below the per-step decoding time (10–100 ms per chunk on edge GPUs). 
+
+5 Experiments 
+
+5.1 Experimental Setup Models. We evaluate two reasoning LLMs from different model families: Qwen3-4B (requiring approximately 8 GB VRAM) and DeepSeek-R1-Distill-Qwen-7B (requiring approximately 14 GB VRAM). Both are edge-server-class models that fit within a single consumer-grade GPU. 
+
+Benchmarks. We evaluate on four reasoning benchmarks [21]: GSM8K [6] (1319 elementary math problems), MATH-500 [11] (500 competition-level math problems), AMC 2023 [21] (40 competition problems), and GPQA Diamond [16] (198 PhD-level science questions). For reasoning quality, we report accuracy (Acc), average token count (Tok), and compression rate (CR defined as 1 −
+
+Tok method /Tok vanilla ). For system performance, we report average latency ( ¯l), P95 latency ( l95 ), throughput (QPS), and SLO satisfaction rate (SLO%). 
+
+Baselines. We compare LASER against four methods: (1) Vanilla : original LRM without early exit; (2) Fixed-High [21]: fixed threshold λ = 0 .95 , rep-resenting the standard early exit configuration; (3) Fixed-Low : fixed threshold 8 Z. Tang et al. GSM8K MATH-500 AMC GPQA        
+
+> 30
+> 50
+> 70
+> 90
+> Accuracy (%)
+> (a) DS-R1-Distill-Qwen-7B
+> GSM8K MATH-500 AMC GPQA
+> 30
+> 50
+> 70
+> 90
+> Accuracy (%)
+> (b) Qwen3-4B
+> 0
+> 2500
+> 5000
+> 7500
+> 10000
+> Avg Tokens
+> 0
+> 2500
+> 5000
+> 7500
+> 10000
+> Avg Tokens
+> Vanilla NoThinking Fixed-High Fixed-Low LASER
+
+Fig. 3. Reasoning quality comparison across four benchmarks. Bars show accuracy (left axis) and average generated token count (right axis) for each method. 
+
+λ = 0 .90 , representing aggressive static tuning; (4) NoThinking : skipping the reasoning phase entirely, serving as a lower bound on reasoning quality. 
+
+Implementation details. All experiments run on an NVIDIA RTX 4090 GPU (24 GB VRAM), which closely matches high-end edge accelerators such as the NVIDIA Jetson AGX Orin (64 GB unified memory). The 4B–7B pa-rameter models fit in 24 GB VRAM, consistent with realistic edge deployment. For system-level evaluation, we employ discrete-event simulation. We first run each method on all benchmark samples to obtain per-sample inference times and accuracy, then simulate Poisson arrivals with QPS {0.5, 1, 2, 4, 8} using a single-server FIFO queue. For burst traffic, we use a three-phase pattern of 10 minutes at 1 QPS, 10 minutes at 5 QPS, and 10 minutes at 1 QPS. Unless other-wise stated, the SLO deadline is d = 30 seconds and the default parameters are 
+
+λbase = 0 .95 , Ltarget = 10 , β = 0 .04 , γ = 1 .0, α = 0 .3, Bbase = 10 , λmin = 0 .88 ,
+
+λmax = 0 .97 , and Bmin = 2 . The maximum generation length is 16384 tokens, with think_ratio = 0 .6 for DeepSeek models and 0.8 for Qwen3 models. 
+
+5.2 Reasoning Quality Results 
+
+Fig. 3 presents the reasoning quality comparison across all benchmarks for both models. LASER achieves accuracy within 2 percentage points of Fixed-High on average across both models while generating substantially fewer tokens. On DeepSeek-R1-Distill-Qwen-7B, LASER achieves 42–80% token compression rela-tive to Vanilla, with accuracy degradation of 1.4–5.0 percentage points compared to Fixed-High. On Qwen3-4B, LASER achieves 59–72% compression, with ac-curacy within 1 percentage point of Fixed-High on GSM8K and MATH-500 and even outperforming Fixed-High on AMC by 5.0 pp. 
+
+5.3 System Performance Under Varying Loads 
+
+Table 1 presents system-level performance under varying QPS levels on MATH-500 for both models. Under low load (QPS=0.5), queueing effects are mini-mal and LASER’s advantage is most visible in raw latency reduction (36–38%). As load increases, all methods experience higher latency due to queueing, but LASER consistently outperforms fixed-threshold baselines. At QPS=2, LASER LASER: Load-Aware Early-Exit Serving at the Edge 9
+
+Table 1. System performance on MATH-500 under varying QPS. ¯l: avg latency (s), 
+
+l95 : P95 latency (s), Tput: throughput (QPS), SLO: SLO satisfaction (%).             
+
+> QPS=0.5 QPS=2.0 QPS=8.0 Model Method ¯ll95 Tput SLO ¯ll95 Tput SLO ¯ll95 Tput SLO
+
+DS-R1-7B                                        
+
+> Vanilla 248.5 484.5 0.17 8.0 329.5 640.9 0.17 7.2 350.3 680.9 0.17 7.2 NoThinking 8.6 27.4 0.54 100 51.4 85.1 0.86 26.4 72.2 124.7 0.86 11.2 Fixed-High 93.9 219.1 0.28 13.6 167.9 369.1 0.29 13.6 188.7 409.0 0.29 12.0 Fixed-Low 89.5 156.0 0.33 8.8 166.3 309.1 0.33 7.2 187.1 349.0 0.33 7.2 LASER 58.4 149.2 0.33 17.6 130.0 297.0 0.34 17.6 150.8 336.9 0.34 16.8
+
+Qwen3-4B                                       
+
+> Vanilla 317.9 591.1 0.15 7.2 399.6 751.1 0.15 4.8 420.4 791.2 0.15 4.8 NoThinking 14.4 46.5 0.46 82.4 65.4 147.1 0.60 14.4 86.2 186.4 0.60 8.8 Fixed-High 76.9 178.8 0.30 16.0 157.4 334.1 0.31 9.6 178.2 374.0 0.31 8.8 Fixed-Low 92.9 204.3 0.28 14.4 173.2 361.4 0.29 12.0 194.0 401.5 0.29 9.6 LASER 49.2 155.3 0.32 61.6 126.6 308.4 0.33 15.2 147.4 348.5 0.33 13.6
+
+Table 2. Burst traffic performance on MATH-500 (three-phase: 1 →5→1 QPS).                                                  
+
+> DS-R1-7B Qwen3-4B Method ¯l(s) l95 (s) Tput SLO% Method ¯l(s) l95 (s) Tput SLO%
+> Vanilla 335.6 657.1 0.17 7.2 Vanilla 405.0 767.3 0.15 5.6 NoThinking 60.7 105.2 0.83 26.4 NoThinking 73.8 165.9 0.59 14.4 Fixed-High 175.4 387.3 0.29 13.6 Fixed-High 163.9 351.5 0.31 12.0 Fixed-Low 173.9 326.8 0.33 8.8 Fixed-Low 180.0 379.0 0.29 13.6 LASER 137.5 315.4 0.34 17.6 LASER 133.7 326.4 0.33 17.6
+
+reduces average latency by 20–23% compared to Fixed-High. Under high load (QPS=8), the reduction remains 17–20%. Throughput improvement is consis-tent across load levels, with LASER achieving 0.32–0.34 QPS versus 0.28–0.31 for Fixed-High, a 6–17% gain. SLO satisfaction under LASER exceeds Fixed-High by 4–6 percentage points under medium and high loads. 
+
+5.4 Burst Traffic Response 
+
+We evaluate LASER’s response to sudden traffic spikes using a three-phase load pattern on MATH-500 (1 →5→1 QPS, equal-duration phases). Table 2 reports the results. On DS-R1-Distill-Qwen-7B, LASER reduces average latency from 175.4 s (Fixed-High) to 137.5 s (21.6% reduction) and improves SLO satisfaction from 13.6% to 17.6%. On Qwen3-4B, LASER achieves 133.7 s versus 163.9 s for Fixed-High (18.4% reduction), with SLO satisfaction improving from 12.0% to 17.6%. LASER detects the load spike through its EMA-smoothed signal and lowers the threshold to accelerate exits during the burst phase, then gradually restores quality as load returns to normal. 
+
+5.5 Ablation Study 
+
+Fig. 4 presents the ablation study on DS-R1-Distill-Qwen-7B and MATH-500 under medium load (QPS=2), isolating the contribution of each component. Budget allocation is the primary driver of latency reduction, decreasing aver-age latency by 23.2% compared to the fixed-threshold baseline. The adaptive threshold alone does not reduce latency because without budget control it merely shifts the exit point within the reasoning chain without capping the maximum 10 Z. Tang et al. Baseline 
+
++Threshold 
+
++Budget 
+
+LASER 
+
+82 
+
+84 
+
+86 
+
+88 
+
+90 
+
+> Accuracy (%)
+
+(a) Accuracy 
+
+> 88.2
+> 86.2
+> 85.0
+> 86.4
+
+Baseline 
+
++Threshold 
+
++Budget 
+
+LASER 
+
+0
+
+200 
+
+400 
+
+600 
+
+> Avg Latency (s)
+
+(b) Avg Latency   
+
+> 638.1 668.6
+> 490.2 513.2
+
+Baseline 
+
++Threshold 
+
++Budget 
+
+LASER 
+
+0.30 
+
+0.35 
+
+0.40 
+
+> Throughput (QPS)
+
+(c) Throughput   
+
+> 0.320 0.317
+> 0.369 0.377
+
+Fig. 4. Ablation study on MATH-500 with DS-R1-Distill-Qwen-7B at QPS=2. Budget allocation is the primary driver of latency reduction, while the adaptive threshold contributes accuracy recovery when combined. 
+
+Table 3. Parameter sensitivity on MATH-500 at QPS=2.                               
+
+> βLtarget α
+> Model Metric 0.02 0.03 0.04 0.05 0.06 5810 15 20 0.1 0.2 0.3 0.5 0.7
+> DS-R1 Acc 82.5 84.1 85.7 84.1 84.1 82.5 85.7 81.0 85.7 87.3 88.9 87.3 87.3 82.5 84.1
+> ¯l98.6 45.4 107.3 78.5 59.6 81.4 78.1 81.2 76.8 58.5 86.7 69.2 75.9 67.9 89.4
+> Tput 0.33 0.50 0.30 0.36 0.46 0.37 0.36 0.35 0.36 0.46 0.35 0.41 0.37 0.43 0.33
+> SLO% 15.9 38.1 14.3 28.6 14.3 22.2 30.2 17.5 30.2 33.3 14.3 27.0 30.2 27.0 15.9
+> Qwen3 Acc 92.1 87.3 88.9 85.7 88.9 87.3 88.9 88.9 87.3 92.1 93.7 88.9 84.1 87.3 87.3
+> ¯l53.9 62.6 72.7 70.2 88.5 69.5 76.5 49.0 78.4 47.5 54.3 72.2 73.9 58.5 76.8
+> Tput 0.47 0.43 0.41 0.42 0.33 0.40 0.41 0.51 0.36 0.51 0.39 0.38 0.41 0.43 0.37
+> SLO% 27.0 19.1 17.5 14.3 19.1 17.5 17.5 30.2 28.6 28.6 28.6 28.6 17.5 27.0 17.5
+
+depth. When combined, the two mechanisms enable LASER to achieve the best throughput while recovering 1.4 percentage points of accuracy compared with the budget-only variant. The adaptive threshold preserves reasoning quality by allowing deeper reasoning under light load, complementing the budget allocator. 
+
+5.6 Parameter Sensitivity 
+
+Table 3 reports the sensitivity of LASER to its key hyperparameters on MATH-500 at QPS=2. LASER shows robust performance across a wide range of param-eter values. For β, accuracy remains within 83–89% across the sweep and latency varies smoothly. For Ltarget , higher values tend to preserve accuracy while lower values favor throughput. Moderate EMA smoothing ( α ∈ [0 .2, 0.5] ) achieves a good balance between responsiveness and stability. The tanh function naturally bounds the adjustment, providing self-correcting behavior that reduces the need for per-scenario tuning in edge deployments. 
+
+6 Conclusion 
+
+This paper presents LASER, a load-aware early exit approach for reasoning model serving at the edge. We have identified the gap between single-request reasoning optimization and system-level edge serving, and addressed it with two complementary mechanisms: an adaptive exit threshold driven by real-time sys-tem load and a difficulty- and load-aware reasoning budget allocator. The budget LASER: Load-Aware Early-Exit Serving at the Edge 11 
+
+allocator serves as the primary driver of latency reduction by capping per-request reasoning depth according to difficulty and load, while the adaptive threshold exploits the confidence polarization phenomenon to preserve reasoning quality within a validated safe range. Experiments on two models, four benchmarks, and diverse load conditions show that LASER reduces average latency by 17–38% and improves SLO satisfaction by 3–6 percentage points over fixed-threshold baselines, at an average accuracy cost of only 1%. In future work, we will extend LASER to multi-device edge clusters with heterogeneous GPUs and integrate reasoning depth control with model selection routing. 
+
+Acknowledgments. This work was supported in part by the National Natural Sci-ence Foundation of China (NSFC) under Grant 62302048, Grant 62272050, and Grant U25A20436; in part by the Science and Technology Development Fund of Macau SAR under Grants 0028/2025/AFJ and 0021/2025/RIA1; in part by Guangdong Higher Education Association under Grant 24GQN97; in part by the Guangdong Provincial Higher Education Institutions under Grant 2024KTSCX219; and in part by Beijing Normal University at Zhuhai Education Reform Project under Grant jx2025037. 
+
+Disclosure of Interests. The authors have no competing interests to declare that are relevant to the content of this article. 
+
+References 
+
+1. Aggarwal, P., Welleck, S.: L1: Controlling how long a reasoning model thinks with reinforcement learning. arXiv preprint arXiv:2503.04697 (2025) 2. Agrawal, A., Kedia, N., Panwar, A., Mohan, J., Kwatra, N., Gulavani, B.S., Tu-manov, A., Ramjee, R.: Taming throughput-latency tradeoff in llm inference with sarathi-serve. In: 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI). pp. 117–134 (2024) 3. Arora, D., Zanette, A.: Training language models to reason efficiently. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems (NeurIPS) (2025) 4. Chen, Q., Gao, H., Yi, M., Li, J., Cheng, L., Li, Y.: Latency-optimal and memory-aware model partitioning for cooperative inference at the edge. In: International Conference on Wireless Artificial Intelligent Computing Systems and Applications (WASA). pp. 25–37 (2025) 5. Chen, X., Xu, J., Liang, T., He, Z., Pang, J., Yu, D., Song, L., Liu, Q., Zhou, M., Zhang, Z., et al.: Do not think that much for 2+ 3=? on the overthinking of o1-like llms. arXiv preprint arXiv:2412.21187 (2024) 6. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al.: Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 (2021) 7. Elhoushi, M., Shrivastava, A., Liskovich, D., Hosmer, B., Wasti, B., Lai, L., Mah-moud, A., Acun, B., Agarwal, S., Roman, A., et al.: Layerskip: Enabling early exit inference and self-speculative decoding. In: Proceedings of the 62nd Annual Meet-ing of the Association for Computational Linguistics (Volume 1: Long Papers). pp. 12622–12642 (2024) 12 Z. Tang et al. 8. Fu, B., Chen, F., Li, P., Zeng, D.: Serving transformer models via joint requst scheduling and batching in the network edge. IEEE Transactions on Sustainable Computing 10 (4), 678–689 (2025) 9. Fu, Y., Chen, J., Zhuang, Y., Fu, Z., Stoica, I., Zhang, H.: Reasoning without self-doubt: More efficient chain-of-thought through certainty probing. In: ICLR 2025 Workshop on Foundation Models in the Wild (2025) 10. Guo, D., Yang, D., Zhang, H., Song, J., Wang, P., Zhu, Q., Xu, R., Zhang, R., Ma, S., Bi, X., et al.: Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 (2025) 11. Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., Steinhardt, J.: Measuring mathematical problem solving with the math dataset. In: The Thirty-fifth Conference on Neural Information Processing Systems (NeurIPS) (2021) 12. Hui, B., Yang, J., Cui, Z., Yang, J., Liu, D., Zhang, L., Liu, T., Zhang, J., Yu, B., Lu, K., et al.: Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 (2024) 13. Kang, Y., Sun, X., Chen, L., Zou, W.: C3ot: Generating shorter chain-of-thought without compromising effectiveness. In: Proceedings of the AAAI Conference on Artificial Intelligence. vol. 39, pp. 24312–24320 (2025) 14. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C.H., Gonzalez, J., Zhang, H., Stoica, I.: Efficient memory management for large language model serving with pagedattention. In: Proceedings of the 29th symposium on operating systems prin-ciples (SOSP). pp. 611–626 (2023) 15. Park, J., Cho, S., Han, D.: Specedge: Scalable edge-assisted serving framework for interactive llms. arXiv preprint arXiv:2505.17052 (2025) 16. Rein, D., Hou, B.L., Stickland, A.C., Petty, J., Pang, R.Y., Dirani, J., Michael, J., Bowman, S.R.: Gpqa: A graduate-level google-proof q&a benchmark. In: First conference on language modeling (COLM) (2024) 17. Snell, C., Lee, J., Xu, K., Kumar, A.: Scaling llm test-time compute optimally can be more effective than scaling model parameters. arXiv preprint arXiv:2408.03314 (2024) 18. Sun, B., Huang, Z., Zhao, H., Xiao, W., Zhang, X., Li, Y., Lin, W.: Llumnix: Dy-namic scheduling for large language model serving. In: 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI). pp. 173–191 (2024) 19. Xu, S., Xie, W., Zhao, L., He, P.: Chain of draft: Thinking faster by writing less. arXiv preprint arXiv:2502.18600 (2025) 20. Xu, X., Hu, Y., Cui, G., Qi, L., Dou, W., Cai, Z.: Cadec: a combinatorial auction for dynamic distributed dnn inference scheduling in edge-cloud networks. IEEE transactions on Mobile computing (2025) 21. Yang, C., Si, Q., Duan, Y., Zhu, Z., Zhu, C., Li, Q., Chen, M., Lin, Z., Wang, W.: Dynamic early exit in reasoning models. arXiv preprint arXiv:2504.15895 (2025) 22. Yu, G.I., Jeong, J.S., Kim, G.W., Kim, S., Chun, B.G.: Orca: A distributed serving system for {Transformer-Based } generative models. In: 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI). pp. 521–538 (2022) 23. Zhang, M., Shen, X., Cao, J., Cui, Z., Jiang, S.: Edgeshard: Efficient llm inference via collaborative edge computing. IEEE Internet of Things Journal 12 (10), 13119– 13131 (2024) 24. Zhong, Y., Liu, S., Chen, J., Hu, J., Zhu, Y., Liu, X., Jin, X., Zhang, H.: Dist-serve: Disaggregating prefill and decoding for goodput-optimized large language model serving. In: 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI). pp. 193–210 (2024)
