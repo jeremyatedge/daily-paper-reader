@@ -6,91 +6,85 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-05
-- 运行时间：2026-07-05 21:18:08 UTC
+- 最新运行日期：2026-07-12
+- 运行时间：2026-07-12 21:17:24 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：12
+- 本次总论文数：21
+- 精读区：10
 - 速读区：11
 
 ### 今日简报（AI）
-今日共读23篇论文，精读12篇，其中《Mega》与《MAM-AI》分别以满分和9分领跑。  
-最值得关注的方向是22nm脉冲神经网络加速器（0.375 pJ/SOP能效）和面向桑给巴尔护士的医疗RAG系统。  
-下一步建议普通读者优先精读这两篇代表作，从中窥见边缘AI在低功耗与医疗场景的最新突破。
-- 详情：[/202607/05/README](/202607/05/README)
+1) 今日聚焦超低功耗XR视觉与嵌入式CNN硬件优化，覆盖Bit-parallel加速器及空间冗余压缩等方向。  
+2) 精读首选《BitFair》12nm Bit-Serial CNN加速器与《Smart Scissor》空间冗余-压缩协同方法，均为10分。  
+3) 建议关注Bit-Serial与自适应位宽的能效优势，以及硬件友好型训练策略（如Lyapunov指导），适合嵌入式/边缘设备部署。
+- 详情：[/202607/12/README](/202607/12/README)
 
 ### 精读区论文标签
-1. [Mega: A 22 nm Convolutional Spiking Neural Network Accelerator Achieving 0.375 pJ/SOP for Efficient Edge Vision](/202607/05/2606.30039v1-mega-a-22-nm-convolutional-spiking-neural-network-accelerator-achieving-0375-pjsop-for-efficient-edge-vision)  
+1. [BitFair: A 12nm Bit-Serial CNN Accelerator with Learnable Early Termination and Adaptive Bit Ordering for Ultra-Low-Power XR Vision](/202607/12/2607.05445v1-bitfair-a-12nm-bit-serial-cnn-accelerator-with-learnable-early-termination-and-adaptive-bit-ordering-for-ultra-low-power-xr-vision)  
    标签：评分：10.0/10、query:aiot
-   evidence：面向边缘视觉的低功耗脉冲神经网络加速器
-2. [MAM-AI: An On-Device Medical Retrieval-Augmented Generation System for Nurses and Midwives in Zanzibar](/202607/05/2606.29580v1-mam-ai-an-on-device-medical-retrieval-augmented-generation-system-for-nurses-and-midwives-in-zanzibar)  
+   evidence：超低功耗位串行CNN加速器，利用可学习早期终止用于XR视觉
+2. [Smart Scissor: Coupling Spatial Redundancy Reduction and CNN Compression for Embedded Hardware](/202607/12/2607.06915v1-smart-scissor-coupling-spatial-redundancy-reduction-and-cnn-compression-for-embedded-hardware)  
+   标签：评分：10.0/10、query:aiot
+   evidence：结合空间冗余减少和CNN压缩用于嵌入式硬件
+3. [ELiTeFormer: An Efficient Transformer for FPGAs](/202607/12/2607.03652v1-eliteformer-an-efficient-transformer-for-fpgas)  
    标签：评分：9.0/10、query:aiot
-   evidence：完全运行在商用Android设备上的离线AI问答系统，使用量化4B模型，无需联网
-3. [RQP: Resource-Oriented Quantiser Pruning for Neural Networks on FPGAs](/202607/05/2606.30382v1-rqp-resource-oriented-quantiser-pruning-for-neural-networks-on-fpgas)  
+   evidence：面向FPGA部署的高效三值Transformer协同设计
+4. [Agentic IoT: Architectures, Applications, and Challenges Toward the Internet of Agents](/202607/12/2607.04219v1-agentic-iot-architectures-applications-and-challenges-toward-the-internet-of-agents)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向FPGA边缘神经网络加速器的资源导向量化剪枝，直接匹配低功耗硬件加速
-4. [MINT: Dynamic-Precision CNN Inference with MSDF Digit-Serial Arithmetic on FPGA](/202607/05/2606.31514v1-mint-dynamic-precision-cnn-inference-with-msdf-digit-serial-arithmetic-on-fpga)  
+   evidence：提出将AI代理集成到物联网的Agentic IoT范式
+5. [Efficient Perception in Automotive Detection and Tracking Using Neuromorphic Computing](/202607/12/2607.04921v1-efficient-perception-in-automotive-detection-and-tracking-using-neuromorphic-computing)  
    标签：评分：9.0/10、query:aiot
-   evidence：FPGA上的动态精度CNN推理加速器
-5. [LASER: Load-Aware Serving with Early-Exit for Reasoning LLMs at the Edge](/202607/05/2606.31580v1-laser-load-aware-serving-with-early-exit-for-reasoning-llms-at-the-edge)  
+   evidence：在边缘设备上进行能效高的SNN推理用于汽车检测
+6. [Is Your NPU Ready for LLMs? Dissecting the Hidden Efficiency Bottlenecks in Mobile LLM Inference](/202607/12/2607.05475v1-is-your-npu-ready-for-llms-dissecting-the-hidden-efficiency-bottlenecks-in-mobile-llm-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘大模型推理的负载感知早退方法，直接针对高效推理
-6. [FlexViT: A Flexible FPGA-based Accelerator for Edge Vision Transformers](/202607/05/2606.31938v1-flexvit-a-flexible-fpga-based-accelerator-for-edge-vision-transformers)  
+   evidence：跨层测量移动LLM推理在NPU等硬件上的效率瓶颈，关乎低功耗硬件加速
+7. [Energy-Efficient GPU DVFS for Fine-Tuning of SLMs on Resource-constrained Embedded Devices](/202607/12/2607.05933v1-energy-efficient-gpu-dvfs-for-fine-tuning-of-slms-on-resource-constrained-embedded-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘视觉Transformer的FPGA加速器
-7. [SoK: Attack and Defense Landscape of Mobile On-device AI Systems](/202607/05/2607.00362v1-sok-attack-and-defense-landscape-of-mobile-on-device-ai-systems)  
+   evidence：在嵌入式设备上通过GPU DVFS实现小语言模型微调的能量效率优化
+8. [A Hardware-Aware Open-Source Framework for Design Space Exploration of Mixed-Signal Spiking Neural Networks](/202607/12/2607.06456v1-a-hardware-aware-open-source-framework-for-design-space-exploration-of-mixed-signal-spiking-neural-networks)  
    标签：评分：9.0/10、query:aiot
-   evidence：移动端设备上AI系统，嵌入式AI架构
-8. [Hawk: Harnessing Hardware-Aware Knowledge for High-Performance NPU Kernel Generation](/202607/05/2607.01590v1-hawk-harnessing-hardware-aware-knowledge-for-high-performance-npu-kernel-generation)  
+   evidence：用于混合信号脉冲神经网络的硬件感知开源框架
+9. [Hardware-aware Graph Neural Networks prunning for embedded event-based vision](/202607/12/2607.06739v1-hardware-aware-graph-neural-networks-prunning-for-embedded-event-based-vision)  
    标签：评分：9.0/10、query:aiot
-   evidence：NPU内核生成，硬件感知，低功耗加速
-9. [ProWAFT: A ROMA-LPD Instance for Workload-Aware and Dynamic Fault Tolerance in FPGA-Based CNN Accelerators](/202607/05/2607.01602v1-prowaft-a-roma-lpd-instance-for-workload-aware-and-dynamic-fault-tolerance-in-fpga-based-cnn-accelerators)  
+   evidence：面向嵌入式FPGA的硬件感知剪枝与量化，用于低功耗事件视觉
+10. [CRIMP: Compact & Reliable DNN Inference on In-Memory Processing via Crossbar-Aligned Compression and Non-ideality Adaptation](/202607/12/2607.08015v1-crimp-compact--reliable-dnn-inference-on-in-memory-processing-via-crossbar-aligned-compression-and-non-ideality-adaptation)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于FPGA的CNN加速器，面向边缘的功耗感知容错
-10. [Approximate Attention Weighting for Sustainable FPGA-Based Vision Transformer Inference](/202607/05/2607.01798v1-approximate-attention-weighting-for-sustainable-fpga-based-vision-transformer-inference)  
-   标签：评分：9.0/10、query:aiot
-   evidence：低功耗近似注意力机制用于FPGA视觉Transformer推理
-11. [Real-Time Visual Intelligence on Low-Cost UAVs: A Modular Approach for Tracking, Scanning, and Navigation](/202607/05/2607.02298v1-real-time-visual-intelligence-on-low-cost-uavs-a-modular-approach-for-tracking-scanning-and-navigation)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向无人机嵌入式系统的轻量神经网络优化
-12. [Embodied.cpp: A Portable Inference Runtime of Embodied AI Models on Heterogeneous Robots](/202607/05/2607.02501v1-embodiedcpp-a-portable-inference-runtime-of-embodied-ai-models-on-heterogeneous-robots)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向异构边缘设备的具身AI模型便携推理运行时
+   evidence：内存处理加速器上的紧凑可靠DNN推理，解决低功耗硬件加速问题
 
 ### 速读区论文标签
-1. [Harvesting AI Computation at the Edge via Generic Approximation](/202607/05/2606.29518v1-harvesting-ai-computation-at-the-edge-via-generic-approximation)  
+1. [AI-RAN on NPUs: Baseband Processing Without Baseband Chips](/202607/12/2607.04224v1-ai-ran-on-npus-baseband-processing-without-baseband-chips)  
    标签：评分：8.0/10、query:aiot
-   evidence：利用通用近似技术回收边缘AI计算资源
-2. [MAM-AI: An On-Device Medical Retrieval-Augmented Generation System for Nurses and Midwives in Zanzibar](/202607/05/2606.29580v2-mam-ai-an-on-device-medical-retrieval-augmented-generation-system-for-nurses-and-midwives-in-zanzibar)  
+   evidence：利用NPU（AI加速器）进行基带处理，实现高效计算
+2. [A Reconfigurable and Representation-Adaptive ISA-Based Architecture for Efficient DNN Acceleration](/202607/12/2607.04475v1-a-reconfigurable-and-representation-adaptive-isa-based-architecture-for-efficient-dnn-acceleration)  
    标签：评分：8.0/10、query:aiot
-   evidence：在商用安卓设备上离线运行的医疗AI助手
-3. [HASTE: A Framework for Training-Free, Dynamic, and Steerable Compression of Pre-Trained Convolutional Neural Networks](/202607/05/2606.30516v1-haste-a-framework-for-training-free-dynamic-and-steerable-compression-of-pre-trained-convolutional-neural-networks)  
+   evidence：基于ISA的可重构高效DNN加速器
+3. [Lyapunov-Guided Training for Hardware-Safe Neural Networks Under Fixed-Point Arithmetic](/202607/12/2607.04531v1-lyapunov-guided-training-for-hardware-safe-neural-networks-under-fixed-point-arithmetic)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向资源受限设备的免训练动态CNN压缩
-4. [COSM: A Cooperative Scheduling Framework for Concurrent PIM and CPU Execution on Mobile Devices](/202607/05/2606.30553v2-cosm-a-cooperative-scheduling-framework-for-concurrent-pim-and-cpu-execution-on-mobile-devices)  
+   evidence：基于李雅普诺夫引导的定点算术硬件安全神经网络训练
+4. [Optimizing ML Workload Partitioning between CPUs and CIM Accelerators for Heterogeneous Computing](/202607/12/2607.05240v1-optimizing-ml-workload-partitioning-between-cpus-and-cim-accelerators-for-heterogeneous-computing)  
    标签：评分：8.0/10、query:aiot
-   evidence：移动设备上PIM与CPU协同调度，通过软硬件协同设计降低能耗
-5. [TinyML for On-Device and Edge Analytics in Wireless Networks: A Survey of Deployments, Opportunities, and Concept-Drift Mitigation](/202607/05/2606.30843v1-tinyml-for-on-device-and-edge-analytics-in-wireless-networks-a-survey-of-deployments-opportunities-and-concept-drift-mitigation)  
-   标签：评分：8.0/10、query:aiot
-   evidence：综述无线网络中端侧和边缘的小型机器学习，直接涉及嵌入式AI和AIoT
-6. [Fog Computing and Large Language Models: A vision for the mutual beneficiaries](/202607/05/2606.29483v1-fog-computing-and-large-language-models-a-vision-for-the-mutual-beneficiaries)  
+   evidence：CPU与计算存储一体异构计算实现低功耗ML加速
+5. [AdaptiveSD A Stability-Aware, Runtime-Adaptive Speculative Decoding Framework with Multi-Policy Orchestration for CPU-Constrained LLM Inference](/202607/12/2607.03876v1-adaptivesd-a-stability-aware-runtime-adaptive-speculative-decoding-framework-with-multi-policy-orchestration-for-cpu-constrained-llm-inference)  
    标签：评分：7.0/10、query:aiot
-   evidence：雾计算与大语言模型在AIoT中的融合
-7. [Energy-Efficient Multimodal Inference Serving with Tri-serve](/202607/05/2606.29629v1-energy-efficient-multimodal-inference-serving-with-tri-serve)  
+   evidence：面向CPU受限边缘设备的自适应推测解码优化
+6. [Task-Oriented Multimodal Edge Intelligence via Integrated Sensing-Communication-Computation](/202607/12/2607.03907v1-task-oriented-multimodal-edge-intelligence-via-integrated-sensing-communication-computation)  
    标签：评分：7.0/10、query:aiot
-   evidence：多模态推理服务中的功耗低效问题
-8. [Energy-Efficient Multimodal Inference Serving with Tri-serve](/202607/05/2606.29629v2-energy-efficient-multimodal-inference-serving-with-tri-serve)  
+   evidence：通过集成感知通信计算的多模态边缘智能框架，直接与AIoT相关
+7. [XS-VLA: Coupling Coarse-grained Spatial Distillation with Latent Flow Matching for Lightweight Robotic Control](/202607/12/2607.04171v1-xs-vla-coupling-coarse-grained-spatial-distillation-with-latent-flow-matching-for-lightweight-robotic-control)  
    标签：评分：7.0/10、query:aiot
-   evidence：多模态推理服务中的功耗低效问题
-9. [Evolutionary Hyperparameter Optimization to Find Lightweight CNN Models for Autonomous Steering](/202607/05/2606.29684v1-evolutionary-hyperparameter-optimization-to-find-lightweight-cnn-models-for-autonomous-steering)  
+   evidence：通过蒸馏实现轻量级VLA模型用于边缘机器人控制
+8. [Entropy-Guided Tensor Compression for Multimodal Federated Learning on Edge Devices](/202607/12/2607.06651v1-entropy-guided-tensor-compression-for-multimodal-federated-learning-on-edge-devices)  
    标签：评分：7.0/10、query:aiot
-   evidence：进化超参优化轻量CNN模型用于自动驾驶
-10. [BaseRT: Best-in-Class LLM Inference on Apple Silicon via Native Metal](/202607/05/2607.00501v1-basert-best-in-class-llm-inference-on-apple-silicon-via-native-metal)  
+   evidence：边缘设备上基于熵引导的张量压缩联邦学习
+9. [NKI-Agent: Domain-Specific Fine-Tuning and Agentic Tool Use for Neuron Kernel Generation](/202607/12/2607.04395v1-nki-agent-domain-specific-fine-tuning-and-agentic-tool-use-for-neuron-kernel-generation)  
    标签：评分：6.0/10、query:aiot
-   evidence：针对Apple Silicon的原生Metal推理运行时，通过芯片级内核融合和统一内存优化，实现最高LLM推理吞吐
-11. [Probabilistic Memory for Trustworthy Edge Intelligence](/202607/05/2607.02465v1-probabilistic-memory-for-trustworthy-edge-intelligence)  
+   evidence：面向AI加速器的自动内核生成，支持硬件软件协同设计
+10. [Beyond the Need for Speed: Energy-Aware Code Generation via Simulation-Guided Reinforcement Learning](/202607/12/2607.04577v1-beyond-the-need-for-speed-energy-aware-code-generation-via-simulation-guided-reinforcement-learning)  
    标签：评分：6.0/10、query:aiot
-   evidence：概率存储器作为边缘智能的新原语，提升概率计算的吞吐量，支持可信边缘AI
+   evidence：使用仿真引导的强化学习进行能感知代码生成
+11. [F-ACVAE: A Federated Adaptive Conditional Variational Auto-Encoder for Privacy-Preserving Intrusion Detection in IoT Networks](/202607/12/2607.04698v1-f-acvae-a-federated-adaptive-conditional-variational-auto-encoder-for-privacy-preserving-intrusion-detection-in-iot-networks)  
+   标签：评分：6.0/10、query:aiot
+   evidence：IoT网络中使用联邦学习进行入侵检测
 
 
 <div class="dpr-home-promo-card">
