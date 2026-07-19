@@ -1,0 +1,543 @@
+Title: SynapticOS: An Inference-First Runtime Architecture for Neural Processing Units on Resource-Constrained Microcontrollers
+
+URL Source: https://arxiv.org/pdf/2607.12606v1
+
+Published Time: Wed, 15 Jul 2026 11:57:29 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# SynapticOS: An Inference-First Runtime Architecture for Neural Processing Units on Resource-Constrained Microcontrollers 
+
+Dimitrios Kafetzis 
+
+SynapticOS Project, Hamburg, Germany 
+
+Abstract —Microcontrollers with on-die neural processing units (NPUs) have become mainstream, but the system software hosting them has not: the production combinations of Zephyr or FreeRTOS with TensorFlow Lite Micro treat AI inference as an application-layer library, leaving memory fragmentation, accelerator-state hygiene, and model-lifecycle guards as recurring application-developer concerns. We present the Phase 1 foundation of SynapticOS, an open-source runtime built on Zephyr that treats inference as a first-class workload. The foundation contributes four cooperating subsystems: (1) a tensor-aware bump allocator with 16-byte DMA-aligned persistent and ephemeral lifetimes sharing a single arena, achieving constant-time allocation ( ∼154 cycles per call, ∼78,000 allocations per second at 150 MHz, invariant across tensor sizes) with zero fragmentation by construction; (2) a four-state hardware abstraction layer for the NPU and DSP, implemented by both a deterministic software stub (for continuous integration under QEMU) and a Neutron-flavoured backend (for the NXP MCXN947); (3) a three-state model lifecycle registry with duplicate-name detection, idempotent load/unload, and hot-swap guards; and (4) a four-mark cycle-accurate profiler. We evaluate on the NXP FRDM-MCXN947 (dual Cortex-M33 at 150 MHz) and on the qemu_cortex_m3 emulator. Build footprints are 67 KB flash / 184 KB SRAM on FRDM (with shell, 128 KB arena) and 24 KB flash / 28 KB SRAM on QEMU (no shell, 8 KB arena). End-to-end inference brackets through the deterministic stub kernel measure 1,038 μs on FRDM and 781 μs on QEMU for a 16 ×16 ×3 INT8 input; these are baseline overhead numbers, not measurements of the Neutron silicon, which is exercised by the real SDK invoke path scheduled for Phase 2. A 61-test suite spanning 10 ZTEST suites passes 100% in 6.6 s on the CI emulator path. SynapticOS is released under Apache 2.0 at https://github.com/Dimitrios-Kafetzis/SynapticOS. 
+
+Index Terms —real-time operating systems, neural processing units, edge AI, TinyML, embedded systems, memory management, hardware abstraction 
+
+I. I NTRODUCTION 
+
+A neural processing unit on a microcontroller is no longer exotic. NXP’s MCXN9 family integrates the eIQ Neutron NPU on a dual-Cortex-M33 package retailing at roughly fifteen US dollars on a reference board [ 1], [ 2]; Arm’s Ethos-U55 ships as a licensable accelerator paired with Cortex-M55 and M85 cores [ 3 ]; STMicroelectronics, Renesas, and Espressif have each announced or shipped comparable on-die accelerators in their recent silicon. Within roughly two product cycles, INT8 inference at single-digit-watt power budgets has migrated from application processors down into the same class of devices that runs a doorbell or a thermostat. The system software has not made the corresponding move. The two production RTOS platforms with the largest install bases — Zephyr [ 4] and FreeRTOS [ 5 ] — both treat AI inference as an application-layer library: a developer links against TensorFlow Lite for Microcontrollers [ 6] or CMSIS-NN [ 7 ], allocates a tensor arena out of the standard heap, and invokes the accelerator through a thin vendor SDK wrapper. This works, but it leaves three classes of problem to the application developer to solve, again, on every project:  
+
+> •
+
+Memory. A general-purpose heap interleaves model weights (which live for the lifetime of a loaded model) and activations (which live for one forward pass), producing the classical checkerboard fragmentation pattern that limits how many inferences a deployed device can run before requiring a reboot.  
+
+> •
+
+Hardware abstraction. The NPU on an MCXN947 board, the Ethos-U on a Cortex-M85 board, and the software fallback on an ESP32-S3 all need to look the same to the inference pipeline, and they do not: each ships with its own SDK conventions, its own async-completion contract, and its own power-management story.  
+
+> •
+
+Lifecycle. A model has a state (registered, loaded, swapped, retired) that needs to be tracked separately from the accelerator state, with guards against the obvious misuses (load while busy, swap while loaded, unregister while loaded). No mainstream MCU runtime ships this surface today. The micro-TVM compiler stack [ 8] takes a different ap-proach: schedule the entire inference graph ahead of time and emit straight-line code with statically planned tensors. This is the right choice when the model is fixed and known at build time, but it is the wrong abstraction for a device that needs to load, update, or hot-swap models in the field, and it offers no help with the hardware-state and lifecycle problems above. CMSIS-NN occupies a similar niche one layer down: efficient kernels with caller-managed memory and no runtime notion of a model. 
+
+A. Inference-First Design 
+
+The starting position of this work is that the three problems above are not application-layer concerns. They are workload-class concerns: they recur on every project because the workload — repeated forward passes through a quantised neural network — has memory, hardware, and lifecycle patterns that arXiv:2607.12606v1 [eess.SY] 14 Jul 2026 differ structurally from the control loops and sensor-polling tasks that the existing RTOS abstractions were shaped around. An OS that treats inference as a first-class workload can name those patterns directly and solve them once. The three observations we build on are: 1) Tensor memory has two lifetimes, not one. Weights are loaded once per model and read on every forward pass; activations are written once per forward pass and discarded. Allocating both from a single free-list forces a policy choice that is wrong for at least one of them; splitting the two and using a bump allocator on each makes both choices trivially correct. 2) Accelerator state is a state machine, not a flag. IDLE ,
+
+BUSY , SUSPENDED , and ERROR are not implementation details of a particular SDK — they are the shared vocabulary that the model registry, the scheduler, and the power manager all need to consult. Putting that state in a single HAL means every layer above the HAL gets a coherent view by construction. 3) A deterministic software fallback unlocks continuous integration. Most RTOS-plus-NPU projects ship without unit tests for the NPU path because the test bench has no NPU. A stub backend with bit-identical output for identical input solves this without giving up on the real-hardware path. These observations are the design axes for SynapticOS Phase 1. The work reported here is the foundation layer — memory, HAL, registry, profiling, shell, and test infrastructure — on which the Phase 2 inference engine (TFLM integration, layer-granularity preemption, real Neutron invoke) and the later phases (dual-core IPC, OTA, fault recovery) are built. 
+
+B. Contributions 
+
+The Phase 1 contributions are: 1) A tensor-aware memory architecture (section III): a bump allocator with persistent and ephemeral regions sharing a single tensor arena and a separate scratch pool, with 16-byte DMA alignment by construction and constant-time allocation independent of tensor size, validated at ∼154 cycles per allocation and ∼78,000 allocations per second on qemu_cortex_m3 (sec-tion VI-D). 2) A state-machine NPU HAL with deterministic soft-ware fallback (section IV): a four-state interface im-plemented by both a software-stub backend (linked for QEMU) and a Neutron-flavoured backend (linked for FRDM-MCXN947), selected at link time with no runtime dispatch overhead. 3) A model lifecycle registry (section V-A ): a three-state machine over a fixed-size slot table with duplicate-name detection, idempotent load/unload, and auto-unload-on-unregister guards. 4) A cycle-accurate profiling surface (section V-B ): four mark-points along the preprocess–invoke–postprocess pipeline backed by k_cycle_get_32() , with arena-peak capture and an NPU utilisation ratio. The mark API is in place; wiring it into the inference path is Phase 2 work and is reported as a known gap. 5) An open-source dual-target implementation of all of the above: roughly 4,100 lines of C across the runtime, frozen public headers, samples, and tests; 61 ZTEST cases across 10 suites with a 100% pass rate on the CI emulator path; and a working FRDM-MCXN947 deployment with a Zephyr shell front-end. Source is released under Apache 2.0 at https://github. com/Dimitrios-Kafetzis/SynapticOS. 
+
+C. Scope 
+
+This paper reports the Phase 1 foundation of SynapticOS. The foundation is deliberately under the inference engine, not the inference engine itself: the latency numbers in section VI-C are bracketed end-to-end times around a deterministic stub kernel, not measurements of the Neutron NPU on a real workload. The real inference engine — TFLite Micro integration, zero-copy tensor pipelines, layer-granularity preemption, the real Neutron invoke path, and per-stage profiler wire-up — is Phase 2 work. We are explicit about this throughout (in sections IV-B , V-B ,VI-A and VI-C ) so that a reader of the latency figures cannot mistake them for silicon performance. 
+
+D. Paper Organisation 
+
+Section II situates SynapticOS against the existing landscape of RTOS-plus-AI integrations. Sections III to V present the three core subsystems (memory, HAL, registry plus profiling). Section VI evaluates build footprint, latency, allocator perfor-mance, and test coverage on both target platforms. Section VII discusses limitations and the roadmap; section VIII concludes. II. R ELATED WORK 
+
+SynapticOS sits at the intersection of three lines of existing work: the real-time operating systems that host embedded AI today, the tensor memory managers that those AI frameworks ship internally, and the hardware abstractions that the larger AI runtimes use to talk to accelerators. We do not claim novelty against any single line in isolation; what is missing is the OS-level synthesis of all three for the MCU-plus-NPU class of device, and it is that gap we address. 
+
+A. RTOS Hosts for Embedded AI 
+
+Table I summarises how the major embedded RTOS and runtime stacks expose AI to the application. In every existing production combination the AI library is a peer of (or a client of) the RTOS, not an integrated subsystem: the runtime supplies a heap and a scheduler, the library supplies an inference pipeline and an arena on top of that heap, and the application stitches them together. The Zephyr-plus-TFLM and FreeRTOS-plus-TFLM combi-nations are the de-facto production stack for shipping MCU AI today. They work and they scale: TFLM has been deployed on hundreds of millions of devices according to the project’s own figures, and the broader MLPerf Tiny benchmark suite [ 9]centres on this class of deployment. The pattern’s limitation is TABLE I EMBEDDED AI INTEGRATION PATTERNS .                         
+
+> System AI support Memory model Accelerator HAL Model lifecycle
+> Zephyr + TFLM [4], [6] app-layer library TFLM arena over heap vendor SDK (per-board) app-managed FreeRTOS + TFLM [5], [6] app-layer library TFLM arena over heap vendor SDK (per-board) app-managed
+> μTVM [8] compiler-generated runtime statically planned AOT-bound to one target one model per build ARM CMSIS-NN [7] kernel library caller-supplied buffers none none
+> SynapticOS (this work) native runtime tensor-aware arena state-machine HAL registry + guards
+
+not technical inadequacy — it is that every project re-derives the same arena-sizing decisions, the same accelerator state hygiene, and the same model-lifecycle guards on top of a runtime that does not name those concerns. Two consequences of this are visible in the field: TFLM’s static arena requires the developer to over-allocate against the largest expected activation tensor (because the framework has no ephemeral / persistent distinction to exploit), and accelerator suspension and resume on power-managed devices is the application’s problem because the framework has no concept of accelerator state. SynapticOS keeps TFLM in scope as a Phase 2 integration target — the goal is not to displace it but to give it (or any other inference library) an OS layer that already solves the recurring problems. The μTVM stack [ 8 ] takes the orthogonal route of ahead-of-time compilation: an entire inference graph is lowered to straight-line C with statically planned tensor offsets. For a fixed, single-model build this is excellent and competitive with hand-tuned kernels, but the abstraction breaks if the device needs to load, hot-swap, or OTA-update models in the field, and the compiler offers no help with hardware-state management or with the shell-level introspection that real-world deployments need for debugging. CMSIS-NN [ 7] is one layer below the others: a library of op-timised neural-network kernels (convolutions, fully-connected, pooling, activation) that callers wire together by hand. It is the right comparator for our DSP HAL (section IV-D ) but explicitly not a runtime; it has no notion of memory ownership, no model lifecycle, and no accelerator HAL. Our DSP HAL adopts CMSIS-NN-style primitive contracts (caller-supplied buffers, separate scale and zero-point for quantised inputs) without inheriting its lack of OS-level integration. Nuttx, Mbed-OS, and the various vendor-specific microcon-troller runtimes (e.g. MCUXpresso, ESP-IDF) follow the same library-attached pattern as Zephyr-plus-TFLM and FreeRTOS-plus-TFLM and are omitted from table I for brevity. None of them ship an OS-native tensor-aware allocator or an OS-native NPU state machine either. 
+
+B. Tensor Memory Management 
+
+The TFLite Micro arena allocator [ 6] is the closest existing work to SynapticOS’s memory subsystem. It uses a bump-pointer scheme within a caller-supplied byte buffer, with two regions: persistent (head of arena, growing up) and non-persistent / temporary (tail of arena, growing down). On the surface this resembles section III-B , but two differences matter for an OS-level use:  
+
+> •
+
+TFLM’s arena is owned by the inference interpreter, sized at interpreter construction, and shared across no other consumers. An OS-level allocator has to serve callers that are not inside the interpreter (e.g. a sensor pre-processor, an IPC marshaller), which is why SynapticOS exposes the arena through a small public API (listing 1) rather than as a hidden interpreter member.  
+
+> •
+
+TFLM has no separate scratch pool. Per-operator scratch is carved out of the same non-persistent region, which forces the operator code to reason about lifetime against neighbouring tensors. A separate, independently reset scratch pool (section III-B ) keeps that reasoning local to the operator. Pool-of-pools and slab allocators in production RTOS kernels (Zephyr’s k_mem_slab , FreeRTOS’s heap_4) solve a different problem: they trade fragmentation for fixed-size restriction. Tensor allocations are not fixed-size, so a slab allocator either wastes significant memory or requires a slab class per expected tensor size, which loses the determinism advantage it was chosen for. The bump-pointer / linear / region allocator family itself is folklore that long predates AI workloads; it is the standard idiom in high-throughput game engines, compilers, and short-lived-arena server patterns [ 10 ], [ 11 ]. SynapticOS’s contribution is not the bump-pointer choice itself — it is the lifetime classification and the OS-level API that surfaces it. 
+
+C. Hardware Abstraction for Accelerators 
+
+On the application-processor and mobile side, the field has converged on the Execution Provider (EP) and device-API patterns. ONNX Runtime [ 12 ] dispatches operators to EPs at graph-execution time; TVM’s device API [ 13 ] exposes a thin C interface for allocator, stream, and kernel launch operations that is implemented per-backend; Android NNAPI [ 14 ] is conceptually similar at the mobile-application layer. All three are too heavy for a Cortex-M class device: ONNX Runtime’s footprint alone is in the multi-megabyte range even after aggressive subsetting, and the dispatch path assumes a device that can afford virtual-function overhead per operator. At the MCU layer the prevailing approach is the opposite extreme: each vendor’s SDK ships its own NPU driver with its own state model, its own buffer-ownership contract, and its own async-completion API. The NXP eIQ Neutron SDK, the Arm Vela compiler and Ethos-U driver, the Renesas DRP-AI driver, and the ST X-CUBE-AI runtime are all internally consistent and all mutually incompatible. The syn_hal_npu.h interface (section IV) is deliberately narrow — a state enum, capability struct, lifecycle functions, and a single synchronous-plus-async invoke pair — precisely so that it can sit above all of these SDKs without paying ONNX-Runtime-class overhead. The dual-backend implementation we ship for Phase 1 (stub and Neutron) demonstrates that the interface is implementable; the Phase 2 work adds the real Neutron-SDK invoke path behind the same surface and the Phase 3 work adds the asymmetric-multiprocessing dimension. III. T ENSOR -A WARE MEMORY ARCHITECTURE 
+
+A neural-network inference kernel has a memory-access pattern that is fundamentally different from the control-loop and sensor-polling workloads that traditional RTOS allocators are tuned for. Weights are loaded once and read many times; activations are written and overwritten on every forward pass; intermediate scratch is needed by individual operators (FFT twiddle factors, softmax denominators) and discarded immediately. SynapticOS exposes these three lifetimes directly to the allocator instead of forcing them through a single general-purpose heap. 
+
+A. Design Rationale 
+
+A general-purpose dynamic allocator — whether newlib malloc , k_malloc , or a free-list heap — has three proper-ties that make it a poor fit for inference on a microcontroller:  
+
+> •
+
+Fragmentation under heterogeneous lifetimes. Weights live for the lifetime of a loaded model; activations live for one forward pass. Allocating both from a single free-list pool interleaves long-lived and short-lived blocks, producing the checkerboard-fragmentation pattern that Wilson et al. [ 15 ] document as defeating any first-fit or best-fit policy under a fixed memory budget.  
+
+> •
+
+Unpredictable latency. Free-list traversal is bounded only by the current pool topology, which is workload-dependent. A real-time inference deadline cannot tolerate a worst-case allocation that is two or three orders of magnitude slower than the typical case.  
+
+> •
+
+No alignment guarantee. NPU and DMA engines on Cortex-M class hardware typically require 16-byte (some-times 32-byte) alignment for input and output tensors. Standard heap implementations only guarantee 4- or 8-byte alignment and require callers to over-allocate and align manually, which both wastes memory and complicates the surrounding code. The Phase 1 allocator addresses all three by construction: lifetime classification eliminates fragmentation, the bump-pointer algorithm guarantees O(1) allocation, and every ten-sor descriptor and payload is placed on a 16-byte bound-ary by an unconditional ALIGN_UP at the allocation site (syn_mem.c:23,112 ).                  
+
+> persistent ephemeral free
+> scratch pool
+> (resets with ephemeral)
+> tensor region (bump-allocated)
+> base base +usable
+> base +total
+> Fig. 1. Tensor arena layout. The arena is a single contiguous block split into a bump-allocated tensor region and a separate scratch pool. Within the tensor region, persistent allocations grow up from base , and ephemeral allocations continue upward where persistent ends; the scratch pool is reclaimed in lockstep with syn_mem_reset_ephemeral() . The allocator returns
+> -ENOMEM when persistent_used +ephemeral_used would exceed
+> usable =total -scratch_size .
+
+B. Arena Layout 
+
+The arena is a single contiguous block of SRAM, partitioned at initialization into a tensor region and a scratch pool. Within the tensor region, two bump pointers grow in the same direction starting at the base: the persistent pointer occupies the low addresses, and the ephemeral pointer takes over once the persistent allocations have stabilized. The scratch pool occupies the high end of the arena and is reclaimed at the same lifetime boundary as the ephemeral region. Figure 1 shows the layout; this is the structure actually implemented in syn_mem.c .The split is parameterized by the Kconfig knob 
+
+CONFIG_SYNAPTIC_SCRATCH_POOL_SIZE (range 1,024– 65,536 bytes); on FRDM the default 128 KB arena is split into a 112 KB tensor region and a 16 KB scratch pool, and on QEMU an 8 KB arena is split 7 KB / 1 KB. The runtime exposes both occupancies through syn_mem_get_stats() 
+
+and the syn mem stats shell command (section VI-E). 
+
+C. Allocation Algorithm 
+
+A tensor allocation proceeds in four steps: 1) Compute the element count by multiplying the (up to four) shape dimensions, then multiply by the dtype size (1, 2, or 4 bytes for the supported INT8/UINT8, INT16/FLOAT16, and FLOAT32 dtypes). 2) Reserve an inline descriptor of size 
+
+⌈sizeof( syn _tensor _t)⌉16 immediately followed by the payload, so the entire allocation is a single contiguous block. The payload pointer in the returned descriptor is set to the byte after the padded descriptor. 3) Select the bump pointer for the requested lifetime: 
+
+persistent_used for SYN_MEM_PERSISTENT 
+
+and persistent_used + ephemeral_used for everything else (see note below on SYN_MEM_SHARED ). 4) Advance the chosen pointer past the aligned end. If the new end would exceed the tensor re-gion ( persistent_used + ephemeral_used >usable ), the call returns NULL and no state mutates; otherwise the allocation count is incremented, the high-water mark is updated, and the descriptor is returned. A call to syn_mem_reset_ephemeral() zeroes both 
+
+ephemeral_used and scratch_used (so scratch is on the ephemeral lifetime by construction, not on a separate lifetime) and increments the reset counter. Persistent state is never touched by a reset. syn_mem_tensor_free() is a deliberate no-op: the bump allocator does not track individual frees, and pretending otherwise would mislead callers. 
+
+A note on SYN_MEM_SHARED .: The public header de-clares three lifetimes ( PERSISTENT , EPHEMERAL , SHARED ), but the Phase 1 implementation only distinguishes two: the life-time branch in arena_alloc() checks for PERSISTENT ,and everything else — including SHARED — bumps from the ephemeral pointer. The SHARED value is reserved for the dual-core IPC region scheduled for the asymmetric-multiprocessing work in Phase 3; passing it today yields ephemeral semantics. This is called out here so that callers do not rely on SHARED 
+
+surviving an ephemeral reset. 
+
+D. API 
+
+The public surface is intentionally small. Listing 1 reproduces the frozen signatures from 
+
+include/synaptic/syn_mem.h ; the scratch pool has a symmetric acquire/release pair where release is a no-op (release is implicit at the next ephemeral reset).                   
+
+> int syn_mem_init( void *arena_base, size_t arena_size);
+> void syn_mem_reset_ephemeral( void ); syn_tensor_t *syn_mem_tensor_alloc( const uint32_t *shape, uint8_t ndim, syn_npu_dtype_t dtype, syn_mem_lifetime_t lifetime);
+> void syn_mem_tensor_free(syn_tensor_t *tensor);
+> void *syn_mem_scratch_acquire(size_t size);
+> void syn_mem_scratch_release( void *ptr);
+> int syn_mem_get_stats(syn_mem_stats_t *stats);
+> Listing 1. Phase 1 memory API ( include/synaptic/syn_mem.h ,frozen).
+
+Quantitative behaviour — per-allocation cost, size invariance, fragmentation accounting, and region isolation — is reported in section VI-D , where the design choices above are validated against the benchmark suites and the runtime statistics from a real inference on the FRDM-MCXN947. IV. H ARDWARE ABSTRACTION LAYER 
+
+The accelerators on a microcontroller class device — an NPU for neural-network invoke, a DSP block for vector and tensor primitives, DMA engines for zero-copy transfers — have vendor-specific register maps, lifecycle quirks, and clock and power-domain requirements. A clean hardware abstraction layer matters for two reasons that go beyond ordinary portability. First, the upstream Zephyr build must be able to finish in continuous integration without the silicon being present; Phase 1 achieves this by linking against software fallback backends on qemu_cortex_m3 that expose the same public interface 
+
+IDLE BUSY 
+
+SUSPENDED ERROR  
+
+> init()
+> invoke()
+> success
+> SDK error suspend() resume()
+
+Precondition guards: load_model / set_input / invoke 
+
+while BUSY → -EBUSY ; any call while not initialized → -EPERM ;
+
+resume from any state ̸ = SUSPENDED → -EINVAL .
+
+Dashed: reachable in Phase 2 once the real Neutron invoke return code is checked.   
+
+> Fig. 2. NPU HAL state machine. The dashed ERROR transition is implemented in the HAL but unreached by Phase 1 code paths because the Neutron backend currently shares the stub’s always-succeeding invoke kernel; it becomes reachable in Phase 2.
+
+as the real drivers. Second, the model lifecycle in section V encodes safety guards (e.g. “cannot load while another invoke is in flight”) that need a single source of truth for accelerator state; SynapticOS centralises that state in the HAL rather than scattering it across drivers. Two HALs are part of the Phase 1 surface: the NPU HAL (syn_hal_npu.h ) and the DSP HAL ( syn_hal_dsp.h ). A DMA HAL is declared but not exercised by the Phase 1 sample and is therefore omitted from this discussion. 
+
+A. NPU State Machine 
+
+The NPU HAL exposes a four-state machine (fig. 2): 
+
+IDLE , BUSY , SUSPENDED , and ERROR .1 Transitions are precondition-checked at every call site: e.g. a load_model 
+
+or set_input call while the NPU is BUSY returns -EBUSY 
+
+without mutating any state, and resume from any state other than SUSPENDED returns -EINVAL . These guards prevent the model registry (section V) from being able to corrupt the HAL through a misordered API call — a property that becomes especially important once preemption is added in Phase 2. 
+
+A note on ERROR .: The ERROR state is part of the public interface and the HAL backends are wired to transition into it on invoke failure, but no code path in Phase 1 actually produces an error: the stub kernel always succeeds, and the Neutron backend currently shares the stub’s invoke logic (see section IV-B ). The state will become reachable in Phase 2 once the Neutron SDK invoke return code is checked; until then, 
+
+ERROR is reachable only by direct test instrumentation, and the syn npu state shell command will never display it in normal operation.    
+
+> 1The implementation additionally maintains a private initialized
+> boolean. We do not promote this to a public state because pre-init and post-deinit look identical to the caller, who only sees -EPERM either way.
+
+B. Dual-Backend Architecture 
+
+The HAL interface in include/synaptic/syn_hal_ npu.h is implemented by two backends, selected at build time by the board identity:  
+
+> •
+
+src/hal/stub/syn_hal_npu_stub.c — the software-emulated stub, linked for qemu_cortex_m3 
+
+and any other target without a vendor NPU. Reports 
+
+caps.name = "stub" and supports_async = false . 
+
+> •
+
+src/hal/mcxn947/syn_hal_npu_neutron.c 
+
+— the MCXN947-targeted backend, linked for 
+
+frdm_mcxn947/mcxn947/cpu0 . Reports 
+
+caps.name = "neutron" and currently advertises 
+
+max_ops_per_sec = 10 8 with supports_async = true . The capability values reflect the NXP-rated headroom of the Neutron silicon [ 2] but the invoke kernel itself is presently the same deterministic stub that runs under QEMU (see section VI-A ); replacing it with the real Neutron SDK invoke path is the first Phase 2 deliverable. Selection happens at the CMake / Kconfig layer, not at runtime, so there is no virtual-dispatch overhead and the linker can garbage-collect the unused backend’s symbols. The stub backend’s ∼24 KB QEMU image in table III excludes the Neutron backend entirely, and vice-versa. 
+
+Capability honesty.: An audit of the Phase 1 Neutron back-end reveals one place where the advertised capability does not yet match runtime behaviour: caps.supports_async = true , but syn_hal_npu_invoke_async() currently re-turns -ENOTSUP on both backends. The supports_async 
+
+field is honest about the silicon (the Neutron NPU does raise a completion interrupt) but not about the Phase 1 runtime; wiring the interrupt handler is grouped with the SDK integration in Phase 2. 
+
+C. Deterministic Stub 
+
+The stub backend exists to make continuous integration possible without hardware. Its design constraints are: 1) Bit-identical output for identical input , so that twister runs are reproducible across machines, kernel versions, and time. 2) Model-agnostic , because the harness has no model parser: the stub must produce a plausible classification result for any input buffer of any registered “model”. 3) No vendor SDK dependency , so it builds clean on 
+
+qemu_cortex_m3 with only Zephyr’s kernel headers. The kernel is consequently very small: it sums the bytes of the input buffer, takes the result modulo the (hard-coded) ten-class output width, writes 127 into the winning class slot, and zeroes the rest. A small busy-wait simulates inference latency, implemented as a volatile loop in the stub (because 
+
+k_busy_wait() is not available on qemu_cortex_m3 )and as a real k_busy_wait(1000) in the Neutron-flavoured backend that runs on FRDM. The determinism property is exercised end-to-end in section VI-C : three QEMU runs from the same input produce identical class, identical confidence, and identical LOG_INF -reported latency. 
+
+D. DSP HAL 
+
+The DSP HAL exposes five primitives in syn_hal_dsp.h :
+
+normalize_int8 , softmax_f32 , argmax , fft_f32 ,and mat_mult_q15 . The first three are exercised by the Phase 1 syn_dsp_suite and syn_dsp_verify_suite 
+
+tests; fft_f32 and mat_mult_q15 are declared in the public header but the Phase 1 backends return -ENOTSUP (the FFT and the Q15 matrix-multiply are wanted for Phase 2 audio pre-processing and classifier-head workloads respectively). Two backends mirror the NPU split: 
+
+src/hal/stub/syn_hal_dsp_stub.c for QEMU, and 
+
+src/hal/mcxn947/syn_hal_dsp_pq.c for FRDM. In Phase 1 the PowerQuad backend is byte-identical to the stub other than its LOG_INF banner; the calls into the PowerQuad block itself are marked with TODO comments and will be added in Phase 2. The softmax implementation is the textbook numerically-stable variant: the maximum input value is subtracted from every input before expf() , eliminating the floating-point overflow that a naive exp( xi)/ P exp( xj ) would produce for large |x| [ 6 ]. The Phase 1 syn_dsp_verify_suite con-firms this across three input patterns (section VI-F ): a known-monotonic input where the output ordering must match, a uni-form all-zero input where the output must approach the uniform distribution, and a large-magnitude input ( {100 , 101 , 102 })where the naive formula would overflow but the stable formula must remain finite. The normalize_int8 primitive is the affine quantisation step out = clamp [−128 ,127] (round(in · s) + 
+
+z), which is the standard TFLite Micro pre-processing path for INT8 input tensors [6]. V. M ODEL REGISTRY AND PROFILING 
+
+Two cross-cutting services sit above the memory and HAL layers. The model registry owns the lifecycle and metadata of every model known to the runtime, providing the safety guards (duplicate-name rejection, double-load detection, hot-swap) that prevent the rest of the runtime from interacting with the NPU through a corrupt or ambiguous identity. The profiler 
+
+attaches cycle-accurate timing to each pipeline stage so that latency regressions are caught at the test bench rather than in the field. A small Zephyr-shell front-end makes both services interrogable over UART without an attached debugger. 
+
+A. Model Lifecycle 
+
+A model occupies one of three states at any time: 
+
+UNREGISTERED (no slot allocated), REGISTERED (slot allocated, metadata stored), or LOADED (slot allocated and NPU has been notified). Figure 3 shows the tran-sitions. The registry is backed by a fixed-size array of 
+
+CONFIG_SYNAPTIC_MAX_MODELS slots (default 8) with a 1-based handle scheme: handle h refers to slot h − 1, and the sentinel SYN_MODEL_INVALID = 0 is reserved so that a zero-initialized handle is unambiguously invalid. UNREGISTERED REGISTERED LOADED                           
+
+> register(info) load()
+> unload() unregister()
+> unregister()
+> (auto-unloads first)
+> Error returns: register on duplicate name →-EEXIST ;
+> register when registry full →-ENOMEM ;load on already-LOADED →-EALREADY ;unload on already-unloaded →-EALREADY ;swap(old,new) when either is not
+> REGISTERED →-EINVAL .
+> Fig. 3. Model lifecycle. Each registry slot lives in exactly one of three states; transitions are precondition-checked and return the corresponding errno
+> on violation. The dashed edge from LOADED back to UNREGISTERED is implemented as an auto-unload followed by an unregister, so the registry never leaves the NPU referring to a freed slot.
+
+The lifecycle code paths enforce three guarantees:  
+
+> •
+
+Unique names. syn_model_register() scans every active slot for a name collision via strncmp and returns 
+
+-EEXIST on duplicate. Without this, a Phase 2 OTA update that flashes a new build of model X could silently shadow the old build of model X with no diagnostic.  
+
+> •
+
+Idempotent load/unload. syn_model_load() 
+
+on an already-LOADED slot returns -EALREADY 
+
+rather than attempting a redundant NPU reload; 
+
+syn_model_unload() on a non-LOADED slot does the same. Idempotency is what lets the shell-driven recovery commands in section V-C be safe to re-issue from a serial console.  
+
+> •
+
+Auto-unload on unregister. 
+
+syn_model_unregister() on a LOADED slot first calls syn_model_unload() so that the NPU is never left in an inconsistent state when its metadata vanishes from the registry. The metadata struct ( syn_model_info_t ) carries the name, semantic version string, input and output sizes and dtypes, 4-D shape arrays, flash offset and size, required SRAM footprint, and a CRC-32 of the model bytes. The CRC field is reserved for the Phase 4 OTA work and is unused in Phase 1, but appears in the public struct so that early callers can populate it without an API break. 
+
+A note on syn_model_swap .: The header ex-poses a hot-swap entry point that promotes one regis-tered model from LOADED to inactive and another from 
+
+REGISTERED to LOADED in a single call. The Phase 1 implementation is a flag-only swap — it does not call into the NPU HAL — because the model registry’s 
+
+model_data pointer is null in the hello_inference 
+
+sample (the sample registers metadata only, not bytes), and the underlying syn_hal_npu_load_model() call site in syn_model_load() is only exercised when both model_data and model_data_size are populated. Wiring the byte-carrying load path through the inference sample is Phase 2 work; until then, swap performs only the registry bookkeeping it advertises and the NPU side of the swap is a no-op. 
+
+B. Cycle-Accurate Profiling 
+
+The profiler instruments four points along the inference pipeline: start (entry), preprocess_done (immediately after the DSP normalize / quantise step), npu_done (after the NPU invoke returns), and end (after post-processing). Listing 2 reproduces the four internal entry points.      
+
+> void syn_prof_mark_start( void );
+> void syn_prof_mark_preprocess_done( void );
+> void syn_prof_mark_npu_done( void );
+> void syn_prof_mark_end( void );
+> Listing 2. Profiler mark API ( src/core/syn_prof_internal.h ).
+
+Each mark snapshots k_cycle_get_32() and computes the delta to the previous mark using 
+
+k_cyc_to_us_ceil32() , which converts cycles to microseconds using the kernel’s compile-time 
+
+CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC .
+
+mark_end() additionally pulls the arena high-water mark out of syn_mem_get_stats() and computes an NPU-utilisation percentage as ⌊100 · tnpu /t total ⌋. The four marks are no-ops when profiling is disabled, so the instrumentation has zero cost on a default release build. The public surface ( include/synaptic/syn_prof.h )exposes syn_prof_enable() ,
+
+syn_prof_disable() , syn_prof_get_last() ,and syn_prof_print_summary() , plus declarations for layer-granularity tracing (syn_prof_enable_layer_trace() ,
+
+syn_prof_get_layer_time() ) that return -ENOTSUP 
+
+in Phase 1 and will be wired in Phase 2 along with the layer-level preemption work. 
+
+Phase 1 wiring status.: The mark API exists and works in isolation, but the inference path in the 
+
+hello_inference sample does not yet call into it. As a result, syn_prof_get_last() returns -ENOENT and the shell command syn prof last reports "No profiling data available" (see the FRDM transcript in sec-tion VI-E ). The latency figures in section VI-C are therefore the outer-bracket totals only; per-stage attribution waits on the Phase 2 work of inserting the four mark calls into the 
+
+syn_infer_run() path. This is a known gap, called out here to forestall any misreading of the missing breakdown as a measurement failure. 
+
+C. Runtime Shell 
+
+The runtime registers a top-level syn command with Zephyr’s shell subsystem through SHELL_CMD_REGISTER ,with sub-commands version , mem stats , model list ,
+
+npu caps , npu state , prof last , prof enable ,and prof disable . Each sub-command reads from the corresponding service through its public API — the shell is a thin formatter, not a parallel state holder — so that any divergence between the shell output and the runtime state is impossible by construction. TABLE II EVALUATION TARGETS .                    
+
+> Parameter FRDM-MCXN947 QEMU
+> CPU Cortex-M33 @ 150 MHz Cortex-M3 (emulated) NPU backend Neutron (placeholder) Software stub SRAM (linker) 320 KB 64 KB Flash 2 MB N/A Arena size 128 KB 8 KB Shell + logging Enabled Disabled Zephyr v3.7.0 v3.7.0 Toolchain SDK 0.16.8, -Os SDK 0.16.8, -Os
+
+The practical value of the shell is on-device debugging without JTAG: on the FRDM-MCXN947, the USB-CDC bridge over the MCU-LINK debugger exposes the Zephyr shell prompt directly to a host picocom session. A developer can then verify the arena occupancy ( syn mem stats ), confirm that a registered model is in the LOADED state ( syn model list ), and check that the NPU returned cleanly to IDLE 
+
+after an inference ( syn npu state ) — all without flashing test firmware or attaching a probe. Section VI-E shows the full transcript from a real session. VI. E VALUATION 
+
+We evaluate the Phase 1 SynapticOS runtime on two targets: the NXP FRDM-MCXN947 development board (real Cortex-M33 silicon with the eIQ Neutron NPU), and the 
+
+qemu_cortex_m3 machine in QEMU (a software emulator used for continuous-integration test runs). The dual-target setup exercises the same source tree under two very different memory budgets and hardware-availability scenarios, which lets us assess both the portability of the abstraction layer and the determinism of the software fallbacks. 
+
+A. Experimental Setup 
+
+Table II summarizes the two targets. The FRDM board runs the full SynapticOS image including the Zephyr shell subsystem, log backend, and a 128 KB tensor arena reservation. The QEMU image is a CI-oriented build with shell and logging disabled and a much smaller 8 KB arena (7 KB tensor region + 1 KB scratch pool) to fit the emulator’s 64 KB SRAM budget. All builds use arm-zephyr-eabi-gcc from Zephyr SDK 0.16.8 with -Os , and link against Zephyr v3.7.0 [4]. The FRDM image links against the Neutron HAL backend (syn_hal_npu_neutron.c ). NXP rates the silicon NPU at 4.8 GOPS INT8 [ 2]; however, the Phase 1 Neutron backend currently advertises a placeholder capability of 1×10 8 OPS/s through the syn_hal_npu_get_caps() interface, pending integration of the eIQ Neutron SDK invoke path. End-to-end inference on the FRDM in this phase therefore exercises the same deterministic stub execution kernel that runs under QEMU, while still traversing the full Cortex-M33 memory bus and clock hierarchy. This is called out explicitly because it materially affects how the latency figures in section VI-C should be interpreted.                             
+
+> TABLE III BUILD FOOTPRINT (A R M -Z E P H Y R -E A B I -S I Z E ,-O S,CAPTURED
+> 2026-05-27).
+> Target text data bss Flash RAM
+> FRDM (with shell) 65,172 1,804 182,681 66,976 184,485 QEMU (no shell) 23,604 506 27,306 24,110 27,812
+> FRDM flash FRDM RAM QEMU flash QEMU RAM
+> 0
+> 50
+> 100
+> 150
+> 200
+> 26.7 23.5
+> 180.4
+> 65.4
+> Size (KB)
+> text data bss
+> Fig. 4. Build footprint comparison (KB). The FRDM image (with Zephyr shell, 128 KB tensor-arena reservation) versus the QEMU CI image (shell-less, 8 KB arena). The FRDM RAM bar is dominated by the BSS-resident tensor arena; the QEMU image fits comfortably in the emulator’s 64 KB SRAM budget. Numbers are from arm-zephyr-eabi-size (see table III).
+
+B. Build Footprint 
+
+Image sizes were measured with 
+
+arm-zephyr-eabi-size on the linked zephyr.elf ,captured on 2026-05-27 with the hello_inference 
+
+sample (table III). 2
+
+The FRDM image is dominated by the 128 KB tensor-arena reservation in BSS, the LPUART driver and Zephyr shell subsystem, the log backend, and the MCXN947 vendor HAL drivers [ 1 ]. The QEMU image omits the shell entirely and reduces the arena to 8 KB, which is sufficient for the unit tests in section VI-F and the hello_inference workload. The shell tables and command code contribute roughly 2 KB of SHELL_CMD_REGISTER entries on FRDM; a no-shell production build is straightforward and would push the FRDM image below the 65 KB flash mark. A visual comparison is shown in fig. 4. 
+
+C. Inference Latency 
+
+End-to-end inference latency was measured by bracketing the inference call in the hello_inference sample with 
+
+k_cycle_get_32() and printing the resulting interval as a LOG_INF line. The workload is a 1 × 16 × 16 × 3 INT8 input passed to the registered test_classify model with a 10-class output buffer; the underlying execution kernel is              
+
+> 2Zephyr’s link-time region report yields 183,288 B for FRDM SRAM (55.94% of the 320 KB primary region); the 1.2 KB difference versus
+> arm-size ’s 184,485 B reflects non-default sections (e.g. noinit ) that arm-size includes in the total but Zephyr’s per-region report does not. Both figures refer to the same image and agree on flash to within 4 bytes. TABLE IV END -TO -END INFERENCE LATENCY FOR A 16 ×16 ×3INT8 INPUT (10
+> CLASSES ,STUB NPU).
+> Target Latency Result (deterministic)
+> FRDM (Cortex-M33 @ 150 MHz) 1,038 μs class 0, conf. 127 QEMU (Cortex-M3, emulated) 781 μs class 0, conf. 127
+
+the deterministic NPU stub on both targets, as discussed in section VI-A. Table IV shows the measured end-to-end times. Three independent QEMU runs produced identical output (class, confidence, and timing) bit-for-bit, confirming the determinism of the stub kernel. The 257 μs FRDM/QEMU delta reflects real Cortex-M33 memory-bus and clock behaviour against QEMU’s idealised model; the inference pattern is otherwise identical. Two caveats are important for interpretation: 1) Per-stage breakdown is not yet exposed. The Phase 1 profiler ships the syn_prof_mark_start ,
+
+syn_prof_mark_preprocess_done ,
+
+syn_prof_mark_npu_done , and 
+
+syn_prof_mark_end API surface, but the inference path does not yet invoke these marks. As a result, 
+
+syn prof last returns "No profiling data available" on the board (visible in the shell transcript in section VI-E ). The 1.04 ms / 0.78 ms numbers above therefore reflect only the outer bracket; preprocess versus stub-invoke versus postprocess attribution will be reported once the marks are wired in. 2) The stub kernel is not silicon-representative. The stub performs an O(n) sum-modulo-classes pass over the input buffer to pick a winner class and then writes a single confidence byte. It is designed for CI determinism, not throughput modelling. The latencies in table IV should therefore be read as a baseline cost of the surrounding runtime (memory allocation, tensor descriptors, state-machine transitions, log output), not as a prediction of inference time on the real Neutron NPU. Real Neutron INT8 invoke times for MobileNet-class models are reported by NXP in the tens to low hundreds of microseconds [ 2]; integration is deferred to Phase 2 along with profiler wire-up. 
+
+D. Memory Allocator Performance 
+
+Allocation throughput, size invariance, and isolation properties of the arena were measured with three dedicated benchmark suites (tests/unit/test_mem_bench.c 
+
+and tests/unit/test_mem_regions.c ) running on qemu_cortex_m3 . All measurements use 
+
+k_cycle_get_32() bracketing and are reported as the average over the batch. 
+
+Throughput. For a batch of 20 single-tensor allocations of 16 bytes each, the allocator consumed 3,080 cycles in total, yielding an average of 154 cycles per allocation and           
+
+> FRDM (M33 @ 150 MHz) QEMU (M3 emulated)
+> 0
+> 500
+> 1,000
+> 1,038
+> 781
+> End-to-end latency (μs)
+> Fig. 5. End-to-end hello_inference latency for a 16 ×16 ×3INT8 input through the deterministic stub NPU kernel on both targets (see table IV). The 257 μs delta reflects real Cortex-M33 bus and clock behaviour against QEMU’s idealised emulation; per-stage breakdown is intentionally omitted because the Phase 1 profiler marks are not yet wired into the inference path (section VI-C).
+
+a throughput of 77,821 allocations per second at 150 MHz. The post-batch arena occupancy was 960 B of the 7,168 B usable region with allocation count equal to 20, confirming no accounting drift. 
+
+Size invariance. Allocating five tensors each at four different sizes (4, 16, 32, and 64 bytes) produced an identical per-allocation cost of 161 cycles in every group, confirming the 
+
+O(1) bump-pointer property of the allocator. The slight gap between 154 and 161 cycles between the two experiments is consistent with batch-size warm-up; both numbers are within instrumentation noise of the steady-state allocator path. 
+
+Zero fragmentation. A heterogeneous mix of five tensors with sizes {9, 7, 16 , 50 , 100 } bytes was allocated into a fresh arena; the reported arena_used after the batch was 432 B, exactly matching the sum of the rounded (16-byte aligned) ten-sor sizes. The peak high-water mark equalled arena_used ,and the allocation count was 5, again with no accounting drift. By construction the bump-pointer arena cannot produce internal holes between live allocations; the test exercises the bookkeeping invariant rather than attempting to defeat it. 
+
+Region isolation. The test_persistent_ephemeral _lifecycle case allocates one persistent tensor and one ephemeral tensor, calls syn_mem_reset_ephemeral() ,and verifies that the persistent tensor’s 16 bytes of payload are bit-identical to their pre-reset contents while the ephemeral region’s bump pointer has been reclaimed. A second case, 
+
+test_scratch_arena_isolation , allocates 20 tensors of 256 bytes each (saturating the tensor region) and then exercises a 256 B scratch acquire / release in the same loop; the scratch pool succeeds even with the tensor region exhausted, confirming that the two pools are independent. 
+
+End-to-end allocator behaviour on FRDM. Af-ter one inference on the board, syn mem stats re-ports Arena: 800/114688 bytes (peak 800) with 
+
+Allocations: 1 and Resets: 0 (see section VI-E ). The 
+
+arena_used value matches the sum of the live tensors with no gap, providing a runtime confirmation of the zero-fragmentation property under a realistic workload. A quantitative comparison against k_malloc and Newlib malloc under fragmenting inference workloads is intention-ally out of scope for this paper and is scheduled for the Phase 2 evaluation, where it will be paired with the zero-copy pipeline work that motivates such a comparison. 
+
+E. Shell Introspection (FRDM) 
+
+The runtime exposes its state through a small set of syn 
+
+sub-commands on the Zephyr shell. Listing 3 reproduces a live session captured over USB-CDC from the FRDM-MCXN947 immediately after the boot-time hello_inference sam-ple completes; ANSI escape sequences have been stripped for clarity but the text content is verbatim. The full raw transcript is included in the artifact repository as 
+
+community/phase1/serial-frdm-boot.log .                                                   
+
+> uart:~$ syn version SynapticOS v0.1.0 uart:~$ syn mem stats Arena: 800/114688 bytes (peak 800) Scratch: 0/16384 bytes Allocations: 1, Resets: 0uart:~$ syn model list Registered models: 1 [1] test_classify v1.0.0 (loaded) uart:~$ syn npu caps NPU: neutron Max OPS/sec: 100000000 Scratch: 16384 bytes Async: yes uart:~$ syn npu state NPU state: IDLE uart:~$ syn prof last No profiling data available uart:~$ syn prof enable Profiling enabled uart:~$ syn prof disable Profiling disabled
+> Listing 3. FRDM shell session (post-boot) showing runtime introspection commands.
+
+Three things are worth noting in this transcript. First, the runtime boots into a steady state with one model registered and loaded and the NPU resting in IDLE — the transition into and out of BUSY happens during the boot-time inference call and the shell snapshot therefore shows the post-inference resting state. Second, the arena occupancy after a real inference (800/114688 bytes ) is small enough that the unused remainder is two orders of magnitude larger than the working set, which is the headroom we expect for the significantly larger models targeted in Phase 2. Third, as noted in section VI-C ,
+
+syn prof last returns no data because the inference path does not yet invoke the profiler marks; the prof enable /
+
+prof disable commands themselves function correctly. 
+
+F. Test Coverage 
+
+The Phase 1 test suite consists of 61 ZTEST cases across 10 suites, all executed on qemu_cortex_m3 via west twister -T tests/unit -p qemu_cortex_m3 . Ta-ble V shows the per-suite breakdown. Every suite passes deterministically on the CI emulator path, with a wall-clock execution time of 6.6 s for the full 61-case run. The deterministic NPU stub (section IV) is what makes this pass rate reproducible without hardware: the same model exercise that runs on the FRDM board also runs unattended in twister with bit-identical output. The DSP verification                              
+
+> TABLE V PHASE 1TEST SUITE (Q E M U _C O R T E X _M3,CAPTURED 2026-05-27).
+> Suite Cases Pass
+> syn_mem_suite 18 18
+> syn_dsp_suite 11 11
+> syn_model_suite 99
+> syn_npu_suite 66
+> syn_dsp_verify_suite 55
+> syn_init_suite 44
+> syn_mem_bench_suite 33
+> syn_mem_regions_suite 33
+> syn_ipc_suite 11
+> syn_scheduler_suite 11
+> Total 61 61
+
+suite ( syn_dsp_verify_suite ) cross-checks each DSP primitive against an independent reference implementation — e.g. argmax against a manual scan, softmax against a numerically-stable reference that subtracts the max — on known input patterns, so that any divergence between the production PowerQuad backend (Phase 2) and the software fallback is caught at CI time rather than at integration. VII. D ISCUSSION AND FUTURE WORK 
+
+A. Phase 1 Limitations 
+
+The known gaps in the Phase 1 implementation have been called out in the sections where they matter; we collect them here so that a reader who skipped directly to the discussion has the same picture. 
+
+Stub-bracketed latency on FRDM. The 
+
+hello_inference sample on FRDM-MCXN947 traverses the deterministic stub kernel rather than the Neutron SDK invoke path (section IV-B ). The 1,038 μs figure in section VI-C is therefore the cost of the surrounding runtime — arena allocation, descriptor setup, state-machine transitions, log output — on a real Cortex-M33, not the inference time of an INT8 model on Neutron silicon. The number is useful as a baseline for the overhead the Phase 2 engine must keep under, but not as a prediction of inference throughput. 
+
+Profiler instrumentation not wired into the inference path. The four-mark profiler API (section V-B ) is implemented and exercised by unit tests but the syn_infer_run() path does not yet invoke the marks. The shell command syn prof last consequently returns "No profiling data available" , and table IV reports only the outer bracket. Per-stage attribution (preprocess vs. invoke vs. postprocess) is a one-day job once the inference path lands; it is grouped with the Phase 2 engine work for sequencing reasons. 
+
+Capability mismatch on the Neutron backend. 
+
+syn_hal_npu_get_caps() on the Neutron backend reports supports_async = true , but 
+
+syn_hal_npu_invoke_async() returns -ENOTSUP 
+
+because the completion interrupt is not yet wired (section IV-B ). The shell will display “Async: yes” on syn npu caps 
+
+while an actual async invoke would fail. Two acceptable Phase 2 fixes exist: wire the interrupt (preferred) or demote the capability flag until it is wired. The same backend also reports an max_ops_per_sec placeholder of 10 8 pending Neutron SDK integration; the silicon’s NXP-rated headroom is approximately two orders of magnitude higher [2]. 
+
+Model lifecycle is flag-driven in Phase 1. syn_model_load() only calls 
+
+syn_hal_npu_load_model() when the registry slot’s 
+
+model_data pointer is non-null; the hello_inference 
+
+sample registers metadata only and so exercises only the flag-level load (section V-A ). Hot-swap ( syn_model_swap() )is similarly flag-level. Wiring the byte-carrying load path through the boot sample is the first step of the Phase 2 pipeline construction work. 
+
+Unimplemented DSP primitives. 
+
+syn_hal_dsp_fft_f32() and 
+
+syn_hal_dsp_mat_mult_q15() are declared in 
+
+syn_hal_dsp.h and return -ENOTSUP in Phase 1(section IV-D ). FFT is wanted for Phase 2 audio pre-processing; the Q15 matrix-multiply is wanted for classifier-head workloads on the PowerQuad backend. 
+
+Lifetime enum gap. SYN_MEM_SHARED is declared in 
+
+syn_mem.h but the Phase 1 allocator (section III-C ) treats it identically to SYN_MEM_EPHEMERAL . The intended seman-tics — placement in a region accessible to both Cortex-M33 cores for IPC — become meaningful in Phase 3 when the second core’s stack and message queues come online. 
+
+No malloc-vs-arena comparison. The allocator results in section VI-D measure the arena’s own behaviour but do not quantify the win against k_malloc or Newlib malloc under fragmenting inference workloads. A quantitative comparison under a realistic Phase 2 workload (TFLM-driven, multi-tensor) is the right place for that experiment. 
+
+Single-vendor evaluation. Phase 1 ships and is measured on exactly one piece of silicon (NXP MCXN947) plus the QEMU emulator. The HAL is structured for portability to ST, Renesas, Espressif, and Arm-Ethos-U targets, but those backends do not yet exist. We discuss this further below. 
+
+B. Roadmap 
+
+The five remaining phases of the project, in order: 
+
+Phase 2 — Inference engine (in progress). Replace the stub kernel with real TFLite Micro integration on top of the existing memory and HAL surfaces; build zero-copy preprocess–invoke– postprocess pipelines; add a job scheduler with layer-granularity preemption points; ship the real Neutron SDK invoke path and the real PowerQuad-accelerated DSP backend; wire the profiler marks. A face-detection sample on FRDM serves as the Phase 2 acceptance gate. 
+
+Phase 3 — Dual-core IPC and asymmetric multipro-cessing. The MCXN947 has two Cortex-M33 cores. The Phase 3 work brings up the second core, defines an asymmetric scheduling model (inference-heavy core vs. application-and-shell core), and makes SYN_MEM_SHARED meaningful by placing tensors and message queues in the shared SRAM region. Pre-emption decisions become cross-core decisions. 
+
+Phase 4 — OTA model updates and A/B flash manage-ment. The crc32 field in syn_model_info_t becomes load-bearing here. We need an OTA download path, a two-slot flash layout for safe rollback, and a model-versioning policy that lets a running inference finish on the old weights before the new ones take over. 
+
+Phase 5 — Production hardening and fault recovery. 
+
+The ERROR state in the NPU HAL becomes reachable from realistic failure modes (NPU watchdog, ECC error on weight SRAM, PowerQuad fault), and the runtime needs a recovery policy: which state to return to, how to surface the fault to the application, how to log it for post-mortem analysis. Includes hardening of the boot path against partial-flash conditions. 
+
+Phase 6 — Ecosystem and v1.0. Additional backends (Ethos-U, ST X-CUBE-AI, Espressif), a Python-side model-packaging tool, an open-source benchmark suite tracking the arena and latency numbers against a fixed reference set, and an extended developer documentation pass for the v1.0 release. 
+
+C. Broader Considerations 
+
+Two observations beyond the immediate roadmap are worth recording. 
+
+The MCU-NPU class is wider than one vendor. The choice of MCXN947 for Phase 1 was driven by board availability and the maturity of the Neutron NPU’s documentation, not by any expectation that Neutron will dominate the segment. The syn_hal_npu.h surface in section IV-A is deliberately small enough that an Ethos-U or ST Edge-AI backend is a few-hundred-line addition rather than a runtime rewrite; the limiting factor on getting a second backend up is access to silicon, not interface design. We invite contributions on this axis from groups with access to other hardware. 
+
+Open-source as a precondition for trust. Edge AI runtimes are an unusually awkward target for closed-source distribution: their performance and memory behaviour are sensitive to the application’s model topology and call pattern in ways that make benchmark numbers in a vendor PDF unreliable as guidance. By shipping the SynapticOS runtime under Apache 2.0 with the unit-test suite, the QEMU build, and the FRDM serial-transcript artifacts included, we aim to make the Phase 1 claims independently reproducible end-to-end — both as a matter of academic responsibility and as a precondition for the project being adopted by other groups. The artifact bundle accompanying this paper includes the raw serial log and the twister output that the section VI numbers were extracted from. VIII. C ONCLUSION 
+
+We presented SynapticOS, an open-source runtime built on Zephyr RTOS that treats neural-network inference as a first-class workload rather than an application-layer concern. The Phase 1 foundation reported here consists of four cooperating subsystems: a tensor-aware bump allocator with persistent and ephemeral lifetimes that achieves O(1) allocation at ∼154 cycles per call with zero fragmentation by construction; a four-state HAL for NPU and DSP accelerators implemented by both a deterministic software stub (QEMU) and a Neutron-flavoured backend (FRDM-MCXN947); a three-state model lifecycle registry with duplicate-name detection, idempotent load/unload, and hot-swap; and a four-mark cycle-accurate profiler backed by the Zephyr cycle counter. On the NXP FRDM-MCXN947 dev board, the runtime occupies 67 KB of flash and 184 KB of SRAM with the Zephyr shell enabled and a 128 KB tensor arena reserved; the no-shell, 8 KB-arena QEMU build for continuous integration occupies 24 KB of flash and 28 KB of SRAM. The end-to-end 
+
+hello_inference bracket measures 1,038 μs on FRDM silicon and 781 μs under QEMU through the deterministic stub kernel — a baseline for the Phase 2 inference engine to come in under, not a prediction of Neutron silicon throughput. A 61-test suite spanning 10 ZTEST suites achieves a 100% pass rate in 6.6 s on the CI emulator path. The Phase 1 surface is the floor under the work that follows: Phase 2 replaces the stub kernel with TFLite Micro on top of the real Neutron SDK invoke path, wires the profiler marks into the inference pipeline, and adds layer-granularity preemption; later phases bring dual-core asymmetric scheduling, OTA model updates, production-grade fault recovery, and additional vendor backends. All the gaps named in section VII-A have an explicit phase assignment. SynapticOS, the unit-test suite, the raw QEMU and FRDM measurement artifacts, and the LaTeX sources of this paper are released under the Apache 2.0 licence at https://github.com/ Dimitrios-Kafetzis/SynapticOS. REFERENCES [1] NXP Semiconductors, “MCX N947 reference manual,” Document MCXNX4XRM, Rev. 5, 2024. [2] ——, “eIQ Neuton NPU technical brief,” Document MCXNNPUTB, 2024. [3] Arm, “Ethos-U55 Neural processing unit technical reference manual,” 2024. [4] Zephyr Project, “Zephyr RTOS,” https://zephyrproject.org, 2024, version 3.7.0 LTS. [5] Amazon Web Services, “FreeRTOS real-time operating system,” https: //www.freertos.org, 2024. [6] R. David, J. Duke, A. Jain, V. Janapa Reddi, N. Jeffries, J. Li, N. Kreeger, I. Nappier, M. Natraj, S. Regev, R. Rhodes, T. Wang, and P. Warden, “TensorFlow Lite Micro: Embedded machine learning on TinyML systems,” in Proceedings of Machine Learning and Systems (MLSys) ,2021. [7] Arm, “CMSIS-NN: Efficient neural network kernels for Arm Cortex-M cpus,” https://github.com/ARM-software/CMSIS-NN, 2023. [8] T. Chen, T. Moreau, Z. Jiang, L. Zheng, E. Yan, M. Cowan, H. Shen, L. Wang, Y. Hu, L. Ceze, C. Guestrin, and A. Krishnamurthy, “TVM: An automated end-to-end optimizing compiler for deep learning,” in 
+
+USENIX OSDI , 2018. [9] C. Banbury, V. J. Reddi, P. Torelli, J. Holleman, N. Jeffries, C. Kiraly, P. Montino, D. Kanter, S. Ahmed, D. Pau et al. , “MLPerf Tiny benchmark,” in Conference on Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2021. [10] J. Gregory, Game Engine Architecture , 3rd ed. CRC Press, 2018. [11] M. Tofte and J.-P. Talpin, “Region-based memory management,” in 
+
+Information and Computation , vol. 132, no. 2, 1997, pp. 109–176. [12] Microsoft, “ONNX Runtime: cross-platform, high performance ML inferencing and training accelerator,” https://onnxruntime.ai, 2024. [13] Apache TVM, “TVM device API,” https://tvm.apache.org/docs/arch/ device_target_interactions.html, 2024. [14] Google, “Android Neural Networks API,” https://developer.android.com/ ndk/guides/neuralnetworks, 2024. [15] P. R. Wilson, M. S. Johnstone, M. Neely, and D. Boles, “Dynamic storage allocation: A survey and critical review,” in International Workshop on Memory Management (IWMM) , 1995, pp. 1–116.

@@ -1,0 +1,506 @@
+Title: Inference Pipelines as Operating-System Objects: Priority Scheduling and Constant-Footprint Streaming for Microcontroller Neural Inference
+
+URL Source: https://arxiv.org/pdf/2607.12614v1
+
+Published Time: Wed, 15 Jul 2026 11:56:24 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Inference Pipelines as Operating-System Objects: Priority Scheduling and Constant-Footprint Streaming for Microcontroller Neural Inference 
+
+Dimitrios Kafetzis 
+
+SynapticOS Project, Hamburg, Germany 
+
+Abstract —Microcontroller runtimes that host neural-network inference treat the inference pipeline — pre-processing, accelerator invocation, post-processing — as application code: every project re-implements stage sequencing, intermediate-buffer sizing, and completion signalling around a library call. We argue these are operating-system concerns, and present the Phase 2 inference engine of SynapticOS, an open-source runtime built on Zephyr, which makes the pipeline itself a first-class OS object. A pipeline is drawn from a static pool, validated at build time against a canonical stage ordering, and executed by a priority job scheduler (REALTIME > NORMAL > BEST -EFFORT , FIFO within class) with per-job completion semaphores, cancellation, and a bounded job table — no heap allocation anywhere on the inference path. Stage buffers are planned size-aware: exact capacities are computed from stage configuration and runtime tensor geometry for the nine built-in processors, with a bounded 4× worst-case fallback for user-supplied stages. Because every intermediate lives in an ephemeral arena region that is reset per frame, streaming workloads run at constant memory footprint. We evaluate on the NXP FRDM-MCXN947 (Cortex-M33 at 150 MHz) and on the qemu_cortex_m3 continuous-integration target, with the model stage executing a deterministic stub NPU kernel on both — honest engine-overhead baselines, not silicon throughput. On the board, the full scheduler path costs 92 μs of wall time over the Phase 1 direct-HAL bracket (1,130 vs. 1,038 μs), of which dispatch inside the profiled window is 1 μs; a 30-frame face-detection pipeline (resize, normalize, quantize, model, decode, non-maximum suppression) averages 4.63 ms per frame (215.8 FPS, stub model stage included) against 31.1 ms under QEMU soft-float, at a constant 2,784-byte arena peak that returns to zero after every frame with zero fragmentation by construction. The MCXN947’s PowerQuad DSP is routed and self-calibrated for FFT and Q15 matrix multiply; measured end-to-end speedups over the software kernels are 5.51 × (256-point FFT) and 1.66 ×
+
+(16 ×16 matmul) with all wrapper costs included — short of the phase plan’s ≥10 × target, which we report as missed and analyse rather than re-scope. Stage-level profiling fires at pipeline stage boundaries, closing a known Phase 1 gap, live on the board. The engine adds 3.8 KB of flash to the QEMU build and 20.7 KB to the FRDM build (shell, PowerQuad routing, and calibration/bench harness included). A 99-test suite across 13 ZTEST suites passes 100% under emulation. SynapticOS is released under Apache 2.0 at https://github.com/Dimitrios-Kafetzis/SynapticOS. 
+
+Index Terms —real-time operating systems, inference pipelines, priority scheduling, neural processing units, edge AI, TinyML, embedded systems 
+
+I. I NTRODUCTION 
+
+The previous paper in this project [ 1] made the case that a microcontroller with an on-die neural processing unit (NPU) deserves an operating system that treats inference as a first-class workload, and delivered the foundation for one: a tensor-aware bump allocator with persistent and ephemeral lifetimes, a four-state NPU hardware-abstraction layer with a deterministic software stub, a model-lifecycle registry, and a cycle-accurate profiling surface, all running on Zephyr [ 2 ] on the NXP FRDM-MCXN947 [ 3 ]. That foundation deliberately stopped below the inference engine: it could allocate a tensor and invoke an accelerator, but the code that turns a camera frame into a classification — resize, normalize, quantize, invoke, decode, suppress — remained, as it does on every production MCU stack today, application code. This paper is about moving that code into the operating system. On the dominant stacks — Zephyr or FreeRTOS hosting TensorFlow Lite Micro [ 2 ], [ 4], [ 5 ] — an inference pipeline exists only as a convention in the application: the developer calls the pre-processing routines in the right order, sizes each intermediate buffer by hand against the worst case, invokes the interpreter, and arranges completion signalling and prioritisation with raw RTOS primitives if more than one model or more than one client is involved. Each of these steps is a recurring, structurally identical problem, and each has a failure mode that is discovered late: mis-ordered stages produce silently wrong tensors, undersized intermediates corrupt memory or fail at the worst moment, and ad-hoc completion signalling is where concurrency bugs live (section VIII-A documents one we found in our own engine). 
+
+A. Pipelines as OS Objects 
+
+Our position is that the inference pipeline has the same claim to OS citizenship that files, sockets, and threads have: it is a recurring workload structure with invariants that the system can check and resources that the system can plan. Concretely, three observations drive the Phase 2 design: 1) Pipelines have a checkable shape. Real inference pipelines are a chain: zero or more pre-processing stages, exactly one model invocation, zero or more post-processing stages. An OS object can enforce that ordering at construction time and validate completeness before first use, converting a class of silent data-corruption bugs into immediate -EINVAL returns. 2) Stage buffers are plannable. For built-in processing stages, the exact output size is a closed-form function of the stage configuration and the runtime input geometry (12 ×12 ×3 bytes for a resize to 12 ×12 over 3 channels; arXiv:2607.12614v1 [cs.OS] 14 Jul 2026 4× the element count for a uint8-to-float32 normalize). The engine can therefore allocate exact-fit intermediates from the ephemeral arena and reserve a bounded worst case only for stages it cannot see inside. 3) Inference completion is a scheduling event, not a callback convention. Once jobs from multiple clients target one accelerator, someone must decide dispatch order, expose completion, and define cancellation. Doing this once, in the OS, with a bounded job table and per-job semaphores, is cheaper and safer than every application growing its own queue. 
+
+B. Contributions 
+
+Building on the Phase 1 memory, HAL, registry, and profiling subsystems [1], this paper contributes: 1) A pipeline-as-OS-object abstraction (section III): a con-struction API over a static pipeline pool with canonical stage ordering enforced at add-time, build-time validation, and a worst-case memory estimate computed before first execution. 2) Size-aware stage-buffer planning (section III-B ): exact output capacities computed from stage configuration plus runtime tensor geometry for the nine built-in processors, with a bounded 4× fallback (64-byte floor) for custom stages, all served from the Phase 1 ephemeral arena. 3) A priority job scheduler for inference on a single MCU core (section IV): three priority classes with FIFO ordering within a class, a dedicated scheduler thread, per-job completion semaphores, cancellation semantics, and a bounded job table — no heap allocation on the submission or completion path. 4) Constant-footprint streaming (section VI-A ): per-frame ephemeral-arena reset gives zero fragmentation across unbounded frame counts; the face-detection demo sus-tains 30 frames at a constant 2,784-byte arena peak — measured on the board — that returns to zero after every frame. 5) Live stage-level profiling (section VI-B ): the Phase 1 four-mark profiler is now driven at pipeline stage bound-aries, closing the “ syn prof last returns no data” gap reported in the Phase 1 paper; when profiling is disabled at runtime the marks reduce to four early-return branch tests per inference. 6) An honest-baseline evaluation (section VII) continuing the Phase 1 methodology: all timing runs through the deterministic stub NPU are labeled as engine-overhead baselines, the engine’s own cost is isolated from model latency, and the one phase acceptance criterion the measurements did not meet — the ≥10 × PowerQuad speedup target, measured at 5.51 × and 1.66 × with wrapper costs included — is reported as missed and analysed (sections VII-E and VIII-B ) rather than re-scoped. The engine is roughly 1,700 lines of new C (pipeline and scheduler core, nine processors, and the shared software DSP kernels) behind the frozen Phase 1 public headers plus one new header ( syn_process.h ) for stage configuration structures. 
+
+C. Scope 
+
+This paper reports the Phase 2 engine as validated on the 
+
+qemu_cortex_m3 continuous-integration target and live on the FRDM-MCXN947 board (transcripts captured 2026-07-12; released as v0.2.0). Three boundaries matter for interpretation. First, the model stage executes the deterministic stub NPU ker-nel inherited from Phase 1 [ 1], not the eIQ Neutron silicon [ 6 ]; every latency number is an engine-overhead baseline, not a throughput claim. The PowerQuad DSP numbers, by contrast, are real hardware. Second, the PowerQuad measurement came in below the phase plan’s acceptance target, and we treat that result as a finding to analyse (section VII-E ), not a blank to defer. Third, two scheduler parameters ( deadline_us ,
+
+preemptible ) are accepted and recorded but not yet acted on: deadline-aware dispatch and layer-granularity preemption are Phase 3 work (section VIII-B). 
+
+D. Paper Organisation 
+
+Section II positions the pipeline and scheduler against existing MCU inference runtimes. Section III presents the pipeline object and its size-aware buffer planning; section IV the priority scheduler; section V the built-in processors and software DSP kernels; section VI constant-footprint streaming and the profiling wire-up. Section VII evaluates footprint, latency, streaming behaviour, and test coverage; section VIII discusses a scheduler race caught by the test suite, limitations, and the roadmap. Section IX concludes. II. R ELATED WORK 
+
+The Phase 1 paper [ 1] surveyed the OS-level landscape — RTOS hosts for embedded AI, tensor memory managers, and accelerator HALs — and we do not repeat that survey here. This section focuses on the two questions Phase 2 answers: who owns the pipeline , and who owns the dispatch decision ,in existing MCU inference stacks. 
+
+A. Pipeline Ownership 
+
+TensorFlow Lite Micro [ 5] owns the graph inside the model boundary: operators within a .tflite flatbuffer are sequenced by the interpreter, and their intermediates are planned in the interpreter’s arena. Everything outside that boundary — resizing and normalising the camera frame, quantising to the input scale, decoding output tensors to boxes, non-maximum suppression — is application code with hand-sized buffers. The same split holds for ExecuTorch [ 7 ], whose ahead-of-time-planned runtime is similarly scoped to the model graph, and for 
+
+μTVM [ 8], which compiles the graph to straight-line C with statically planned tensors but leaves pre- and post-processing to the caller. CMSIS-NN and CMSIS-DSP [ 9], [ 10 ] sit one layer lower still: libraries of kernels that callers wire together by hand, with caller-supplied buffers and no runtime notion of a pipeline at all. SynapticOS inverts the boundary: the OS object spans the 
+
+whole pipeline, from raw sensor tensor to application-level result, with the model invocation as one stage among several. This is what lets the engine do end-to-end buffer planning (section III-B ) — the intermediates that TFLM cannot see, because they live outside the flatbuffer, are exactly the ones our built-in stages describe in closed form. The two designs are complementary rather than competing: a TFLM interpreter invocation is a natural implementation of our model stage, and remains the planned integration path (section VIII-C). 
+
+B. Dispatch Ownership 
+
+TFLM’s interpreter is single-threaded and synchronous by design; the project’s own guidance for concurrent workloads is to serialise access externally or instantiate one interpreter per thread. In practice, production Zephyr and FreeRTOS deployments wrap inference in one of two idioms: submit closures to a system work queue, or dedicate a thread per model and mediate with queues and semaphores. Both idioms re-derive, per application, the questions a scheduler answers once: in what order do competing requests run, how is completion exposed, and what does cancellation mean. The work-queue idiom is the closest structural relative of our scheduler, and its known sharp edges motivated our departures from it. A Zephyr work queue executes work items strictly FIFO at a single thread priority — there is no notion that a wake-word inference matters more than a background telemetry classification. Prioritisation requires multiple queues at different thread priorities, at one thread stack each, and cancellation of an already-running item is undefined. Our scheduler keeps the single dedicated thread (one stack, one context) but adds a priority-aware pick over a bounded job table (REALTIME > NORMAL > BEST -EFFORT , FIFO within class), per-job completion semaphores, and defined cancel semantics (section IV-A ). Classical real-time theory offers the next steps up this ladder — deadline-driven ordering is well understood since Liu and Layland [ 11 ] — and the job parameters already carry deadline_us and preemptible fields for exactly that evolution, but we deliberately ship the simpler priority-class scheduler first and report the fields as inert (section VIII-B). On application processors, ONNX Runtime [ 12 ] and similar runtimes do own scheduling across execution providers, with thread-pool parallelism and inter-op concurrency; as with their memory and dispatch machinery, the footprint and threading assumptions do not transfer to a Cortex-M budget. MLPerf Tiny [ 13 ] measures exactly the class of workload we target but is silent on scheduling: its harness runs one model in isolation, which is precisely the situation where pipeline-and-scheduler machinery looks unnecessary — until a second model, or a second client, arrives. 
+
+C. Streaming Memory Behaviour 
+
+Region- and arena-based memory management is long-established folklore [ 14 ], and the Phase 1 paper [ 1] positioned the SynapticOS arena against TFLM’s interpreter-owned arena in detail. Phase 2 adds the streaming claim: because every pipeline intermediate is an ephemeral-arena tensor and the application resets the ephemeral region at frame boundaries, per-frame memory behaviour is identical across unbounded frame counts — the sawtooth in fig. 3 rather than the monotonic creep or fragmentation-driven failure that a general-purpose heap invites. TFLM achieves a comparable steady state within one interpreter invocation by re-planning the same arena offsets each invoke; our version extends the property across the whole pipeline, including the stages TFLM does not see, and makes the reset an explicit, application-visible lifecycle event with an observable statistic ( syn mem stats reporting the peak and the return to zero). III. T HE PIPELINE OBJECT 
+
+A SynapticOS pipeline is an ordered chain of stages — zero or more pre-processors, exactly one model invocation, zero or more post-processors — owned and validated by the runtime. Listing 1 reproduces the construction API from the frozen Phase 1 header syn_infer.h ; the Phase 2 work reported here is the implementation behind it.                     
+
+> syn_pipeline_t *syn_pipeline_create( const char *name );
+> int syn_pipeline_add_preprocess(syn_pipeline_t *pipe ,syn_preprocess_fn_t fn,
+> void *config);
+> int syn_pipeline_add_model(syn_pipeline_t *pipe, syn_model_handle_t model);
+> int syn_pipeline_add_postprocess(syn_pipeline_t *pipe, syn_postprocess_fn_t fn,
+> void *config);
+> int syn_pipeline_build(syn_pipeline_t *pipe);
+> void syn_pipeline_destroy(syn_pipeline_t *pipe);
+> Listing 1. Pipeline construction API (include/synaptic/syn_infer.h , frozen).
+
+A. Static Pool and Construction Invariants 
+
+Pipelines are drawn from a static pool of four slots — con-sistent with the no-heap discipline of the Phase 1 allocator [ 1], nothing on the inference path ever touches a general-purpose heap. syn_pipeline_create() claims a slot under the engine mutex and returns NULL on pool exhaustion. Every subsequent handle crossing the API boundary is validated by range (the pointer must lie inside the pool) and by liveness (the slot’s in_use flag), so a stale or forged handle fails fast instead of corrupting engine state. Two invariants are enforced at add-time rather than at build time, so the failing call itself returns the error:  
+
+> •
+
+Canonical ordering. A pre-processor added after the model stage, or a post-processor added before it, is rejected with -EINVAL and a log line naming the pipeline. The accepted grammar is exactly pre ∗ model post ∗. 
+
+> •
+
+Single model stage. A second 
+
+syn_pipeline_add_model() returns -EALREADY ;multi-model graphs are out of scope for this phase (section VIII-B ). The model handle itself is checked against the Phase 1 registry at add-time, so a dangling handle is caught before the pipeline can be built. Stage capacity is bounded by CONFIG_SYNAPTIC_MAX_ PIPELINE_STAGES (default 8, range 4–16), and a built TABLE I EXACT OUTPUT CAPACITIES FOR BUILT -IN STAGES , COMPUTED FROM STAGE CONFIG AND RUNTIME INPUT GEOMETRY (n = INPUT PAYLOAD BYTES ).                                                   
+
+> Stage Output capacity (bytes)
+> image_resize w·h·c(config w, h ; input channels c)
+> image_normalize n·4(uint8/int8 →float32)
+> quantize_int8 n/ 4(float32 →int8)
+> audio_mfcc ⌊n/ 4F⌋ · C·4(frame len F, coeffs C)
+> softmax nif float32 input, else n·4
+> argmax 8 (one syn_classification_t )
+> top_k k·8(config k)
+> nms n(kept boxes ⊆candidates)
+> dequantize n·4(int8 →float32)
+
+pipeline is immutable: further stage additions return -EPERM 
+
+until the pipeline is destroyed. Destruction returns the slot to the pool after cancelling any jobs still queued against the pipeline (each such job completes with -ECANCELED through the normal completion path, so no waiter deadlocks on a destroyed pipeline). 
+
+syn_pipeline_build() validates completeness (a model stage must be present), then walks the stage chain to compute a worst-case memory estimate: the model’s declared SRAM requirement plus the worst-case capacity of every intermediate buffer the chain will allocate (using the 4× rule of section III-B and the model’s declared output size). The estimate is logged at build time — the hello_inference 
+
+transcript in section VII-C shows est. 4106 bytes for a single-stage pipeline over a model declaring 4,096 B of SRAM and a 10-byte output — and gives the application a pre-execution answer to “will this pipeline fit the arena?” that today’s hand-wired stacks can only discover by running out of memory. 
+
+B. Size-Aware Stage-Buffer Planning 
+
+Every stage writes its output into a fresh ephemeral-arena tensor allocated by the engine immediately before the stage runs. The planning question is the capacity of that tensor, and the engine answers it at two levels of knowledge. 
+
+Exact capacities for built-in stages. When the stage function is one of the nine built-in processors (section V), the engine computes the exact output size from the stage configuration and the runtime geometry of the incoming tensor. Table I lists the closed forms. The resize capacity, for example, is w · h · c bytes with w×h from the stage config and the channel count c read from the incoming tensor’s last dimension at execution time — the plan adapts to the actual input rather than a declared worst case. 
+
+Bounded fallback for custom stages. A stage function the engine does not recognise gets max(4 n, 64) bytes, where 
+
+n is the input payload size. The 4× factor covers the worst legal expansion in the type system (a 1-byte-per-element tensor promoted to float32); the 64-byte floor keeps degenerate inputs (an argmax result feeding a custom stage) from receiving unusably small buffers. The fallback is deliberately a bound ,not a guess: a custom stage that needs more than 4× must claim its own memory, and the engine’s estimate stays conservative rather than optimistic. 
+
+The model-feed guarantee. Whichever rule produced the capacity, the stage that feeds the model stage is additionally raised to the model’s declared input size, so a pre-processing chain can never hand the accelerator a short buffer. In the face-detection pipeline this rule is a no-op (the quantize output is exactly the model input size); it exists for chains whose final pre-processor legitimately shrinks data below the declared input. 
+
+The stage-buffer convention. Stage functions receive the planned capacity in out->size and must set the final geome-try — shape , ndim , dtype , size — before returning. This convention does double duty: the capacity check inside each built-in stage converts a planning bug into -ENOMEM at the offending stage (with a log line naming the shortfall) rather than a buffer overrun, and the final geometry lets the next stage plan against actual rather than worst-case dimensions. Stage outputs, including the pipeline’s final result, live in the ephemeral arena region and remain valid until the application calls 
+
+syn_mem_reset_ephemeral() — the lifecycle contract that section VI-A builds streaming on. Figure 1 shows the face-detection pipeline as built, with the planned capacity of each intermediate. IV. T HE PRIORITY JOB SCHEDULER 
+
+Execution is decoupled from construction: a built pipeline is submitted as a job , and a dedicated scheduler thread decides what runs next. Figure 2 shows the architecture; listing 2 the submission API.                                    
+
+> typedef struct {syn_priority_t priority; /* RT >NORMAL >BE */
+> uint32_t deadline_us; /* recorded; Phase 3*/
+> bool preemptible; /* recorded; Phase 3 */
+> syn_infer_cb_t callback;
+> void *user_data; }syn_infer_params_t; syn_job_id_t syn_infer_submit(syn_pipeline_t *pipe,
+> const syn_tensor_t *input,
+> const syn_infer_params_t *params);
+> int syn_infer_wait(syn_job_id_t job, uint32_t timeout_ms);
+> int syn_infer_cancel(syn_job_id_t job);
+> int syn_infer_get_result(syn_job_id_t job, syn_tensor_t *output);
+> Listing 2. Job submission API and parameters ( syn_infer.h , frozen).
+
+A. Bounded Job Table 
+
+Jobs live in a fixed table of CONFIG_SYNAPTIC_MAX_ CONCURRENT_JOBS slots (default 2, range 1–4). A slot carries the job’s state machine ( FREE → QUEUED → RUN - 
+
+> NING
+
+→ DONE /ERROR /CANCELLED → FREE ), the submission parameters, a monotonic sequence number, the result tensor descriptor, and a per-job completion semaphore. Submission pipeline object (stages sequenced and buffers planned by the engine; intermediates in the ephemeral arena) 
+
+frame  
+
+> 24 ×24 ×3u8
+
+resize  
+
+> →12 ×12 ×3
+
+normalize   
+
+> u8 →f32
+
+quantize   
+
+> f32 →i8
+
+model 
+
+> stub NPU
+
+decode 
+
+> app code
+
+NMS         
+
+> built-in
+> 1728 B 432 B 1728 B 432 B 64 B boxes
+> Fig. 1. The face_detection pipeline as built. Solid boxes are engine-owned stages; dashed boxes are application code (the frame source and the model-specific box decoding, after which the application invokes the built-in NMS directly). Arrow labels give the exact stage-buffer capacities planned from stage configuration and runtime tensor geometry (table I); the model output is raised to the 64-byte floor. All intermediates are ephemeral-arena tensors reclaimed by the per-frame reset.
+
+client A 
+
+> submit(RT)
+
+client B   
+
+> submit(BE)
+> slot 0: QUEUED RT, seq 7
+> slot 1: QUEUED BE, seq 6
+> bounded job table (no heap)
+
+scheduler thread 
+
+> pick: prio desc, seq asc (FIFO)
+
+execute pipeline 
+
+> stages in order
+
+snapshot under lock 
+
+> cb, id, output
+
+callback 
+
+> from snapshot
+
+k_sem_give     
+
+> waiter resumes
+> order is load-bearing
+> Fig. 2. Scheduler architecture. Submissions claim slots in a bounded job table; a dedicated thread picks the highest-priority queued job (FIFO within class) and executes its pipeline non-preemptively. Completion snapshots the callback context under the engine mutex, fires the callback from the snapshot, and gives the per-job semaphore last — the ordering whose violation section VIII-A dissects.
+
+takes the engine mutex, checks the count of QUEUED -plus- 
+
+> RUNNING
+
+jobs against a runtime-adjustable concurrency cap (syn_infer_set_max_concurrent() ), claims a free slot, and wakes the scheduler — constant work, no allocation. Job IDs are 32-bit, monotonically assigned, and skip the reserved invalid value on wrap-around; lookups match IDs only against non-free slots, so a stale ID for a recycled slot returns -ENOENT rather than aliasing the new occupant. A completed job’s slot is held until the client consumes the outcome with syn_infer_get_result() , which returns the output descriptor (for DONE ), the error (for ERROR ), or -ECANCELED , and only then frees the slot. This makes result delivery reliable at the cost that a client who abandons a job leaks a slot until the table’s bound is felt — adeliberate trade documented with the API, and the reason 
+
+syn_infer_run_sync() consumes the slot even on time-out. 
+
+B. Dispatch Policy 
+
+The scheduler thread blocks on a wake semaphore, then selects the QUEUED job with the highest priority class, breaking ties by lowest sequence number: strict priority across classes (REALTIME > NORMAL > BEST -EFFORT ), FIFO within a class. With a job table of at most four slots the O(slots ) linear scan is cheaper than any queue structure worth maintaining. Dispatch is non-preemptive : priority governs which job starts next, and a REALTIME arrival overtakes any queued BEST - 
+
+> EFFORT
+
+job, but it does not interrupt one that is already running. The worst-case priority inversion is therefore one pipeline execution, which is acceptable at Phase-2 job granularity and is precisely what the recorded-but-inert preemptible flag and the layer-granularity preemption work in Phase 3 are scoped to fix (section VIII-B ). For the same reason, “concurrent” jobs are concurrent in submission but serialised in execution: one scheduler thread executes one pipeline at a time on the single Cortex-M33 core, and the concurrency cap bounds queue depth, not parallelism. The scheduler runs in a dedicated 2 KB-stack thread at preemptible Zephyr priority 8, rather than on the system work queue. Section II-B gives the comparative rationale; the operational reasons are that inference latency should not inherit head-of-line blocking from unrelated system work items, and that a single well-known thread makes the engine’s CPU share visible and tunable through the standard Zephyr thread analyser rather than smeared across work-queue callbacks. 
+
+C. Completion Protocol 
+
+Completion crosses from the scheduler thread to the client through two channels: an optional callback and the per-job semaphore, in that order. After the pipeline returns, the scheduler takes the engine mutex, records the result, moves the job to DONE /ERROR , and — critically — snapshots the callback pointer, user data, job ID, and output descriptor into locals before releasing the mutex. The callback then fires from the snapshot, and only afterwards is the semaphore given. The ordering is load-bearing. The semaphore give is the moment a blocked waiter can resume, consume the result, and resubmit — at which point the slot may be reinitialised for a new job. Firing the callback before the give, and from a snapshot rather than from the slot, guarantees the callback observes the job it belongs to. Our first implementation gave the semaphore first and read the slot afterwards, and the test suite caught the resulting slot-reuse race deterministically; section VIII-A reconstructs that bug in full as a case study. Cancellation is defined by job state: a QUEUED job is marked CANCELLED and its semaphore given (waiters observe 
+
+-ECANCELED ); a RUNNING job returns -EBUSY (nothing interrupts an executing pipeline); a finished job returns -EALREADY . Destroying a pipeline cancels its queued jobs through the same path (section III-A). 
+
+D. Synchronous Convenience Path 
+
+syn_infer_run_sync() packages the common one-model-no-stages case: it creates a transient pipeline (named 
+
+run_sync in the engine’s build-time log line), builds it, submits at the caller’s priority, waits with a 5-second bound, copies the result into a caller buffer if one is supplied (or hands back the arena descriptor if not), and destroys the pipeline. It is the path the hello_inference sample and the syn infer run shell command use, and — because it includes pipeline create, build, and destroy in every call — it is also the worst case for engine overhead, which is exactly why section VII-C measures it. V. B UILT -IN PROCESSORS AND DSP K ERNELS 
+
+The size-aware planning of section III-B works because the engine ships the stages that real pipelines are made of. Phase 2 provides nine built-in processors — four pre-processors and five post-processors — plus the two software DSP kernels (FFT and Q15 matrix–vector multiply) that were declared in the Phase 1 DSP HAL but returned -ENOTSUP until now [ 1]. 
+
+A. The Nine Built-in Stages 
+
+All nine stages implement the uniform stage signature of listing 1 and honour the stage-buffer convention (capacity in, final geometry out). Configuration travels through small per-stage structs in the new public header syn_process.h —the one header added in Phase 2; the Phase 1 headers remain frozen. 
+
+Pre-processors. image_resize performs edge-aligned bilinear interpolation (pixel centres mapped, borders clamped) on uint8/int8 images of up to four channels. image_normalize applies per-channel 
+
+(x − μc)/σ c, producing float32. quantize_int8 computes 
+
+q = round( x/s ) + z with saturation to the int8 range. 
+
+audio_mfcc computes MFCC features [ 15 ] as Hamming window → FFT (through the DSP HAL) → power spectrum 
+
+→ triangular mel filterbank → log → DCT-II, with the complex FFT working buffer drawn from the Phase 1 scratch pool so it is reclaimed at the same lifecycle boundary as every other intermediate. The MFCC implementation makes four deliberate, documented simplifications relative to a librosa-parity frontend: non-overlapping frames, no pre-emphasis filter, natural (not decadic) log, and an unnormalized DCT-II. It targets keyword-spotting models trained with the same frontend; models trained against librosa features need the Phase-3 parity pass (section VIII-B). 
+
+Post-processors. softmax accepts int8 logits (dequantized in place via an optional config) or float32 and produces float32 probabilities through the DSP HAL’s numerically-stable softmax. argmax emits a single syn_classification_t 
+
+record; top_k emits k of them by repeated selection ( O(kn ),no sort buffer, no allocation). nms implements greedy per-class non-maximum suppression over packed syn_bbox_t 
+
+records (24 B each: two corners, score, class), dropping boxes under a score threshold and suppressing overlaps above an IoU threshold, capped at a configured maximum. dequantize 
+
+inverts the int8 quantization to float32. One boundary is deliberate: converting raw model output tensors to syn_bbox_t candidates (anchor or grid decoding) is application code, not a built-in — the decode step encodes model-family knowledge (anchor layouts, cell geometry) that does not generalise, whereas NMS over decoded boxes does. The face-detection sample’s decode_cells() plays this role in section VI-A. 
+
+B. Software DSP Kernels and the PowerQuad Path 
+
+Phase 2 implements the two outstanding DSP HAL entry points as shared software kernels in syn_dsp_soft.c : 
+
+> •
+
+fft_f32 : an iterative radix-2 Cooley–Tukey FFT [ 16 ]over interleaved complex float32, in-place capable, with bit-reversal permutation and lengths restricted to powers of two in [2 , 1024] . 
+
+> •
+
+mat_mult_q15 : a saturating Q15 matrix–vector mul-tiply with 64-bit accumulation, arithmetic shift down by 15, and saturation to int16 — the CMSIS-DSP-style contract [10] for fixed-point classifier heads. The kernels are shared , not stub-only: the QEMU stub DSP backend calls them directly, and the MCXN947 backend routes the same entry points to the PowerQuad engines (PQ_TransformCFFT , PQ_MatrixMultiplication ), retaining the software kernels as the reference implementation and fallback. The software kernels are validated by the FFT unit suite (DC, impulse, in-place, and argument-validation cases among them; section VII-F ) and by the Phase 1 cross-check suite pattern; the hardware path is then validated against them 
+
+by a boot-time self-calibration pass on the board: the FFT path confirms the PowerQuad’s 1/N output-gain model on a known input (measured gain 1024/16384 at N =16 ), and the matmul path runs a Q15 known-answer and saturation check, before the backend advertises hardware routing. Two Phase 1 tests that asserted -ENOTSUP for these entry points were updated to assert success — the only Phase 1 test-suite changes in this phase. Measured on the board with all wrapper costs included, the hardware paths deliver 5.51 × (256-point FFT) and 1.66 × (16 ×16 Q15 matmul) over the software kernels — real speedups, but below the phase plan’s ≥10 × acceptance target; section VII-E reports the measurement and its decomposition, and section VIII-B the honest reading. VI. C ONSTANT -F OOTPRINT STREAMING AND PROFILING 
+
+A. Constant-Footprint Streaming 
+
+The pipeline engine allocates every intermediate — and the final result — from the ephemeral region of the Phase 1 arena [1], and never frees anything individually. The contract with the application is a single lifecycle event: when the result of frame n has been consumed, the application calls 
+
+syn_mem_reset_ephemeral() , which reclaims all of frame n’s intermediates (and the scratch pool) in constant n n+1 n+2 n+3             
+
+> 0
+> 432
+> 2 160
+> 2 656
+> measured peak (FRDM): 2 784 B, constant per frame
+> reset
+> frame
+> ephemeral arena (B)
+> Fig. 3. Constant-footprint streaming in face_detection (schematic; payload values from the buffer plan of fig. 1, descriptor overhead omitted). Each frame allocates the same staircase of stage buffers — 432 B resize, 1,728 B normalize, 432 B quantize, 64 B model output — and the per-frame
+> syn_mem_reset_ephemeral() (dashed drops, marked reset ) returns occupancy to zero, so frame n+kis bit-identical in memory behaviour to frame nfor any k. The FRDM run (section VII-D ) measures the peak at 2,784 B — the payload staircase plus descriptor overhead — returning to zero on all 30 frames (120 allocations, 30 resets); QEMU’s integer-KB display reports the same peak as 2 KB.
+
+time. Frame n+1 then allocates into the identical addresses under the identical plan. The consequence is a memory profile that is a flat sawtooth (fig. 3): per-frame peak occupancy is a constant of the pipeline, not a function of frame count, and fragmentation is zero by construction — there is no free-list to fragment. Where a general-purpose heap under a streaming inference workload degrades with uptime (the classical checkerboard pattern the Phase 1 paper measured the arena against), the arena-backed pipeline’s 30th, 300th, and 3-millionth frames are bit-identical in memory behaviour to the first. The claim is validated, not just argued: the face-detection run in section VII-D reports its arena peak and its return to zero after every one of 30 frames through syn mem stats .The face_detection sample is the streaming acceptance workload for the phase, exercising every subsystem this paper describes. A deterministic synthetic frame source (a dark gradient plus a bright 8×8 blob that advances one grid cell per frame) stands in for the OV7670 camera so the demo runs identically under QEMU and on the board. Each 24 ×24 ×3
+
+uint8 frame flows through a pipeline built once and reused for all frames — resize to 12 ×12 ×3, normalize to float32, quantize to int8, model — submitted at REALTIME priority; the application then decodes the model’s per-cell scores to candidate boxes ( decode_cells() , the app-side stand-in for anchor decoding; section V-A ) and calls the built-in NMS directly. The frame closes with the ephemeral reset. Camera (DVP) and LCD overlay integration are tracked hardware bring-up items; the pipeline, scheduler, profiling, and post-processing path in the sample is the production path. 
+
+B. Profiling the Live Inference Path 
+
+The Phase 1 paper shipped a four-mark profiling API (start, preprocess-done, NPU-done, end) and reported, as a known limitation, that nothing invoked it: syn prof last 
+
+returned "No profiling data available" on real                                                                
+
+> uart:~$ syn infer run test_classify Model ’test_classify’: class 0(confidence 127), 1130 us Use ’syn prof last’ for the stage breakdown. uart:~$ syn prof last Last inference: Total: 1069 us Preprocess: 1us NPU: 1068 us Postprocess: 1us Memory peak: 1792 bytes uart:~$ syn mem stats Arena: 0/114688 bytes (peak 1792) Scratch: 0/16384 bytes Allocations: 6, Resets: 2uart:~$ syn npu state NPU state: IDLE
+> Listing 3. FRDM-MCXN947 shell session (captured 2026-07-12): alive inference through the scheduler and its profile. ANSI escapes and one interleaved asynchronous log line elided; text otherwise verbatim (community/phase2/serial-frdm-shell.log ).
+
+hardware [ 1 ]. Phase 2 closes that gap by firing the marks at pipeline stage boundaries inside the engine itself: start before the first stage, preprocess-done at the model-stage entry, NPU-done at model-stage exit, end after the last post-processor. A pipeline with no model stage cannot arise (build validation), and pre- or post-free pipelines degenerate cleanly — the corresponding interval is simply empty. Because the engine owns stage sequencing, every inference through the scheduler is attributed automatically; applications add no instrumentation code. From the four marks the profiler derives per-stage times, total time, the arena high-water mark, and an NPU utilisation ratio (NPU interval over total). Utilisation is exactly the engine-overhead metric the honest-baseline methodology wants: on the stub backend it reads 99% (section VII-C ), meaning the engine’s dispatch and buffer planning consume 1% of the profiled window — and on real Neutron silicon it will expose, rather than hide, any engine overhead that model acceleration reveals. Two properties are worth stating precisely. First, profiling is runtime-switched ( syn prof enable /disable ); when disabled, each mark is an early-return branch test — four branch tests per inference, not zero cost, but no timestamp reads, no memory-statistics calls, and no state writes. Second, the profiler keeps the last completed result in a single slot; since the scheduler serialises execution (section IV-B ), marks from different jobs cannot interleave, but a client that profiles a specific job should read syn_prof_get_last() before the next job completes. The new syn infer run <model> 
+
+shell command runs a named model through the full scheduler path and prints the profile, making the closed Phase 1 gap directly visible on hardware. Listing 3 reproduces the live board session: where the Phase 1 paper’s transcript showed "No profiling data available" at this point, the same command now returns the stage breakdown of the inference that just ran — 1,069 μs profiled, of which the stub model stage is 1,068 μs, leaving roughly 1 μs of engine dispatch on real silicon (section VII-C). TABLE II EVALUATION TARGETS .                    
+
+> Parameter FRDM-MCXN947 QEMU
+> CPU Cortex-M33 @ 150 MHz Cortex-M3 (emulated) FPU Hardware Soft-float NPU backend Neutron (stub kernel) Software stub DSP backend PowerQuad (hardware) Software kernels SRAM (linker) 320 KB 64 KB Arena size 128 KB 8 KB Zephyr v3.7.0 v3.7.0 Toolchain SDK 0.16.8, -Os SDK 0.16.8, -Os
+
+VII. E VALUATION 
+
+We evaluate the Phase 2 engine with the methodology of the Phase 1 paper [ 1]: every number that passes through the deterministic stub NPU backend is labeled an engine-overhead baseline rather than silicon throughput, the engine’s own cost is isolated from the (stub) model latency, and an acceptance criterion that was not met is reported as missed (section VII-E ). QEMU runs use icount shift=6 , so their timings are deterministic emulated time; QEMU numbers were captured on 2026-07-11 ( community/phase2/results-qemu.md ). FRDM-MCXN947 numbers were captured live on the board on 2026-07-12 from the v0.2.0 release builds; the raw serial transcripts are in the repository (community/phase2/serial-frdm-*.log ) alongside the consolidated results-frdm.md .
+
+A. Experimental Setup 
+
+The two targets follow Phase 1 (table II): the FRDM-MCXN947 board image with Zephyr shell and a 128 KB arena, and the CI-oriented QEMU image with an 8 KB arena inside the emulator’s 64 KB SRAM budget. Both link Zephyr v3.7.0 [ 2 ] with -Os under Zephyr SDK 0.16.8. The model stage executes the deterministic stub kernel on both targets in this phase; the eIQ Neutron invoke path [ 6] remains future integration work, so the latency numbers bracket the engine ,not the accelerator. New relative to Phase 1, the board image routes the DSP HAL to the PowerQuad engines (section V-B )— those numbers are real hardware, not stub. 
+
+B. Build Footprint 
+
+Table III reports the footprints of the two samples on both targets from the v0.2.0 release builds, alongside the Phase 1 baselines. The FRDM images carry the Zephyr shell and the full PowerQuad integration; the QEMU images build without the shell ( hello_inference ) and without PowerQuad (both), with the logging subsystem enabled for face_detection .The Phase 1-to-Phase 2 delta on the QEMU image — which contains the engine and nothing else that changed — is 3.8 KB of flash for pipeline construction and execution, the job scheduler, all nine processors, and the software FFT and matrix kernels; QEMU RAM grows 2.6 KB, dominated by the scheduler thread’s 2 KB stack plus the static job and pipeline tables. The shell-equipped FRDM image grows 20.7 KB of                                   
+
+> TABLE III BUILD FOOTPRINT (FLASH =TEXT +DATA , RAM = DATA +BSS ; P HASE 1
+> BASELINES FROM [1]). FRDM P HASE -2 ROWS INCLUDE SHELL AND
+> POWER QUAD .
+> Build Target Flash RAM
+> hello_inference (P1) FRDM (shell) 67.0 KB 184.5 KB hello_inference (P2) FRDM (shell+PQ) 87.7 KB 201 KB hello_inference (P1) QEMU 24.1 KB 27.8 KB hello_inference (P2) QEMU 27.9 KB 30.4 KB face_detection (P2) FRDM (shell+PQ) 88.8 KB 203 KB face_detection (P2) QEMU 42.7 KB 32.2 KB
+> hello FRDM hello QEMU face FRDM face QEMU
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 67
+> 24 .1
+> 87 .7
+> 27 .9
+> 88 .8
+> 42 .7
+> flash (KB)
+> Phase 1
+> Phase 2
+> Fig. 4. Flash footprint by build (v0.2.0, -Os ). The Phase-1-to-Phase-2 delta is +3.8 KB on the no-shell QEMU image (the engine alone) and +20.7 KB on the shell-equipped FRDM image, which additionally includes the PowerQuad routing, self-calibration, and bench harness. face_detection
+> has no Phase 1 counterpart; its FRDM image (shell and PowerQuad included) carries the complete vision stack in 88.8 KB.
+
+flash, which additionally buys the PowerQuad driver routing, its boot-time self-calibration, and the syn dsp bench harness; FRDM RAM grows 16.5 KB, of which 14 KB is static PowerQuad working memory (8 KB FFT staging buffers plus 6 KB bench buffers). The complete face_detection 
+
+vision stack — pipeline, scheduler, processors, PowerQuad, and shell — fits in 88.8 KB of flash, within 1.1 KB of 
+
+hello_inference . Figure 4 visualises the phase-over-phase growth. 
+
+C. Engine Overhead on the Synchronous Path 
+
+The worst case for engine overhead is 
+
+syn_infer_run_sync() , which pays for pipeline creation, build, submission, the scheduler round-trip, result copy, and pipeline destruction on every call (section IV-D ). We measure it with the same workload as the Phase 1 latency experiment — the test_classify model over a 16 ×16 ×3
+
+INT8 input through the stub kernel — so the two paths are directly comparable. Listing 4 shows the QEMU transcript. Three numbers matter, at three levels of the stack (fig. 5):  
+
+> •
+
+7 μs: dispatch overhead inside the profiled window. 
+
+The profile’s total-minus-NPU delta is the engine’s cost between the profiler marks — stage-buffer allocation, stage sequencing, and the profiler itself. On a 1 ms stub inference this is the 99% NPU-utilisation figure printed above. Pipeline ’run_sync’ built: 1 stages, est. 4106 bytes Inference completed in 1361 us === Inference Profile === Total: 1010 us Preprocess: 4 us NPU: 1003 us Postprocess: 5 us Memory peak: 896 bytes NPU util: 99%            
+
+> Listing 4. hello_inference via the scheduler path (QEMU, stub NPU, icount shift=6).
+> 0500 1,000 1,500
+> P1 direct (QEMU)
+> P2 run_sync (QEMU)
+> P1 direct (FRDM)
+> P2 run_sync (FRDM)
+> μs (stub NPU on both targets)
+> stub kernel engine dispatch run_sync wrapper
+> Fig. 5. Wall-time decomposition of the synchronous convenience path against the Phase 1 direct-HAL bracket, under QEMU (icount shift=6) and on the FRDM-MCXN947. On the board, the 1,130 μs wall time splits into 1,068 μs of stub model stage, 1 μs of engine dispatch inside the profiled window, and 61 μs of run_sync wrapper (transient pipeline create/build/destroy, submission, scheduler round-trip, wait, result copy) — 92 μs total over the Phase 1 bracket. The QEMU wrapper share (351 μs) is inflated by the emulator’s logging and thread-switch costs. Stub-kernel baselines; not silicon throughput.
+> •
+
+1,010 μs: the profiled inference. Almost entirely the stub kernel’s O(n) pass, consistent with the Phase 1 direct-HAL measurements.  
+
+> •
+
+1,361 μs: wall time, submit to result. The 580 μs increase over the Phase 1 direct-HAL path (781 μs on the same emulator [ 1]) buys the entire OS surface this paper describes, and — because this is the run_sync 
+
+convenience path — includes transient pipeline create, build (with its LOG_INF line), destroy, and the scheduler thread round-trip. Applications that build a pipeline once and stream frames through it (section VII-D ) amortise all of that away. The QEMU figures are emulated-time baselines useful for isolating engine costs deterministically and regression-testing them in CI; the board tells the real story, and it is better. The same syn infer run test_classify workload on the FRDM-MCXN947 (listing 3) measures 1,130 μs wall against the Phase 1 direct-HAL bracket of 1,038 μs on the same silicon [ 1]: the entire scheduler path — transient pipeline create and build, submission, dispatch, wait, result copy-out, and destroy — costs 92 μs on hardware. Inside the profiled window the breakdown is 1,069 μs total with 1,068 μs in the stub model stage, leaving roughly 1 μs of engine dispatch (stage-buffer allocation, sequencing, profiler marks) per inference; the boot-time run reports the same 1,069 μs total at 99% NPU utilisation. The large QEMU-to-board gap in the wrapper share (351 vs. 61 μs) is consistent with the emulator’s inflated cost for the logging and thread-switch paths; both figures bound the same code. 
+
+D. Streaming: face_detection 
+
+The 30-frame face-detection run (section VI-A ) exercises the amortised path: one pipeline built once, 30 REALTIME jobs, one ephemeral reset per frame. On the board it averages 
+
+4,632 μs per frame (215.8 FPS) , against 31,134 μs (32.1 FPS) under QEMU soft-float, detecting the synthetic face in every frame on both targets (30 detections in 30 frames, one per frame after NMS — the frame source is deterministic, so the detection sequence is target-independent). 1 Three observations attach to the board number:  
+
+> •
+
+Where the time goes. The last-frame profile reads 3,562 μs preprocess, 1,040 μs stub model stage, 1 μs post-process (4,602 μs total, 22% NPU utilisation). The Cortex-M33’s hardware FPU cuts the float-heavy resize/normalize preprocessing roughly 8× against QEMU soft-float — the bulk of the 6.7 × overall frame-time improvement — and leaves preprocessing at 77% of the frame. The stub stage’s deterministic ∼1 ms is not a real detector’s cost; once real Neutron kernels land, that 77% preprocessing share is the bottleneck to attack (section VIII-C).  
+
+> •
+
+Throughput, not latency-hiding. FPS through a seri-alised scheduler means frames processed one at a time (section IV-B).  
+
+> •
+
+Constant footprint, confirmed on hardware. The board’s arena telemetry over the full run reports 120 allocations, 30 ephemeral resets, a peak of 2,784 B — the 2,656 B buffer plan of fig. 1 plus descriptor overhead — and occupancy ending at zero, identical on every frame: the constant-footprint sawtooth of fig. 3, with zero fragmentation by construction. (QEMU’s integer-KB display reports the same peak as “2 KB”.) 
+
+E. PowerQuad on Silicon: A Missed Target, Reported 
+
+The phase plan set an acceptance criterion of “ ≥10 × over the software kernels” for the PowerQuad DSP paths. The measured result is below that target, and we report it as measured rather than re-scoping the criterion — the honest-baseline methodology is only worth having if it also governs the numbers that disappoint. Listing 5 reproduces the on-board benchmark verbatim. Three facts frame the numbers. First, the hardware works and is verified : the boot-time self-calibration pass (section V-B )confirmed the PowerQuad CFFT’s 1/N output-gain model on silicon and passed the Q15 known-answer and saturation checks before either path was enabled, and the accuracy figures above — 976 ppm of peak for the FFT, consistent with the ∼13-bit input scaling of the fixed-point transform engine, and 1 LSB for the Q15 matmul — are within the expected envelopes.                                                
+
+> 1On the board, early frames overran the deferred-logging buffer (“35 messages dropped”); the summary block and the last ten frame lines are complete, and the surviving per-frame timings are uniform at 4,626–4,644 μs. The log path is not on the measured inference path. uart:~$ syn dsp bench FFT f32 256 pts x16: soft: 86184 us (5386 us/op) hal: 15641 us (977 us/op) speedup: 5.51x max err: 976 ppm of peak MatMul q15 16x16 x200: soft: 2948 us (14740 ns/op) hal: 1768 us (8840 ns/op) speedup: 1.66x max err: 1LSB
+> Listing 5. PowerQuad vs. software DSP kernels on the FRDM-MCXN947 ( syn dsp bench , captured 2026-07-12; text verbatim from
+> serial-frdm-shell.log ).
+
+Second, the measurement is end-to-end by design : the per-operation times include the full HAL wrapper cost — float ↔fixed staging loops on the FFT path, a PQ_SetConfig 
+
+on every call, and the HAL mutex — because that is the cost a pipeline stage actually pays. A transform-engine-only comparison would look better and mean less. Third, the shortfall has a legible structure . The 256-point FFT, where the transform is large enough to amortise per-call overhead, achieves 5.51 ×; the 16 ×16 matmul, an 8.8-vs-14.7 μs-per-op contest where staging and configuration are a large fraction of each call, achieves only 1.66 ×. The known paths to closing the gap — persistent PowerQuad configuration across calls, batched staging, and larger transform and matrix sizes as real workloads provide them — are scoped to Phase 3 (section VIII-B ). Until then, the routing already pays for real pipelines (a 256-point MFCC frontend spends 5.5× less time per FFT) while falling short of the plan’s headline. 
+
+F. Test Coverage 
+
+The suite grows from Phase 1’s 61 cases in 10 suites to 
+
+99 cases in 13 suites , all passing on qemu_cortex_m3 
+
+via twister (table IV); the 99-case binary executes in 1.1 s of emulator time. Four suites are new: pipeline construction and execution (8 cases), the job scheduler (7), the FFT kernel (9), and the nine processors (15). The Phase 1 placeholder 
+
+syn_scheduler_suite (one smoke-test case) is super-seded by the real syn_sched_suite , and two Phase 1 DSP cases flipped their expectation from -ENOTSUP to success when FFT and Q15 matrix multiply became real (section V-B ); no other Phase 1 tests changed. The scheduler suite deserves specific mention: because ztest threads on the emulator are cooperative, thread interleavings around the completion protocol are deterministic , and one of the seven cases ( test_priority_order ) reproducibly caught a callback/slot-reuse race in the first scheduler implementation on every run. Section VIII-A reconstructs the bug; we note it here because it is the strongest evidence in this paper that the CI-first methodology carries its weight — a race that bit deterministically in CI would have been an intermittent field bug on preemptive hardware. 
+
+G. Cross-Target Summary 
+
+Table V consolidates the headline measurements across the two targets. Model-stage numbers are stub-NPU baselines on                                                                  
+
+> TABLE IV PHASE 2TEST SUITE (Q E M U _C O R T E X _M3,CAPTURED 2026-07-11). SUITES MARKED ∗ARE NEW IN PHASE 2.
+> Suite Cases Pass
+> syn_mem_suite 18 18
+> syn_process_suite ∗15 15
+> syn_dsp_suite 11 11
+> syn_dsp_fft_suite ∗99
+> syn_model_suite 99
+> syn_pipeline_suite ∗88
+> syn_sched_suite ∗77
+> syn_npu_suite 66
+> syn_dsp_verify_suite 55
+> syn_init_suite 44
+> syn_mem_bench_suite 33
+> syn_mem_regions_suite 33
+> syn_ipc_suite 11
+> Total 99 99
+> TABLE V CROSS -TARGET SUMMARY . S TUB -NPU BASELINES EXCEPT THE
+> POWER QUAD ROWS (REAL HARDWARE ); THE PHASE PLAN ’SPOWER QUAD TARGET WAS ≥10 ×.
+> Metric QEMU (stub) FRDM
+> run_sync wall time 1361 μs 1130 μs P1 direct-HAL baseline 781 μs 1038 μs scheduler-path cost 580 μs 92 μs Dispatch overhead (Total −NPU) 7 μs 1 μs face_detection frame / FPS 31.1 ms / 32.1 4.63 ms / 215.8 preprocess share —77% Arena peak per frame ( →0) 2 KB (int. display) 2784 B PowerQuad FFT speedup (256-pt) n/a (soft only) 5.51 ×
+> PowerQuad matmul speedup ( 16 ×16 )n/a (soft only) 1.66 ×
+
+both; the PowerQuad rows are real hardware. VIII. D ISCUSSION 
+
+A. Case Study: The Callback/Slot-Reuse Race 
+
+The completion-protocol ordering of section IV-C exists because our first implementation got it wrong, and the manner in which the test suite caught it is instructive beyond this codebase. 
+
+The bug. The original scheduler loop completed a job in the natural-seeming order: record the result, give the completion semaphore, then fire the completion callback from the job slot. Under ztest’s cooperative threading, k_sem_give() 
+
+on a semaphore a cooperative waiter is pending on transfers control immediately : the waiter ran, consumed the result via syn_infer_get_result() (freeing the slot), and resubmitted — reinitialising the same slot for a new job — all before the scheduler thread resumed. When it did resume, it fired the completion callback with the new job’s parameters: wrong callback pointer, wrong user data, wrong job ID. 
+
+The detection. test_priority_order submits jobs across the three priority classes and asserts on the execution order its callbacks record. The corrupted callback context sur-faced as an impossible assertion: exec_order[0] claimed a BEST -EFFORT job had run before a REALTIME job. Because ztest threads are cooperative, the interleaving was not a one-in-a-thousand window but the guaranteed schedule: the test failed on every run, bisected cleanly, and reproduced in seconds under QEMU. 
+
+The fix is the protocol now described in section IV-C :snapshot the callback, user data, job ID, and output descriptor under the engine mutex; fire the callback from the snapshot; give the semaphore last. 
+
+The lesson generalises. On preemptive hardware this race window is a handful of instructions wide and priority-dependent — the classic intermittent field bug. A cooperative-threading test harness inverts the economics: any race whose losing interleaving the scheduler can express becomes a deterministic failure. We now treat “the completion path has a ztest case whose cooperative schedule exercises the worst interleaving” as an acceptance criterion for scheduler changes, and we suggest the pattern to anyone building dispatch machinery on Zephyr: the emulator plus cooperative threads is not a weaker approximation of the board — for concurrency validation it is strictly stronger. 
+
+B. Limitations 
+
+As in the Phase 1 paper, we collect every known gap in one place. 
+
+Stub NPU baseline. Every latency and utilisation number in section VII that involves the model stage brackets the deterministic stub kernel — under emulation for the QEMU figures, on real Cortex-M33 silicon for the FRDM figures. They isolate and regression-pin the engine’s overhead; they predict nothing about Neutron silicon throughput. The eIQ Neutron SDK invoke path remains the top integration item. (The PowerQuad measurements are the exception: real hardware end to end.) 
+
+Deadline dispatch and preemption are not implemented. 
+
+deadline_us and preemptible are accepted, recorded, and inert. Dispatch is strict-priority, non-preemptive; the worst-case priority inversion is one full pipeline execution (section IV-B ). Deadline-aware ordering and layer-granularity preemption points are Phase 3, and the frozen API already carries the parameters so applications written today need no signature change. 
+
+The PowerQuad speedup is below the plan target. The phase plan’s acceptance criterion was ≥10 × over the software kernels; the board measures 5.51 × (256-point FFT) and 1.66 ×
+
+(16 ×16 Q15 matmul), wrapper costs included (section VII-E ). We record this as a missed criterion, not a re-scoped one, and we consider doing so a feature of the methodology rather than an embarrassment of the hardware: the PowerQuad itself is routed, boot-time self-calibrated (gain model and known-answer checks on silicon), and accurate to 976 ppm / 1 LSB — what falls short is our wrapper, whose float ↔fixed staging loops, per-call PQ_SetConfig , and mutex acquisition dominate small operations, and a 16 ×16 matrix is small. Persistent PowerQuad configuration, batched staging, and larger transform/matrix sizes are the known paths to closing the gap and are Phase 3 backlog items; the criterion stays on the books until one of them meets it. 
+
+MFCC is not librosa-parity. Non-overlapping frames, no pre-emphasis, natural log, unnormalized DCT-II (section V-A ). Correct for models trained with this frontend; a parity mode is future work. 
+
+One model stage per pipeline; four pipelines. Cascades (detector feeding a classifier) currently compose at the appli-cation level from multiple pipelines. Multi-model pipelines and a larger pool are straightforward extensions the static-pool design admits. 
+
+Results live in the ephemeral arena. An output descriptor is valid only until the next syn_mem_reset_ephemeral() .This is the contract that buys constant-footprint streaming (section VI-A ), but it is a sharper lifetime than heap-returned results; run_sync therefore copies into a caller buffer when one is provided. 
+
+Single-slot profiler. The profiler retains the last completed inference only; serialised execution keeps records coherent, but a high-rate client wanting per-job attribution must read between completions (section VI-B). 
+
+C. Roadmap 
+
+Phase 3 carries the scheduling story forward: deadline-aware dispatch over the already-recorded deadline_us ,layer-granularity preemption points (making preemptible 
+
+meaningful), TFLite Micro [ 5] as a production model stage, the real Neutron invoke path, and the MCXN947’s second Cortex-M33 core — at which point the serialised-execution simplification of section IV-B is deliberately broken and the completion protocol of section IV-C earns its keep under true concurrency. On the DSP side, Phase 3 carries the PowerQuad wrapper work needed to revisit the missed speedup target — persistent configuration, batched staging — which also attacks the 77% preprocessing share the board’s face-detection profile exposed (section VII-D ). Camera and LCD bring-up (deferred from this phase) turn the face-detection sample into an end-to-end hardware demo. The later-phase items (OTA model updates, fault recovery, additional vendor backends) are unchanged from the Phase 1 roadmap [1]. IX. C ONCLUSION 
+
+We presented the Phase 2 inference engine of SynapticOS, which promotes the inference pipeline from an application-code convention to an operating-system object. A pipeline is drawn from a static pool, validated at construction against a canonical pre ∗-model-post ∗ grammar, given exact-fit intermediate buffers planned from stage configuration and runtime tensor geometry (with a bounded 4× fallback for stages the engine cannot see inside), and executed by a priority job scheduler — three classes, FIFO within class, per-job completion semaphores, defined cancellation, bounded job table, no heap anywhere on the path. Because every intermediate lives in the ephemeral arena region and streaming applications reset that region per frame, memory behaviour is a constant-footprint sawtooth with zero fragmentation across unbounded frame counts. The Phase 1 profiler is now driven at stage boundaries, closing the known instrumentation gap live on the board. Measured on the FRDM-MCXN947 through the determinis-tic stub NPU — engine baselines, not silicon claims — the entire scheduler path costs 92 μs of wall time over the Phase 1 direct-HAL bracket (1,130 vs. 1,038 μs), with roughly 1 μs of dispatch inside the profiled window; the 30-frame face-detection pipeline averages 4.63 ms per frame (215.8 FPS, 6.7 ×
+
+the QEMU soft-float figure) at a constant 2,784-byte arena peak that returns to zero after every frame. The PowerQuad DSP is routed and boot-time self-calibrated; its measured end-to-end speedups — 5.51 × for the 256-point FFT, 1.66 × for the 16 ×16 
+
+Q15 matmul, wrapper costs included — fall short of the phase plan’s ≥10 × target, and we report the miss and its structure rather than re-scope it. The engine adds 3.8 KB of flash to the QEMU image and 20.7 KB to the shell-equipped FRDM image including the PowerQuad integration. Test coverage grows from 61 cases in 10 suites to 99 cases in 13, at a 100% pass rate — and the suite’s cooperative-scheduling determinism caught a completion-protocol race that would have shipped as an intermittent field bug, a methodological result we consider as valuable as the engine itself. SynapticOS v0.2.0, the test suite, the QEMU and FRDM measurement artifacts (including the raw serial transcripts behind every board number in this paper), and the LaTeX sources of this paper are released under Apache 2.0 at https://github.com/Dimitrios-Kafetzis/SynapticOS. REFERENCES [1] D. Kafetzis, “SynapticOS: An inference-first runtime architecture for neu-ral processing units on resource-constrained microcontrollers,” Preprint, SynapticOS Project. https://github.com/Dimitrios-Kafetzis/SynapticOS, 2026, phase 1 paper; LaTeX sources and measurement artifacts in the repository. [2] Zephyr Project, “Zephyr RTOS,” https://zephyrproject.org, 2024, version 3.7.0 LTS. [3] NXP Semiconductors, “MCX N947 reference manual,” Document MCXNX4XRM, Rev. 5, 2024. [4] Amazon Web Services, “FreeRTOS real-time operating system,” https: //www.freertos.org, 2024. [5] R. David, J. Duke, A. Jain, V. Janapa Reddi, N. Jeffries, J. Li, N. Kreeger, I. Nappier, M. Natraj, S. Regev, R. Rhodes, T. Wang, and P. Warden, “TensorFlow Lite Micro: Embedded machine learning on TinyML systems,” in Proceedings of Machine Learning and Systems (MLSys) ,2021. [6] NXP Semiconductors, “eIQ Neuton NPU technical brief,” Document MCXNNPUTB, 2024. [7] PyTorch Foundation, “ExecuTorch: On-device AI runtime,” https:// pytorch.org/executorch, 2024. [8] T. Chen, T. Moreau, Z. Jiang, L. Zheng, E. Yan, M. Cowan, H. Shen, L. Wang, Y. Hu, L. Ceze, C. Guestrin, and A. Krishnamurthy, “TVM: An automated end-to-end optimizing compiler for deep learning,” in 
+
+USENIX OSDI , 2018. [9] Arm, “CMSIS-NN: Efficient neural network kernels for Arm Cortex-M cpus,” https://github.com/ARM-software/CMSIS-NN, 2023. [10] ——, “CMSIS-DSP software library,” https://github.com/ARM-software/ CMSIS-DSP, 2023. [11] C. L. Liu and J. W. Layland, “Scheduling algorithms for multiprogram-ming in a hard-real-time environment,” Journal of the ACM , vol. 20, no. 1, pp. 46–61, 1973. [12] Microsoft, “ONNX Runtime: cross-platform, high performance ML inferencing and training accelerator,” https://onnxruntime.ai, 2024. [13] C. Banbury, V. J. Reddi, P. Torelli, J. Holleman, N. Jeffries, C. Kiraly, P. Montino, D. Kanter et al. , “MLPerf Tiny benchmark,” in Conference on Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2021. [14] M. Tofte and J.-P. Talpin, “Region-based memory management,” in 
+
+Information and Computation , vol. 132, no. 2, 1997, pp. 109–176. [15] S. B. Davis and P. Mermelstein, “Comparison of parametric represen-tations for monosyllabic word recognition in continuously spoken sen-tences,” IEEE Transactions on Acoustics, Speech, and Signal Processing ,vol. 28, no. 4, pp. 357–366, 1980. [16] J. W. Cooley and J. W. Tukey, “An algorithm for the machine calculation of complex Fourier series,” Mathematics of Computation , vol. 19, no. 90, pp. 297–301, 1965.

@@ -1,0 +1,455 @@
+Title: Realizable N:M Sparse Transformer Inference via Search-Kernel Co-Design
+
+URL Source: https://arxiv.org/pdf/2607.12505v2
+
+Published Time: Thu, 16 Jul 2026 06:12:50 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 
+
+Yiming Liu 1 , Wenqi Lou 2 , Zhiguang Wang 3 , Zhiwei Ke 1 ,Fengrui Zuo 1 , Chao Wang 1 , and Xuehai Zhou 1 
+
+> 1
+
+University of Science and Technology of China, Hefei, China  
+
+> 2
+
+Suzhou Institute of Advanced Research, University of Science and Technology of China, Suzhou, China  
+
+> 3
+
+National Key Laboratory of Modeling and Simulation for Complex Systems, China 
+
+liuyiming9974@mail.ustc.edu.cn , louwenqi@ustc.edu.cn , cswang@ustc.edu.cn 
+
+Abstract. Vision Transformers (ViTs) achieve strong accuracy but in-cur high inference latency. Semi-structured N:M sparsity can reduce arithmetic cost, yet its theoretical savings often fail to translate into pro-portional end-to-end speedups on modern GPUs. This mismatch arises because deployment latency depends not only on arithmetic reduction but also on execution regularity and hardware scheduling under spar-sity. Achieving practical acceleration, therefore, requires coordinated de-sign across sparse execution and sparsity configuration. To this end, we propose a hardware-software co-design framework for N:M sparse ViT inference. On the hardware side, we design MD-SpMM, an N:M sparse CUDA kernel that reorganizes sparse GEMM into micro-dense, Tensor-Core-aligned dataflow and uses inference-aware adaptive paral-lelism to sustain utilization. On the software side, we perform layer-wise sparsity search under explicit end-to-end latency budgets using a three-stage heuristic search with constraint relaxation to avoid pre-mature convergence and enable deployment-aware sparsity allocation. Experiments on multiple ViT/Swin models and GPU platforms show that the framework achieves over 2.2 × latency speedup while main-taining comparable accuracy and delivering superior accuracy under the same latency constraint. The source code is publicly available at https: //github.com/liuganhuo/realizable-nm-sparse-transformer .
+
+Keywords: Semi-structured sparsity · Hardware–software co-design ·
+
+Vision Transformer · CUDA kernels. 
+
+## 1 Introduction 
+
+Vision Transformers (ViTs) leverage self-attention to capture long-range depen-dencies and achieve strong performance in tasks such as image classification and semantic segmentation [20]. However, this benefit comes with high inference cost: ViTs rely heavily on matrix multiplications in projection and feed-forward lay-ers, imposing substantial compute and memory demands that make deployment on real hardware increasingly challenging [16, 24]. arXiv:2607.12505v2 [cs.AR] 15 Jul 2026 2 Y. Liu et al. 
+
+Model compression, especially pruning, has been widely studied to mitigate this burden by removing redundant parameters while preserving accuracy [2]. Among pruning schemes, semi-structured N:M sparsity has emerged as a practi-cal compromise between accuracy preservation and hardware regularity, and has been adopted across CNNs, ViTs, and related accelerators [9, 10, 12, 25]. Despite this progress, the theoretical savings of N:M sparsity often fail to translate into proportional end-to-end latency gains in real inference, especially under INT8 deployment, as evidenced by the experimental comparisons in Sec-tion 6. In this regime, latency depends not only on arithmetic reduction but also on execution regularity, memory behavior, and scheduling effects under sparsity. This reveals a persistent gap between theoretical efficiency and practical perfor-mance. The gap is often misinterpreted as sparsity being “ineffective”, whereas it is more accurately attributed to the difficulty of realizing sparsity efficiently on current deployment stacks. We therefore focus on realizable acceleration : whether N:M sparsity can de-liver a target end-to-end latency reduction on a real deployment stack, rather than merely improving proxy metrics such as FLOPs, global sparsity, or isolated operator speedups [4, 18, 23]. From a system perspective, realizable accelera-tion requires satisfying two tightly coupled conditions. First, sparse computation must be execution-realizable : sparse operators should deliver stable and efficient execution on real hardware instead of exhibiting irregular behavior that prevents consistent latency reduction [10]. Second, sparsity assignment must be latency-grounded : when N:M sparsity is applied in a layer-wise manner, per-layer ratios should be selected under explicit deployment-level latency constraints rather than abstract sparsity or FLOPs-based objectives that poorly reflect end-to-end cost [8]. Violating either condition leads to unrealizable speedups in prac-tice, even when theoretical computation reduction is significant. Yet existing approaches often optimize only one side [7, 9, 10, 13], motivating an end-to-end co-design framework that couples execution-realizable sparse kernels with latency-grounded layer-wise configuration and lightweight candidate evaluation. To this end, we propose a hardware-software co-design framework for re-alizable N:M sparse inference acceleration. On the hardware side, we design MD-SpMM, an N:M sparse CUDA kernel that restructures sparse computa-tion into Tensor-Core-aligned execution through micro-dense restructuring and adaptive parallelism. On the software side, we introduce a latency-grounded layer-wise search pipeline that combines a profiling-based latency predictor and a feasible-region-aware evolutionary solver to evaluate candidates efficiently. By integrating execution-realizable kernels with latency-grounded sparsity search, the framework consistently translates sparsity-induced computation reduction into end-to-end latency improvement on real deployment stacks. In summary, this work makes the following contributions: 
+
+– We present a search–kernel co-design framework for realizable N:M sparse Transformer acceleration, built on execution realizability and con-figuration realizability under deployment latency constraints, and enabling more accurate and reliable acceleration under the same target speedup. Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 378.9                                     
+
+> Acc.
+> Uniform 2:4
+> 79.6
+> N:M Sparsity for Each Transformer Block
+> 3:4 3:4 3:4 2:4 2:4 1:4 2:4 3:4 2:4 1:4 1:4 1:4
+> Non -zero
+> values
+> Weight matrix
+> with 2:4 sparsity Indices
+> 3
+> 1423
+> 1312
+> 2414
+> 232
+> 3423
+> 2334
+> 1324
+> 3413
+> encode
+> & store
+> Weight matrix with
+> unstructured sparsity
+
+Fig. 1: N:M sparsity and uniform vs. layer-wise configurations in ViTs. Peak FLOP/s 
+
+Arithmetic  Intensity  
+
+> Performance
+> Dense MM
+> (Baseline)
+> cuBLAS MD -SpMM
+> 88% sp.
+> 75% sp.
+> 50% sp.
+> nmsparse
+> 88% sp .
+> 75% sp.
+> 50% sp.
+
+Fig. 2: Roofline analysis of N:M sparse INT8 inference on GPUs. 
+
+– We design MD-SpMM , an execution-realizable Tensor-Core-native N:M sparse kernel that converts sparse computation into regular MMA-centric execution with scalable inference parallelism. Across diverse matrix multi-plication shapes and sparsity levels, it delivers 2.0 × average speedup over cuBLAS dense GEMM and 1.6 ×–4.0 × speedup over nmSPARSE [10]. 
+
+– We propose a latency-grounded layer-wise N:M search pipeline that inte-grates a calibrated LUT-based latency predictor with a feasible-region-aware evolutionary solver to efficiently discover high-quality sparse configurations. With our hardware–software co-design, the resulting solutions achieve over 2.2 × latency reduction while delivering higher accuracy, yielding up to +1.4% Top-1 accuracy on ImageNet-1K and consistently outperforming prior meth-ods across ViT and Swin inference settings. 
+
+## 2 Background and Motivation 
+
+2.1 Vision Transformers and Layer-wise N:M Configuration 
+
+Vision Transformers (ViTs) process an image as a sequence of patch embeddings and forward it through a stack of Transformer blocks. In practice, inference is dominated by the Q/K/V projections, the attention output projection, and the two FFN linear layers. For common vision workloads, these matrix-heavy operators account for most of the end-to-end inference time, making them the primary targets for sparsification [24]. N:M sparsity constrains each group of M weights to retain N nonzeros. In ViTs, it is often applied uniformly across all Transformer blocks, as illustrated in Fig. 1. However, despite their similar block structure, layers at different depths contribute unequally to model accuracy and inference latency due to their depth-dependent roles [5, 8, 18]. This leads to heterogeneous sparsity sensitivity across blocks, making a single global N:M ratio suboptimal. Consequently, ViT sparsi-fication is more naturally formulated as a layer-wise N:M configuration problem. 4 Y. Liu et al. 
+
+2.2 The Lack of Efficient Sparse Execution Mechanisms 
+
+Although N:M sparsity reduces multiply-accumulate operations, it does not di-rectly yield efficient execution on modern Tensor Core GPUs. This mismatch is especially pronounced for INT8 inference, where dense GEMM already achieves high efficiency through regular dataflow, predictable control flow, and high MMA utilization [1, 14, 15]. In this regime, sparse speedup depends not only on arith-metic reduction but also on whether execution remains compatible with the hardware execution model. Existing sparse kernels often rely on metadata han-dling, runtime decoding, and irregular memory accesses, which disrupt Tensor Core dataflow and reduce utilization [6, 10, 22]. As illustrated by the Roofline analysis in Fig. 2, existing approaches exhibit a clear execution trade-off. nmSPARSE [10] follows sparse decoding and irreg-ular access patterns, leading to low arithmetic intensity and limited utilization, whereas cuBLAS sustains high efficiency with dense GEMM but cannot exploit N:M structure. This gap highlights the need for sparse execution mechanisms that preserve Tensor-Core-friendly regularity while exposing the arithmetic ben-efit of N:M sparsity. 
+
+2.3 The Need for Latency-Grounded Layer-wise Configuration 
+
+Introducing latency constraints into sparse configuration search is necessary but challenging, since meeting a target latency requires different sparsity levels across models, layers, and deployment environments. Traditional methods that opti-mize proxy metrics such as sparsity ratio or FLOPs often fail to capture real deployment behavior. Even with similar overall sparsity, different layer-wise as-signments can lead to substantially different end-to-end latencies. Moreover, en-forcing latency constraints fragments the feasible space by discarding invalid con-figurations, weakening search-space connectivity and making exploration prone to narrow feasible regions. To address this issue, sparse configuration optimization must incorporate deployment-level latency semantics. In particular, latency models built on the target hardware and deployment stack are needed to guide the search toward configurations that both satisfy latency constraints and enable realizable end-to-end acceleration. This mitigates the mismatch between abstract optimization objectives and real hardware behavior [3, 4, 19]. 
+
+## 3 Problem Formulation and Method Overview 
+
+Given a Transformer model and a target end-to-end latency budget, the problem is to realize N:M sparse inference that preserves model quality while delivering actual speedup on the target hardware. As shown in Fig. 3, we address this problem through two coordinated com-ponents. At the execution level, we design MD-SpMM, a sparse kernel that realizes N:M sparsity through Tensor-Core-aligned execution. At the configura-tion level, we build a latency-grounded layer-wise search pipeline, in which a Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 5Practical 
+
+> Inference
+> Acceleration
+> Deployment-Effective Configuration
+> …
+> Realizable speedup
+
+OUTPUTS 
+
+> Accuracy preserved
+> Latency-Guarantee
+> Target Speedup
+> Optional Sparsity
+> Given Model
+
+Inputs Realizable Acceleration 
+
+> Configuration
+> Realizability
+> Execution
+> Realizability
+> Execution
+> Realizability
+
+MD-SpMM: Execution-Realizable Kernel   
+
+> Micro-Dense MMA Execution Adaptive Parallelism Weight Packing
+
+Latency-Grounded Layer-wise Search Pipeline  
+
+> Three-Stage
+> Evolutionary Solver
+> Parent
+> …
+> Offsprings
+> …
+> …
+> …
+> Refine Repair Overshoot
+> Optimal Offspring
+> …
+> Next
+> Gen
+> input
+> Op Sparsity
+> -Latency LUT
+> Linear
+> Model
+> Profiling
+> Samples
+> Fit Construct
+> Hardware Latency Check Subnet Sampling & Evaluation
+> Trained One-shot Supernet
+> Configuration
+> Realizability
+> Configuration
+> Realizability
+> Realizable speedup
+> Accuracy preserved
+
+Fig. 3: Overview of the search-kernel co-design framework for N:M sparse Trans-former acceleration. calibrated LUT-based latency predictor enforces deployment feasibility and a hardware-aware search strategy explores the fragmented feasible region under explicit latency constraints. Together, these components instantiate the two requirements of realizable ac-celeration introduced in Section 1. MD-SpMM addresses execution realizability, while the latency-grounded search addresses configuration realizability by identi-fying layer-wise N:M assignments aligned with end-to-end deployment behavior. In this sense, realizable acceleration is achieved only when sparse execution and sparsity configuration are jointly optimized. 
+
+## 4 MD-SpMM: Dataflow-Centric N:M Sparse Kernels 
+
+4.1 Design Methodology 
+
+From the perspective of execution realizability, INT8 inference with N:M spar-sity depends not only on reduced arithmetic but also on whether sparse exe-cution matches the hardware execution model. We identify two first-order re-quirements: (i) dataflow regularity to sustain Tensor Core MMA utilization, and (ii) inference-scale parallelism to maintain high SM occupancy across varying operator shapes. Violating either requirement by introducing index-driven con-trol, irregular memory access, or insufficient thread-block parallelism can erase theoretical sparsity gains in end-to-end latency. As shown in Fig. 4, MD-SpMM uses three mechanisms: (1) Weight Packing for decode-friendly sparse storage, (2) Micro-Dense Execution for MMA-centric regular tiles, and (3) Adaptive Par-allelism to improve occupancy while bounding reduction overhead. 
+
+4.2 Micro-Dense: From N:M Sparsity to Tensor Core Dataflow 
+
+To make N:M sparsity compatible with Tensor Core execution, we introduce 
+
+Micro-Dense , which reformulates N:M SpMM as an MMA-centric regular dataflow. Under N:M sparsity, each window of size M contains N nonzeros. Rather than ex-posing them to the compute stage as irregular sparse operands, Micro-Dense ma-terializes only these N nonzeros into fixed MMA-compatible dense tiles aligned 6 Y. Liu et al. Original N:M  
+
+> Sparse B
+> CondensedB data ,Bidx
+> Activation
+> Matrix A
+> (dense matrix)
+
+Parallelism Analysis  
+
+> SM Cov / Work Depth/ Warp Avail
+
+Trade -off & Policy  
+
+> Parallelism
+> waves/SM
+> SM uilts .
+> Reduction cost
+> Extra reduction
+> writeback
+> 1 | 2 | 4 | 8 | 16 | 32 4SplitK ∈
+
+VS 
+
+③: Adaptive 
+
+Parallelism 
+
+①: Weight 
+
+Packing    
+
+> Warp -Private
+> Buffer Reset
+> Tile -A
+> W0W1W2W3
+> Warp mapping
+
+…     
+
+> n8@0 n8@8 n8@16 n8@24
+> a_frag [4]
+> B_panel (32X32)
+> Tile -A (16X32)
+> b_frag [2] b_frag [2]
+
+…
+
+…IMMA  
+
+> m16n8k32
+> C_panel (16X32)
+
+Fused IMMA 
+
+Micro -Kernel 
+
+> N-unrolled IMMA
+> Reg -fragment packing
+> Packed -B
+> Fetch
+
+②: Micro -Dense Execution 
+
+> Decode &
+> Dense Placement
+> data
+> idx
+> DEMUX
+> Warp -Private
+> B-Tile
+
+Parallelism Context     
+
+> Workload Hardware
+> Matrix shape, sparsity SM cnt , Tensor Core
+> warp -
+> cooperative
+> tile load
+> Packed
+> Bpack
+> single vectorized load
+> one -load decode
+> data
+> idx
+
+Fig. 4: Overview of the MD-SpMM kernel design. with Tensor Core fragment shapes, so Tensor Cores still operate on regular dense fragments and runtime computation remains entirely MMA-based. This design shifts sparsity irregularity out of the MMA compute path and into the loading-and-decoding stage. To keep the resulting overhead low, we adopt a decode-friendly packed representation ( B_pack ) that jointly encodes nonzero values and their positions within each N:M window. This removes separate index loads and enables lightweight decoding, which is overlapped with shared-memory placement and MMA issuance. Therefore, Micro-Dense confines sparsity handling to packed loading and lightweight decoding, allowing runtime computation to operate directly on MMA-aligned tiles. Overall, it establishes a clear execution mapping: N:M sparsity →
+
+Micro-Dense tiles → Tensor Core dataflow. 
+
+4.3 Adaptive Parallelism: Split-K for Inference-Scale SpMM 
+
+Micro-Dense improves per-block Tensor Core efficiency, but inference can still suffer from under-occupancy when operator shapes expose limited parallel work. End-to-end performance therefore depends not only on efficient single-block ex-ecution, but also on scalable and predictable parallelism across workloads. We address this with split-K parallelism, which partitions the reduction di-mension so multiple thread blocks compute partial sums in parallel, expanding the parallel space from the output dimensions (M, N ) to (M, N, splitK ). Split-K boosts occupancy but introduces reduction and extra write-back overhead, so its benefit must be controlled. We therefore adopt a rule-driven splitK selection strategy. First, parallelism priority : splitK is increased until the number of blocks is sufficient to fully sched-ule SMs. Second, controlled reduction : splitK is restricted to a small discrete candidate set so that K-splits remain aligned with Tensor Core granularity and reduction overhead stays predictable. When K is small or reduction dominates, the strategy reverts to a smaller splitK. In this approach, all splits share the same compute template and partial sums are merged only in the final stage, avoiding additional control complexity. Com-Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 7
+
+Fig. 5: Predicted vs. measured end-to-end latency on platforms and architectures. bined with Micro-Dense, this adaptive parallelism enables consistent speedup across deployment scenarios. 
+
+## 5 Latency-Grounded Layer-wise Sparsity Search 
+
+While MD-SpMM makes N:M sparsity execution-realizable, determining an ef-fective layer-wise sparsity configuration remains challenging, since accuracy alone is insufficient and the end-to-end latency impact of sparsity is strongly deployment-dependent. We therefore develop a latency-grounded search strategy that explic-itly incorporates latency constraints to guide the search toward higher-quality and deployment-feasible configurations. 
+
+5.1 Lookup Table-based Latency Modeling 
+
+Accuracy ranking alone is insufficient, since the search must also satisfy an end-to-end latency budget. Because measuring full-model latency for every candidate is too costly, we build a lightweight predictor for feasibility checks [3, 5, 11, 21]. Under a fixed hardware–software stack, we profile MD-SpMM operators and build an operator-level sparsity–latency lookup table (LUT). For each operator shape and candidate N:M ratio, we benchmark sparse matrix multiplication latency (average repeated runs). Empirically, the latency is largely determined by operator shape and sparsity level, yielding a LUT indexed by (shape , sparsity ).Since ViT-family models reuse only a small set of operator shapes, the LUT can be rebuilt offline within seconds when the deployment environment changes. To predict end-to-end latency, we fit a first-order linear model on top of the LUT. Let tℓ(sℓ) denote the LUT latency of layer ℓ under sparsity setting sℓ, then 
+
+Tpred =
+
+> L
+
+X
+
+> ℓ=1
+
+γℓ tℓ(sℓ) + b, (1) where γℓ ≥ 0 and b ≥ 0 are calibrated by non-negative least squares (NNLS) us-ing a small number of full-model measurements. This calibration absorbs graph-8 Y. Liu et al. 
+
+Algorithm 1: HW-aware heuristic search algorithm 
+
+Input: Model M ; latency budget Ttarget ; number of generations G; number of offspring λ;//define: parent x; child y. 
+
+> 1
+
+Initialization: candidate = UniSparGen (Ttarget , M );  
+
+> 2
+
+x1 = Rand _Spar (candidate, toward = Ttarget );  
+
+> 3
+
+Search: for g in [1 , G] do  
+
+> 4
+
+of f springs = [];  
+
+> 5
+
+3Stage-OffspringGen: for i in [1 , λ ] do  
+
+> 6
+
+yi = xg ; 
+
+> 7
+
+for l in Random _K( { l | yi[l] < 8 }) do  
+
+> 8
+
+yi[l] = N + 1; //Densify the l-th layer of yi (e.g., 4:8 to 5:8), keeping other layers unchanged.  
+
+> 9
+
+while Latency (yi) > Ttarget do  
+
+> 10
+
+l = Random _1( { l | yi[l] > 1 } );  
+
+> 11
+
+yi[l] = N − 1; //Sparsify the l-th layer of yi 
+
+> 12
+
+D := { l | (yi[l] < 8) ∧ ∆Fitness l ≥ 0}; //layers whose densification yields a fitness gain.  
+
+> 13
+
+while D̸ = ∅ do  
+
+> 14
+
+yi[Random _1(D)] = N +1; //Random densify one layer  
+
+> 15
+
+D := { l | (yi[l] < 8) ∧ ∆Fitness l ≥ 0}; //Update  
+
+> 16
+
+of f springs.append (yi);  
+
+> 17
+
+Selection: xg+1 = MAX _Fitness (of f springs );  
+
+> 18
+
+return xG+1 ; (final sparse configuration) 
+
+level scheduling, runtime overhead, and compiler optimizations beyond single-operator profiling. After calibration, the predictor enables constant-time feasi-bility checks during search with within-5% error (Fig. 5), grounding layer-wise sparsity decisions in deployment latency rather than abstract sparsity metrics. 
+
+5.2 Hardware-Aware Layer-wise Sparsity Search 
+
+Given the latency predictor, we search for a layer-wise N:M configuration that maximizes model quality under a target latency budget. Let M denote the model, and let s = [ s1, . . . , s L] denote the layer-wise N:M configuration, where each sℓ
+
+is selected from a discrete set of hardware-supported N:M ratios. We solve 
+
+max  
+
+> s
+
+Acc  M(s) s.t. Tpred 
+
+ M(s) ≤ T target , (2) where Acc (·) denotes the Top-1 accuracy on ImageNet-1K and Ttarget is the target end-to-end latency budget. This problem is challenging because, under layer-wise N:M sparsity, the map-ping from sparsity configuration to deployment latency is highly nonlinear. The latency constraint therefore partitions the search space into multiple discon-nected feasible regions. As a result, prior local-perturbation-based methods [17] tend to get trapped on small “feasibility islands”, causing the search to stagnate. Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 9
+
+To address this, we adopt a feasible-region-aware (1 + λ) evolutionary search that follows an overshoot–repair–refine procedure, enabling effective transitions across fragmented feasible regions in the sparsity–latency landscape. The over-all pipeline is summarized in Algorithm 1. The search is instantiated within the standard one-shot sparsity search framework [8], where the supernet train-ing stage remains unchanged and each candidate configuration is scored by its inherited accuracy under the trained supernet. During initialization, we first construct several latency-feasible configurations with approximately uniform sparsity distributions and select the one with the highest fitness score (Eq. 3) as the initial parent. We then repeatedly invoke 
+
+3Stage-OffspringGen to produce λ offspring via the following three stages: 
+
+Fitness (S) = 
+
+(
+
+Acc Inherit 
+
+ M(s), Tpred 
+
+ M(s) ≤ Ttarget ,
+
+−∞ , otherwise . (3) 1) Overshoot (Lines 7–8) adopts a “relax-first” strategy: a small random sub-set of layers is moved to the next denser sparsity level, deliberately violating the latency budget. This avoids the vanishing effect (noise-level score variations) of conventional 1:1 “sparsify-dens” perturbations near the feasibility boundary. 2) Repair (Lines 9–11) then restores feasibility by increasing sparsity on ran-domly sampled layers until the latency constraint is met, avoiding the directional bias of greedy, latency-guided repair and encouraging diverse search trajectories. 3) Refine (Lines 12–15) then explores the feasible boundary by gradually densifying the model while retaining only latency-valid updates. Candidate con-figurations with non-decreasing fitness are accepted, allowing the search to advance along the feasible boundary iteratively. Throughout the search, the latency predictor provides constant-time feasibil-ity checks, and the final configuration is selected through offspring competition under the latency constraint. Overall, this design enables more effective explo-ration of the fragmented feasible space and improves the quality of deployment-feasible layer-wise N:M configurations. 
+
+## 6 Experiments 
+
+6.1 MD-SpMM Kernel Evaluation Benchmark We evaluate MD-SpMM using a benchmark across matrix shapes and sparsity levels. The matrices are defined by the dimensions M , N , and K
+
+for matrix multiplication, where M is the number of rows, and N and K are the number of columns in the input and output matrices, respectively. We con-sider sparsity levels of 50%, 75%, and 87.5%, with M ∈ { 64 , 128 , 256 , 512 } and 
+
+N, K ∈ { 128 , 256 , 512 , 1024 }. Experiments are performed on A100, RTX 4060, and RTX 4090 GPUs using Ubuntu 22.04 and CUDA 12.2, with C++/CUDA kernel implementation compiled using nvcc . We report latency excluding one-time offline weight packing, since B_pack construction is performed once before deployment. All runtime costs during inference are included, including decoding 10 Y. Liu et al. 
+
+Table 1: Adaptive parallel strategy across platforms and sparsity levels.                                        
+
+> Platform A100 RTX 4090 RTX 4060 Sparsity 50% 75% 87.5% 50% 75% 87.5% 50% 75% 87.5% Top-1 Hit Rate 0.813 0.875 0.827 0.799 0.711 0.690 0.720 0.763 0.714 Avg. Norm. Perf. 0.990 0.990 0.990 0.983 0.965 0.958 0.972 0.968 0.960 Worst Norm. Perf. 0.818 0.774 0.803 0.786 0.746 0.739 0.773 0.694 0.696
+
+Fig. 6: Speedup over cuBLAS across matrix shapes under different sparsity levels. overhead, data movement, and MMA computation. Thus, both kernel latency and end-to-end latency correspond to pure inference-time execution. 
+
+Baselines We compare MD-SpMM against state-of-the-art dense and sparse baselines: cuBLAS, NVIDIA’s highly optimized dense GEMM library represent-ing the vendor-optimized upper bound, and nmSPARSE [10], a representative library for N:M sparse matrix multiplication. 
+
+Results We first evaluate the adaptive parallel strategy against fixed Split-K settings. For each shape–sparsity pair, we test multiple Split-K candidates and use the lowest latency as the oracle optimum. Table 1 summarizes the Top-1 hit rate, average normalized performance, and worst-case normalized performance. The adaptive strategy selects the oracle-optimal configuration in most cases and remains close to optimal even in non-hit cases, while also maintaining strong worst-case robustness. Compared with a fixed parallel setting, it improves overall kernel performance by more than 50%. Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 11 
+
+Fig. 7: Comparison of search trajectories between Evo-Press and our method across models and speedup settings. Fig. 6 reports the kernel speedup of MD-SpMM and nmSPARSE over dense cuBLAS across matrix shapes under different N:M sparsity levels. The verti-cal axis shows speedup normalized to dense cuBLAS, while the horizontal axis indexes different matrix shapes; speedups above 4 are truncated for clarity. MD-SpMM consistently outperforms nmSPARSE and delivers stable acceler-ation across platforms. On A100, it achieves around 2.0 × average speedup over cuBLAS and 1.6 ×–4.0 × speedup over nmSPARSE [10]. Similar trends are ob-served on RTX 4060 and RTX 4090, with absolute gains varying due to hardware characteristics such as compute capability and memory bandwidth. These results show that practical N:M sparse acceleration requires not only arithmetic reduction, but also regularized Tensor-Core-friendly execution to-gether with shape-aware parallel adaptation. Overall, MD-SpMM substantially improves the execution realizability of N:M sparsity under deployment-relevant conditions. 
+
+6.2 Feasible-Region-Aware Search Validation Benchmark: We evaluate the proposed search strategy on DeiT-Small, DeiT-Base, and Swin-Small under 1.5 ×, 2.0 ×, and 2.5 × target speedups on A100 , RTX 4060 and RTX 4090 GPUs. To improve efficiency, search is conducted on ImageNet-300, a subset of ImageNet-1K with 300 classes, 500 training images, and 50 validation images per class. We find that it preserves the search trends and final configurations observed on full ImageNet-1K while substantially reducing search cost. 
+
+Baseline: We instantiate our method within the standard one-shot layer-wise sparsity search framework, keeping supernet training unchanged and replacing 12 Y. Liu et al. 2.7x speedup 
+
+> +1.1% acc
+> 2.6x speedup
+> +1.3% acc
+> 1. 4x speedup
+> +1.8% acc
+
+Fig. 8: Accuracy-speedup trade-offs across search and kernel combinations. only the post-training search stage with our latency-grounded search algorithm. We compare against Evo-Press [17], a representative evolutionary method for layer-wise sparsity search, under the same one-shot framework and latency pre-diction setup. Under this setting, the dominant cost still comes from supernet training; the full pipeline with 200 search generations takes about 10 hours on three A100 GPUs. 
+
+Results: Fig. 7 shows the search trajectories of our method and Evo-Press across different models and target speedups. Our method exhibits more stable convergence and consistently reaches better final solutions, while Evo-Press more often stagnates near inferior local regions. In many cases, our method overtakes Evo-Press as early as the 20th–30th generation, and the gap further widens un-der higher speedup targets, where the feasible region becomes more constrained and fragmented. Moreover, the search typically converges within about 100 gen-erations, indicating good search efficiency in practice. These results demonstrate that explicitly incorporating latency constraints into the search process improves both search quality and robustness under practical deployment budgets. 
+
+6.3 Overall Evaluation Benchmark To evaluate the end-to-end effectiveness of the proposed search-kernel co-design framework, we conduct INT8 sparse inference experiments on DeiT-Small and DeiT-Base using an NVIDIA A100 GPU. All methods are tested under the same inference stack and deployment setting. 
+
+Baselines We compare different combinations of sparsity configuration strate-gies and execution backends. On the search side, we consider uniform N:M spar-sity, EvoPress [17], and our latency-grounded layer-wise search. On the execution side, we compare nmSPARSE [10] and MD-SpMM as sparse execution backends, while cuBLAS serves as the dense reference. This allows us to isolate the effect of search, kernel, and their combination under the same deployment constraint. 
+
+Results: Fig. 8 summarizes the resulting accuracy–speedup trade-offs, where the shaded feasible region denotes configurations satisfying the target speedup. Improving sparse execution alone is insufficient if sparsity allocation remains weak or latency-unaware. When deploying N:M sparse models with nmSPARSE, irregular execution overhead often offsets arithmetic savings, so more aggressive Realizable N:M Sparse Transformer Inference via Search–Kernel Co-Design 13 
+
+sparsity is required to meet the target speedup, which in turn causes notice-able accuracy degradation. Conversely, improving sparsity allocation alone is also insufficient without a realizable sparse backend. Uniform N:M sparsity and proxy-driven approaches, such as EvoPress, optimize abstract objectives that are misaligned with deployment latency, often over-pruning latency-critical layers or producing configurations that fail to satisfy the latency constraint. Together, these results show that practical sparse acceleration requires both realizable sparse execution and latency-aligned layer-wise sparsity search. By contrast, the proposed framework achieves the best overall result by cou-pling latency-grounded search with MD-SpMM. The former allocates layer-wise sparsity according to deployment behavior, while the latter ensures that these allocations translate into realizable end-to-end speedup on hardware. As a result, compared with conventional strategy combinations, our method consistently de-livers better accuracy–speedup trade-offs across all evaluated settings, with an average 2.2 × speedup gain and 1.4% accuracy improvement. Overall, these results highlight a key principle for practical N:M accelera-tion: neither sparsity search nor sparse execution alone is sufficient. Favorable accuracy–speedup trade-offs require jointly optimizing layer-wise sparsity con-figuration and hardware-realizable sparse execution, so that algorithmic sparsity decisions remain aligned with deployment performance. 
+
+## 7 Conclusion 
+
+This paper argues that practical N:M sparse Transformer acceleration is a search-kernel co-design problem. MD-SpMM makes sparse execution more realizable on Tensor-Core GPUs, while the proposed latency-grounded layer-wise search pipeline allocates sparsity by deployment behavior rather than abstract sparsity objectives. Together, they turn N:M sparsity into a more stable and deployment-effective acceleration mechanism under explicit latency targets.   
+
+> Acknowledgments. This work was supported in part by the Strategic Priority Re-search Program of the Chinese Academy of Sciences, Grant Nos. XDB0660101, XDB0660000, and XDB0660100, in part by the National Natural Science Foundation of China under Grant No. 62502489, in part by Jiangsu Provincial Natural Science Foundation under Grants BK20241818 and BK20250479.
+> Disclosure of Interests. The authors have no competing interests to declare that are relevant to the content of this article.
+
+## References  
+
+> 1. Chen, Z., et al.: Efficient tensor core-based gpu kernels for structured sparsity under reduced precision. In: SC. pp. 1–14 (2021) 2. Deng, L., et al.: Model compression and hardware acceleration for neural networks: A comprehensive survey. Proc. IEEE 108 (4), 485–532 (2020)
+
+14 Y. Liu et al. 3. Feng, C., et al.: LitePred: Transferable and scalable latency prediction for hardware-aware neural architecture search. In: Proc. NSDI. pp. 1463–1477 (2024) 4. Frantar, E., et al.: Spdy: Accurate pruning with speedup guarantees. In: Proc. ICML. pp. 6726–6743 (2022) 5. Fu, W., et al.: Unicos: A unified neural and accelerator co-search framework for cnns and vits. In: DAC. pp. 1–6 (2025) 6. Gale, T., et al.: Sparse gpu kernels for deep learning. In: Proc. SC. pp. 1–14 (2020) 7. He, Y., et al.: Amc: Automl for model compression and acceleration on mobile devices. In: ECCV. pp. 784–800 (2018) 8. Huang, N.C., et al.: Elsa: Exploiting layer-wise n: m sparsity for vision transformer acceleration. In: Proc. CVPR. pp. 8006–8015 (2024) 9. Kang, X., et al.: Suarch: Accelerating layer-wise n: M sparse pattern with a unified architecture for deep-learning edge device. In: Proc. ASP-DAC. pp. 700–705 (2025) 10. Lin, B., et al.: Efficient gpu kernels for n: m-sparse weights in deep learning. In: Proc. MLSys. pp. 513–525 (2023) 11. Liu, W., et al.: Arch2end: Two-stage unified system-level modeling for heteroge-neous intelligent devices. IEEE Trans. Comput.-Aided Des. Integr. Circuits Syst. 
+
+43 (11), 4154–4165 (2024) 12. Liu, Z.G., et al.: S2ta: Exploiting structured sparsity for energy-efficient mobile cnn acceleration. In: Proc. HPCA. pp. 573–586 (2022) 13. Lou, W., et al.: Unleashing network/accelerator co-exploration potential on fpgas: A deeper joint search. IEEE Trans. Comput.-Aided Des. Integr. Circuits Syst. 
+
+43 (10), 3041–3054 (2024) 14. Mishra, A., et al.: Accelerating sparse deep neural networks. arXiv (2021) 15. NVIDIA: NVIDIA A100 Tensor Core GPU Architecture. Whitepaper (2020) 16. Qin, Y., et al.: Enhancing long sequence input processing in fpga-based transformer accelerators through attention fusion. In: Proc. GVLSI. pp. 599–603 (2024) 17. Sieberling, O., et al.: Evopress: Towards optimal dynamic model compression via evolutionary search. In: ICML (2024) 18. Sun, W., et al.: Dominosearch: Find layer-wise fine-grained n: M sparse schemes from dense neural networks. Adv. Neural. Inf. Process. Syst. 34 , 20721–20732 (2021) 19. Tang, C., et al.: CloserToMe: A unified framework for accurate and transferable latency prediction across heterogeneous devices. In: Proc. AAAI. pp. 25805–25813 (2026) 20. Touvron, H., et al.: Training data-efficient image transformers & distillation through attention. In: Proc. ICML. pp. 10347–10357 (2021) 21. Wang, Z., et al.: UniCoX: A unified cost model for tensorized program tuning across ubiquitous accelerators. IEEE Trans. Comput. 75 (1), 305–319 (2025) 22. Wang, Z., et al.: UniSparTa: A unified sparse tensor program tuning framework. IEEE Trans. Comput.-Aided Des. Integr. Circuits Syst. (2025) 23. Yang, T.J., et al.: Netadapt: Platform-aware neural network adaptation for mobile applications. In: ECCV. pp. 285–300 (2018) 24. You, H., et al.: Vitcod: Vision transformer acceleration via dedicated algorithm and accelerator co-design. In: Proc. HPCA. pp. 273–286 (2023) 25. Zhou, A., et al.: Learning n: m fine-grained structured sparse neural networks from scratch. In: Proc. ICLR (2021)

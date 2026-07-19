@@ -1,0 +1,805 @@
+Title: EMO: Energy Efficiency Modeling and Optimization for AI Workloads
+
+URL Source: https://arxiv.org/pdf/2607.12324v1
+
+Published Time: Wed, 15 Jul 2026 11:59:01 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# EMO: Energy Efficiency Modeling and Optimization for AI Workloads 
+
+Jiyu Luo 
+
+University of Science and Technology of China 
+
+Hefei, China luojiyu@mail.ustc.edu.cn 
+
+Shaoyu Chen 
+
+University of Science and Technology of China 
+
+Hefei, China rktrem@mail.ustc.edu.cn 
+
+Jingwei Sun 
+
+University of Science and Technology of China 
+
+Hefei, China sunjw@ustc.edu.cn 
+
+Shengcai Liu 
+
+Southern University of Science and Technology 
+
+Shenzhen, China 
+
+Guangdong Provincial Key Laboratory of Brain-Inspired Intelligent Computation 
+
+Shenzhen, China liusc3@sustech.edu.cn 
+
+Ke Tang 
+
+Southern University of Science and Technology 
+
+Shenzhen, China 
+
+Guangdong Provincial Key Laboratory of Brain-Inspired Intelligent Computation 
+
+Shenzhen, China tangk3@sustech.edu.cn 
+
+Guangzhong Sun 
+
+University of Science and Technology of China 
+
+Hefei, China gzsun@ustc.edu.cn 
+
+Abstract —The massive energy consumption of GPU-accelerated AI workloads challenges sustainable computing. We observe that execution asynchrony (e.g., CPU-GPU, concurrent streams, multi-GPU) creates slack, allowing non-critical kernels to run at lower frequencies to save energy without impacting end-to-end latency. However, existing approaches fail to simultaneously achieve workload generality and fine-grained slack discovery, while high-fidelity modeling incurs prohibitive overhead. We present EMO, a lightweight framework exploiting these fine-grained opportunities. First, to identify where to optimize, EMO constructs a low-level dependency graph capturing asyn-chrony and performs what-if timing analysis to precisely identify slack windows. Second, to determine how to optimize, EMO in-troduces dependency-aware kernel packing. It aggregates kernels to preserve critical paths while collapsing redundant details, enabling high-fidelity latency-energy modeling with minimal profiling cost. Finally, EMO combines graph analysis and pack-level models to formulate energy optimization as a constrained combinatorial problem, efficiently solving for optimal frequency policies under given latency targets. Evaluations show EMO reduces energy consumption by 15%–28% with only 2%–5% performance loss and negligible overhead. 
+
+Index Terms —Energy Efficiency, Dynamic Voltage and Fre-quency Scaling (DVFS), Performance Modeling 
+
+I. I NTRODUCTION 
+
+The rapid advancement of deep learning has dramatically increased computational power demands across increasingly diverse AI workloads, including training and inference [1]– [5], leading to widespread adoption of GPUs and specialized accelerators in both cloud and on-premise datacenters. As models and datasets continue to scale, the resulting surge in energy consumption has become a critical concern. Studies indicate that training large language models such as GPT-3 can consume energy on the order of gigawatt-hours (GWh) [6]–[9], driving energy costs to represent a substantial portion of total AI infrastructure expenditure. This escalating power consumption not only inflates operational costs but also con-strains scalability and sustainability objectives [10], [11]. Dynamic Voltage and Frequency Scaling (DVFS) is widely supported on modern accelerators, providing trade-offs be-tween performance and energy. Hardware-integrated tech-niques such as CRISP [12], PCSTALL [13], and ReGate [14] enable nanosecond-level responsiveness but rely on cus-tomized hardware support or simulators, limiting their appli-cability. In contrast, software runtimes expose DVFS through vendor APIs and offer superior flexibility and portability, mak-ing them the predominant approach for energy optimization in production systems [15], [16]. Existing software approaches generally fall into two categories: model-free and model-based. Model-free meth-ods [15]–[19] avoid detailed modeling by using online met-rics (e.g., utilization) to reactively adjust frequencies. Model-based methods [20]–[24] construct detailed performance-energy models to determine optimal frequency scaling poli-cies. However, a fundamental limitation persists across both categories. Neither approach effectively captures fine-grained slack of the AI execution graph, leading to missed optimization opportunities. We identify two fundamental challenges in achieving optimal energy efficiency: 
+
+Challenge 1: The Dilemma of Slack Discovery: Gener-ality vs. Granularity. Modern AI workloads exhibit complex, asynchronous parallelism where tasks span CPUs, GPUs, and network interconnects concurrently. This asynchrony creates 
+
+execution slack , defined as time windows where kernels are not on the critical path of the workload. As illustrated in Figure 1, we can decrease the frequency of a kernel within this slack to arXiv:2607.12324v1 [cs.PF] 14 Jul 2026 K1 K2 K4          
+
+> Comm2
+> K3 K5
+> Comm1
+> Stream 1 Stream 2 GPU Compute Kernel KComm NCCL Communication
+> K1 K2 K4
+> Comm2
+> K3 K5
+> Comm1
+> Stream 1 Stream 2
+> Frequency Scaling
+> Freq 1 Freq 2 Freq 3
+> Freq Window Slack Window Fig. 1. Asynchronous execution creates slack where non-critical kernels can run at lower frequencies to save energy without end-to-end performance loss.
+
+save energy. This does not affect the end-to-end iteration time because the delay is hidden by other concurrent tasks. However, discovering this slack presents a fundamental dilemma between generality and granularity. Existing model-free approaches are workload-agnostic and highly general, but they rely on coarse-grained metrics like average GPU utilization [15]. A kernel might exhibit high utilization but still be non-critical because it is waiting for a dependency (e.g., network communication). Consequently, they either miss savings or aggressively scale down critical kernels, caus-ing performance degradation. Conversely, existing model-based approaches [21] can identify fine-grained slack, but they strongly rely on specific workload semantics (e.g. mi-crobatches, pipeline stages). This heavy reliance inherently sacrifices workload generality, rendering them ineffective for arbitrary or emerging AI models. 
+
+Challenge 2: The Tension between Modeling Fidelity and Profiling Overhead. Exploiting execution slack requires fine-grained DVFS decisions at per-kernel granularity or millisecond-scale to distinguish critical operations. It relies on a high-fidelity latency-energy model that predicts how changing frequency affects latency and energy for specific kernels under specific dependency contexts. However, obtaining this fidelity creates a fundamental con-flict with profiling overhead. Accurate modeling typically demands exhaustive runtime profiling [25], [26] or pre-built lookup tables [27] to map variations across all frequency set-tings. Such detailed characterization incurs prohibitive costs, as any change in workload, input size, or hardware configura-tion necessitates repeating the process. This creates a tension: while high-fidelity modeling is essential for identifying slack, the associated profiling overhead renders it impractical for dynamic production environments. To address these challenges, this paper presents EMO ,a lightweight Energy Modeling and Optimizing framework that systematically discovers and exploits fine-grained energy optimization opportunities in AI workloads. Our design is built on two design insights: (1) optimization potential lies within low-level execution dependencies, and (2) effective latency-energy modeling requires a proper granularity that balances fidelity with runtime efficiency. EMO operates in three phases. First, it abstracts the work-load execution into a fine-grained Execution Graph . This graph captures GPU compute events, CPU events, and com-munication primitives, along with their happens-before con-straints. Second, to reduce modeling overhead, EMO employs 
+
+dependency-aware kernel packing . Instead of profiling every GPU kernel, EMO aggregates kernels into representative packs that preserve critical dependencies while collapsing redundant scheduling details. EMO combines lightweight profiling with microbenchmark-based predictors to build accurate latency-energy models for these packs. Finally, EMO integrates these pack-level models into the execution graph to perform aholistic what-if analysis. It formulates the energy minimization task as a constrained combinatorial optimization problem and employs a dynamic programming algorithm to efficiently derive the optimal frequency policy within a performance budget. Our contributions are as follows:  
+
+> •
+
+We propose a general and lightweight framework for energy modeling and optimization. It performs what-if analysis on low-level dependency graphs. This approach captures comprehensive asynchronous behaviors, enabling the precise identification of execution slack and optimiza-tion opportunities that prior methods miss.  
+
+> •
+
+We introduce dependency-aware kernel packing techniques that substantially reduce profiling overhead for fine-grained modeling. By combining profiling results with microbench-based performance prediction, we enable accurate and efficient estimation of the latency and energy consumption for each pack under various frequency settings.  
+
+> •
+
+We formulate energy efficiency optimization as a com-binatorial optimization problem and design an efficient algorithm that yields near-optimal solutions. Evaluations show EMO reduces energy consumption by 15%–28% with only 2%–5% performance loss and negligible overhead. II. R ELATED WORK 
+
+Modeling Energy Efficiency. Accurate optimization of energy efficiency on GPUs requires detailed knowledge of workload and performance characteristics under different fre-quency configurations. Guerreiro et al. [25], [26], [28]–[31] construct analytical or machine learning models by collecting runtime performance metrics to predict kernel performance and energy consumption. For large-scale AI workloads, the profiling overhead associated with collecting fine-grained data becomes prohibitive. Some approaches sidestep runtime pro-filing by leveraging static information [32], [33] to predict performance characteristics without execution. Lookup table approaches [21], [27] record kernel or forward/backward pass latency and energy consumption offline under different fre-quencies to reduce profiling overhead. However, hardware limitations complicate fine-grained energy measurement at millisecond granularity, often requiring hundreds of kernel executions to obtain accurate energy readings [25]. Moreover, TABLE I COMPARISON OF VARIOUS ENERGY OPTIMIZATION METHODS .                                                         
+
+> Related Work Slack Discovery Granularity Workload Generality Profiling Overhead Online Adaptation Overhead Platform
+> MF-GPOEO [19] Coarse ✓Low High NVIDIA ZEUS [17] Coarse ✓Low High NVIDIA EnvPipe [20] Fine ✗High Low NVIDIA PERSEUS [21] Fine ✗High Low NVIDIA GEEPAFS [16] Coarse ✓Low High NVIDIA
+> μ-Serve [18] Coarse ✓Low High NVIDIA EVeREST [15] Coarse ✓Low High NVIDIA, AMD throttLL’eM [22] Fine ✗High Low NVIDIA DynamoLLM [27] Fine ✗High Low NVIDIA Wang et. al. [23] Coarse ✓Moderate Low Ascend EMO (Ours) Fine ✓Low Low NVIDIA
+
+these profiling efforts must be regenerated when workloads change, incurring substantial additional overhead. 
+
+Optimizing Energy Consumption. We categorize energy optimization methods into two categories: model-free and model-based approaches. Model-free methods typically em-ploy feedback-based frequency tuning [15]–[19] and operate on coarse-grained system metrics such as utilization. Although recent works like μ-Serve [18] introduce operator-level fre-quency sensitivity modeling, they essentially remain feedback-driven approaches that cannot capture fine-grained execution slack. Consequently, the lack of comprehensive dependency modeling prevents them from accurately identifying optimiza-tion opportunities, resulting in suboptimal energy efficiency. Additionally, feedback-based tuning often results in slow or in-complete convergence, requiring extensive online exploration that disrupts normal runtime execution. Model-based approaches [20]–[23], [27], [34], [35] leverage pre-constructed models to formulate energy optimization as a structured search problem. Wang et al. [23] collect power consumption data to build analytical models that predict kernel energy and execution time, then employ genetic algorithms to search for optimal frequency policies. Beyond kernel-level modeling, some studies focus on workload-specific analysis to uncover optimization opportunities. Works such as Perseus [20], [21] exploit asynchrony in pipeline-parallel execution to mask frequency scaling latencies, proposing two types of “energy bloat” that correspond to inter-GPU asynchrony in our taxonomy. Similarly, works such as throt-tLL’eM [22], [27], [36] perform in-depth analysis of LLM serving workloads to optimize energy consumption. Although such workload-specific analysis enables deeper optimization, it inherently limits generalizability. Currently, no existing approach provides fine-grained optimization capabilities that generalize across arbitrary workloads. Table I provides a qualitative comparison of representative energy optimization techniques across several dimensions: (1) the granularity of their slack discovery, (2) their workload gen-erality, (3) profiling overhead, (4) online adaptation overhead, and (5) supported platforms. Our approach, EMO, establishes a new balance: achieving fine-grained, workload-agnostic en-ergy optimization with minimal profiling and online adaptation overhead, making it practical for deployment in diverse AI computing environments. III. K EY INSIGHTS 
+
+Our design is guided by two key insights that address the fundamental challenges of optimizing end-to-end energy efficiency for diverse AI workloads. Model   
+
+> Framework
+> Execution Primitive
+> Hardware
+> Model Architectures, Training/Inference Con fi gurations
+> Parallelism Strategies Tensor Algebra, Autograd, Computation Graph
+> NCCL Comm, CUDA Kernel, CUDA Runtime / Driver API Physical Computing and Communication Resources
+> (GPU, NPU, CPU, Memory, Interconnects)
+> Fig. 2. Abstraction Layers in Modern AI Systems
+
+A. Workload-Agnostic Slack Discovery via Execution Graph 
+
+To identify where energy can be saved without hurting performance, we must first understand the complex execution flow of AI workloads. Modern AI systems are not monolithic; they are orchestrated across heterogeneous resources involving GPU computation, interconnect communication, and diverse CPU operations ranging from control logic to compute-heavy offloading. This interaction creates inherent asynchrony, which we categorize into three types: (1) CPU-GPU Asynchrony: CPU and GPU execute tasks independently during memory-constrained offloading or heterogeneous computation [37]–[40]. (2) Intra-GPU Asynchrony: Communication and computa-tion proceed concurrently within a single GPU, particu-larly in data parallelism and tensor parallelism implemen-tations [41]–[43]. (3) Inter-GPU Asynchrony: Multiple GPUs perform dif-ferent tasks or exhibit varying computational intensities, causing load imbalance or straggler effects in pipeline parallelism and heterogeneous environments [44]–[46]. Capturing these asynchronous behaviors is crucial for lo-cating execution slack. However, as shown in Figure 2, the choice of abstraction level determines the visibility of these opportunities. High-level abstractions, such as model archi-tectures or framework computation graphs, focus on logical data dependencies but obscure the runtime parallelism (e.g., overlapping communication with computation). Conversely, hardware-level instruction traces provide full detail but are too noisy and expensive to collect for runtime optimization. We identify the Execution Primitive level as the optimal abstraction layer to break the dilemma between generality and granularity. This level consists of CUDA kernels, runtime API calls, and NCCL operations. Regardless of the upper-level model semantics or frameworks, all workloads ultimately decompose into these fundamental primitives. By constructing an Execution Graph at this level, we can explicitly map the happens-before dependencies between primitives. This graph provides the fine-grained visibility needed to pinpoint execution slack, while remaining workload-agnostic. It enables us to perform precise “what-if” analysis to predict how fre-quency adjustments on specific primitives propagate through the graph and affect end-to-end latency, without relying on any predefined model structures. 5.555 ms 5.555 ms 5.571 ms 6.020 ms 10.190 ms 10.189 ms   
+
+> Start Freq Change Finish Freq Change
+> CPU GPU
+> Sleep 10ms After
+> Kernel Launch
+> Fig. 3. Execution trace on an RTX 3080 Ti demonstrating the overhead of frequency scaling. Six identical kernels are executed sequentially, and a frequency change from 1800 MHz to 900 MHz is initiated at 10 ms, and taking effect during the fourth kernel.
+
+B. Kernel Packing Balances Modeling Fidelity and Overhead 
+
+While the execution graph reveals where optimization op-portunities exist, the challenge shifts to how to efficiently model and select frequencies. As highlighted in Challenge 2, a fundamental tension exists between modeling fidelity and profiling overhead. Characterizing the energy and latency sensitivity of every individual kernel to achieve high fidelity incurs prohibitive runtime costs. While recent studies [27] report that GPU frequency adjust-ments incur overheads and degrade throughput, our profiling reveals a different hardware reality. As illustrated in Figure 3, when we execute identical kernels and initiate a frequency change, the adjustment process is entirely asynchronous. It does not block GPU execution or create bubbles, and the actual hardware-level frequency transition occurs with negligible interference to the running kernels. Although the scaling process is non-blocking, the DVFS command still requires an interval of 5 to 15 milliseconds [26] to take effect. While we can pre-issue commands to align the actual frequency transition with the start of slack windows, this delay fundamentally limits the control granularity. Conse-quently, modeling performance at a sub-millisecond per-kernel resolution is wasteful and provides redundant information that the DVFS controller cannot exploit. This observation leads to our second insight: Kernel Pack-ing. To eliminate wasteful profiling, we define a pack as a continuous sequence of GPU compute kernels aggregated to match this control granularity. We specifically isolate compute kernels because they are the primary energy consumers sen-sitive to frequency scaling, whereas communication [47] and CPU tasks are generally frequency-tolerant. By evaluating at the pack level, EMO reduces the number of entities requiring profiling, collapsing redundant scheduling details. However, arbitrary packing would obscure the structural insights gained from the execution graph. To resolve this, EMO introduces dependency-aware kernel packing in the next section. It aggregates kernels only when such grouping preserves the critical-path relationships identified in the graph. L12           
+
+> K12
+> Computation L11
+> K4 K5 K8
+> Synchronization L1
+> K1
+> Comm2
+> K6 K7 K11
+> Comm1
+> CPU GPU Stream 1
+> LKernel Launch GPU Kernel KDependency Comm NCCL Communication Kernel Packing
+> GPU Stream 2
+> Fig. 4. A Kernel Packing Example
+
+IV. D ESIGN OF EMO 
+
+A. Overview 
+
+Building on the insights discussed above, we introduce EMO, a general and lightweight framework for energy mod-eling and optimization across diverse AI workloads. As il-lustrated in Figure 5, EMO comprises three key components: 
+
+➊ the Profiling phase, ➋ the Modeling phase, and ➌ the 
+
+Optimization phase. Central to this framework is the Graph Analysis within the modeling phase. For a given AI workload, EMO first employs a trace profiler to capture low-level execution primitives and their dependencies, constructing a Directed Acyclic Graph (DAG) that fully characterizes the workload’s asynchronous behavior. It then performs a what-if Analysis on the DAG to formally quantify how frequency scaling of GPU compute ker-nels affects end-to-end latency and total energy consumption. Based on the dependency structure revealed by the DAG, we select appropriate packing strategies to aggregate GPU kernels into coarse-grained packs. For a small subset of representative packs, we utilize a lightweight pack profiler to record runtime performance metrics. These metrics are fed into a microbenchmark-based model to predict the latency and energy sensitivity of each pack to frequency changes. Finally, by integrating pack-level modeling with the holistic DAG analysis, EMO asyn-chronously searches for and applies near-optimal frequency configurations at runtime. This enables continuous online en-ergy efficiency optimization, adapting to workload characteris-tics without interrupting or significantly impacting execution. Latency 
+
+> Pack Modeling
+> Energy
+> Freq
+> Trace Profiler
+> CUDA Runtime, CUDA Kernel,
+> CUDA Sync, NCCL Sync, ......
+> Pack Profiler
+> Performance Metrics Instruction Mix
+
+AI Workloads - Model Architectures - Optimization Methods - Heterogeneous Envs - Parallel Strategies  
+
+> Packing Strategies What-if Analysis on DAG
+> Graph Analysis
+
+Profiling Modeling 
+
+> Graph-based Policy Searching
+
+Frequency Policy 
+
+# +
+
+Optimization 
+
+❶
+
+❷
+
+❸ 
+
+> Fig. 5. Overview of EMO
+
+B. Profiling 
+
+Although several mature GPU profilers exist, such as NVIDIA Nsight Systems, Nsight Compute [48], [49], PyTorch Profiler [50], and various simulation-based tools [51]–[53], these solutions do not fully satisfy EMO’s requirements for lightweight, flexible-purpose profiling. In particular, they lack native support for kernel packing, efficient pack-level metric collection, and low-level execution graph construction. To address these limitations, we implement EMOprofiler directly on top of CUPTI [54]. EMOprofiler consists of two main components: the trace profiler and the pack profiler. The Trace Profiler captures key execution primitives and their dependencies during program execution. We utilize three categories of primitives to represent all program events as nodes in the graph. First, for CPU Events , we capture all CUDA Runtime APIs via CUPTI’s Activity API. We define the interval between two consecutive runtime APIs as afixed CPU computation event. This design is based on the observation that GPU frequency scaling does not impact CPU latency, and CPU-side logic or computation are inherently captured within these intervals. Second, for GPU Kernels , we record CUDA kernels via CUPTI’s Activity API. Finally, re-garding Communication , NCCL operations are instrumented via LD_PRELOAD to record details such as communication domains and participants. Accurately capturing dependencies as DAG edges is es-sential for reconstructing asynchronous and overlapping ex-ecution, which is critical for understanding the impact of frequency scaling. Similar to the asynchrony categories in the Section III, we classify dependencies into three categories: (1) CPU-GPU : Explicit dependencies including kernel launch APIs, CUDA stream/event synchronizations, and memory copy APIs. (2) Intra-GPU : Explicit dependencies where synchroniza-tion between streams is established via CUDA Even-tRecord and enforced with CUDA StreamWaitEvent, en-abling control computation and communication overlap. (3) Inter-GPU : Implicit dependencies where various com-munication APIs use polling mechanisms to synchronize across devices [55]. The Pack Profiler enables online collection of pack-level metrics. By intercepting kernel launches via CUPTI Callbacks APIs, EMOprofiler inserts user-range profiling APIs before and after each identified pack, following the packing strategies in Section IV-D. Similar to existing work [25], [26], [28], we collect several key metrics that provide the foundation for subsequent performance and energy modeling, as summarized in Table II.            
+
+> TABLE II GPU P ERFORMANCE METRICS
+> ID Description Cyc SM active cycles Warp Avg. active warps per cycle DRR/W DRAM bytes read and written L1/L2 L1TEX or L2 access bytes ALU Arithmetic/logic instructions FMA Fused multiply-add instructions FP64 Double-precision (FP64) instructions Mem Memory access instructions Ten Tensor core instructions
+
+C. What-if Analysis on DAG 
+
+Using the information collected by the trace profiler, we construct an execution graph in which each execution primitive is represented as a node, and dependencies are represented as directed edges. For the what-if analysis, our goal is to determine how frequency changes in GPU compute kernels or packs affect end-to-end latency. Formally, the execution graph is a directed acyclic graph (DAG), denoted as G = ( V, E ),where each node v ∈ V corresponds to an event, and each edge (i, j ) ∈ E encodes a precedence constraint: event i must finish before event j can begin. This DAG structure captures both the parallelism and dependency relationships within the workload. For each node v, we define its completion time as: 
+
+Cv = tv + max  
+
+> k∈pred( v)
+
+Ck, (1) where tv is the execution time of node v measured during trace profiling, and pred( v) denotes the set of predecessor nodes for 
+
+v. The end-to-end latency and total energy consumption of the workflow are then given by: 
+
+TDAG = max  
+
+> v∈V
+
+Cv , EDAG = X
+
+> v∈V
+
+ev + Eidle , (2) where ev is the energy consumed by node v, and Eidle 
+
+represents idle energy consumption. To optimize EDAG and TDAG , we consider adjusting the GPU frequency. When the operating frequency changes, both 
+
+tv and ev become functions of the frequency. For each node: 
+
+tv → t(fv ) 
+
+> v
+
+, ev → e(fv ) 
+
+> v
+
+, (3) where fv is the operating frequency during the execution of node v. Note that for non-GPU-kernel nodes, the execution time or energy may not be affected by GPU frequency. We define a frequency policy P = { ⟨ Ti, F i⟩ | i = 1 , 2, ... },where Ti are the time points at which frequency changes occur, and Fi are the corresponding frequency settings. For simplicity, we omit GPU IDs, although in practice, each GPU may be governed by its own policy. The optimization objective is to find a feasible policy P that minimizes total energy consumption, subject to an end-to-end latency constraint: 
+
+arg min  
+
+> P
+
+Energy = X
+
+> v∈V
+
+e(fv ) 
+
+> v
+
++ Eidle 
+
+s.t. TDAG = max  
+
+> v∈V
+
+Cv ≤ Tset ,Cv = t(fv ) 
+
+> v
+
++ max  
+
+> k∈pred( v)
+
+Ck, ∀v ∈ V, 
+
+∆Ti = Ti+1 − Ti ≥ ϵ, 1 ≤ i ≤ | P |,
+
+(4) where 
+
+fv = Fi if max  
+
+> k∈pred( v)
+
+Ck ∈ [Ti, T i+1 ].
+
+This formulation provides a general objective to guide en-ergy optimization under performance constraints. When the frequency policy P changes, the frequency fv of node v
+
+changes accordingly. This alters the node’s duration t(fv ) 
+
+> v
+
+. If this change causes node v to fall on the critical path, the end-to-end execution time TDAG will shift. 
+
+D. Packing Strategies 
+
+Kernel packing essentially aggregates the GPU compute kernels into larger units in the DAG. While kernel packing effectively reduces profiling overhead, it also disrupts the original execution graph’s dependencies. This disruption can potentially invalidate the end-to-end performance analysis de-scribed in Equation 2. The DAG’s end-to-end latency is determined by each node’s critical predecessor k∗ 
+
+> v
+
+, defined as: 
+
+k∗ 
+
+> v
+
+= arg max  
+
+> k∈pred( v)
+
+Ck, (5) where the edge k∗ 
+
+> v
+
+→ v represents a critical dependency, and 
+
+v becomes the critical successor of k∗ 
+
+> v
+
+.Comm2       
+
+> K4 K2 K3 K1
+> Comm1
+> GPU Stream 1 GPU Compute Kernel KComm NCCL Communication Critical Dependency GPU Stream 2
+> Fig. 6. Incorrect packing strategy leads to loss of critical dependencies.
+
+When kernels are packed together, only the incoming de-pendencies of the first kernel and the outgoing dependencies of the last kernel are preserved. All intermediate dependencies are lost. As illustrated in Figure 6, incorrect packing leads to the loss of critical dependencies. For instance, if we pack K3 and K4, we lose the critical dependency from K3 to Comm2. This loss results in incorrect critical path analysis and inaccurate performance predictions. 
+
+1 # Input: V (Sorted GPU kernels) 
+
+2 packs, curr_pack = [], [] 
+
+3 for v in V: 
+
+4 if not curr_pack: 
+
+5 curr_pack = [v]; continue 
+
+67 # Last node in current pack 
+
+8 u = curr_pack[-1] 
+
+910 # Dependency Safety 1
+
+11 r1 = (stream(v)==stream(v.crit_pred)) 
+
+12 # Dependency Safety 2
+
+13 r2 = all(stream(k)==stream(u) \
+
+14 for k in u.crit_succ) 
+
+15 # Granularity Control 
+
+16 r3 = duration(curr_pack) + t_v < ∆max 
+
+17 18 # Check Rules 
+
+19 if r1 and r2 and r3: 
+
+20 curr_pack.append(v) 
+
+21 else: 
+
+22 packs.append(curr_pack) 
+
+23 curr_pack = [v] 
+
+24 25 packs.append(curr_pack)  
+
+> Listing 1. Dependency-Aware Greedy Packing
+
+Our goal is to design a packing strategy ensuring that these lost dependencies would never become critical dependencies under any frequency setting. Based on the property that GPU compute kernel execution time monotonically increases as frequency decreases, we propose a Dependency-Aware Greedy Packing approach governed by the following three rules: 1) Dependency Safety 1: For all non-initial nodes i within a pack, ensure that i and its critical predecessor k∗ 
+
+> i
+
+belong to the same stream. 2) Dependency Safety 2: For all non-final nodes i within a pack, ensure that i and all its critical successors belong to the same stream. 3) Granularity Control: The cumulative execution time of a pack under the default frequency should not exceed a predefined threshold ∆max .The first two rules preserve key dependencies (Figure 6), while the third ensures appropriate DVFS control granularity. Since GPU frequency adjustments typically require 5–15 ms to take effect, setting ∆max = 5 ms balances control resolution with packing benefits. It is worth noting that because the DVFS transition latency is explicitly modeled in the constraints of Equation 4, the pack duration does not need to strictly align with this latency. Listing 1 details the procedure where we iterate through kernels in topological order and merge them only if these constraints are satisfied. To further reduce overhead, we employ pack-level sampling by hashing the sequence of kernel names within each pack. Unlike individual kernels, whose performance varies signifi-cantly based on context and cannot be easily clustered [56], packs encapsulate sufficient contextual information to allow reliable sampling. Consequently, we profile only the first occurrence of each unique pack. These strategies collectively guide the pack profiler in acquiring accurate performance metrics for the modeling described in the subsequent section. 
+
+E. Pack Modeling 
+
+Unlike general performance prediction models that estimate execution metrics from scratch [57], our modeling task is much more focused: we already possess the exact characteristics of a pack at the maximum (default) frequency. Our goal is to predict its scaling behavior at lower frequencies. However, machine learning-based approaches [29] are infea-sible for this task because acquiring ground-truth energy labels at the pack level is impractical. GPU power sensors have a low sampling frequency (e.g., ∼50ms) [28], making it impos-sible to directly measure millisecond-scale packs. Measuring hundreds of looped packs to accumulate measurable energy is also inaccurate, since isolating real workload packs from live execution destroys runtime context and memory states. These limitations lead us to adopt a simplified yet highly accurate microbenchmark-based characterization methodology established in prior studies [25], [28], [58], [59]. We use a combination of microbenchmarks as a proxy for each orig-inal pack, shifting the measurement burden from packs to microbenchmarks, which can be easily isolated and repeated for precise ground-truth energy profiling. This approach incurs only a one-time offline overhead while enabling rapid online predictions using the metrics collected in Table II. Specifically, we utilize a suite of 12 microbenchmarks. Building upon Guerreiro et al. [28], we augment standard scalar and memory benchmarks with specialized Tensor Core workloads (HMMA and IMMA) to capture the matrix-heavy nature of modern AI models. We profile the power and latency of these microbenchmarks offline across all frequency states to construct a metric matrix B ∈ Rn×m.At runtime, we characterize the target pack by collecting a feature vector b ∈ Rn at the default frequency. We then decompose the pack’s behavior into a linear combination of our microbenchmarks by solving a non-negative least squares (NNLS) problem [58] to find the composition weights x =(x1, . . . , x m)⊤ ∈ Rm:
+
+arg min  
+
+> x
+
+∥Bx − b∥2 s.t. xi ≥ 0, ∀i ∈ { 1, . . . , m }. (6) With the weights x resolved, the predicted energy Ef
+
+and latency Tf of the pack at any target frequency f are efficiently computed as the weighted sum of the pre-profiled microbenchmark metrics: 
+
+Ef [P] = 
+
+> m
+
+X
+
+> i=1
+
+xi · Ef [Bi], Tf [P] =
+
+> m
+
+X
+
+> i=1
+
+xi · Tf [Bi]. (7) This lightweight analytic model allows EMO to instantly de-rive frequency scaling behaviors, decoupling energy modeling from online power measurements. 
+
+Algorithm 1 End-to-End Prediction (What-If Analysis) 
+
+Require: DAG G = ( V, E ); frequency policy P ;Modeling tables Tf , E f for packs; idle power pidle [f ]
+
+Ensure: End-to-end time T , total energy E 
+
+> 1:
+
+Initialize comp [v], pred [v] for all v ∈ V 
+
+> 2:
+
+Ea ← 0, Ei ← 0 // active and idle energy  
+
+> 3:
+
+for node v in topological order of G do  
+
+> 4:
+
+start ← comp [pred [v]]  
+
+> 5:
+
+if v is a pack then  
+
+> 6:
+
+f ← Fi where start ∈ [Ti, T i+1 ) in P 
+
+> 7:
+
+dur ← Tf [v], e ← Ef [v] 
+
+> 8:
+
+else  
+
+> 9:
+
+dur ← tv , e ← 0 
+
+> 10:
+
+end if  
+
+> 11:
+
+comp [v] ← start + dur , Ea ← Ea + e 
+
+> 12:
+
+for each u in successors of v do  
+
+> 13:
+
+if ! pred [u] or comp [v] > comp [pred [u]] then  
+
+> 14:
+
+pred [u] ← v 
+
+> 15:
+
+end if  
+
+> 16:
+
+end for  
+
+> 17:
+
+end for  
+
+> 18:
+
+for each [Ti, T i+1 ) in P do  
+
+> 19:
+
+Ei ← Ei + idle_time [Ti,T i+1 ) × pidle [Fi] 
+
+> 20:
+
+end for  
+
+> 21:
+
+T ← max v∈V comp [v] 
+
+> 22:
+
+E ← Ea + Ei 
+
+> 23:
+
+return T, E 
+
+F. Energy Efficiency Optimization 
+
+We have formulated frequency policy optimization as the problem in Formulation 4. To efficiently evaluate optimization objectives, we integrate the pack-level models into the global execution graph to perform a holistic what-if analysis. Given a frequency policy, we can efficiently predict end-to-end execution using our performance models and execution graph. Algorithm 1 details this prediction process: we perform a single topological traversal of the DAG, updating each pack’s time and energy consumption under its assigned frequency while tracking critical predecessors. We then account for idle energy consumption to obtain end-to-end predictions. Since this requires only one topological traversal, the time complexity is O(|V | + |E|).
+
+Algorithm 2 Search Near-optimal Frequency Policy 
+
+Require: frequency intervals {[pi, p i+1 )}; constraint Tmax ;supported frequencies {F }; Predict function Pred( P );
+
+Ensure: P ∗: near-optimal policy  
+
+> 1:
+
+Initialize P0 = default freq in all intervals  
+
+> 2:
+
+(t0,E0) = Pred( P0) 
+
+> 3:
+
+Initialize dp [0][ t0] ← (E0, P 0) 
+
+> 4:
+
+for i = 0 to |P | − 1 do  
+
+> 5:
+
+for each (t, (E, P )) in dp [i] do  
+
+> 6:
+
+for each f ∈ F do  
+
+> 7:
+
+P ′ ← set freq f in [pi, p i+1 ) in P 
+
+> 8:
+
+(t′, E ′) ← Pred( P ′) 
+
+> 9:
+
+if t′ ≤ Tmax and E′ < dp [i + 1][ t′].energy then  
+
+> 10:
+
+dp [i + 1][ t′] ← (E′, P ′) 
+
+> 11:
+
+end if  
+
+> 12:
+
+end for  
+
+> 13:
+
+end for  
+
+> 14:
+
+Clear dp [i − 1] if i > 0 // memory recycle  
+
+> 15:
+
+end for  
+
+> 16:
+
+(E∗, P ∗) ← min t≤Tmax dp [N ][ t] 
+
+> 17:
+
+return P ∗
+
+However, finding the optimal policy is challenging. Even coarse-grained versions of this problem are NP-hard [21]. Therefore, we introduce several simplifications to enable ef-ficient search. The energy optimization problem on graphs shares similarities with the knapsack problem [21]. Inspired by this connection, we develop a pseudo-polynomial time algo-rithm. We first discretize the performance constraint and fix the frequency change time points Ti. This discretization introduces minimal error since we can set an arbitrarily fine granularity (e.g., 1 ms), and our problem formulation already imposes minimum interval constraints on frequency transitions. As shown in Algorithm 2, we employ dynamic program-ming with a state array dp [i][ t] storing the minimum en-ergy consumption when the first i frequency change points have been processed and the end-to-end time is t. This is a pseudo-polynomial algorithm, as the time complexity is proportional to ∆T = Tset − T0, where T0 is the end-to-end latency at maximum frequency (frequency scaling can only increase execution time). Since each state update requires invoking the prediction algorithm, the total time complexity is 
+
+O(|P | · | F | · ∆T · (|V | + |E|)) , where |P | is the number of frequency change points and |F | is the number of available frequency levels. V. E VALUATION 
+
+A. Setup 
+
+Workloads and Hardware. We evaluate EMO across workloads that demonstrate the three asynchronous patterns from Section III. First, we evaluate tensor-parallel training via DeepSpeed Domino [42] for computation-communication overlap. Second, we examine pipeline-parallel training with DeepSpeed [60] for inter-GPU asynchrony. Third, we test KTransformers [61] inference with Mixture-of-Experts (MoE) offloading for CPU-GPU asynchrony. Our hardware testbed includes two NVIDIA RTX 3080 Ti GPUs (consumer-grade), and eight A100-80GB GPUs (data-center). On the 3080 Ti platform, due to memory constraints, we train LLaMA2-0.5B and Qwen2-0.5B [1]. On the A100 cluster, we train GPT3-6.7B [62] and Qwen2-7B [1], and perform inference on DeepSeek-V2-Lite [2]. 
+
+Frequency Control and Energy Monitoring. We employ Zeus’s daemon process (zeusd) [17] for frequency manage-ment, avoiding the need for administrative privileges. While our method supports both memory and SM/core frequency scaling, A100 GPUs restrict memory frequency adjustment, so we focus on SM frequency control in our experiments. Energy is monitored via NVIDIA Management Library, reporting 5-iteration averages to account for measurement variability. 
+
+Baselines. We compare with both model-free and model-based approaches. Model-free baselines include Zeus [17], which optimizes energy using power limits, and GEEP-AFS [16], which employs online modeling with GPU memory bandwidth utilization. For model-based comparison, we use Perseus [21] in pipeline-parallel scenarios, as it represents the state-of-the-art in phase-aware frequency scaling. Other relevant works, such as Wang et al. [23] and EVeREST [15], are omitted due to the lack of open-source implementations. 
+
+B. Performance and Energy Modeling 
+
+As discussed in Section IV-E, directly validating runtime pack-level energy is impractical due to the low sampling frequency of GPU power sensors. Consequently, we validate EMO’s fidelity through end-to-end measurements. Unlike indi-vidual packs, end-to-end execution spans a sufficient duration for GPU power sensors to capture reliable ground-truth energy. Specifically, our evaluation aims to verify whether EMO can accurately predict the end-to-end execution time T and total energy E under any given frequency policy P . By feeding a predefined policy P into Algorithm 1, EMO aggregates all pack-level predictions to estimate the global metrics, which are then compared against actual hardware measurements. We first evaluate static policies across diverse workloads (LLaMA2, GPT-3, and Qwen2) on RTX 3080Ti and A100 platforms, where the entire workload runs at a fixed frequency 
+
+F (i.e., P = {⟨ 0, F ⟩} ). As shown in Figure 7, EMO achieves a Mean Absolute Percentage Error (MAPE) below 3% for most configurations. Notably, it accurately captures the non-linear trend where energy sometimes increases at lower frequencies due to prolonged execution time ( E = P ower · t). 1050 1200 1350 1500 1650 1800                            
+
+> Frequency (MHz)
+> 3.30
+> 3.45
+> 3.60
+> 3.75
+> 3.90
+> Time (ns)
+> 1e8
+> MAPE: 1.1%
+> RTX 3080Ti - LLaMA2
+> (Tensor Parallel)
+> Predicted
+> Actual
+> 750 900 1050 1200
+> Frequency (MHz)
+> 0.80
+> 0.88
+> 0.96
+> 1.04
+> 1.12
+> 1e9
+> MAPE: 2.0%
+> A100 - GPT-3
+> (Tensor Parallel)
+> 1050 1200 1350 1500 1650 1800
+> Frequency (MHz)
+> 3.60
+> 3.68
+> 3.76
+> 3.84
+> 3.92
+> 1e8
+> MAPE: 0.8%
+> RTX 3080Ti - Qwen2
+> (Pipeline Parallel)
+> 750 900 1050 1200
+> Frequency (MHz)
+> 1.74
+> 1.80
+> 1.86
+> 1.92
+> 1.98
+> 1e9
+> MAPE: 0.9%
+> A100 - Qwen2
+> (Pipeline Parallel)
+> 1050 1200 1350 1500 1650 1800
+> Frequency (MHz)
+> 6.75
+> 7.00
+> 7.25
+> 7.50
+> 7.75
+> Energy (mJ)
+> 1e4
+> MAPE: 1.6%
+> Predicted
+> Actual
+> 750 900 1050 1200
+> Frequency (MHz)
+> 1.9
+> 2.0
+> 2.1
+> 2.2
+> 2.3
+> 1e5
+> MAPE: 3.0%
+> 1050 1200 1350 1500 1650 1800
+> Frequency (MHz)
+> 7.0
+> 7.5
+> 8.0
+> 8.5
+> 9.0
+> 1e4
+> MAPE: 3.1%
+> 750 900 1050 1200
+> Frequency (MHz)
+> 2.25
+> 2.40
+> 2.55
+> 2.70
+> 2.85
+> 1e5
+> MAPE: 2.7%
+
+Fig. 7. Performance and energy modeling accuracy across different workloads and GPU configurations. The top row shows execution time predictions with MAPE, while the bottom row displays energy consumption predictions. EMO achieves low prediction errors across diverse scenarios. Policy 1 Policy 2 Policy 3 Policy 4 Policy 5         
+
+> 3.30
+> 3.45
+> 3.60
+> 3.75
+> Time (ns)
+> 1e8 Latency under Random Policies
+> Policy 1 Policy 2 Policy 3 Policy 4 Policy 5
+> 66000
+> 69000
+> 72000
+> 75000
+> Energy (mJ)
+> Energy under Random Policies
+> Predicted Actual Global Fixed 1800 MHz EMO Optimal Fine-grained Policy
+
+Fig. 8. Prediction accuracy of latency and energy under fine-grained random frequency policies for LLaMA2 with Tensor Parallelism on RTX 3080 Ti. 
+
+To further validate pack-level precision, we consider ahighly complex scenario with fine-grained varying frequencies. As shown in Figure 8, we evaluate five offline-generated ran-dom policies. In each policy, the GPU frequency is reassigned every 20ms to a random level between 900 MHz and 1800 MHz. Despite this complexity, EMO’s end-to-end predictions remain highly consistent with actual measurements. Since the end-to-end prediction strictly aggregates all pack-level models via Algorithm 1, this high accuracy under rapid frequency transitions proves the reliability of the underlying pack models. 
+
+C. End-to-End Energy Optimization 
+
+We quantify effectiveness using Energy Savings ( ES ) and Performance Loss ( P L ). Let Eori and Tori be the energy and latency at default frequency, and Eopt and Topt be the metrics under optimized policies. They are calculated as: 
+
+ES = Eori − Eopt 
+
+Eori 
+
+× 100% , P L = Topt − Tori 
+
+Tori 
+
+× 100% .
+
+(8) 
+
+1) Tensor Parallel and Intra-GPU Asynchrony: Tensor Par-allelism (TP) splits operators across GPUs, requiring frequent communication. The main optimization opportunity here is intra-GPU asynchrony: the overlap between computation and communication on different CUDA streams. The degree of this overlap determines the execution slack. Table III presents the energy optimization results for TP training workloads. EMO consistently outperforms both model-free approaches (GEEPAFS and Zeus) across different configurations. In scenarios with significant communication bottlenecks, such as TP-2 on the RTX 3080 Ti and TP-8 on the A100, the execution slack is substantial. EMO effectively identifies these non-critical periods to achieve 27.56% and 20.53% energy savings, significantly surpassing the savings achieved by GEEPAFS. Zeus underperforms here because it relies on power capping rather than the direct frequency scaling [15]. Conversely, configurations like TP-2-A100 exhibit minimal slack. Existing methods like GEEPAFS fail here because they rely on utilization drops for coarse-grained frequency scaling. Since GPU utilization remains high during communication waits, it cannot distinguish critical computation from non-critical communication, leading to excessive performance loss. EMO overcomes this limitation by exploiting intra-GPU asyn-chrony with millisecond granularity, making it highly effective for TP workloads that demand multi-phase, fine-grained op-timization. In our experiments, we adjust frequencies every 20ms, a precision enabled by our high modeling accuracy. 
+
+2) Pipeline Parallel and Inter-GPU Asynchrony: We eval-uate pipeline-parallel (PP) training on A100 GPUs using Qwen2-7B with 2, 4, and 8-GPU configurations. We utilize DeepSpeed’s two partitioning strategies: uniform (equal layers per stage) and parameter-based (equal parameter size per stage). PP workloads exhibit inter-GPU asynchrony, where GPUs wait for neighbor data dependencies. These pipeline bubbles form the execution slack. Table IV compares EMO against baselines for PP training under strict performance constraints (targeting zero performance loss). EMO achieves up to 18.97% energy savings for PP-4 (uniform) with minimal performance impact (1.78%). Perseus, despite targeting PP, achieves only 11.38% savings with higher variability (4.39%). This stems from EMO’s superior bubble utilization. While both methods identify the execution slack created by bubbles, Perseus operates at a coarse-grained Pass Level , applying a single frequency to an entire forward or backward stage. This is inefficient because operations within a pass have varying TABLE III COMPARISON OF VARIOUS ENERGY OPTIMIZATION METHODS FOR TENSOR -PARALLEL TRAINING WORKLOADS 
+
+Model Config Metrics ZEUS-5% GEEPAFS-2% GEEPAFS-5% EMO-2% EMO-5% 
+
+TP-2-LLaMA2 On 3080 Ti Energy Saving 14.72% 16.97% 19.41% 19.94% 27.56% Performance Loss 4.82% 1.87% 6.20% 1.33% 4.84% TP-2-GPT3 On A100 Energy Saving 2.19% 0.40% 1.45% 7.00% 8.19% Performance Loss 4.56% 2.59% 4.87% 2.36% 4.15% TP-4-GPT3 On A100 Energy Saving 5.15% 0.69% 3.76% 12.08% 15.98% Performance Loss 5.64% 2.80% 5.63% 1.99% 5.37% TP-8-GPT3 On A100 Energy Saving 2.31% 9.65% 14.16% 15.82% 20.53% Performance Loss 3.21% 2.77% 4.21% 3.20% 4.78% TABLE IV ENERGY SAVINGS (%) COMPARISON FOR PIPELINE -PARALLEL TRAINING . N UMBERS IN PARENTHESES INDICATE ACTUAL PERFORMANCE LOSS (%). 
+
+Model Config Partition Strategy ZEUS GEEPAFS PERSEUS EMO 
+
+PP-2-QWEN2 Uniform 0.40 (4.91) 4.22 (3.78) 6.06 (3.92) 8.86 (0.28) Parameter 0.22 (2.78) 5.60 (1.71) 6.54 (3.25) 14.42 (1.05) PP-4-QWEN2 Uniform 0.33 (2.04) 5.80 (3.73) 11.38 (4.39) 18.97 (1.78) Parameter 1.17 (2.04) 3.83 (4.69) 6.55 (4.29) 16.22 (1.70) PP-8-QWEN2 Uniform 0.64 (1.45) 10.66 (5.38) 15.79 (7.84) 18.89 (0.25) Parameter 1.14 (2.56) 5.69 (3.14) N/A 17.17 (3.27) 
+
+frequency sensitivities. Within the same fixed time budget (the bubble size), Perseus is limited by the most sensitive parts of the pass. In contrast, EMO operates at the Pack Level , aggressively slowing frequency-insensitive packs while keeping sensitive ones fast, extracting greater savings. Furthermore, Perseus struggles with short pipeline stages, such as the extremely brief first stage in the 8-GPU parameter-based partitioning. Relying on online measurements, it en-counters the hardware limitation discussed in Section V-B: GPU power sensors sample too slowly to profile such short phases, causing Perseus to fail (marked as N/A). In contrast, EMO completely bypasses online energy measurement and generates robust policies even for highly imbalanced pipelines. 
+
+3) Offloading and CPU-GPU Asynchrony: Figure 9 shows optimization results for DeepSeek-V2-Lite inference via KTransformers. It enables inference under memory constraints by offloading MoE layers to the CPU, while GPUs handle attention computation. This setup creates a CPU-bottlenecked scenario with low GPU utilization. Consequently, reducing GPU frequency rarely impacts end-to-end performance. In this scenario, GEEPAFS’s utilization-based approach also performs well, achieving results close to EMO. EMO achieves 42.2% energy reduction with only 0.8% latency increase, com-pared to GEEPAFS’s 37.1% energy savings with 0.1% latency increase. EMO’s slight advantage lies in its stable policies, whereas GEEPAFS requires periodic online exploration, a fundamental limitation of model-free methods. Original GEEPAFS EMO    
+
+> Optimization Method
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Latency (seconds)
+> 2.22 s 2.22 s
+> 0.1%
+> 2.24 s
+> 0.8%
+> Inference Latency Comparison
+> Original GEEPAFS EMO
+> Optimization Method
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> 2.00
+> Energy Consumption (mJ)
+> 1e5
+> 174966.0 mJ
+> 110017.7 mJ
+> 101178.0 mJ
+> 37.1% saving
+> =64948.3 mJ
+> 42.2% saving
+> =73788.0 mJ
+> Energy Consumption Comparison
+
+Fig. 9. Energy optimization results for DeepSeek-V2-Lite inference with KTransformers offloading. 
+
+D. Overhead Analysis 
+
+Figure 10 compares profiling overhead on A100 GPUs using PP workloads to benchmark against Perseus. Model-free baselines (ZEUS, GEEPAFS) are excluded here due to their negligible profiling costs. As shown in the figure, Perseus incurs substantial overhead to generate stable lookup tables, despite modeling at coarse pass levels. In contrast, EMO maintains under 5s overhead across all configurations. Remarkably, despite its finer pack-level granularity, EMO profiles orders of magnitude faster. Figure 10 also presents an ablation study to quantify the efficiency gains. Raw kernel profiling (EMO-w/o Packing and Sampling) is prohibitively expensive ( ≥2000s). Packing (EMO-w/o Sampling) drastically reduces modeled instances, and sampling (EMO) further avoids redundant profiling. Con-sequently, EMO is up to 1100 × faster than raw profiling and 50 ×–200 × faster than Perseus. While model-free approaches offer lower overhead, they suffer from limited optimization and unstable convergence. EMO successfully balances accuracy with deployment practi-cality, making it suitable for production environments requir-ing minimal overhead. PP-2 PP-4 PP-8     
+
+> Configuration
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Profiling Overhead (seconds, log scale)
+> 2128s 2912s 4204s
+> 14.0s 16.3s
+> 33.2s
+> 4.3s
+> 2.6s
+> 4.3s
+> 274s 358s
+> 896s
+> EMO-w/o P&S
+> EMO-w/o S
+> EMO
+> Perseus
+
+Fig. 10. Profiling overhead comparison on pipeline parallel workloads. 
+
+VI. D ISCUSSION 
+
+A. Generalization 
+
+While our evaluation focuses on three fundamental paral-lelism paradigms, EMO’s design is inherently extensible to more complex hybrid parallelization strategies and heteroge-neous computing environments. This generality stems from our decision to model at the level of execution primitives rather than high-level framework operations. By abstracting the workload into a low-level dependency graph, EMO de-couples itself from specific model architectures. Furthermore, constructing the graph via CUPTI tracing ensures compatibil-ity with runtime optimizations like CUDA Graphs. Although EMO currently targets stable patterns, execution variability is often structured and predictable. In LLM serv-ing, graph topology remains highly similar across requests. Integrating output length prediction [22] could allow EMO to dynamically adapt policies without full re-profiling. 
+
+B. Optimization Scalability 
+
+Our pseudo-polynomial algorithm provides optimal solu-tions, but search time grows with GPU scale. Fortunately, exhaustive search is often unnecessary. In tensor- and data-parallel setups, we can optimize a single GPU’s graph and replicate the policy. Only heterogeneous or pipeline-parallel workloads require multi-device graph merging. Although optimization search in Algorithm 2 runs asyn-chronously without consuming GPU resources, EMO can al-ternatively integrate approximation methods. For example, re-inforcement learning [63] or evolutionary search methods [23], [64] can efficiently explore the solution space, trading strict optimality for bounded search times in large-scale deploy-ments. VII. C ONCLUSION 
+
+This paper presented EMO, a lightweight framework for energy optimization across diverse AI workloads. By intro-ducing the execution graph abstraction, EMO captures fine-grained slack windows while maintaining workload generality. Our kernel packing techniques balance modeling accuracy and profiling overhead. Through pack modeling and intelligent graph analysis, EMO achieves up to 28% energy savings with minimal performance impact across diverse AI workloads. ACKNOWLEDGMENT 
+
+We utilized a generative AI tool to assist in improving the grammar and readability of this manuscript. REFERENCES [1] A. Yang, B. Yang, B. Hui, B. Zheng, B. Yu, C. Zhou, C. Li, C. Li, D. Liu, F. Huang, G. Dong, H. Wei, H. Lin, J. Tang, J. Wang, J. Yang, J. Tu, J. Zhang, J. Ma, J. Yang, J. Xu, J. Zhou, J. Bai, J. He, J. Lin, K. Dang, K. Lu, K. Chen, K. Yang, M. Li, M. Xue, N. Ni, P. Zhang, P. Wang, R. Peng, R. Men, R. Gao, R. Lin, S. Wang, S. Bai, S. Tan, T. Zhu, T. Li, T. Liu, W. Ge, X. Deng, X. Zhou, X. Ren, X. Zhang, X. Wei, X. Ren, X. Liu, Y. Fan, Y. Yao, Y. Zhang, Y. Wan, Y. Chu, Y. Liu, Z. Cui, Z. Zhang, Z. Guo, and Z. Fan, “Qwen2 technical report,” 2024. [Online]. Available: https://arxiv.org/abs/2407.10671 [2] DeepSeek-AI, A. Liu, B. Feng, B. Wang, B. Wang, B. Liu, C. Zhao, C. Dengr, C. Ruan, D. Dai, D. Guo, D. Yang, D. Chen, D. Ji, E. Li, F. Lin, F. Luo, G. Hao, G. Chen, G. Li, H. Zhang, H. Xu, H. Yang, H. Zhang, H. Ding, H. Xin, H. Gao, H. Li, H. Qu, J. L. Cai, J. Liang, J. Guo, J. Ni, J. Li, J. Chen, J. Yuan, J. Qiu, J. Song, K. Dong, K. Gao, K. Guan, L. Wang, L. Zhang, L. Xu, L. Xia, L. Zhao, L. Zhang, M. Li, M. Wang, M. Zhang, M. Zhang, M. Tang, M. Li, N. Tian, P. Huang, P. Wang, P. Zhang, Q. Zhu, Q. Chen, Q. Du, R. J. Chen, R. L. Jin, R. Ge, R. Pan, R. Xu, R. Chen, S. S. Li, S. Lu, S. Zhou, S. Chen, S. Wu, S. Ye, S. Ma, S. Wang, S. Zhou, S. Yu, S. Zhou, S. Zheng, T. Wang, T. Pei, T. Yuan, T. Sun, W. L. Xiao, W. Zeng, W. An, W. Liu, W. Liang, W. Gao, W. Zhang, X. Q. Li, X. Jin, X. Wang, X. Bi, X. Liu, X. Wang, X. Shen, X. Chen, X. Chen, X. Nie, X. Sun, X. Wang, X. Liu, X. Xie, X. Yu, X. Song, X. Zhou, X. Yang, X. Lu, X. Su, Y. Wu, Y. K. Li, Y. X. Wei, Y. X. Zhu, Y. Xu, Y. Huang, Y. Li, Y. Zhao, Y. Sun, Y. Li, Y. Wang, Y. Zheng, Y. Zhang, Y. Xiong, Y. Zhao, Y. He, Y. Tang, Y. Piao, Y. Dong, Y. Tan, Y. Liu, Y. Wang, Y. Guo, Y. Zhu, Y. Wang, Y. Zou, Y. Zha, Y. Ma, Y. Yan, Y. You, Y. Liu, Z. Z. Ren, Z. Ren, Z. Sha, Z. Fu, Z. Huang, Z. Zhang, Z. Xie, Z. Hao, Z. Shao, Z. Wen, Z. Xu, Z. Zhang, Z. Li, Z. Wang, Z. Gu, Z. Li, and Z. Xie, “Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model,” 2024. [Online]. Available: https://arxiv.org/abs/2405.04434 [3] Z. Feng, Q. Chen, N. Lu, Y. Li, S. Cheng, S. Peng, D. Tang, S. Liu, and Z. Zhang, “Is prm necessary? problem-solving rl implicitly induces prm capability in llms,” in Advances in Neural Information Processing Systems , D. Belgrave, C. Zhang, H. Lin, R. Pascanu, P. Koniusz, M. Ghassemi, and N. Chen, Eds., vol. 38. Curran Associates, Inc., 2025, pp. 32 424–32 442. [4] J. Wu, N. Lu, S. Liu, K. Wang, Y. Yang, B. Lin, C. J. Zhang, L. Qing, and K. Tang, “Train at moving edge: Online-verified prompt selection for efficient rl training of large reasoning model,” 2026. [Online]. Available: https://arxiv.org/abs/2603.25184 [5] N. Lu, S. Liu, J. Wu, W. Chen, Z. Zhang, Y.-S. Ong, Q. Wang, and K. Tang, “Safe delta: Consistently preserving safety when fine-tuning LLMs on diverse datasets,” in Proceedings of the 42nd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, A. Singh, M. Fazel, D. Hsu, S. Lacoste-Julien, F. Berkenkamp, T. Maharaj, K. Wagstaff, and J. Zhu, Eds., vol. 267. PMLR, 13–19 Jul 2025, pp. 40 537–40 559. [Online]. Available: https://proceedings.mlr.press/v267/lu25g.html [6] S. Samsi, D. Zhao, J. McDonald, B. Li, A. Michaleas, M. Jones, W. Bergeron, J. Kepner, D. Tiwari, and V. Gadepally, “From words to watts: Benchmarking the energy costs of large language model inference,” in 2023 IEEE High Performance Extreme Computing Conference (HPEC) , 2023, pp. 1–9. [Online]. Available: https://doi.org/10.1109/HPEC58863.2023.10363447 [7] N. Jegham, M. Abdelatti, L. Elmoubarki, and A. Hendawi, “How hungry is ai? benchmarking energy, water, and carbon footprint of llm inference,” 2025. [Online]. Available: https://arxiv.org/abs/2505.09598 [8] D. Patterson, J. Gonzalez, Q. Le, C. Liang, L.-M. Munguia, D. Rothchild, D. So, M. Texier, and J. Dean, “Carbon emissions and large neural network training,” 2021. [Online]. Available: https://arxiv.org/abs/2104.10350 [9] C. Rodriguez, L. Degioanni, L. Kameni, R. Vidal, and G. Neglia, “Evaluating the Energy Consumption of Machine Learning: Systematic Literature Review and Experiments,” Aug. 2024, arXiv:2408.15128 [cs]. [Online]. Available: https://doi.org/10.48550/arXiv.2408.15128 [10] “Global Data Center Trends 2025 — cbre.com,” https://www.cbre.com/insights/reports/global-data-center-trends-2025, 2025. [11] A. Tschand, A. T. R. Rajan, S. Idgunji, A. Ghosh, J. Holleman, C. Kiraly, P. Ambalkar, R. Borkar, R. Chukka, T. Cockrell, O. Curtis, G. Fursin, M. Hodak, H. Kassa, A. Lokhmotov, D. Miskovic, Y. Pan, M. P. Manmathan, L. Raymond, T. S. John, A. Suresh, R. Taubitz, S. Zhan, S. Wasson, D. Kanter, and V. J. Reddi, “MLPerf Power: Benchmarking the Energy Efficiency of Machine Learning Systems from μWatts to MWatts for Sustainable AI,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . Las Vegas, NV, USA: IEEE, Mar. 2025, pp. 1201–1216. [Online]. Available: https://doi.org/10.1109/HPCA61900.2025.00092 [12] R. Nath and D. Tullsen, “The crisp performance model for dynamic voltage and frequency scaling in a gpgpu,” in 2015 48th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2015, pp. 281–293. [Online]. Available: https://doi.org/10.1145/2830772.2830826 [13] S. Bharadwaj, S. Das, K. Mazumdar, B. M. Beckmann, and S. Kosonocky, “Predict; Don’t React for Enabling Efficient Fine-Grain DVFS in GPUs,” in Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 4. Vancouver BC Canada: ACM, Mar. 2023, pp. 253–267. [Online]. Available: https://doi.org/10.1145/3623278.3624756 [14] Y. Xue and J. Huang, “Regate: Enabling power gating in neural processing units,” in Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture , ser. MICRO ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 1160–1177. [Online]. Available: https://doi.org/10.1145/3725843.3756038 [15] A. Yue, P.-C. Yew, and S. Mehta, “EVeREST: An Effective and Versatile Runtime Energy Saving Tool for GPUs,” in Proceedings of the 30th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming . Las Vegas NV USA: ACM, Feb. 2025, pp. 57–69. [Online]. Available: https://doi.org/10.1145/3710848.3710875 [16] Y. Zhang, Q. Wang, Z. Lin, P. Xu, and B. Wang, “Improving GPU Energy Efficiency through an Application-transparent Frequency Scaling Policy with Performance Assurance,” in Proceedings of the Nineteenth European Conference on Computer Systems . Athens Greece: ACM, Apr. 2024, pp. 769–785. [Online]. Available: https://doi.org/10.1145/3627703.3629584 [17] J. You, J.-W. Chung, and M. Chowdhury, “Zeus: Understanding and optimizing GPU energy consumption of DNN training,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . Boston, MA: USENIX Association, Apr. 2023, pp. 119–139. [Online]. Available: https://www.usenix.org/conference/nsdi23/presentation/you [18] H. Qiu, W. Mao, A. Patke, S. Cui, S. Jha, C. Wang, H. Franke, Z. T. Kalbarczyk, T. Bas ¸ar, and R. K. Iyer, “Power-aware deep learning model serving with μ-serve,” in Proceedings of the 2024 USENIX Conference on Usenix Annual Technical Conference , ser. USENIX ATC’24. USA: USENIX Association, 2024. [Online]. Available: https://www.usenix.org/conference/atc24/presentation/qiu [19] F. Wang, M. Hao, W. Zhang, and Z. Wang, “Model-Free GPU Online Energy Optimization,” IEEE Transactions on Sustainable Computing , vol. 9, no. 2, pp. 141–154, Mar. 2024. [Online]. Available: https://doi.org/10.1109/TSUSC.2023.3314916 [20] S. Choi, I. Koo, J. Ahn, M. Jeon, and Y. Kwon, “EnvPipe: Performance-preserving DNN training framework for saving energy,” in 2023 USENIX Annual Technical Conference (USENIX ATC 23) .Boston, MA: USENIX Association, Jul. 2023, pp. 851–864. [Online]. Available: https://www.usenix.org/conference/atc23/presentation/choi [21] J.-W. Chung, Y. Gu, I. Jang, L. Meng, N. Bansal, and M. Chowdhury, “Reducing energy bloat in large model training,” in Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles , ser. SOSP ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 144–159. [Online]. Available: https://doi.org/10.1145/3694715.3695970 [22] A. K. Kakolyris, D. Masouros, P. Vavaroutsos, S. Xydis, and D. Soudris, “throttLL’eM: Predictive GPU Throttling for Energy Efficient LLM Inference Serving,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) .Las Vegas, NV, USA: IEEE, Mar. 2025, pp. 1363–1378. [Online]. Available: https://doi.org/10.1109/HPCA61900.2025.00103 [23] Z. Wang, Y. Zhang, F. Wei, B. Wang, Y. Liu, Z. Hu, J. Zhang, X. Xu, J. He, X. Wang, W. Dou, G. Chen, and C. Tian, “Using Analytical Performance/Power Model and Fine-Grained DVFS to Enhance AI Accelerator Energy Efficiency,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 . Rotterdam Netherlands: ACM, Mar. 2025, pp. 1118–1132. [Online]. Available: https://doi.org/10.1145/3669940.3707231 [24] J. Geng, Z. Zhu, W. Liu, X. Zhou, and B. Li, “PowerLens: An Adaptive DVFS Framework for Optimizing Energy Efficiency in Deep Neural Networks,” in Proceedings of the 61st ACM/IEEE Design Automation Conference . San Francisco CA USA: ACM, Jun. 2024, pp. 1–6. [Online]. Available: https://doi.org/10.1145/3649329.3655956 [25] J. Guerreiro, A. Ilic, N. Roma, and P. Tomas, “GPGPU Power Modeling for Multi-domain Voltage-Frequency Scaling,” in 2018 IEEE International Symposium on High Performance Computer Architecture (HPCA) . Vienna: IEEE, Feb. 2018, pp. 789–800. [Online]. Available: https://doi.org/10.1109/HPCA.2018.00072 [26] Q. Wang and X. Chu, “GPGPU Performance Estimation With Core and Memory Frequency Scaling,” IEEE Transactions on Parallel and Distributed Systems , vol. 31, no. 12, pp. 2865–2881, Dec. 2020. [Online]. Available: https://doi.org/10.1109/TPDS.2020.3004623 [27] J. Stojkovic, C. Zhang, I. n. Goiri, J. Torrellas, and E. Choukse, “DynamoLLM: Designing LLM Inference Clusters for Performance and Energy Efficiency,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . Las Vegas, NV, USA: IEEE, Mar. 2025, pp. 1348–1362. [Online]. Available: https://doi.org/10.1109/HPCA61900.2025.00102 [28] J. Guerreiro, A. Ilic, N. Roma, and P. Tomas, “Modeling and Decoupling the GPU Power Consumption for Cross-Domain DVFS,” IEEE Transactions on Parallel and Distributed Systems ,vol. 30, no. 11, pp. 2494–2506, Nov. 2019. [Online]. Available: https://doi.org/10.1109/TPDS.2019.2917181 [29] G. Alavani, J. Desai, S. Saha, and S. Sarkar, “Program Analysis and Machine Learning–based Approach to Predict Power Consumption of CUDA Kernel,” ACM Transactions on Modeling and Performance Evaluation of Computing Systems , vol. 8, no. 4, pp. 1–24, Dec. 2023. [Online]. Available: https://doi.org/10.1145/3603533 [30] L. Braun, S. Nikas, C. Song, V. Heuveline, and H. Fr¨ oning, “A Simple Model for Portable and Fast Prediction of Execution Time and Power Consumption of GPU Kernels,” ACM Transactions on Architecture and Code Optimization , vol. 18, no. 1, pp. 1–25, Mar. 2021. [Online]. Available: https://doi.org/10.1145/3431731 [31] Q. Wang, C. Liu, and X. Chu, “GPGPU performance estimation for frequency scaling using cross-benchmarking,” GPGPU 2020 - Proceedings of the 2020 General Purpose Processing Using GPU , pp. 31–40, 2020, iSBN: 9781450370257. [Online]. Available: https://doi.org/10.1145/3366428.3380767 [32] P. S.K., S. Taluri, B. S, L. Karwa, and Y. Simmhan, “PowerTrain: Fast, generalizable time and power prediction models to optimize DNN training on accelerated edges,” Future Generation Computer Systems , vol. 161, pp. 329–344, Dec. 2024. [Online]. Available: https://doi.org/10.1016/j.future.2024.07.001 [33] Q. Wang, L. Li, W. Luo, Y. Zhang, and B. Wang, “DSO: A GPU Energy Efficiency Optimizer by Fusing Dynamic and Static Information,” in 
+
+2024 IEEE/ACM 32nd International Symposium on Quality of Service (IWQoS) . Guangzhou, China: IEEE, Jun. 2024, pp. 1–6. [Online]. Available: https://doi.org/10.1109/IWQoS61813.2024.10682917 [34] G. Ali, M. Side, S. Bhalachandra, N. J. Wright, and Y. Chen, “Performance-Aware Energy-Efficient GPU Frequency Selection using DNN-based Models,” in Proceedings of the 52nd International Conference on Parallel Processing . Salt Lake City UT USA: ACM, Aug. 2023, pp. 433–442. [Online]. Available: https://doi.org/10.1145/3605573.3605600 [35] F. Wang, W. Zhang, S. Lai, M. Hao, and Z. Wang, “Dynamic GPU Energy Optimization for Machine Learning Training Workloads,” IEEE Transactions on Parallel and Distributed Systems , pp. 1–1, 2022. [Online]. Available: https://doi.org/10.1109/TPDS.2021.3137867 [36] J. Stojkovic, C. Zhang, I. n. Goiri, E. Choukse, H. Qiu, R. Fonseca, J. Torrellas, and R. Bianchini, “TAPAS: Thermal- and Power-Aware Scheduling for LLM Inference in Cloud Platforms,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . Rotterdam Netherlands: ACM, Mar. 2025, pp. 1266–1281. [Online]. Available: https://doi.org/10.1145/3676641.3716025 [37] P. Vellaisamy, T. Labonte, S. Chakraborty, M. Turner, S. Sury, and J. P. Shen, “Characterizing and optimizing llm inference workloads on cpu-gpu coupled architectures,” 2025. [Online]. Available: https://arxiv.org/abs/2504.11750 [38] T. Sen, H. Shen, and A. P. Iyer, “Flex: Fast, accurate dnn inference on low-cost edges using heterogeneous accelerator execution,” in 
+
+Proceedings of the Twentieth European Conference on Computer Systems , ser. EuroSys ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 507–523. [Online]. Available: https://doi.org/10.1145/3689031.3696067 [39] J. Ren, S. Rajbhandari, R. Y. Aminabadi, O. Ruwase, S. Yang, M. Zhang, D. Li, and Y. He, “ZeRO-Offload: Democratizing Billion-Scale model training,” in 2021 USENIX Annual Technical Conference (USENIX ATC 21) . USENIX Association, Jul. 2021, pp. 551–564. [Online]. Available: https://www.usenix.org/conference/atc21/presentation/ren-jie [40] Z. Zhu, C. Giannoula, M. Andoorveedu, Q. Su, K. Mangalam, B. Zheng, and G. Pekhimenko, “Mist: Efficient distributed training of large language models via memory-parallelism co-optimization,” in Proceedings of the Twentieth European Conference on Computer Systems , ser. EuroSys ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 1298–1316. [Online]. Available: https://doi.org/10.1145/3689031.3717461 [41] L.-W. Chang, W. Bao, Q. Hou, C. Jiang, N. Zheng, Y. Zhong, X. Zhang, Z. Song, C. Yao, Z. Jiang, H. Lin, X. Jin, and X. Liu, “Flux: Fast software-based communication overlap on gpus through kernel fusion,” 2024. [Online]. Available: https://arxiv.org/abs/2406.06858 [42] G. Wang, C. Zhang, Z. Shen, A. Li, and O. Ruwase, “Domino: Eliminating communication in llm training via generic tensor slicing and overlapping,” 2024. [Online]. Available: https://arxiv.org/abs/2409.15241 [43] S. Zhang, N. Zheng, H. Lin, Z. Jiang, W. Bao, C. Jiang, Q. Hou, W. Cui, S. Zheng, L.-W. Chang, Q. Chen, and X. Liu, “Comet: Fine-grained computation-communication overlapping for mixture-of-experts,” 2025. [Online]. Available: https://arxiv.org/abs/2502.19811 [44] D. Narayanan, A. Harlap, A. Phanishayee, V. Seshadri, N. R. Devanur, G. R. Ganger, P. B. Gibbons, and M. Zaharia, “Pipedream: generalized pipeline parallelism for dnn training,” in Proceedings of the 27th ACM Symposium on Operating Systems Principles , ser. SOSP ’19. New York, NY, USA: Association for Computing Machinery, 2019, p. 1–15. [Online]. Available: https://doi.org/10.1145/3341301.3359646 [45] T. Um, B. Oh, M. Kang, W.-Y. Lee, G. Kim, D. Kim, Y. Kim, M. Muzzammil, and M. Jeon, “Metis: Fast automatic distributed training on heterogeneous GPUs,” in 2024 USENIX Annual Technical Conference (USENIX ATC 24) . Santa Clara, CA: USENIX Association, Jul. 2024, pp. 563–578. [Online]. Available: https://www.usenix.org/conference/atc24/presentation/um [46] J. Lin, Z. Jiang, Z. Song, S. Zhao, M. Yu, Z. Wang, C. Wang, Z. Shi, X. Shi, W. Jia, Z. Liu, S. Wang, H. Lin, X. Liu, A. Panda, and J. Li, “Understanding stragglers in large model training using what-if analysis,” 2025. [Online]. Available: https://arxiv.org/abs/2505.05713 [47] Z. Jia, L. N. Bhuyan, and D. Wong, “Pccl: Energy-efficient llm training with power-aware collective communication,” in 2024 IEEE 42nd International Conference on Computer Design (ICCD) , 2024, pp. 84– 91. [Online]. Available: https://doi.org/10.1109/ICCD63220.2024.00023 [48] NVIDIA, “Nvidia nsight compute,” https://developer.nvidia.com/nsight-compute, 2025. [49] ——, “Nvidia nsight systems,” https://developer.nvidia.com/nsight-systems, 2025. [50] PyTorch, “Pytorch profiler,” https://docs.pytorch.org/docs/stable/profiler.html, 2025. [51] H. Zhu, A. Phanishayee, and G. Pekhimenko, “Daydream: accurately estimating the efficacy of optimizations for dnn training,” in Proceedings of the 2020 USENIX Conference on Usenix Annual Technical Conference , ser. USENIX ATC’20. USA: USENIX Association, 2020. [Online]. Available: https://www.usenix.org/conference/atc20/presentation/zhu-hongyu [52] G. X. Yu, Y. Gao, P. Golikov, and G. Pekhimenko, “Habitat: A Runtime-Based computational performance predictor for deep neural network training,” in 2021 USENIX Annual Technical Conference (USENIX ATC 21) . USENIX Association, Jul. 2021, pp. 503–521. [Online]. Available: https://www.usenix.org/conference/atc21/presentation/yu [53] J. Bang, Y. Choi, M. Kim, Y. Kim, and M. Rhu, “vtrain: A simulation framework for evaluating cost-effective and compute-optimal large language model training,” in 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2024, pp. 153–167. [Online]. Available: https://doi.org/10.1109/MICRO61859.2024.00021 [54] NVIDIA, “Nvidia cuda profiling tools interface (cupti),” https://developer.nvidia.com/cupti, 2025. [55] ——, “Nvidia nccl,” https://github.com/NVIDIA/nccl, 2025. [56] E. Chung, S. Na, S. H. Kang, and H. Kim, “Swift and trustworthy large-scale gpu simulation with fine-grained error modeling and hierarchical clustering,” in Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture , ser. MICRO ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 1397–1411. [Online]. Available: https://doi.org/10.1145/3725843.3757107 [57] V. Kandiah, S. Peverelle, M. Khairy, J. Pan, A. Manjunath, T. G. Rogers, T. M. Aamodt, and N. Hardavellas, “AccelWattch: A Power Modeling Framework for Modern GPUs,” in MICRO-54: 54th Annual IEEE/ACM International Symposium on Microarchitecture . Virtual Event Greece: ACM, Oct. 2021, pp. 738–753. [Online]. Available: https://doi.org/10.1145/3466752.3480063 [58] J. Luo, T. Yan, Q. Xu, J. Sun, and G. Sun, “Siesta: Synthesizing proxy applications for mpi programs,” in 2024 IEEE International Conference on Cluster Computing (CLUSTER) , 2024, pp. 14–26. [Online]. Available: https://doi.org/10.1109/CLUSTER59578.2024.00009 [59] J. Luo, Q. Xu, T. Yan, J. Sun, and G. Sun, “Hfproxy: Synthesizing portable and high-fidelity proxy applications for mpi programs,” ACM Trans. Archit. Code Optim. , vol. 23, no. 1, Mar. 2026. [Online]. Available: https://doi.org/10.1145/3786205 [60] J. Rasley, S. Rajbhandari, O. Ruwase, and Y. He, “Deepspeed: System optimizations enable training deep learning models with over 100 billion parameters,” in Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining , ser. KDD ’20. New York, NY, USA: Association for Computing Machinery, 2020, p. 3505–3506. [Online]. Available: https://doi.org/10.1145/3394486.3406703 [61] H. Chen, W. Xie, B. Zhang, J. Tang, J. Wang, J. Dong, S. Chen, Z. Yuan, C. Lin, C. Qiu, Y. Zhu, Q. Ou, J. Liao, X. Chen, Z. Ai, Y. Wu, and M. Zhang, “Ktransformers: Unleashing the full potential of cpu/gpu hybrid inference for moe models,” in Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles , 2025. [62] T. B. Brown, B. Mann, N. Ryder, M. Subbiah, J. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam, G. Sastry, A. Askell, S. Agarwal, A. Herbert-Voss, G. Krueger, T. Henighan, R. Child, A. Ramesh, D. M. Ziegler, J. Wu, C. Winter, C. Hesse, M. Chen, E. Sigler, M. Litwin, S. Gray, B. Chess, J. Clark, C. Berner, S. McCandlish, A. Radford, I. Sutskever, and D. Amodei, “Language models are few-shot learners,” 2020. [Online]. Available: https://arxiv.org/abs/2005.14165 [63] Y. Wang, M. Hao, H. He, W. Zhang, Q. Tang, X. Sun, and Z. Wang, “DRLCAP: Runtime GPU Frequency Capping With Deep Reinforcement Learning,” IEEE Transactions on Sustainable Computing , vol. 9, no. 5, pp. 712–726, Sep. 2024. [Online]. Available: https://doi.org/10.1109/TSUSC.2024.3362697 [64] S. Liu, C. Chen, X. Qu, K. Tang, and Y.-S. Ong, “Large language models as evolutionary optimizers,” in 2024 IEEE Congress on Evolutionary Computation (CEC) , 2024, pp. 1–8. [Online]. Available: 10.1109/CEC60901.2024.10611913
