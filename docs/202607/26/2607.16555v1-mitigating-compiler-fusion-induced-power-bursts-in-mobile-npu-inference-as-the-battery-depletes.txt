@@ -1,0 +1,291 @@
+Title: Mitigating Compiler Fusion-Induced Power Bursts in Mobile NPU Inference as the Battery Depletes
+
+URL Source: https://arxiv.org/pdf/2607.16555v1
+
+Published Time: Tue, 21 Jul 2026 00:19:07 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Mitigating Compiler Fusion-Induced Power Bursts in Mobile NPU Inference as the Battery Depletes 
+
+## Ryoga Yuzawa 1,2* Masayoshi Tomizuka 11UC Berkeley 2Sony 
+
+Abstract 
+
+Mobile devices increasingly rely on real-time NPU inference for camera and perception workloads. Under low-voltage conditions, however, a single inference can induce an instantaneous voltage droop on the power-delivery network (PDN), forcing the PMIC to invoke dynamic voltage and frequency scaling (DVFS) and inflating latency. This paper presents a measurement study of that effect on a commercial smartphone. We show that aggressive operator fusion in a mobile NPU compiler can create monolithic superlayers whose concentrated execution produces large peak-current bursts. These bursts shift the DVFS-onset voltage upward and reduce the low-voltage operating margin. We further evaluate a practical black-box mitigation: a measurement-guided pre-compilation graph rewrite whose deployed form inserts barriers at selected PAPR hot spots to block harmful superlayer merging in the vendor NPU compiler. On Snapdragon 8 Gen 3 with MobileNetV4 (768 ×768, ImageNet-1k), this reduces peak current from 3.12 A to 1.94 A with 3.76 % latency overhead, preserves stable latency deeper into the low-voltage regime, and shifts the inferred DVFS margin by approximately 173 mV. 
+
+# 1 Introduction 
+
+Deep neural networks (DNNs) are increasingly deployed on mobile devices for camera, perception, and other always-on inference tasks [18, 21]. Real-time performance is critical for stable operation of these workloads. To meet real-time latency constraints, NPU compilers fuse consecutive operators into monolithic superlayers [ 3 , 20 ]. This fusion can also create a few very large superlayers, which concentrate computation into a short time window and cause large current spikes. Consequently, more aggressively fused, higher-efficiency designs may lower average power yet create sharper current spikes—an “efficient” model is not necessarily a “stable” one. Through the power-delivery network (PDN), these bursts can induce transient voltage droops [ 7]; reduced open-circuit voltage at low state of charge leaves less operating margin [ 16 ]. In our voltage sweep, this regime is associated with DVFS and shutdown-like behavior. However, current mobile NPU compilation flows are effectively voltage-unaware and have no mechanism to detect or prevent this. Meanwhile, extrinsic DVFS that suppresses instantaneous current can only uniformly throttle the entire inference after the event, incurring significant latency overhead. To address this problem, we propose a PAPR-based splitting method (Fig. 1): before invoking the vendor NPU compiler, Q–DQ barrier layers are inserted at selected fusion boundaries so that harmful merges do not form overly large superlayers, thereby controlling peak current. Our contributions are as follows: 1. A measurement study on a commercial Snapdragon 8 Gen 3 smartphone showing that mobile NPU compiler fusion can create peak-current hazards, and quantifying the relationship between peak current and DVFS activation voltage. 2. A practical black-box mitigation based on PAPR-guided superlayer splitting, implemented as a pre-compilation graph rewrite that steers vendor compilation away from harmful merges under compiler constraints (Section 3.2). 
+
+> *Visiting researcher at University of California, Berkeley.
+
+1arXiv:2607.16555v1 [cs.AR] 17 Jul 2026 Figure 1: Voltage-unaware fusion and the proposed PAPR-based splitting. Left: The NPU compiler fuses operators (UIB + MQA, MobileNetV4) into a single superlayer to maximize throughput. The resulting current burst causes a deep voltage droop that crosses the DVFS / shutdown threshold. Right: The PAPR-based splitting method selectively splits the superlayer at identified boundaries, constraining each block’s current peak within the safe voltage margin and extending stable operating time. 3. Empirical design implications for mobile deployment, including operating regimes where splitting is worthwhile, comparison against vendor frequency capping, and results up to 38 % peak current reduction with <4 % latency increase (Section 5). 
+
+# 2 Related Work 
+
+We organize prior work along two axes—compiler-side (throughput-centric) and hardware-side (voltage-aware but generally unaware of vendor compiler fusion decisions)—to motivate the gap addressed by our measurement-guided graph rewrite. 
+
+## 2.1 Compiler-side optimization 
+
+NPU and DNN compilers pursue latency and memory efficiency through operator fusion, tiling, and scheduling [ 3, 20 ]. In neural-architecture search (NAS), NetAdapt [ 26 ] and AMC [ 8] measure per-layer latency; FBNet [ 23 ] builds operator-level latency look-up tables; Once-for-All [ 1] specializes sub-networks to device-specific constraints. On the energy side, Energy-Aware Pruning [ 25 ] targets inference energy as the objective, and HAQ [ 22 ] learns from hardware feedback on latency and energy. MONAS [ 10 ] adds a scalar peak-power constraint to a multi-objective NAS reward, but models peak power as a single number rather than as a time-domain waveform. In the compiler domain, Korch [ 11 ]employs operator fission—decomposing operators into primitives before re-fusing them—to discover faster kernel orchestrations; notably, splitting is used solely to improve throughput, not to mitigate voltage hazards. Limitation. These methods do not explicitly model time-domain PDN transients induced by fusion or use measured current waveforms to veto selected fusion boundaries. Recent system-level work on DVFS governor tuning for LLM inference [ 27 ] and energy-efficient early exiting [ 28 ] likewise optimizes average energy without modeling intra-inference voltage transients. 
+
+## 2.2 Hardware-side mitigation 
+
+At the physical layer, voltage droops arise from both resistive IR drop and inductive L dI/ dt in the PDN [ 2, 7]. Existing systems use DVFS and thermal throttling on embedded processors [ 17 ], while power capping has been studied for scientific and multi-GPU workloads [ 6, 13 ]. These controls target power or temperature rather than compiler-induced transient droop. Circuit-level techniques such as Razor [ 5] and active guardband management [ 14 ] reduce conservative margins. Adaptive batching targets serving latency and throughput [ 4 ], and heterogeneous DNN scheduling 2targets responsiveness and energy [ 15 ]. Conversely, di/dt stressmarks deliberately generate periodic current pulses to characterize worst-case PDN droop [ 12 ]. SparseDroop [ 19 ] co-designs a dedicated hardware stagger scheduler with structured weight pruning to reduce L dI/ dt in custom DNN accelerators; however, it requires dedicated hardware logic and model retraining, neither of which is available on commodity mobile SoCs. Limitation. These mechanisms are extrinsic: they react to or prevent voltage violations without understanding which compiler decisions caused them. For example, DVFS uniformly lowers the clock for the entire inference, incurring large latency overhead even when only one fused block is responsible for the peak (see Section 5, Table 4). 
+
+## 2.3 Position of this work 
+
+Our work targets the intersection of the two axes above on a commodity mobile NPU. We feed physical-layer measurements (current waveforms, PAPR) back into a pre-compilation graph rewrite that selectively blocks only the fusion boundaries responsible for voltage hazards. In contrast to compiler-side methods—including Korch’s operator fission [ 11 ]—which split for throughput, our method splits to reduce current density. Our approach preserves weights and is deployable on commodity devices. The resulting PAPR-based splitting method is orthogonal to, and composable with, both compiler optimizations and extrinsic throttling. 
+
+# 3 Method 
+
+We first define the PDN transient model and show how voltage-unaware compiler fusion creates voltage hazards. We then describe the details of the PAPR-based splitting algorithm. 
+
+## 3.1 Voltage hazards from voltage-unaware fusion 
+
+PDN transient model. We model the device’s power-delivery network as a series resistance R and inductance L.Given load current I(t), the instantaneous voltage drop on the supply rail is 
+
+∆V (t) ≈ R I (t) + L dI(t)dt , (1) and the SoC terminal voltage is 
+
+Vterm (t) = Vsrc (t) − ∆V (t) , (2) where Vsrc (t) is the battery open-circuit voltage, which drops steeply at low state of charge [ 16 , 24 ] (Fig. 2). When 
+
+Vterm falls below a hardware threshold, low-voltage protection can engage even while the displayed SoC remains above the software-protection threshold. 
+
+How compiler fusion creates voltage hazards. NPU compilers fuse consecutive operators into superlayers, eliminat-ing intermediate buffers and maximizing throughput [ 3, 20 ]. This is optimal in the compiler’s logical domain. However, in the physical domain, each superlayer concentrates compute and memory traffic into a short window, producing (i) high |I(t)|, which increases the instantaneous rail drop, and (ii) large localized power bursts relative to the inference average. Wide activations and channel expansions further amplify simultaneous memory traffic and MAC bursts [9]. The target compiler has no model of these physical consequences; it is voltage-unaware. The result is that fusion decisions locally optimal for throughput become globally harmful for voltage stability. 
+
+## 3.2 PAPR-based splitting 
+
+To counteract the voltage hazards created by voltage-unaware fusion, we apply a graph-rewrite pass before invoking the vendor NPU compiler. The deployed transformation is lightweight and performs no online search: it inserts up to K
+
+barriers at PAPR-ranked boundaries to block the largest voltage-hazard superlayers. Constructing the feasible-edge set and measuring the PAPR profile are one-time offline characterization steps for each model–resolution–compiler configuration. 3Figure 2: Li-ion terminal voltage vs. SOC (schematic, based on [ 16 , 24 ]). At low SOC, Vsrc is small and peak-induced 
+
+∆V readily pushes Vterm below the DVFS or shutdown threshold. 
+
+Peak metric: PAPR. We quantify peaks using the peak-to-average power ratio (PAPR). Let I(t) be the instantaneous current at time t and ¯I the mean current over the full inference interval; then 
+
+PAPR( t) = I(t)¯I (3) is a dimensionless measure of instantaneous stress relative to the inference-average current on the measured device. Because the supply-rail voltage is approximately constant during a single inference, PAPR in current is proportional to conventional power PAPR, making it a convenient proxy for instantaneous power stress. In this work, we use PAPR as a practical peak-current indicator for identifying superlayers that are likely to create the largest droop on the measured device. 
+
+Compile-feasible edge set. Let E contain every edge in the exported graph. For each model–resolution–compiler configuration, we tentatively insert a Q–DQ pair at every b ∈ E, export the rewritten graph, invoke the vendor compiler, and test the artifact on the target NPU. We define 
+
+F = { b ∈ E | COMPILE FEASIBLE (b) }, (4) where C OMPILE FEASIBLE requires successful graph export, vendor compilation, and execution. Exhaustive probing is necessary because some edges that appear structurally insertable fail vendor compilation when a Q–DQ pair is placed inside the corresponding fused region. The set F is computed once offline for each configuration and used as an internal compatibility-screening pool. The deployable output is the jointly compiled boundary set rather than the pool of individually feasible edges. For exploratory characterization, we report the final sets Beval in Appendix Table A1; at deployment, Algorithm 1 returns B∗ after applying the PAPR gate. 
+
+Greedy boundary selection. Given F and the PAPR profile, Algorithm 1 first identifies compile-feasible boundaries adjacent to PAPR hot spots, defined by PAPR ≥ γ. It then ranks these candidates by local peak current and greedily adds up to K boundaries. For an edge b = ( i, j ), its boundary interval is Tb = [ tis, t je] and its score is s(b) = max t∈Tb I(t),using the synchronized execution intervals of its producer and consumer. 4Algorithm 1 PAPR-Guided Greedy Split                                                                  
+
+> Require: Current waveform I(t); layer intervals {[tis, t ie]}Ni=1 ; compile-feasible edge set F; threshold γ; budget K
+> Ensure: Split boundaries B∗
+> 1: S← { t|I(t)/¯I≥γ}▷PAPR hot points
+> 2: if S=∅then return ∅
+> 3: end if
+> 4: C← { b∈F|Tb∩S̸=∅} ▷feasible hot-spot boundaries
+> 5: Sort Cby s(b), descending
+> 6: B∗← ∅
+> 7: for bin sorted Cdo
+> 8: if |B∗|< K and JOINT COMPILE FEASIBLE (B∗∪ { b})then
+> 9: B∗←B∗∪ { b}
+> 10: end if
+> 11: end for
+> 12: return B∗
+
+JOINT COMPILE FEASIBLE requires successful graph export, vendor compilation, and execution with all barriers in the candidate set. A candidate that fails this combined check is skipped. At each selected boundary in B∗, we insert a Quantize–Dequantize (Q–DQ) operator pair as a barrier that the compiler cannot fold away. In principle, a zero-cost identity operator would be more desirable. In practice, however, the target NPU compiler (Qualcomm HTP) merges Identity and Reshape nodes, defeating the intended split; we therefore use Q–DQ as a practical substitute. The rewritten graph is then passed to the vendor compiler, which sees the separated subgraphs and no longer merges them into a single monolithic superlayer. The measured accuracy impact is reported in Table 2 (worst case −0.31 pp Top-1). The PAPR threshold γ is an operational parameter that defines which superlayers are treated as voltage hazards. Its value should be chosen according to the device’s DVFS-onset characteristics and the trade-off between peak reduction and latency overhead. In Section 5, we derive an empirical operating threshold from measurements across models and resolutions. The parameter K sets the maximum number of inserted barriers and therefore directly limits the latency overhead of the method. 
+
+# 4 Experimental Setup 
+
+This section describes the measurement environment, the voltage-sweep protocol used to expose droop-induced protection behavior, the models to which the proposed splitting method is applied, and the evaluation metrics used throughout the paper. 
+
+## 4.1 Measurement setup 
+
+To confirm that compiler-fused superlayers create measurable voltage hazards, we synchronously measured current, voltage, and latency during DNN inference on a commercial smartphone (Sony Xperia 1 VI, Snapdragon 8 Gen 3, equipped with a Qualcomm Hexagon Tensor Processor (HTP) NPU; Fig. 3). To isolate the NPU contribution, we suppressed background processing, fixed CPU and DRAM frequencies to their lowest values, and ensured that only the NPU was under high load. Subtracting idle power from active power yielded the NPU load power. 
+
+## 4.2 Voltage-sweep protocol and protection modes 
+
+To characterize DVFS protection and shutdown-like behavior, we ran continuous inference while lowering the pro-grammable DC supply at the PMIC input rail in ∼10 mV steps, recording the DVFS incidence (fraction of throttled inference kernels) and latency at each voltage point. For the DVFS-onset analysis, each peak-current bin contains five measurements. In the detailed MobileNetV4@768 voltage sweep, latency at each plotted point is averaged over 100 inferences. Waits were inserted between frames to equalize average power across models while keeping each DNN’s instantaneous peak current distinct. This sweep revealed how the device’s protection mechanisms engage. All measurements were performed at 25 ◦C with sufficient cool-down between voltage points. 5Figure 3: Power measurement setup. The battery terminals are driven by an external supply (DP832A), and instantaneous power at the PMIC input rail is acquired with a power analyzer (JS220). A host PC synchronously collects DNN inference logs and power traces via Android Debug Bridge (ADB). In this evaluation, we distinguish two protection mechanisms: 
+
+4.2.1 Software protection 
+
+During normal operation, the OS estimates a safety margin from the indicated state-of-charge (SoC) and uniformly enforces DVFS in software when SoC approaches about 5%. In this mode, throttling fires irrespective of the model’s peak power once SoC nears the threshold, causing a sharp latency increase (up to 72% in our measurements). Thus, software protection is an SoC-based, model-agnostic throttling policy rather than a response to model-specific power profiles. 
+
+4.2.2 Hardware protection 
+
+Beyond software control, if the effective PMIC input voltage Vterm (t) momentarily drops below a hardware threshold due to PDN-induced droop (Section 3.1), the device engages DVFS or near-halt behavior as a self-defense mechanism. This response is independent of the displayed SoC and is driven directly by instantaneous current spikes and the resulting voltage drop. By replacing the internal battery with a programmable supply, we could lower the supply voltage even while the device judged sufficient capacity to remain (i.e., before software protection would trigger), allowing us to isolate the impact of voltage droop during DNN inference. 
+
+## 4.3 Models 
+
+We apply Algorithm 1 to MobileNetV4-hybrid-large [ 18 ] and Hiera-Tiny [ 21 ]. These two backbones were chosen to cover representative mobile vision architectures with different operator structures and fusion behavior on the target NPU. 
+
+## 4.4 Evaluation metrics 
+
+For each model and resolution, we report the following before and after splitting: • Latency: per-inference processing time [ms]. • Current (MAX): maximum instantaneous current within the recorded inference interval at the PMIC input rail [A]. • Avg Power: mean power during inference [W]. • Energy / inference: Latency × Avg Power [mJ]. These metrics capture both the intended benefit (peak reduction) and the cost (latency and energy overhead) of breaking fusion. 6Figure 4: DVFS-onset voltage vs. peak current. Dots: all measurements per peak-current bin ( n=5 ). Thick line: bin-wise mean. Dashed line: exploratory linear fit (extrapolated), slope 0.147 V/A ( ≈147 mV per +1 A). The orange band marks the shutdown-dominated region at VLVC ≈ 3.22 V. Peak reduction by the PAPR-based splitting method (Section 3.2) is estimated to lower the DVFS-onset voltage toward the shutdown threshold. 
+
+# 5 Results and Discussion 
+
+This section first characterizes the association between instantaneous peak current and DVFS onset, then evaluates the proposed splitting method across models and input resolutions, and finally discusses the practical implications and limitations of the approach. 
+
+## 5.1 Peak current and hardware protection threshold 
+
+Fig. 4 shows the relationship between peak current and DVFS-onset voltage for each model. Models with higher peak current exhibit DVFS onset at higher supply voltages; an exploratory linear fit has a slope of 0.147 V/A. Inserting waits between frames reduces differences in average load across models, but it does not eliminate model- and kernel-dependent confounders. We therefore interpret the fit as an association rather than an isolated causal estimate of peak current. The trend is consistent with peak-current-induced PDN drop advancing hardware-protection DVFS onset. 
+
+## 5.2 Qualitative example of PAPR-guided splitting 
+
+On the Sony Xperia 1 VI, the sequence of Universal Inverted Residual (UIR) blocks in MobileNetV4 is fused by the NPU compiler into a single large superlayer, producing a pronounced peak-power burst (Fig. 5). This superlayer arises because multiple UIR blocks share the same spatial resolution, kernel shape, and operator pattern (Conv → BN → Act, etc.), prompting the NPU optimizer to schedule them as one large fused kernel. 
+
+## 5.3 Main quantitative results 
+
+We first performed an exploratory characterization to determine when splitting is worthwhile, without applying a PAPR-based deployment gate. For each model–resolution pair, we tested Q–DQ insertion at every graph edge b ∈ E and formed the compile-feasible subset F using Eq. (4) . We then disabled the deployment threshold, ranked the screened edges by local peak current, and constructed a jointly compilable evaluation set Beval ⊆ F subject to |Beval | ≤ K = 4 ,using the same greedy skip-on-failure rule as Algorithm 1. This forced-split characterization includes low-PAPR cases and exposes when insertion overhead outweighs peak-current reduction. The resulting sets contain four barriers for MobileNetV4 and two for Hiera-Tiny; their locations and detailed operator listings are reported in the appendix. Focusing on the PAPR max column in Table 1, the six configurations separate into two empirical regimes. For the three configurations with PAPR max ≥ 2.0 (MNV4@512: 2.43, @768: 2.60, @1024: 2.60), forced splitting reduces peak current by 17–40% with only 2–14% latency increase. MNV4@768 is a particularly favorable operating point, with 38% peak reduction at 4% latency cost. 7Figure 5: Correspondence between PAPR (upper) and layer execution intervals (lower) in MobileNetV4 (768 ×768 input). The upper panel shows PAPR( t) = I(t)/ ¯I relative to the average current ¯I over the entire inference interval; the red dashed line marks the threshold γ = 2 .0. The middle panel color-codes per-layer execution intervals. Light blue vertical lines indicate hot intervals exceeding γ, and green diamonds are split boundaries selected by the algorithm (K=4 splits). The large Conv2D region (red diagonal lines) with consecutive UIR blocks is fused as a single superlayer, generating a PAPR peak ( ≈2.6). The lower panel shows the split model after applying our method, where the PAPR peak is reduced below the threshold γ.In contrast, for the three configurations with PAPR max < 2.0 (MNV4@224: 1.57, Hiera@224: 1.53, Hiera@384: 1.66), forced-split peak reduction is limited to 0–23% while latency increases by 25–36%—the barrier-insertion overhead exceeds the benefit of peak reduction because the original peak is already low. This exploratory dichotomy suggests an empirical operating threshold near PAPR max ≈ 2.0 on the tested platform. We therefore use γ = 2 .0 as a deployment gate: configurations below the threshold, including both Hiera-Tiny cases, are left unsplit, whereas candidate boundaries are considered only when the measured profile crosses the threshold. The Hiera-Tiny results are therefore low-PAPR cases showing why unconditional splitting is undesirable, not configurations for which the final policy recommends splitting. Accuracy is also largely preserved: the largest Top-1 change with Q–DQ layer insertion is −0.31 pp (Table 2). That said, as noted earlier, an insertion layer that is computationally equivalent or does not affect accuracy would be ideal for layer splitting. 
+
+## 5.4 Sensitivity to boundary scoring 
+
+Under the conditions γ=2 .0 and K=4 identified as effective in the trade-off analysis above, we performed splitting using three patterns: PAPR-threshold selection, equal-interval splitting, and random splitting. All three strategies select from the same compile-feasible candidate pool under the same K = 4 budget: equal-interval splitting spaces its choices uniformly in execution order, while random splitting samples from the pool. For every strategy, candidates that failed the same combined compilation check were skipped. The experiment was conducted on MobileNetV4@768, comparing 8Table 1: Comparison of latency, peak current, average power, PAPR, and energy across architectures. For each model and resolution, the third row reports ratios (Forced/Original). The forced-split rows are exploratory results obtained without applying the deployment gate. Resolutions 224–1024 denote input size. Bold marks the selected operating point that achieves over 35% peak reduction with less than 4% latency overhead.                                                                                                  
+
+> Model Resolution Variant Latency [ms] Current (MAX) [A] Avg Power [W] PAPR max Energy / inference [mJ] MobileNetV4 224 ×224 Original 2.04 1.99 4.69 1.57 9.57 Forced split 2.56 1.54 4.44 1.28 11.36 Ratio (Forced/Orig.) 1.25 ×0.77 ×0.95 ×1.19 ×
+> 512 ×512 Original 6.18 3.06 4.65 2.43 28.73 Forced split 7.07 1.85 4.60 1.49 32.52 Ratio (Forced/Orig.) 1.14 ×0.60 ×0.99 ×1.13 ×
+> 768 ×768 Original 19.95 3.12 4.44 2.60 88.58 Forced split 20.70 1.94 4.39 1.64 90.87
+> Ratio (Forced/Orig.) 1.04 ×0.62 ×0.99 ×1.03 ×
+> 1024 ×1024 Original 47.63 3.04 4.32 2.60 205.76 Forced split 48.42 2.51 4.38 2.12 212.08 Ratio (Forced/Orig.) 1.02 ×0.83 ×1.01 ×1.03 ×
+> Hiera-Tiny 224 ×224 Original 6.29 1.74 4.22 1.53 26.54 Forced split 8.54 1.36 3.10 1.62 26.47 Ratio (Forced/Orig.) 1.36 ×0.78 ×0.73 ×1.00 ×
+> 384 ×384 Original 26.33 2.07 4.60 1.66 121.12 Forced split 32.90 2.06 3.98 1.91 130.94 Ratio (Forced/Orig.) 1.25 ×0.99 ×0.86 ×1.08 ×
+
+Table 2: Effect of Q–DQ layer insertion count K on accuracy (MobileNetV4-hybrid-large, timm pretrained, ImageNet-1k, 448 ×448 input). For K > 0, barriers are accumulated in descending local-peak rank using the same skip-on-failure rule as Algorithm 1.                    
+
+> KAccuracy [%] ∆vs. K=0 [%] Top-1 Top-5 Top-1 Top-5 0 (none) 84.25 96.94 —183.94 96.82 -0.31 -0.11 284.03 96.94 -0.22
+
++0.00         
+
+> 384.06 96.93 -0.20 -0.01 484.06 96.91 -0.19 -0.03
+
+peak current and latency (Table 3). PAPR-threshold selection reduced peak current to 1.94 A, whereas equal-interval splitting achieved only 2.51 A and random splitting averaged 2.65 A, both requiring comparable or higher latency. This demonstrates that PAPR-based boundary selection is essential for peak reduction. 
+
+## 5.5 Implications for voltage margin and control 
+
+Voltage-margin improvement. As discussed in Section 4.2, we estimate the voltage-margin change associated with peak-current reduction. From the exploratory fit in Fig. 4, the DVFS activation voltage changes by approximately 147 mV per 1 A of peak current. The 1.18 A reduction for MobileNetV4@768 (3.12 A → 1.94 A) therefore yields an improvement in the DVFS activation voltage of approximately 173 mV: 
+
+∆VDVFS = 1 .18 A × 147 mV /A ≈ 173 mV (5) Fig. 6 shows the corresponding within-model comparison. We deployed MobileNetV4@768 before and after applying the algorithm on a real device and measured average latency at each applied voltage. The Original version begins to exhibit latency increases due to DVFS throttling around 3.45 V, whereas the Split version maintains stable latency down to near the system shutdown threshold ( ≈3.28 V). This comparison is consistent with peak-current reduction shifting hardware-protection DVFS activation to a lower voltage. 
+
+Cross-device interpretation. The slope in Fig. 4 is a descriptive estimate of the effective current-to-voltage sensitivity of the measured power-delivery path. We do not infer its magnitude on other devices; cross-device use requires a new fit under matched acquisition settings. 9Table 3: Comparison of boundary scoring strategies (MobileNetV4@768, budget K=4 ). PAPR-guided selection reduces peak current 23–27% more than na¨ ıve methods. Random Split values are averaged over 3 seeds.           
+
+> Method Peak Current (A) Latency (ms) Proposed (PAPR) 1.94 20.70 Equal Interval 2.51 21.17 Random ( s=0 ,1,2)2.65 avg (2.50–2.74) 20.88 (20.70–21.10)
+
+Figure 6: Applied voltage vs. average latency (MobileNetV4@768). Inference time is the average over every 100 inferences. The Original version shows sharp latency increases from DVFS throttling around 3.45 V, while the Split version maintains stable inference time down to near the shutdown threshold ( ≈3.28 V).                                            
+
+> Table 4: Comparison with vendor frequency capping: PAPR-based splitting vs. frequency capping (MobileNetV4@768). Sustained mode is a vendor preset of frequency capping. PAPR follows Eq. (3): PAPR( t) = I(t)/¯I.Method NPU mode Lat. [ms] ∆Lat. [%] Peak [A] ∆Peak [%] Power [W] Energy [mJ] ∆Energy [%] Baseline Burst 19.95 03.12 04.44 88.58 0Baseline Sustained 23.73 +18.9 2.29 −26 .63.35 79.50 −10 .3
+> Proposed Burst 20.70 +3.8 1.94 −37.8 4.39 90.87 +2.6
+> Proposed Sustained 25.04 +25.5 1.49 −52 .23.20 80.13 −9.5
+
+As shown in Fig. 4, in our measurements the inference task became unsustainable (OS shutdown) once the termi-nal/PMIC input voltage reached approximately 3.22 V. Reducing the peak current shifts the DVFS activation voltage downward by ∆V , which effectively widens the usable operating-voltage range under the same load profile. 
+
+## 5.6 Comparison with frequency capping 
+
+The proposed method reshapes the current waveform at the compiler level and is therefore orthogonal to external frequency-capping strategies such as DVFS (Section 2). To compare against a practical external-control baseline, we use the vendor-provided frequency cap: Qualcomm’s QNN HTP backend exposes a “perf profile” knob with several presets (e.g., “burst”, “sustained high performance”), which directly limit the available clock/voltage operating points. We treat sustained mode as a representative vendor preset of frequency capping and compare it against PAPR-based splitting on MobileNetV4@768 (Table 4). Frequency capping (sustained mode) lowers the absolute peak but at a large latency cost ( ×1.19 vs. baseline burst). In contrast, PAPR-based splitting achieves a larger peak reduction ( −37 .8% vs. −26 .6%) with only +3 .8% latency in burst mode. Critically, frequency capping reduces the absolute current peak but does not reshape the waveform as selectively as the proposed method: its PAPR max changes only modestly (2.60 →2.12), whereas the proposed method reduces it more substantially (2.60 →1.64) by breaking only the highest-hazard superlayers. The two approaches are complementary: combining them (Proposed + Sustained) yields a 52.2% peak reduction. 10 5.7 Limitations 
+
+This paper is a measurement study on one SoC (Snapdragon 8 Gen 3 NPU) and two representative vision backbones. The specific fusion patterns of the NPU compiler examined in this paper are expected to vary across compilers and devices. The method is most effective when the compiler creates large, aggressively fused superlayers; when fusion is minimal, the effect of the safety layer is limited and conventional energy/latency optimizations remain the primary lever. Results also vary with input resolution, as different resolutions change NPU kernel selections and memory-access patterns. The current workflow requires offline PAPR profiling and compilation screening for each model–resolution–compiler configuration. The voltage-onset regression is descriptive: we report the sample count and fitted slope, but no confidence interval or hypothesis test. Accordingly, the 147 mV/A slope and the derived 173 mV margin are exploratory estimates rather than calibrated transfer laws. Furthermore, on CPU/GPU delegates that do not perform aggressive layer fusion for execution-speed reduction, superlayers themselves are unlikely to form, and the effect of the proposed method is expected to be limited. Accordingly, we do not claim that the measured DVFS slope or the best splitting threshold transfers unchanged across devices; rather, we view these results as evidence that compiler-fusion-induced power transients are a practically measurable deployment issue that merits per-platform characterization. 
+
+# 6 Conclusion 
+
+This paper reported a measurement study of compiler-fusion-induced voltage droop during mobile NPU inference. Aggressive operator fusion maximizes throughput in the logical domain but can create high-amplitude current bursts that threaten voltage stability in the physical domain. During a synchronized current measurement and voltage sweep on a Snapdragon 8 Gen 3 smartphone, these bursts were associated with earlier DVFS onset and shutdown-like behavior near the lower operating limit. To counteract these voltage hazards, we proposed a PAPR-based splitting method—a measurement-guided, weight-preserving workflow whose deployed rewrite selectively splits the highest-hazard superlayers using PAPR-guided boundary selection. On MobileNetV4 (768 ×768), peak current was reduced by 37.8 % ( −1.18 A) with only 3.76 % latency overhead, yielding an estimated 173 mV improvement in DVFS voltage margin on the tested device. PAPR-guided selection outperformed random and equal-interval baselines by 23–27 % in peak reduction, confirming that targeted boundary identification is essential. These results highlight a practical deployment issue for always-on mobile inference pipelines—including camera and perception workloads—where DVFS-induced latency spikes cause frame drops and degrade user experience in the low-battery regime. The proposed safety layer complements both model compression/NAS and extrinsic throttling, and is best suited to reshaping current waveforms without retraining, modifying the compiler, or compromising hardware protection. More broadly, we expect the measurements in this study to be useful as a reference point for future work on mobile NPU compilers, power integrity, and low-voltage inference robustness. In future work, we will extend the approach to additional SoCs, compilers, and model families, and investigate static peak-power prediction from operator-graph features to eliminate the need for per-model measurement. 
+
+# References         
+
+> [1] Han Cai, Chuang Gan, Tianzhe Wang, Zhekai Zhang, and Song Han. Once-for-all: Train one network and specialize it for efficient deployment. In ICLR , 2020. [2] Kyungwook Chang, Siddharth Das, Saibal Sinha, Brian Cline, Greg Yeric, and Sung Kyu Lim. Frequency and time domain analysis of power delivery network for monolithic 3D ICs. In IEEE/ACM Int. Symp. Low Power Electron. Design (ISLPED) ,2017. [3] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie Yan, Haichen Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy. Tvm: An automated end-to-end optimizing compiler for deep learning. In OSDI , pages 578–594, 2018. [4] Daniel Crankshaw, Xin Wang, Guilio Zhou, Michael J. Franklin, Joseph E. Gonzalez, and Ion Stoica. Clipper: A low-latency online prediction serving system. In NSDI , pages 613–627, 2017.
+
+11 [5] D. Ernst, Nam Sung Kim, S. Das, S. Pant, R. Rao, Toan Pham, C. Ziesler, D. Blaauw, T. Austin, K. Flautner, and T. Mudge. Razor: a low-power pipeline based on circuit-level timing speculation. In Proceedings. 36th Annual IEEE/ACM International Symposium on Microarchitecture, 2003. MICRO-36. , pages 7–18, 2003. [6] Azzam Haidar, Heike Jagode, Phil Vaccaro, Asim YarKhan, Stanimire Tomov, and Jack Dongarra. Investigating power capping toward energy-efficient scientific applications. Concurrency and Computation: Practice and Experience , 31(6):e4485, 2019. [7] Seunghyup Han, Osama Waqar Bhatti, and Madhavan Swaminathan. Computation of maximum voltage droop in power delivery networks. IEEE Access , 8:197875–197884, 2020. [8] Yihui He, Ji Lin, Zhijian Liu, Hanrui Wang, Li-Jia Li, and Song Han. AMC: AutoML for model compression and acceleration on mobile devices. In ECCV , pages 784–800, 2018. [9] Mark Horowitz. 1.1 computing’s energy problem (and what we can do about it). In IEEE International Solid-State Circuits Conference (ISSCC) Digest of Technical Papers , 2014. [10] Chi-Hung Hsu, Shu-Huan Chang, Jhao-Hong Liang, Hsin-Ping Chou, Chun-Hao Liu, Shih-Chieh Chang, Jia-Yu Pan, Yu-Ting Chen, Wei Wei, and Da-Cheng Juan. Monas: Multi-objective neural architecture search using reinforcement learning. arXiv:1806.10332, 2018. [11] Muyan Hu, Ashwin Venkatram, Shreyashri Biswas, Balamurugan Marimuthu, Bohan Hou, Gabriele Oliaro, Haojie Wang, Liyan Zheng, Xupeng Miao, and Jidong Zhai. Optimal kernel orchestration for tensor programs with Korch. arXiv preprint arXiv:2406.09465, 2024. [12] Youngtaek Kim and Lizy Kurian John. Automated di/dt stressmark generation for microprocessor power delivery networks. In 
+
+IEEE/ACM International Symposium on Low Power Electronics and Design , pages 253–258, 2011. [13] Adam Krzywaniak, Paweł Czarnul, and Jerzy Proficz. Gpu power capping in exploiting energy-efficient execution of deep neural networks in multi-gpu systems. In ICCS , pages 667–681. Springer, 2022. [14] Charles R. Lefurgy, Alan J. Drake, Michael S. Floyd, Malcolm Allen-Ware, Bishop Brock, Jos ´e A. Tierno, John B. Carter, and Robert W. Berry. Active guardband management in power7+ to save energy and maintain reliability. IEEE Micro , 33(4):35–45, 2013. [15] Zheng Lin, Bin Guo, Sicong Liu, Wentao Zhou, Yasan Ding, Yu Zhang, and Zhiwen Yu. AdaOper: Energy-efficient and responsive concurrent DNN inference on mobile devices. arXiv preprint arXiv:2404.19209, 2024. [16] B. Pattipati, Balakumar Balasingam, Gopi Vinod Avvari, Krishna R. Pattipati, and Yaakov Bar-Shalom. Open circuit voltage characterization of lithium-ion batteries. Journal of Power Sources , 269:317–333, 2014. [17] Valentino Peluso, Roberto Giorgio Rizzo, and Andrea Calimera. Performance profiling of embedded convnets under thermal-aware dvfs. Electronics , 8(12):1423, 2019. [18] Danfeng Qin, Chas Leichner, Manolis Delakis, Marco Fornoni, Shixin Luo, Fan Yang, Weijun Wang, Colby Banbury, Chengxi Ye, Berkin Akin, Vaibhav Aggarwal, Tenghui Zhu, Daniele Moro, and Andrew Howard. Mobilenetv4 – universal models for the mobile ecosystem. In ECCV , 2024. [19] Arnab Raha, Shamik Kundu, Arghadip Das, Soumendu Kumar Ghosh, and Deepak A. Mathaikutty. SparseDroop: Hardware– software co-design for mitigating voltage droop in DNN accelerators. J. Low Power Electron. Appl. , 16(1):2, 2026. [20] Nadav Rotem, Jordan Fix, Saleem Abdulrasool, Garret Catron, Summer Deng, Roman Dzhabarov, Nick Gibson, James Hegeman, Meghan Lele, Roman Levenstein, Jack Montgomery, Bert Maher, Satish Nadathur, Jakob Olesen, Jongsoo Park, Artem Rakhov, Misha Smelyanskiy, and Man Wang. Glow: Graph lowering compiler techniques for neural networks. arXiv preprint arXiv:1805.00907, 2018. [21] Chaitanya Ryali, Yuan-Ting Hu, Daniel Bolya, Chen Wei, Haoqi Fan, Po-Yao Huang, Vaibhav Aggarwal, Arkabandhu Chowdhury, Omid Poursaeed, Judy Hoffman, Jitendra Malik, Yanghao Li, and Christoph Feichtenhofer. Hiera: A hierarchical vision transformer without the bells-and-whistles. In ICML , 2023. [22] Kuan Wang, Zhijian Liu, Yujun Lin, Ji Lin, and Song Han. HAQ: Hardware-aware automated quantization with mixed precision. In CVPR , pages 8612–8620, 2019. [23] Bichen Wu, Xiaoliang Dai, Peizhao Zhang, Yanghan Wang, Fei Sun, Yiming Wu, Yuandong Tian, Peter Vajda, Yangqing Jia, and Kurt Keutzer. FBNet: Hardware-aware efficient ConvNet design via differentiable neural architecture search. In CVPR ,pages 10734–10742, 2019. 
+
+12 [24] Rui Xiong, Jiayi Cao, Quanqing Yu, Hongwen He, and Fengchun Sun. Critical review on the battery state of charge estimation methods for electric vehicles. IEEE Access , 6:1832–1843, 2018. [25] Tien-Ju Yang, Yu-Hsin Chen, and Vivienne Sze. Designing energy-efficient convolutional neural networks using energy-aware pruning. In CVPR , pages 5687–5695, 2017. [26] Tien-Ju Yang, Andrew Howard, Bo Chen, Xiao Zhang, Alec Go, Mark Sandler, Vivienne Sze, and Hartwig Adam. Netadapt: Platform-aware neural network adaptation for mobile applications. In ECCV , pages 289–304, 2018. [27] Zongpu Zhang, Pranab Dash, Y. Charlie Hu, Qiang Xu, Jian Li, and Haibing Guan. Dissecting the impact of mobile DVFS governors on LLM inference performance and energy efficiency. arXiv preprint arXiv:2507.02135, 2025. [28] Ziyang Zhang, Yang Zhao, Ming-Ching Chang, Changyao Lin, and Jie Liu. E4: Energy-efficient DNN inference for edge video analytics via early-exit and DVFS. arXiv preprint arXiv:2503.04865, 2025. 
+
+13 A Supplementary Material 
+
+This appendix reports the exploratory boundary sets and their operator-level locations. Table A1: Boundary sets selected from the compile-feasible set F for exploratory forced-split characterization. Indices refer to the rewritten graph.                                   
+
+> Model Resolution |Beval |Beval (Q/DQ operator index) MobileNetV4 224 ×224 4indices 22, 25, 28, 31 MobileNetV4 512 ×512 4indices 22, 25, 28, 31 MobileNetV4 768 ×768 4indices 22, 25, 28, 31 MobileNetV4 1024 ×1024 4indices 22, 25, 28, 31 Hiera-Tiny 224 ×224 2indices 1, 3 Hiera-Tiny 384 ×384 2indices 1, 3
+
+## A.1 Selected boundary sets 
+
+Following Eq. (4) , we tested every graph edge and used the compatibility-screened pool to construct a jointly compilable 
+
+Beval , subject to |Beval | ≤ K = 4 , without applying the deployment threshold. Candidates that failed the combined compilation check were skipped as in Algorithm 1. Table A1 reports the resulting evaluation sets used in Table 1. Detailed layer configurations appear in Table A2 for MobileNetV4 and Table A3 for Hiera-Tiny. 
+
+Indexing convention. The reported indices refer to Q/DQ barrier operators after rewriting, not to indices in the original graph. For MobileNetV4, Q/DQ barriers are placed at indices 22, 25, 28, and 31, while for Hiera-Tiny they are at indices 1 and 3. Empirically, all tested resolutions of a given model yielded the same selected locations. See Section 3.2 for the feasibility test. 
+
+## A.2 Operator-level layer listings 
+
+14 Table A2: Layer configuration of MobileNetV4 Hybrid Large. Indices are 0-based in operator order. Quant–dequant barriers mark split candidates. 
+
+Idx Type Class Description Split 0 op conv2d channels= 3 → 24 
+
+1 op batch norm act 2 pattern edge residual channels= 24 → 48 
+
+3 pattern universal inverted residual channels= 48 → 96 
+
+4 pattern universal inverted residual channels= 96 → 96 
+
+5 pattern universal inverted residual channels= 96 → 192 
+
+6 pattern universal inverted residual channels= 192 → 192 
+
+7 pattern universal inverted residual channels= 192 → 192 
+
+8 pattern universal inverted residual channels= 192 → 192 
+
+9 pattern universal inverted residual channels= 192 → 192 
+
+10 pattern universal inverted residual channels= 192 → 192 
+
+11 pattern universal inverted residual channels= 192 → 192 
+
+12 pattern mqa 13 pattern universal inverted residual channels= 192 → 192 
+
+14 pattern mqa 15 pattern universal inverted residual channels= 192 → 192 
+
+16 pattern mqa 17 pattern universal inverted residual channels= 192 → 192 
+
+18 pattern mqa 19 pattern universal inverted residual channels= 192 → 192 
+
+20 pattern universal inverted residual channels= 192 → 512 
+
+21 pattern universal inverted residual channels= 512 → 512 
+
+22 op quant dequant barrier Q/DQ barrier ✓
+
+23 pattern universal inverted residual channels= 512 → 512 
+
+24 pattern universal inverted residual channels= 512 → 512 
+
+25 op quant dequant barrier Q/DQ barrier ✓
+
+26 pattern universal inverted residual channels= 512 → 512 
+
+27 pattern universal inverted residual channels= 512 → 512 
+
+28 op quant dequant barrier Q/DQ barrier ✓
+
+29 pattern universal inverted residual channels= 512 → 512 
+
+30 pattern universal inverted residual channels= 512 → 512 
+
+31 op quant dequant barrier Q/DQ barrier ✓
+
+32 pattern universal inverted residual channels= 512 → 512 
+
+33 pattern universal inverted residual channels= 512 → 512 
+
+34 pattern mqa 35 pattern universal inverted residual channels= 512 → 512 
+
+36 pattern mqa 37 pattern universal inverted residual channels= 512 → 512 
+
+38 pattern mqa 39 pattern universal inverted residual channels= 512 → 512 
+
+40 pattern mqa 41 pattern universal inverted residual channels= 512 → 512 
+
+42 pattern conv bn act 43 pattern classification head 
+
+15 Table A3: Layer configuration of Hiera Tiny. Indices are 0-based in operator order. Quant–dequant barriers mark split boundaries. 
+
+Idx Type Class Description Split 0 pattern hiera patch embed patch embedding 1 op quant dequant barrier Q/DQ barrier ✓
+
+2 pattern hiera block dim=96 →96, tokens=3136 3 op quant dequant barrier Q/DQ barrier ✓
+
+4 pattern hiera block dim=96 →192, tokens=3136 5 pattern hiera block dim=192 →192, tokens=196 6 pattern hiera block dim=192 →384, tokens=196 7 pattern hiera block dim=384 →384, tokens=49 8 pattern hiera block dim=384 →384, tokens=49 9 pattern hiera block dim=384 →384, tokens=49 10 pattern hiera block dim=384 →384, tokens=49 11 pattern hiera block dim=384 →384, tokens=49 12 pattern hiera block dim=384 →384, tokens=49 13 pattern hiera block dim=384 →768, tokens=49 14 pattern hiera block dim=768 →768, tokens=49 15 pattern hiera block dim=768 →768, tokens=49 16 pattern hiera block dim=768 →768, tokens=49 17 op layer norm layer normalization 18 op reshape reshape to sequence 19 op adaptive avg pool 1d global average pooling (1D) 20 op flatten flatten 21 op fc fully-connected classifier 
+
+16

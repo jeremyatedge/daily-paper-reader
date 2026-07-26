@@ -1,0 +1,655 @@
+Title: SEAM-V: A Hybrid-Decoupled RISC-V Vector Processor with Backend-Visible EP Context for Sustained Vector Throughput
+
+URL Source: https://arxiv.org/pdf/2607.17899v1
+
+Published Time: Tue, 21 Jul 2026 01:52:28 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+> 1
+
+# SEAM-V: A Hybrid-Decoupled RISC-V Vector Processor with Backend-Visible EP Context for Sustained Vector Throughput 
+
+Weiying Wang and Zhiwei Zhang 
+
+Abstract —Data-parallel workloads in deep learning and scien-tific computing continue to drive demand for higher processor throughput, energy efficiency, and scalability. The RISC-V Vector Extension (RVV) supports scalable execution through a vector-length-agnostic programming model. However, many tightly coupled implementations still rely on the scalar core to supply vector instructions one at a time, making execution susceptible to vector-instruction supply gaps, scalar-side progression delays, and conservative dependence handling in short-vector, loop-tail, and control/memory-interleaved phases. This paper presents SEAM-V, a hybrid-decoupled vector execution architecture for RVV. SEAM-V forms a continuous stream of execute packets (EPs) through task-level decoupling, local instruction supply, and VLIW-style packing. After an EP is serialized into individual requests, its EP identity and request-bound prefetch context remain visible to the dynamic vector backend, enabling same-EP candidate-hazard suppression and request-bound prefetching. The hybrid-dispatch path can also provide limited cross-EP vector overlap when the required safety conditions are satis-fied. Cross-EP dependences, dependences not exempted by the EP contract, resource conflicts, and memory ordering remain dynamically managed by the backend. Cycle-accurate RTL eval-uation shows that, compared with an Ara-based tightly coupled RVV implementation (TC), SEAM-V achieves a geometric-mean speedup of 1.34 × across 17 representative kernels. The one-dimensional variable-AVL, BLAS and matrix, and fixed-size application groups achieve speedups of 1.50 ×, 1.25 ×, and 1.27 ×,respectively. At AVL=32, the geometric-mean speedup across six one-dimensional vector kernels approaches 3 ×.
+
+Index Terms —RISC-V Vector Extension, hybrid-decoupled execution, execute packet, vector-instruction supply, backend cooperation. 
+
+I. I NTRODUCTION 
+
+# MANY workloads in deep neural networks, scientific computing, and autonomous driving exhibit substan-tial data-level parallelism and contain phases dominated by regular computation or streaming memory access. Their high-throughput demands continue to drive general-purpose pro-cessors toward vector architectures. The RISC-V Vector Ex-tension (RVV) provides an open, scalable, and vector-length-agnostic programming model, offering a unified interface for software portability and performance scaling across imple-mentations with different physical vector lengths [1]. Many existing RVV processors employ a tightly coupled execution 
+
+Weiying Wang and Zhiwei Zhang are with the Institute of Automation, Chinese Academy of Sciences, Beijing 100049, China, and also with the School of Artificial Intelligence, University of Chinese Academy of Sciences, Beijing 100049, China. Corresponding authors: Weiying Wang and Zhiwei Zhang (e-mail: wang-weiying2021@ia.ac.cn; zhiwei.zhang@ia.ac.cn). 
+
+organization: a host scalar core performs instruction fetch, decode, control-flow management, base-address and loop-state maintenance, and vector-instruction issue, while the vector unit executes data-parallel commands as the backend. This orga-nization provides a clean interface and broad compatibility. However, vector execution remains paced by instruction-at-a-time issue from the scalar core, making it difficult to sustain a sufficiently dense and continuous stream of work in the vector backend [2]. Moreover, front-end-visible semantics, including loop structure, local parallelism, and memory-access intent, are not naturally propagated with the command stream into the backend, limiting the opportunities for scheduling, dependence handling, and memory-access coordination. These limitations arise across practical workloads with different granularities and characteristics. Short vectors, loop tails, small-batch operators, and small-matrix computations reduce the ability of vector instructions to amortize scalar-control, address-update, and issue overheads, thereby expos-ing instruction-throughput bottlenecks. Kernels with frequent control and address updates are constrained by scalar/vector interleaving, whereas regular but memory-sensitive kernels can lose execution continuity because of memory stalls and conser-vative backend scheduling. Even when an application exposes substantial data-level parallelism at a coarse granularity, its execution efficiency can still be jointly constrained by vector granularity, control intensity, and memory-access behavior. Therefore, the bottleneck of conventional tightly coupled RVV execution is not limited to short-vector scenarios. Across dif-ferent kernel classes, it commonly manifests as discontinuous execution caused by insufficient vector-instruction throughput, scalar-side progression constraints, and conservative backend execution [2], [3]. Existing approaches improve vector execution efficiency mainly through stronger instruction supply, optimized dynamic vector backends and memory paths, decoupled or streaming execution, and explicit representation of local parallelism. One class of designs employs more capable supply paths, dynamic scheduling, chaining, and memory-system optimizations to improve vector-request delivery, execution overlap, and tol-erance to long-latency events [3]–[5]. Another class reduces dependence on instruction-at-a-time control by the host scalar core and lowers fine-grained synchronization overhead through local instruction supply or by decoupling control, memory ac-cess, and computation [6]–[8]. Meanwhile, VLIW/EPIC archi-tectures explicitly organize local instruction-level parallelism using software- or compiler-generated execution packets [9], arXiv:2607.17899v1 [cs.AR] 20 Jul 2026 2
+
+[10]. Our prior work further introduced a VLIW-driven hybrid-decoupled vector architecture that integrates task-level decou-pling, local instruction supply, scalar execution, and HINT-guided dynamic EP formation within the vector coprocessor, allowing it to progress autonomously after task submission by the Host [11]. However, front-end-generated structured information may still be lost when EPs are serialized into individual vector requests, forcing the dynamic vector backend to continue making dependence and memory-access decisions primarily from isolated requests and run-time state and thereby introducing unnecessary conservative handling. Therefore, the central problem addressed in this work is how to preserve EP ownership, loop context, and memory-access intent across the interface and make them continuously available to the back-end, while retaining the execution capabilities and correctness guarantees of a dynamic vector backend. This paper presents SEAM-V, a hybrid-decoupled vector execution architecture for RVV. SEAM-V uses an execute packet (EP) as the fundamental organizational unit connecting front-end supply and backend execution. Through task-level decoupling, local instruction fetch, scalar control, and VLIW-style organization, the front end restructures a fine-grained interleaved scalar/vector instruction stream into a continuous stream of EPs. Software uses lightweight HINT headers whose 
+
+p-bits, loop markers, and prefetch fields expose packet bound-aries, local parallelism, loop attributes, and memory-access intent. Hardware uses these annotations to form EPs and gener-ate backend-visible EP context. SEAM-V further preserves key EP context across the front-end–backend interface, allowing the vector backend to reduce conservative dependence stalls introduced by the instruction-at-a-time request interface and to perform controlled prefetching for regular vector memory accesses. The hybrid execution path can also provide limited cross-EP vector-execution overlap when the required safety conditions hold. Without changing the computational seman-tics of standard RVV instructions, true dependences, memory ordering, and completion state remain dynamically maintained by the vector backend. SEAM-V instead improves pipeline coordination among scalar control, vector computation, and memory access. This paper develops, implements, and evalu-ates this EP-centric execution model and demonstrates its abil-ity to improve sustained execution efficiency across different vector granularities and kernel characteristics. The main contributions of this work are as follows:  
+
+> •
+
+We propose a task-level hybrid-decoupled execution ar-chitecture and an execute-packet formation mechanism for RVV. The architecture decouples hot kernels from instruction-at-a-time synchronous control by the host scalar core and restructures interleaved scalar/vector in-struction streams into continuous EP streams through local instruction fetch, scalar execution, and HINT-guided packetization. This design alleviates instruction-supply and scalar-progression constraints in short-vector and scalar/vector-interleaved workloads.  
+
+> •
+
+We develop a backend-visible EP-context propagation mechanism spanning hybrid dispatch, serialization into individual requests, and backend delivery. EP identity and request-bound prefetch context remain aligned with the corresponding vector requests as they enter the dynamic vector backend, while an independent loop-active 
+
+state provides run-time context to the memory path. This mechanism prevents critical packet-level information from being lost during execution-granularity conversion.  
+
+> •
+
+We introduce EP-context-driven backend cooperation. SEAM-V uses EP identity to implement same-EP candidate-hazard suppression, reducing conservative de-pendence stalls reintroduced by the instruction-at-a-time request interface. It also uses request-bound memory hints to perform dynamically controlled prefetching for eligible unit-stride vector-load streams. Both mechanisms retain the backend’s existing management of true dependences, resource conflicts, and memory ordering.  
+
+> •
+
+We complete the end-to-end RTL integration of SEAM-V with a dynamic RVV backend and conduct a systematic evaluation. Cycle-accurate simulation, microarchitectural counters, ablation and sensitivity analyses, synthesis, and physical-design flows are used to quantify the perfor-mance and energy-efficiency benefits of the complete architecture and its key mechanisms, together with the corresponding area and power costs. The remainder of this paper is organized as follows. Sec-tion II introduces the RVV execution background and related work. Section III presents the SEAM-V hardware architecture. Section IV describes the programming model and software interface. Section V reports the performance evaluation, ab-lation and sensitivity analyses, and physical-design results. Section VI concludes the paper. II. B ACKGROUND AND RELATED WORK 
+
+This section first introduces the spatio-temporal execution characteristics of RVV and the vector-instruction supply con-straints of tightly coupled organizations. It then reviews prior work on scalable vector microarchitectures, dynamic back-end scheduling, decoupled and streaming execution, backend memory-path optimization, and explicit instruction grouping. Based on this discussion, we identify the execution semantic gap between the front end and backend and position SEAM-V within the resulting design space. 
+
+A. RVV and Spatio-Temporal Vector Execution 
+
+SIMD and vector architectures both exploit data-level par-allelism, but organize it differently. In a fixed-width SIMD ar-chitecture, the number of elements processed by an instruction is determined primarily by the ISA-visible register width and element type, and is therefore largely fixed at the architectural level. In contrast, a vector architecture decouples the architec-tural vector length from the physical datapath width. A vector instruction is expanded into a stream of element operations according to run-time state, with these operations progressing spatially across multiple lanes and temporally across multiple beats [1], [2]. In RVV, vl determines the number of active elements processed by the current instruction, while SEW and LMUL specify the element width and register grouping, respectively. The number of physical lanes and the available backend 3
+
+resources determine how the element operations are distributed across space and time, while masking further determines which active elements update architectural state. Vector memory operations are also constrained by their access modes, address generation, and memory-system state. An RVV backend is therefore not merely a fixed-width SIMD datapath, but a stateful execution system that dynamically tracks execution progress, data dependences, resource conflicts, and memory ordering [1]. These spatio-temporal execution characteristics fundamen-tally constrain packet-based execution for RVV. Front-end packet formation can expose local program structure, but cannot statically determine the actual execution progress of vector instructions in the backend. Packet-level information relevant to backend cooperation should therefore augment, rather than replace, the run-time state of a dynamic vector backend. Vector-instruction expansion, cross-EP dependences and dependences not exempted by the EP contract, resource availability, execution progress, and memory ordering remain under dynamic backend management. 
+
+B. Scalar-Driven Supply Constraints in Tightly Coupled RVV Processors 
+
+Many existing RVV processors adopt a tightly coupled organization in which the host scalar core performs instruction fetch, decode, control-flow management, base-address and loop-state maintenance, and vector-instruction issue, while the vector unit receives and executes vector commands individ-ually. This organization reuses the existing scalar fetch and control paths and provides a clean scalar–vector interface. However, in systems that issue vector instructions one at a time, the scalar core remains on the critical supply path for vector-request generation. Branches, loop-control and address-state updates, and frequent vset configurations may lie on the program-order or state-dependence paths of subsequent vector requests. Delays in advancing these operations can therefore introduce supply gaps between consecutive requests [2], [11]. When vectors are short or scalar and vector operations are frequently interleaved, each vector instruction amortizes less control, state-update, and issue overhead. Even if the vector backend provides substantial data-parallel execution capacity, its vector-instruction supply remains constrained by the progression rate of the scalar path. Intermittent request arrivals may prevent the lanes and memory resources from operating continuously. This limitation is therefore not merely a scalar-front-end fetch or decode bandwidth problem, but an end-to-end supply constraint jointly imposed by scalar-state progression, vector-request generation, and instruction-at-a-time issue [2], [5]. 
+
+C. Related Execution Models and the Semantic Gap 
+
+Prior work has improved vector-processor efficiency through scalable microarchitectural organizations and dynamic backend scheduling. Ara and Ara2 employ scalable lane-based organizations to support long-vector execution and show that scalar-core issue rate can become a performance constraint for short vectors [2], [12]. Spatz improves area and energy efficiency through compact vector units integrated into large-scale shared-L1 clusters [13]. Classical out-of-order vector architectures introduce register renaming and out-of-order issue into vector processors [4]. OVPM further explores out-of-order execution for short-vector workloads [14], while CODE improves vector-register-file scalability and hides communication and memory latency through a clustered vector register file, rename structures, and execution decoupling [15]. For RVV, Vitruvius+ com-bines in-order and out-of-order execution, register renaming, and arithmetic–memory decoupling [16], whereas Saturn uses dynamic scheduling and chaining to improve short-vector execution efficiency [5]. Titan-I further combines a scalable lane-based out-of-order architecture with issue-as-commit, fine-grained chaining, and memory interleaving to improve scalar/vector concurrency, dependent-instruction progress, and memory-level parallelism [17]. Another class of work improves execution continuity through decoupled supply, streaming semantics, or backend memory-path optimization. The vector-thread model of Scale and the decoupled vector-fetch architecture of Hwacha allow data-parallel execution to maintain a local instruction supply outside the control core [6], [18]. Decoupled Access/Execute separates access and execution streams using queues, allowing address generation and memory access to progress ahead of computation [7]. Stream Semantic Registers map regular memory accesses onto implicit register accesses, thereby re-ducing explicit load/store and address-update instructions [8]. Snitch’s FREP mechanism repeatedly supplies floating-point instructions from a micro-loop buffer, reducing the need for continuous instruction delivery from the integer control pipeline [19]. On the backend memory side, TROOP shows that widening the L1 interface alone is insufficient for low-operational-intensity workloads to reach the bandwidth roofline. It com-bines decoupled load/store interfaces, improved vector chain-ing, shadow buffers for hiding VRF conflicts, and TCDM address scrambling to better coordinate memory throughput with compute-pipeline progress [3]. Decoupled Vector Runa-head represents a related approach that speculatively vectorizes indirect memory-access chains to generate future requests and hide irregular memory latency [20]. Complementary to dynamic scheduling and decoupled ex-ecution, VLIW/EPIC and several DSP architectures explicitly expose local instruction-level parallelism through software-or compiler-generated annotations that organize parallel op-erations into instruction bundles or execution packets [9], [10]. SLAP further relaxes the lockstep constraint among conventional VLIW functional units and supports SIMD vector lengths that vary at run time [21]. For RVV, however, each vector instruction must still be dynamically expanded over multiple beats according to vl , SEW, LMUL, and the number of physical lanes. Its actual progress, resource occupancy, data dependences, and memory ordering cannot be fully determined by front-end grouping. Explicit instruction grouping can there-fore expose local program structure, but cannot replace the run-time execution management of a dynamic RVV backend. Overall, prior work improves vector execution through 4
+
+scalable vector organizations, dynamic backend scheduling, decoupled or streaming execution, backend memory opti-mization, and explicit parallelism representation. A design that combines front-end execute-packet organization with an instruction-at-a-time dynamic RVV backend must additionally preserve information across changes in execution granularity. Once a front-end-generated packet is decomposed or serialized into individual vector requests, EP ownership and memory-access intent may be lost unless they are explicitly carried across the interface. Similarly, loop-active state may no longer remain continuously available to the backend memory path. The vector backend must then make dependence and memory-access decisions primarily from individual requests and run-time state, potentially introducing unnecessary conservative handling. We refer to this inability to preserve and reuse front-end structured information across execution-granularity conversion as the front-end–backend execution semantic gap. 
+
+D. Positioning of SEAM-V 
+
+SEAM-V lies at the intersection of decoupled vector execu-tion, execute-packet organization, and dynamic RVV backend optimization. Its defining feature is not a simple combina-tion of these mechanisms, but the continuity of EP context across task-level execution, local instruction organization, and dynamic backend execution. Hot kernels progress through a local hybrid execution path, where interleaved scalar/vector instructions are organized into EPs. After an EP is hybrid-dispatched and its vector slice is serialized into individual requests, the associated context remains visible to the backend. SEAM-V does not use EPs to replace run-time backend management. Instead, backend-visible EP context augments the dynamic RVV backend with packet-level information that would otherwise be lost during request serialization. Vector-instruction expansion, cross-EP dependences and dependences not exempted by the EP contract, resource conflicts, execution progress, and memory ordering remain dynamically managed by the backend. This paper studies the complete execution path compris-ing task-level hybrid decoupling, HINT-guided EP formation, hybrid dispatch, backend-visible EP-context propagation, and EP-driven backend cooperation. Compared with our prior work [11], this work further preserves EP context across the instruction-at-a-time request interface, enables the dynamic backend to consume that context, and completes the end-to-end RTL integration of same-EP candidate-hazard suppression and request-bound prefetching. The evaluation further includes ablation and sensitivity analyses, together with synthesis and physical-design evaluation, to quantify the performance, energy-efficiency, and hardware costs of the key mechanisms. III. SEAM-V H ARDWARE ARCHITECTURE 
+
+This section presents the SEAM-V hardware architecture. We describe how the hybrid-decoupled execution path forms and dispatches execute packets (EPs), how EP context is generated and propagated to the dynamic RVV backend, and how the backend uses this context to reduce conservative dependence stalls and perform request-bound prefetching. 
+
+A. Architecture Overview 
+
+Fig. 1 shows the overall microarchitecture of SEAM-V. SEAM-V introduces a task-level hybrid-decoupled execution path between the Host and the vector backend. This path decouples hot vector kernels from instruction-at-a-time issue by the Host and converts them into a sustained stream of EPs generated by local hardware. It comprises task management, local instruction supply and scalar execution, HINT-guided EP formation, hybrid dispatch, and backend-visible EP-context propagation. After the Host submits a kernel entry address and its execution context, the Task Schedule Unit (TSU), Instruction Prefetch Unit (IPU), VLIW Pack Unit (VLIWPU), Hybrid Execution Unit (HEU), and local scalar backend jointly per-form task scheduling, instruction supply, loop progression, EP formation, and hybrid dispatch. The VLIWPU organizes the local instruction stream into EPs, while the HEU partitions each EP into a scalar slice and a vector slice and delivers them to the scalar backend and vector backend, respectively. Each vector request carries an EP identity and request-bound prefetch context into the vector backend, whereas 
+
+loop-active is supplied to the memory path as indepen-dent run-time state. The EP identity identifies the EP to which a request belongs, preserving same-EP membership after the EP is serialized into individual requests. Together, the EP identity and request-bound prefetch context constitute the EP context used throughout this work. An EP is the basic unit of local instruction organization and dispatch, whereas EP context is the packet-level hardware metadata that connects hybrid dispatch with vector-backend cooperation. Cross-EP dependences, requests without valid EP context, and dependences not exempted by the software EP contract remain dynamically managed by the vector backend. Resource conflicts, memory ordering, and instruction completion also re-main under backend control. The IPU, scalar LSU, and VLSU access system memory through a shared AXI interconnect, while task-completion and exception status are returned to the Host through a unified aggregation path. 
+
+B. Hybrid-Decoupled Execution Path 
+
+SEAM-V employs task-level decoupling to raise the software–hardware interaction granularity from individual vec-tor instructions to complete kernels. After the Host submits a task, the TSU manages pending tasks in submission order and activates one task at a time. Instruction fetch, loop control, scalar execution, EP formation, and vector dispatch are then performed entirely within the local execution domain. This organization removes the Host from the continuous vector-instruction supply path while retaining the execution context required to coordinate scalar control and vector execution within a kernel [11]. The IPU fetches 128-bit instruction packets from the task entry address and uses ping-pong buffering to overlap con-sumption of the current packet with refill of subsequent packets. For a loop region delimited by loop markers and repeatedly executed through an actual backward branch, the IPU can directly replay the buffered instructions, reducing 5Host Task Interface             
+
+> EP Reassembly &
+> Slice Builder
+> Dispatch / Ack / Promotion Ctrl
+> (1 -bit ep_id toggle)
+> Current EP State Buffered EP
+> (1 entry)
+> HEU (Hybrid Execution Unit)
+> Task CSR Registers
+> (ADDR / PADDR / START / STATUS)
+> Submission Handshake
+> (valid / ready)
+> Status Latches
+> (busy / done / error)
+> TIU (Task Interface Unit)
+> Task FIFO
+> (4 entries)
+> Active -Task Control
+> (one active)
+> Done / Error State
+> TSU (Task Schedule Unit)
+> 128 -bit Fetch Interface 2×512B
+> Ping -Pong Buffers Serve / Fill Ctrl Redirect & Loop Replay
+> (loop active)
+> IPU (Instruction Prefetch Unit)
+> HINT Decode &
+> Packet Assembly
+> Slot Marking &
+> Inst -Class Decode EP Boundary Scan Cross -Packet Carry &
+> 8-Slot EP output
+> VLIWPU (VLIW Pack Unit)
+> `
+> Local Scalar Backend
+> Scalar Operand / Writeback Interface with VDU
+> (operand service / scalar -visible writeback / ordering interlocks)
+> XRF
+> 32 ×64b
+> FRF
+> 32 ×64b
+> VL / VTYP / FRM
+> Arch State
+> compressed
+> Decode
+> RV64 Decode
+> 3-Wide Issue
+> Decode &
+> Issue ALU x 2
+> MUL
+> FPU
+> Branch Resolve
+> & Redirect
+> CSR / Task -End
+> Execution / Ctrl
+> Load / Store Unit
+> Vector -Store
+> Ordering Interlock
+> vset RAW Interlock
+> Scalar LSU &
+> Interlocks
+
+Dynamic RVV Backend 
+
+> Decode &
+> Vector -State Capture
+> (vl /vtype /vstart /frm )
+> Req Formation /
+> Reshuffle Ctrl
+> Resp / Except
+> Interface
+> Dispatcher
+> In -Flight Inst Table
+> (per -entry ep_id)
+> PE Issue &
+> Completion Track
+> Sequencer
+> Dependency Track
+> Same -EP Candidate
+> Suppression
+> Vector -Slice Capture
+> & Slot Serializer
+> Scalar Operand
+> Snapshot
+> Command Window
+> (12 entries)
+> Response Match /
+> Scalar Writeback
+> VDU (Vector Dispatch Unit)
+> EP Ack Generation
+
+Completion / Error Aggregator        
+
+> Scalar Task -End / Errors
+> VDU Drain / Outstanding State
+> Dispatcher / Sequencer / VLSU Exceptions
+> Task Done / Error Aggregation
+> TSU / TIU / Host Status Export
+> scalar slice scalar_ep_done
+> vector slice
+> vec_ep_ack (id)
+> Vector Lanes ×N
+> (VRF / OpQ /ALU
+> Mul / FPU)
+> Mask Unit
+> Slide Unit
+> Vector Execution
+> Cluster AddrGen & Prefetch
+> (1X / 2X / 4X / 8X)
+> Vector Load Unit
+> Vector Store Unit
+> AXI Interface
+> VLSU
+> Prefetch Credit /
+> Stream -Break Recovery
+
+Shared AXI Interconnect 
+
+> AXI Invalidation
+> Fillter
+> AXI 3 -Port Mux
+> System AXI4 Interface
+> IPU I -Fetch
+> AXI Master
+> Scalar LSU
+> AXI Master
+> Vector Backend
+> AXI Master
+> Control / handshake
+> Return / status
+> Bidirectional interface Forward request flow
+> Metadata / context
+
+Fig. 1. Overall microarchitecture of SEAM-V. The task-level hybrid-decoupled execution path performs local instruction supply, scalar execution, HINT-guided EP formation, and hybrid dispatch. EP identity and request-bound prefetch context accompany serialized vector requests into the dynamic RVV backend, while loop-active is supplied independently to the vector memory path. 
+
+repeated instruction-memory accesses across iterations. After resolving control flow, the local scalar backend sends a redirect to the IPU. Loop progression and instruction-fetch redirection thus form a closed local path that maintains a continuous instruction window for subsequent EP formation [11]. A task may still contain branches, address updates, scalar load/store operations, and vset configurations that require local scalar execution. SEAM-V therefore retains an inde-pendent local scalar backend. This backend maintains task-local register and control state, performs scalar computation, resolves branches, updates addresses, detects task completion, and supplies the scalar operands required by vector instruc-tions to the Vector Dispatch Unit (VDU). The vector backend performs vector-instruction expansion, vector-register access, lane execution, and vector memory operations. It also writes scalar-visible results produced by instructions such as vset back to the scalar backend [1]. The two paths advance cooperatively through operand delivery, scalar-visible writeback, and the required memory-ordering interlocks. SEAM-V therefore implements a complete local hybrid execution path rather than merely placing vector com-mands in a separate queue. 
+
+C. HINT-Guided Execute-Packet Formation 
+
+The continuous local instruction stream is organized into EPs through HINT-guided packetization [11]. A HINT header specifies the logical-packet width, whether an EP may span logical packets, loop markers, and prefetch intent. Each p-bit in the pbits field indicates whether two adjacent instruction slots may remain within the same EP. The detailed encoding and software annotation rules are presented in Section IV. By default, the IPU supplies 128-bit fetch packets. When 
+
+packet256 is asserted, two consecutive fetch packets form a 256-bit logical packet, enlarging the local observation window of the VLIWPU. The instruction stream is scanned in 16-bit slots. A compressed instruction occupies one slot, whereas a 32-bit instruction spans two consecutive slots [22]. Increasing the logical-packet width enlarges only the observation and packing window; an individual EP remains subject to a fixed maximum issue width of eight slots. The VLIWPU scans sequentially from the current valid position in a logical packet. It terminates the current EP when the p-bit chain breaks, an explicit dependence boundary is encountered, a branch or system boundary is reached, or the maximum issue width is reached. At the end of a logical packet, an EP boundary is formed if cross is disabled or the conditions for cross-packet formation are not satisfied. Otherwise, the tail fragment is buffered and combined with instructions at the beginning of the next logical packet. This mechanism prevents a physical fetch boundary from unnec-essarily truncating an EP. Downstream backpressure stalls the delivery of an already formed EP but does not alter its membership. EP membership is jointly determined by software an-notations and hardware-enforced boundaries, exposing local 63 EP Assembly and 8 -Slot Output                                                                                                                                                                              
+
+> Sscalar slot Vvector slot C16b inst slot -Invalid slot
+> EP0 (slot 0 -4)
+> 01234675
+> SSC-VV--
+> 01234675
+> CCC-----
+> EP2 (slot 12 –13 +
+> next pkt 0’)
+> 01234675
+> SSC-VVVV
+> EP1 (slot 5 -11)
+> 4HEU Scalar/Vector Slice Mapping
+> Scalar
+> slice
+> Vector
+> slice
+> 11100000
+> SSC-----
+> 00011000
+> ----VV--
+> EP0
+> ep_id =i
+> 11100000
+> SSC-----
+> 00011101
+> ----VVVV
+> EP1
+> ep_id =i⊕1
+> 11100000
+> CCC-----
+> 00000000
+> --------
+> EP2
+> ep_id =—
+> 1128 -bit Fetch Packets from IPU (two beats when packet256 = 1)
+> Header Inst
+> (LUI x0, imm20)
+> Hint
+> Fetch Packet
+> k
+> rd = x0 imm [31:12] opcode = 0110111
+> 06711 12 31
+> pf_disable pbits [12:0]
+> 012
+> packet256
+> 13
+> cross
+> 14
+> loop_start
+> 15
+> loop_end
+> 16
+> pf_mode
+> 18 17 19
+> Header[31:0]
+> 31 0
+> Payload[127:32]
+> (6 ×16b slots)
+> 32 127
+> Payload[127:0]
+> (8 ×16b slots)
+> 0127 Fetch Packet k + 1
+> pf_mode :00 / 01 / 10 / 11 → 1X / 2X / 4X / 8X
+> 216 -bit Slot Scan and EP Boundary Formation (cross = 1)
+> addi
+> (32b)
+> c.addi
+> (16b)
+> add
+> (32b)
+> vle32.v
+> (32b)
+> c.li
+> (16b)
+> c.mv
+> (16b)
+> vadd.vv
+> (32b)
+> vse32.v
+> (32b)
+> c.addi
+> (16b)
+> 0-123-475-68-912 13
+> c.li
+> (16b)
+> pbits [4] = 0 pbits [11] = 0 cross = 1
+> EP0 (slot 0 -4) EP1 (slot 5 -11) EP2 (slot 12 –13
+> + next pkt 0’)
+> next pkt 0’
+> next pbits [0] = 0
+> p = 1 p = 0 Cross continuation forced boundary
+
+Fig. 2. HINT-guided EP formation and scalar/vector slice mapping. The VLI-WPU scans 16-bit instruction slots within 128- or 256-bit logical packets and forms EPs according to p-bit connectivity and hardware-enforced boundaries. Optional cross-packet formation allows a tail fragment to continue into the next logical packet. The HEU then reconstructs the instructions and partitions each EP into scalar and vector slices. 
+
+instruction groups that can be exploited by hardware. The prefetch context associated with a cross-packet tail fragment is buffered together with the fragment, preserving consistent prefetch semantics after cross-packet formation. EP forma-tion therefore avoids unnecessary truncation at physical fetch boundaries while providing a stable carrier for subsequent scalar/vector partitioning and backend context propagation. 
+
+D. Hybrid Dispatch and Backend-Visible EP-Context Propa-gation 
+
+As shown at the bottom of Fig. 2, once an EP has been formed, the HEU reconstructs its 16- and 32-bit instructions according to their slot lengths and partitions them into a scalar slice and a vector slice based on instruction class. The scalar slice is delivered to the local scalar backend for task-level control flow, address progression, and scalar-state updates. The vector slice enters the VDU shown in Fig. 1, where it is serialized into individual requests accepted by the vector backend. Before a request enters the vector backend, the VDU captures its required scalar operands. Once captured, these operands are no longer affected by subsequent updates to the scalar register file. The VDU also binds the EP identity and request-bound prefetch context to each request. Thus, even after an EP is decomposed into individual requests at the interface, its EP membership and prefetch intent remain visible to the vector backend. SEAM-V defines vector-slice acknowledgment as an operand-safe handoff rather than completion of vector exe-cution. Once the scalar operands required by all requests in a vector slice have been captured and any required scalar-visible vset result has been returned, the VDU acknowledges the vector-side handoff. The HEU additionally waits for the scalar slice to complete before acknowledging the current EP and allowing the front end to advance. At that point, the corresponding vector instructions may still be executing in the sequencer, lanes, or memory subsystem. This separation decouples front-end progress from long-latency vector com-pletion and enables a sustained supply of EPs. To decouple EP generation from the handoff of its two slices, the HEU maintains one current EP and one buffered EP and assigns EP identities to the corresponding vector slices. A buffered scalar slice always waits for promotion before executing in program order. A buffered vector slice may be handed off early only when the required control-flow, memory-ordering, operand-dependence, and backend-resource safety conditions are satisfied. This mechanism allows vector-side work from a later EP to enter the VDU earlier under controlled conditions, without changing the ordered semantics of scalar slices or permitting unrestricted cross-EP out-of-order execution. A small command window within the VDU further decou-ples request resolution and operand snapshotting from actual request acceptance by the vector backend. During transient backend backpressure, resolved requests can remain buffered in the window and resume delivery once the backend becomes available. Each window entry retains the EP context and side-effect metadata associated with its request, preserving request-level metadata alignment throughout buffering. 
+
+E. EP-Driven Backend Cooperation 
+
+Once EP context enters the vector backend with each re-quest, the sequencer uses the EP identity to recognize same-EP requests and perform same-EP candidate-hazard suppression, while the VLSU and address-generation unit use the request-bound prefetch context to perform request-bound prefetching. The former reduces conservative dependence stalls reintro-duced when an EP is serialized into individual requests, whereas the latter converts software-exposed regular memory-access intent into prefetch behavior controlled by run-time backend state. The vector sequencer tracks vector-register dependences us-ing in-flight read and write state. Because the VDU serializes an EP into multiple independent requests, a backend that loses their EP membership may conservatively construct candidate dependences between same-EP requests under conventional instruction-at-a-time checking. SEAM-V therefore retains the EP identity of each in-flight request. When a new request and an in-flight request carry valid and matching EP identities, the sequencer excludes the corresponding same-EP RAW, WAR, 7
+
+and WAW candidate entries when constructing the hazard vectors, in accordance with the EP contract. This prevents these candidates from introducing unnecessary stalls during subsequent operand requests and execution progress. This mechanism neither disables conventional dynamic dependence tracking nor makes requests unconditionally is-suable. The safety of suppressing same-EP candidates is guaranteed by the software EP contract. Cross-EP requests, re-quests without valid EP context, and dependences not covered by the contract remain subject to conventional RAW, WAR, and WAW handling. Requests must also satisfy backend queue availability, execution-resource constraints, and other run-time safety conditions before they can progress. In the vector memory path, the prefetch context remains aligned with its associated EP during EP formation and cross-packet combination. After request serialization, the VDU binds this context to the corresponding unit-stride vector-load request, preventing it from becoming misaligned with the actual request during queuing, command-window buffering, or backend stalls. For an eligible regular load stream, the 1X mode prefetches an equally sized data block immediately after the logical vector-access span of the current request. The 2X, 4X, and 8X modes advance the prefetch address by two, four, and eight logical vector spans, respectively. The address-generation unit produces a prefetch only when the request-level hint is valid and enabled, the access mode is eligible, and the remaining AVL is sufficient to cover the target range. Prefetch issue is further constrained by queue capacity, buffer credits, and recovery state. When loop-active is deasserted, the hardware stops extending the prefetch stream and drains the associated state. If the hint is invalid, the access mode is ineligible, or the required resources are unavailable, the memory path continues with normal demand-driven exe-cution. The prefetch path further limits its lookahead through ca-pacity constraints and stream-break recovery. When the actual demand stream diverges from the recorded prefetch sequence, the hardware stops extending the prefetch stream, waits for in-flight requests to drain safely, and then clears the address-matching state and prefetch buffer. This recovery prevents stale prefetched data from continuing to occupy resources or obstructing normal demand requests. Software therefore supplies only exploitable memory-access intent, while the vector backend dynamically determines whether a prefetch is generated, when it is issued, and whether it is ultimately consumed by a demand access. IV. S OFTWARE -E XPOSED EP S EMANTICS 
+
+This section describes how software expresses EP semantics through task-level execution, HINT encoding, and the p-bit contract. These mechanisms expose the local instruction-level parallelism, loop context, and memory-access intent required for EP formation and backend cooperation. 
+
+A. Task-Level Execution Model 
+
+SEAM-V uses a task as its basic execution unit. The main program performs data preparation, parameter passing,                    
+
+> TABLE I SEAM-V HINT-HEADER ENCODING .
+> Field Bits Semantics
+> pbits imm20[12:0] Indicates whether adjacent 16-bit slots may continue into the same EP.
+> packet256 imm20[13] Extends the current logical packet to 256 bits.
+> cross imm20[14] Allows the tail EP of the current logical packet to extend into the next logical packet.
+> loop_start imm20[15] Marks the beginning of a loop region.
+> loop_end imm20[16] Marks the end of a loop region.
+> pf_mode imm20[18:17] Selects the prefetch distance when
+> pf_disable=0 :00 =1X, 01 =2X, 10 =4X, and
+> 11 =8X.
+> pf_disable imm20[19] Explicitly disables prefetching.
+
+and task submission, while performance-critical RVV ker-nels are encapsulated as SEAM-V tasks and executed by the local execution path [11]. Vector computation within a task remains expressed using standard RVV instructions [1]; however, instruction fetch, scalar control, EP formation, and vector dispatch are advanced locally by SEAM-V. Compared with a tightly coupled organization in which the Host issues vector instructions individually, task-level execution raises the software–hardware interaction granularity to the kernel level, reduces continuous Host involvement in fine-grained execu-tion, and provides a stable context for packet-level instruction organization. Software responsibilities are divided into two layers. At the algorithmic layer, data-parallel computation remains expressed as an ordinary RVV kernel. At the execution-structure layer, software provides the instruction-connectivity information, control boundaries, loop markers, and memory hints required for EP formation and backend cooperation. Software does not explicitly manage vector-backend state. Instead, within locally analyzable regions, it identifies which instructions may be grouped into the same EP, where EP boundaries must be inserted, and which regular memory streams are suitable for controlled prefetching. SEAM-V thus establishes a lightweight software–hardware contract on top of the stan-dard RVV programming model, allowing hardware to exploit software-visible program structure while reducing reliance on conservative run-time inference. 
+
+B. HINT Encoding and Semantic Contract 
+
+SEAM-V uses the RISC-V HINT form lui x0, imm20 
+
+to encode the packet-level information required for EP for-mation and backend cooperation. The instruction does not modify architecturally visible RISC-V state; in SEAM-V, its immediate field is interpreted as packet-level metadata [11], [22]. Table I summarizes the HINT-header encoding. The HINT header defines the software-visible annotation associated with a logical packet. The packet256 field en-larges the local scanning and packing window of the VLIWPU, while cross allows an unfinished EP at the end of one logical packet to continue into the next when the required conditions are satisfied. These fields affect only the VLIWPU observation window and the permission for cross-packet formation; they do not change the maximum issue width of an individual EP. 8
+
+The pbits field is a bitmap that describes instruction connectivity within a logical packet. When the p-bit between two adjacent slots is set, the following instruction may be included in the same EP; when it is cleared, an EP boundary is formed at the corresponding position. For a 32-bit instruction, the VLIWPU reconstructs the complete instruction from two consecutive 16-bit slots, and an EP boundary cannot split the instruction [22]. Branch and system instructions are forced by hardware to terminate the current EP. Software must also clear the corresponding p-bit for data dependences or memory-ordering relationships that require dynamic backend enforce-ment, thereby placing the affected instructions in different EPs. Consequently, software guarantees that vector instructions within the same EP contain no RAW, WAR, WAW, or memory-ordering conflicts that require dynamic backend maintenance. The loop_start and loop_end fields identify a loop region that may be buffered and replayed by the local front end. The actual loop-active state is not determined solely by these static markers; instead, it is jointly maintained using the loop markers and the backward branch resolved by the local scalar path. Prefetch semantics are jointly defined by pf_disable and 
+
+pf_mode . The former determines whether the current logical packet carries prefetch intent, while the latter selects a 1X, 2X, 4X, or 8X distance when prefetching is enabled. Their inde-pendent encodings prevent 00 from ambiguously representing both disabled prefetching and the minimum prefetch distance. The hint primarily targets eligible unit-stride vector-load streams within loops. It remains aligned with the correspond-ing EP during EP formation and cross-packet combination and is bound to the associated vector memory request after serialization. In 1X mode, the backend prefetches an equally sized data block immediately after the logical vector-access span of the current request. The 2X, 4X, and 8X modes advance the prefetch address by two, four, and eight logical vector spans, respectively. For gather/scatter operations, irreg-ular accesses, short execution phases, or access patterns that cannot be effectively represented by a fixed distance, software should disable the hint and allow the vector backend to follow normal demand-driven execution. These fields expose execution structure and define the associated software–hardware contract without changing the computational semantics of RVV instructions. Cross-EP de-pendences, dependences not exempted by the software con-tract, run-time resource conflicts, memory ordering, and state cleanup at loop exit remain dynamically managed by the vector backend. 
+
+C. RVV Kernel Case Study 
+
+Listing 1 presents a simplified RVV kernel fragment illus-trating how the HINT fields guide EP formation. The HINT 
+
+directive is a pseudo-macro that expands to the corresponding RISC-V HINT encoding in the implementation. The first HINT enlarges the local packing window through 
+
+packet256 and permits a tail EP to extend into the next logical packet through cross . The loop_start field marks the beginning of the loop region, while pf_disable=0 and                                          
+
+> Listing 1: RVV kernel with HINT-based EP semantics
+> loop: HINT pbits=0x1DFD, packet256=1, cross=1, loop_start=1, pf_disable=0, pf_mode=00 vsetvli t0, a0, e32, m1, ta, ma vle32.v v0, (a1) vle32.v v1, (a2) sub a0, a0, t0 slli t1, t0, 2add a1, a1, t1 add a2, a2, t1 HINT pbits=0x001D, loop_end=1, pf_disable=1 vfadd.vv v2, v0, v1 vse32.v v2, (a3) add a3, a3, t1 HINT pbits=0x0005, pf_disable=1 bnez a0, loop ret
+
+pf_mode=00 provide 1X prefetch intent for eligible unit-stride vector loads. The pbits field preserves the required dependence bound-aries. In this example, vfadd.vv consumes v0 and v1 
+
+produced by the preceding loads, while vse32.v subse-quently consumes v2 produced by vfadd.vv . These RAW dependences therefore cross EP boundaries and remain subject to conventional backend dependence handling. The following HINT marks the end of the loop region and disables further prefetch intent. Actual loop progression is determined by the run-time outcome of bnez , while control-flow instructions are forced by hardware to terminate the current EP. This example illustrates how HINT annotations expose local instruction connectivity, dependence boundaries, loop regions, and memory-access intent. The resulting EP dispatch and prefetch behavior nevertheless remain governed by run-time hardware state. V. E XPERIMENTAL METHODOLOGY AND EVALUATION 
+
+This section evaluates SEAM-V from four perspectives: per-formance, mechanism-level contributions, microarchitectural behavior, and physical cost. We first compare the complete design against a tightly coupled RVV baseline. We then use vector-length sensitivity analysis, ablation experiments, and microarchitectural counters to examine the contributions of in-dividual mechanisms and the remaining execution bottlenecks. Finally, we evaluate the area, power, and energy-efficiency costs of the added hardware. 
+
+A. Experimental Setup and Workloads 
+
+We obtain performance results and microarchitectural coun-ters through cycle-accurate RTL simulation and systematically sweep different input sizes and execution configurations. We use an Ara-based tightly coupled RVV implementation as the reference design, hereafter referred to as the tightly coupled baseline (TC) [2], [12]. SEAM-V and TC execute the same workloads and input sizes with identical vector-backend scale parameters and memory-system configurations. Normalized 90.0 0.5 1.0 1.5 2.0      
+
+> DWT
+> AXPY
+> STENCIL3
+> FIR5
+> SWAP
+> DOTP
+> TRSM
+> GER
+> SYMV
+> GEMV
+> GEMM
+> SYRK
+> JACOBI2D
+> CONV2D
+> SPMV
+> LAVAMD
+> SOFTMAX
+> GeoMean
+> 1.0x 1.89x
+> 1.75x
+> 1.66x
+> 1.48x
+> 1.24x
+> 1.12x
+> 1.32x
+> 1.27x
+> 1.25x
+> 1.21x
+> 1.40x
+> 1.06x
+> 1.74x
+> 1.27x
+> 1.17x
+> 1.15x
+> 1.09x
+> 1.34x
+> 1D Vector BLAS / Matrix Application GeoMean
+> Fig. 3. Representative speedup of SEAM-V over the Ara-based tightly coupled baseline (TC).
+
+performance is computed from paired execution cycles mea-sured over a common task-level interval. The ablation experiments use the same environment and selectively enable individual or combined backend mecha-nisms that consume EP context on top of the basic hybrid-decoupled configuration. This setup isolates the incremental performance contribution of each hardware path. The physical implementation results are used to quantify the associated area, power, and energy-efficiency costs. The workloads cover three execution classes. The first class contains one-dimensional variable-AVL kernels, including ba-sic streaming vector operations, reduction, data exchange, filtering, transforms, and one-dimensional neighborhood com-putation. These kernels are used to study how vector length af-fects vector-instruction supply efficiency and task-level cycles per element. The second class contains BLAS and matrix ker-nels and evaluates the effects of LMUL, blocking, data reuse, and local parallel structure in compute-intensive workloads. The third class contains representative fixed-size application kernels, including two-dimensional convolution, iterative two-dimensional computation, softmax, molecular dynamics, and sparse matrix–vector multiplication, and is used to evaluate SEAM-V under execution patterns closer to application-level workloads. 
+
+B. Overall Performance 
+
+Fig. 3 reports the representative performance of the com-plete SEAM-V design relative to TC. Speedup is computed as the TC task execution cycles divided by the corresponding SEAM-V task execution cycles. Across 17 representative ker-nels, SEAM-V achieves a geometric-mean speedup of approx-imately 1.34 ×. The one-dimensional vector, BLAS and ma-trix, and fixed-size application groups achieve approximately 1.50 ×, 1.25 ×, and 1.27 ×, respectively. All representative points show positive speedup, indicating that the benefits of SEAM-V extend across the selected computation patterns rather than being confined to a single microbenchmark. Among the representative one-dimensional vector kernels, DWT and AXPY achieve approximately 1.89 × and 1.75 ×
+
+speedup, respectively, while STENCIL3 and FIR5 also obtain substantial improvements. SWAP and DOTP exhibit com-paratively smaller gains. This group achieves the highest geometric-mean speedup, showing that SEAM-V broadly im-proves one-dimensional vector kernels, although the magni-tude of the benefit remains kernel dependent. The BLAS and matrix kernels exhibit consistent but more moderate improvements. TRSM, GER, SYMV, GEMV, and GEMM all achieve positive speedup, whereas the improvement for SYRK is limited. The geometric mean of this group is lower than that of the one-dimensional kernels, indicating that SEAM-V still reduces task execution cycles in compute-intensive matrix workloads, but with gains that are more strongly dependent on the individual kernel. The fixed-size application kernels further demonstrate the behavior of SEAM-V under application-level computation patterns. JACOBI2D achieves approximately 1.74 × speedup, while CONV2D and SPMV also show stable improvements. LAVAMD and SOFTMAX obtain more moderate gains. All five application kernels outperform TC, covering two-dimensional computation, sparse computation, molecular dy-namics, and normalization. Overall, SEAM-V provides consistent performance im-provements across all three workload classes. The gains are largest for the one-dimensional vector kernels, while the fixed-size application kernels retain strong overall performance and the BLAS and matrix kernels show more moderate improve-ments. The magnitude of the benefit nevertheless remains workload dependent. 
+
+C. Vector-Length Sensitivity and Per-Element Efficiency 
+
+Fig. 4 analyzes six one-dimensional vector kernels across different application vector lengths (AVLs). Fig. 4(a) reports the speedup of SEAM-V over TC, while Fig. 4(b) compares their cycles per element (CPE). CPE is defined as the task execution cycles divided by AVL and represents the average task-level cost of processing one element. This experiment examines how the benefits of SEAM-V vary with vector granularity and distinguishes fixed overheads at short AVLs from per-element execution efficiency at large AVLs. SEAM-V provides its largest benefit at short AVLs. At AVL=32, the geometric-mean speedup across the six kernels approaches 3 ×. As AVL increases, fixed startup, control, and instruction-supply overheads are amortized over more elements, and the speedups gradually decrease and converge. Nevertheless, SEAM-V retains a geometric-mean speedup of approximately 1.45 ×–1.50 × over the AVL=1024–4096 range. Its benefit therefore extends beyond reducing the fixed over-heads of short-vector execution. The convergence rate differs across kernels. AXPY and DWT retain relatively high speedups at large AVLs, DOTP shows the smallest gain, and SWAP, STENCIL3, and FIR5 fall between these cases. These differences show that computation and memory-access patterns affect the performance response to SEAM-V. 10 32 64 128 256 512 1K 2K 4K 
+
+AVL 
+
+> 1
+> 2
+> 3
+> 4
+> Speedup over baseline
+> 1.0x
+> large AVL
+
+(a)        
+
+> 32 64 128 256 512 1K 2K 4K
+
+AVL 
+
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Cycles / element
+> large AVL
+
+(b)      
+
+> AXPY DOTP SWAP DWT STENCIL3 FIR5
+
+Fig. 4. Vector-length sensitivity and per-element efficiency for six one-dimensional vector kernels. (a) Speedup of SEAM-V over TC. (b) Task-level cycles per element, where solid lines denote SEAM-V and dashed lines denote TC. 
+
+The CPE curves further show that SEAM-V lowers task-level cycles per element at every tested AVL. As AVL in-creases, most kernels enter a relatively stable CPE region. The large-AVL CPE values of AXPY, DWT, and FIR5 ap-proach approximately 0.75, 1.00, and 1.84 cycles per element, respectively. Together, the speedup and CPE results show that SEAM-V provides stronger overall acceleration at short AVLs while retaining lower per-element execution cost at large AVLs. SEAM-V outperforms TC at all tested points. 
+
+D. Ablation Study 
+
+Fig. 5 evaluates the contributions of the key SEAM-V mechanisms. Fig. 5(a) compares normalized execution cycles across seven representative kernels, while Fig. 5(b) summa-rizes their geometric means. Normalized cycles are defined as the task execution cycles of each configuration divided by the corresponding TC task execution cycles; lower values indicate better performance. We compare five SEAM-V configurations. HDV-B contains task-level decoupling, local instruction supply, and EP forma-tion. PF enables request-bound prefetching on top of HDV-B, while Haz enables same-EP candidate-hazard suppres-sion. PF+Haz enables both mechanisms. Full is the complete SEAM-V configuration and integrates PF, Haz, buffered vec-tor early issue, scalar-operand lookahead/bypass, command-window metadata tracking, and safe gating into the complete hardware path. Across the seven representative kernels, HDV-B reduces the geometric-mean normalized cycles to approximately 0.88, an 11.7% reduction relative to TC. The basic hybrid-decoupled path therefore provides a measurable benefit even before the backend cooperation mechanisms are enabled. On top of HDV-B, PF and Haz reduce the geometric mean to approximately 0.80 and 0.78, respectively, showing that each mechanism provides an independent incremental contribution. Enabling both mechanisms in PF+Haz further reduces the geometric mean to approximately 0.68, below either single-mechanism AXPY 
+
+> DOTP
+> SWAP
+> DWT
+> STENCIL3
+> FIR5
+> GEMM
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Normalized cycles
+
+(a)      
+
+> 1.00
+> 1.00
+> 1.00
+> 1.00
+> 1.00
+> 1.00
+> 1.00
+> 0.92
+> 0.98
+> 0.90
+> 0.94
+> 0.78
+> 0.79
+> 0.89
+> 0.79
+> 0.98
+> 0.81
+> 0.76
+> 0.76
+> 0.77
+> 0.74
+> 0.63
+> 0.89
+> 0.90
+> 0.81
+> 0.63
+> 0.74
+> 0.89
+> 0.57
+> 0.89
+> 0.81
+> 0.57
+> 0.59
+> 0.66
+> 0.74
+> 0.57
+> 0.89
+> 0.80
+> 0.53
+> 0.60
+> 0.68
+> 0.71
+> 0.5 0.6 0.7 0.8 0.9 1.0
+> TC
+> HDV-B
+> PF
+> Haz
+> PF+Haz
+> Full
+
+(b)            
+
+> 1.00 ref.
+> 0.88 -11.7%
+> 0.80 -20.3%
+> 0.78 -22.2%
+> 0.68 -32.0%
+> 0.67 -32.6%
+> TC HDV-B PF Haz PF+Haz Full
+
+Fig. 5. Ablation study of the key SEAM-V mechanisms. Task execution cycles are normalized to the tightly coupled baseline (TC=1.0); lower values indicate better performance. 
+
+configuration, indicating that the two backend paths can contribute jointly. The complete Full configuration reaches approximately 0.674, corresponding to a 32.6% reduction relative to TC. The contribution of each mechanism varies across kernels. AXPY benefits primarily from Haz, whereas SWAP and GEMM are more responsive to PF. DWT benefits from both mechanisms and exhibits its largest reduction under PF+Haz and Full. DOTP remains constrained by reduction dependences and receives little additional improvement from PF alone. For 11 AXPY 
+
+> DOTP
+> SWAP
+> DWT
+> STENCIL3
+> FIR5
+> GER
+> GEMM
+> SYRK
+> TRSM
+> SPMV
+> JACOBI2D
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> Throughput / cycle
+
+(a)   
+
+> SEAM-V packed inst/cycle TC vector inst/cycle SEAM-V vector inst/cycle
+> AXPY
+> DOTP
+> SWAP
+> DWT
+> STENCIL3
+> FIR5
+> GER
+> GEMM
+> SYRK
+> TRSM
+> SPMV
+> JACOBI2D
+> 0
+> 1
+> 2
+> 3
+> Instructions / EP
+
+(b)   
+
+> scalar inst/EP vector inst/EP non-singleton EP ratio
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Ratio
+
+Fig. 6. Instruction throughput and EP organization. (a) SEAM-V packed inst/cycle, TC vector inst/cycle, and SEAM-V vector inst/cycle. (b) Scalar and vector instructions per EP and the non-singleton EP ratio. 
+
+STENCIL3 and FIR5, PF alone provides limited improvement, while combining it with Haz further reduces execution cycles. The geometric mean of the normalized cycles for Full is only approximately 1% lower than that for PF+Haz. STENCIL3 and FIR5 also exhibit slight regressions under Full, showing that the incremental effects of the additional complete-path mechanisms are workload dependent and do not guarantee monotonic improvement for every kernel. Over-all, HDV-B provides the basic hybrid-decoupling benefit, PF and Haz form the main backend-side incremental paths, and Full represents their integration into the complete hardware implementation. 
+
+E. Microarchitectural Analysis of Instruction Throughput and Backend Coordination 
+
+This section uses microarchitectural counters to characterize the hardware activity corresponding to the performance results. Whereas Section V-D quantifies the incremental contributions of key mechanisms through configuration differences, this section examines their behavior along the complete execu-tion path. We focus on the effective instruction throughput produced by local instruction supply, the organization of local scalar/vector instruction structure within EPs, and the use of EP context by backend coordination paths. Fig. 6 analyzes instruction throughput and EP formation, while Fig. 7 summarizes backend EP-context use and residual execution pressure. Fig. 6(a) shows that the SEAM-V vector-instruction rate exceeds the corresponding TC rate for all representative ker-nels, demonstrating that the local execution path improves vector-instruction supply. AXPY, DWT, STENCIL3, FIR5, GER, and GEMM also exhibit relatively high SEAM-V packed inst/cycle, indicating that local instruction supply can contin-uously organize scalar and vector instructions from their loop bodies. Fig. 6(b) further shows the EP organization characteristics of different kernels. The six one-dimensional kernels generally exhibit high scalar instructions per EP, vector instructions per EP, and non-singleton EP ratios, indicating substantial opportunities for local instruction grouping. FIR5 has the AXPY                                                                              
+
+> DOTP
+> SWAP
+> DWT
+> STENCIL3
+> FIR5
+> GER
+> GEMM
+> SYRK
+> TRSM
+> SPMV
+> JACOBI2D
+> Hazard elim.
+> PF cov.
+> Cross-EP ovlp.
+> Backend
+> backpressure
+> Cmd-window full
+> False-haz. stall
+> Scalar wait
+> 0.99 0.07 0.03 0.34 1.00 0.54 0.85 0.13 0.94 0.04 0.25 0.38
+> 0.97 0.98 1.00 1.00 0.44 0.40 0.76 0.98 0.00 0.00 0.65 0.00
+> 0.08 0.04 0.09 0.18 0.03 0.13 0.03 0.04 0.00 0.00 0.00 0.00
+> 0.77 0.89 0.87 0.71 0.61 0.79 0.41 0.77 0.99 0.24 0.94 0.92
+> 0.00 0.00 0.00 0.00 0.00 0.06 0.00 0.00 0.85 0.00 0.40 0.06
+> 0.52 0.77 0.68 0.17 0.29 0.00 0.28 0.22 0.97 0.20 0.00 0.30
+> 0.21 0.05 0.12 0.21 0.21 0.20 0.13 0.19 0.03 0.04 0.03 0.03
+> 0
+> 0.15
+> 0.38
+> 0.60
+> 0.76
+> 0.90
+> 1
+
+Fig. 7. Backend coordination activity and residual execution pressure. Hazard elim., PF cov., and Cross-EP ovlp. denote, respectively, the fraction of candidate hazards eliminated by same-EP suppression, the fraction of vector loads covered by request-bound prefetching, and the fraction of task cycles exhibiting cross-EP vector overlap. The remaining rows report the fractions of task cycles with backend backpressure, a full command window, residual false-hazard stalls, and scalar-operand waits. 
+
+largest average EP width and the highest non-singleton EP ratio, consistent with the richer local structure exposed by its multi-load filter body. In contrast, SYRK, TRSM, and SPMV have smaller EP widths, indicating fewer opportunities for local instruction aggregation. Fig. 7 shows how EP context is used by the backend coordination paths and how the resulting activity varies across kernels. AXPY, STENCIL3, GER, and SYRK exhibit the strongest hazard-elimination activity, while FIR5 also shows substantial candidate suppression. These results indicate that EP context allows the sequencer to exclude eligible same-EP RAW, WAR, and WAW candidates when constructing the hazard vectors, reducing the conservative dependence gating that these candidates would otherwise impose on subsequent operand requests and execution progress. AXPY, DOTP, SWAP, DWT, and GEMM achieve nearly complete prefetch coverage, while GER and SPMV show partial coverage, indicating that these kernels exploit request-bound prefetching to different degrees. Cross-EP overlap remains low overall, although DWT, FIR5, and SWAP ex-hibit comparatively higher activity. This behavior shows that 12 
+
+buffered vector early issue can provide limited cross-EP over-lap when the required safety conditions are satisfied. These activity trends are consistent with the principal incre-mental contributions of PF and Haz observed in Section V-D, although the activity level of a mechanism in an individual kernel does not directly equal its performance contribution. Across the kernels used in the ablation study, the small geometric-mean difference between Full and PF+Haz further indicates that the average additional contribution of the re-maining complete-path mechanisms is limited. The pressure indicators reveal the remaining execution constraints in the complete design. Most kernels exhibit sub-stantial backend backpressure, indicating that backend accep-tance capacity and command-consumption rate can still limit execution progress. SYRK, SPMV, and JACOBI2D show the strongest backpressure, while DOTP and SWAP also have high values; GEMM similarly exhibits noticeable backend acceptance pressure. Command-window-full activity is most pronounced for SYRK and is also significant for SPMV. SYRK, DOTP, and SWAP exhibit relatively high residual false-hazard stalls, indicating that residual conservative depen-dence stalls continue to affect their progress. FIR5 combines high EP-packing activity with substantial backend backpressure, showing that rich local instruction-grouping opportunities do not necessarily eliminate backend acceptance pressure. Scalar-operand waits are relatively low overall but are more visible in AXPY, DWT, STENCIL3, FIR5, and GEMM. Overall, Figs. 6 and 7 capture the end-to-end microarchi-tectural behavior of SEAM-V, from local instruction supply and EP formation to backend use of propagated EP context. Local instruction supply improves vector-instruction organi-zation and delivery. Backend-visible EP-context propagation supports same-EP candidate-hazard suppression and request-bound prefetching, while buffered vector early issue pro-vides limited cross-EP overlap under safe conditions. After vector-instruction supply is improved, backend backpressure, command-window capacity, residual dependence stalls, and scalar-operand waits remain important sources of pressure for several workloads. VI. C ONCLUSION 
+
+This work presented SEAM-V, a hybrid-decoupled vector execution architecture that addresses two limitations of tightly coupled RVV processors: discontinuous vector-instruction sup-ply caused by scalar-driven instruction-at-a-time issue, and the loss of EP context when execute packets are serialized into individual requests. SEAM-V forms a sustained stream of execute packets (EPs) through task-level decoupling, local instruction supply, and VLIW-style packing. It propagates EP identity and request-bound prefetch context to the dynamic vector backend, enabling same-EP candidate-hazard suppres-sion and request-bound prefetching. Buffered vector early issue further provides limited cross-EP overlap of vector-side work when the required safety conditions are satisfied. Cross-EP dependences, dependences not exempted by the EP contract, resource conflicts, and memory ordering remain dynamically managed by the backend. Cycle-accurate RTL evaluation shows that SEAM-V achieves a geometric-mean speedup of 1.34 × over TC across 17 representative kernels. At AVL=32, the geometric-mean speedup across six one-dimensional vector kernels approaches 3×. The ablation study demonstrates that the basic hybrid-decoupled path, request-bound prefetching, and same-EP candidate-hazard suppression each provide incremental perfor-mance benefits. Across seven representative kernels, the com-plete configuration reduces geometric-mean execution cycles by approximately 32.6% relative to TC. Microarchitectural analysis further reveals kernel-dependent EP organization, backend-coordination activity, and residual execution pressure. Overall, the results demonstrate that maintaining backend visibility of EP ownership and request-bound prefetch infor-mation across request serialization improves vector-instruction supply continuity and end-to-end execution efficiency for the evaluated workloads. REFERENCES [1] “V” Standard Extension for Vector Operations, Version 1.0 , RISC-V International, 2026, in The RISC-V Instruction Set Manual, Volume I: Unprivileged Architecture, Version 20260120. [Online]. Available: https://docs.riscv.org/reference/isa/v20260120/unpriv/v-st-ext.html [2] M. Perotti, M. A. Cavalcante, R. Andri, L. Cavigelli, and L. Benini, “Ara2: Exploring single- and multi-core vector processing with an efficient RVV 1.0 compliant open-source processor,” IEEE Transactions on Computers , vol. 73, no. 7, pp. 1822–1836, Jul. 2024. [3] N. K. Purayil, D. Shen, M. Perotti, and L. Benini, “TROOP: At-the-roofline performance for vector processors on low operational intensity workloads,” in Proceedings of the 2025 IEEE 43rd International Con-ference on Computer Design . IEEE, Nov. 2025, pp. 594–601. [4] R. Espasa, M. Valero, and J. E. Smith, “Out-of-order vector archi-tectures,” in Proceedings of the 30th Annual IEEE/ACM International Symposium on Microarchitecture . IEEE Computer Society, Dec. 1997, pp. 160–170. [5] J. Zhao, D. Grubb, M. Rusch, T. Wei, K. Anderson, B. Nikoli´ c, and K. Asanovi´ c, “Instruction scheduling in the Saturn vector unit,”                                               
+
+> arXiv preprint arXiv:2412.00997 ,Dec. 2024. [Online]. Available: https://arxiv.org/abs/2412.00997 [6] R. Krashinsky, C. Batten, and K. Asanovi´ c, “Implementing the Scale vector-thread processor,” ACM Transactions on Design Automation of Electronic Systems , vol. 13, no. 3, pp. 41:1–41:24, Jul. 2008. [7] J. E. Smith, “Decoupled access/execute computer architectures,” in
+> Proceedings of the 9th Annual International Symposium on Computer Architecture .New York, NY, USA: Association for Computing Machinery, Apr. 1982, pp. 112–119. [8] F. Schuiki, F. Zaruba, T. Hoefler, and L. Benini, “Stream semantic registers: A lightweight RISC-V ISA extension achieving full compute utilization in single-issue cores,” IEEE Transactions on Computers ,vol. 70, no. 2, pp. 212–227, Feb. 2021. [9] B. R. Rau and J. A. Fisher, “Instruction-level parallel processing: History, overview, and perspective,” The Journal of Supercomputing ,vol. 7, no. 1–2, pp. 9–50, May 1993. [10] M. S. Schlansker and B. R. Rau, “EPIC: Explicitly parallel instruction computing,” Computer , vol. 33, no. 2, pp. 37–45, Feb. 2000. [11] W. Wang, Q. Zhai, R. Xiao, and Z. Zhang, “Boosting vector instruction throughput in RISC-V via a hybrid decoupled architecture with VLIW-driven execution,” in 2026 IEEE International Symposium on Circuits and Systems (ISCAS) .IEEE, May 2026, pp. 3729–3733. [12] M. A. Cavalcante, F. Schuiki, F. Zaruba, M. Schaffner, and L. Benini, “Ara: A 1-GHz+ scalable and energy-efficient RISC-V vector processor with multiprecision floating-point support in 22-nm FD-SOI,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 28, no. 2, pp. 530–543, Feb. 2020. [13] M. A. Cavalcante, D. W¨ uthrich, M. Perotti, S. Riedel, and L. Benini, “Spatz: Acompact vector processing unit for high-performance and energy-efficient shared-L1 clusters,” in Proceedings of the 41st IEEE/ACM International Conference on Computer-Aided Design .New York, NY, USA: Association for Computing Machinery, Oct. 2022, pp. 1–9, art. no. 22. 13
+
+[14] Y. Gao, R. Egawa, H. Takizawa, and H. Kobayashi, “An out-of-order vector processing mechanism for multimedia applications,” in Proceed-ings of the ACM International Conference on Computing Frontiers .New York, NY, USA: Association for Computing Machinery, 2012, pp. 233–235. [15] C. E. Kozyrakis and D. A. Patterson, “Overcoming the limitations of conventional vector processors,” in Proceedings of the 30th Annual International Symposium on Computer Architecture . IEEE Computer Society, Jun. 2003, pp. 399–409. [16] F. Minervini, O. Palomar, O. S. Unsal, E. Reggiani, J. V. Quiroga, J. Marimon, C. Rojas, R. Figueras, A. Ruiz, A. Gonzalez, J. Mendoza, I. Vargas, C. Hernandez, J. Cabre, L. Khoirunisya, M. Bouhali, J. Pavon, F. Moll, M. Olivieri, M. Kovac, M. Kovac, L. Dragic, M. Valero, and A. Cristal, “Vitruvius+: An area-efficient RISC-V decoupled vector coprocessor for high performance computing applications,” ACM Trans-actions on Architecture and Code Optimization , vol. 20, no. 2, pp. 1–25, Mar. 2023, art. no. 28. [17] J. Liu, Q. Li, Y. Luo, H. Zhang, J. Lu, S. Fan, J. Ye, Y. Liu, X. Liu, Y. Yang, Z. Ye, Y. Zeng, A. Shen, R. Huang, W. Cong, X. Zou, and M. Gao, “Titan-I: An open-source, high performance RISC-V vector core,” in Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture . New York, NY, USA: Association for Computing Machinery, Oct. 2025, pp. 675–690. [18] Y. Lee, C. Schmidt, A. Ou, A. Waterman, and K. Asanovi´ c, “The Hwacha vector-fetch architecture manual, version 3.8.1,” EECS Department, University of California, Berkeley, Tech. Rep. UCB/EECS-2015-262, Dec. 2015. [Online]. Available: https://www2.eecs.berkeley. edu/Pubs/TechRpts/2015/EECS-2015-262.html [19] F. Zaruba, F. Schuiki, T. Hoefler, and L. Benini, “Snitch: A tiny pseudo dual-issue processor for area- and energy-efficient execution of floating-point-intensive workloads,” IEEE Transactions on Computers , vol. 70, no. 11, pp. 1845–1860, Nov. 2021. [20] A. Naithani, J. Roelandts, S. Ainsworth, T. M. Jones, and L. Eeck-hout, “Decoupled vector runahead,” in Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture . New York, NY, USA: Association for Computing Machinery, Oct. 2023, pp. 17–31. [21] A. Shrivastava, A. Gatherer, T. Sun, S. Wokhlu, and A. Chandra, “SLAP: A split latency adaptive VLIW pipeline architecture which enables on-the-fly variable SIMD vector length,” in Proceedings of the 2021 IEEE International Conference on Acoustics, Speech and Signal Processing .IEEE, Jun. 2021, pp. 7868–7872. [22] The RISC-V Instruction Set Manual, Volume I: Unprivileged Architecture , RISC-V International, 2026, version 20260120, Official Release. [Online]. Available: https://docs.riscv.org/reference/ isa/v20260120/unpriv/unpriv-index.html

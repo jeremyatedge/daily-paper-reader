@@ -1,0 +1,685 @@
+Title: LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters
+
+URL Source: https://arxiv.org/pdf/2607.17175v1
+
+Published Time: Tue, 21 Jul 2026 01:03:28 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 
+
+Reza Farahani 1 ID Zoha Azimi 2 ID Mario Colosi 3 ID Schahram Dustdar 1 ID  
+
+> 1
+
+Vienna University of Technology, Vienna, Austria  
+
+> 2
+
+University of Klagenfurt, Klagenfurt, Austria  
+
+> 3
+
+University of Messina, Messina, Italy 
+
+Abstract. Large language model (LLM) services increasingly operate on edge infrastructure, enabling low-latency and privacy-preserving AI services. However, efficiently serving LLM requests across heterogeneous and resource-constrained edge devices requires orchestration mechanisms that jointly determine model configuration (family, size, and quantization level) and execution placement while satisfying user- and system-level quality of service (QoS) requirements. This paper introduces LMEdge , a QoS-aware orchestration service that dynamically makes these decisions across heterogeneous edge devices. We formulate the problem as a binary integer linear programming (BILP) optimization that minimizes response time under accuracy, network, and resource constraints. To enable scal-able online scheduling, we employ five lightweight machine learning (ML) models to predict query-specific latency, accuracy, resource usage, and response size for each model–size-quantization-device combination, and design a lightweight heuristic that approximates the BILP solution. We collect a comprehensive benchmarking dataset of over 59 000 rows to train models and support reproducibility. Evaluation on a Kubernetes-based edge testbed with 57 instances and diverse query categories shows that LMEdge reduces latency, preserves accuracy, improves resource uti-lization, and increases serving ratio compared to two baselines. 
+
+Keywords: LLM; SLM; Edge Computing; Edge Orchestration; QoS. 
+
+1 Introduction 
+
+Recently, LLMs have become the backbone of AI services like chatbots, assis-tants, and code generators, with unprecedented adoption exemplified by Chat-GPT reaching 100 million users in two months [2]. While closed-source founda-tion models such as GPT are typically deployed in cloud environments, open-source LLMs are increasingly being served on edge infrastructure to provide lower latency, enhanced privacy, and reduced reliance on centralized resources. These deployments comprise heterogeneous devices with diverse computational, memory, and networking capabilities while simultaneously serving queries with varying complexity, length, and quality requirements. This heterogeneity raises a fundamental systems challenge: “How can queries be efficiently served under con-strained and dynamically changing resource conditions while maintaining target latency and accuracy?” However, existing approaches such as split execution [10] and edge model caching [13] provide only coarse-grained optimization. They typ-ically focus on a single dimension of the deployment space and lack per-query orchestration mechanisms that jointly select the LLM family , size , quantization level , and execution device to satisfy both user QoS requirements (e.g., latency arXiv:2607.17175v1 [cs.DC] 19 Jul 2026 2 Reza Farahani et al. 
+
+and accuracy) and system-level constraints (e.g., resource availability, computa-tional load, and network bandwidth). This paper presents LMEdge , a QoS-aware orchestration service that dynami-cally selects the LLM family, model size, quantization level, and execution device for each query across heterogeneous edge devices. We formulate query orchestra-tion as a BILP optimization model to minimize the query response time, consid-ering accuracy and system constraints. We design a modular architecture and a lightweight online scheduling heuristic that leverages five ML models to predict inference latency, response accuracy and size, and resource use (i.e., CPU/GPU and memory). We design a realistic Kubernetes-based edge testbed with 57 in-stances with 29 model instances across families, sizes, and quantization levels. We build a benchmarking dataset of over 59 000 query–model–quantization–device records to train predictors and support reproducibility using more than 1422 
+
+user queries from five public datasets spanning seven categories (e.g., mathemat-ics, programming, science, and commonsense reasoning). Experimental results confirm that LMEdge achieves better latency, accuracy, resource utilization, and serving ratios compared to two baselines. 
+
+2 Related Work 
+
+Oh et al. proposed ExeGPT [8], an LLM scheduler that leverages input/output length distributions to optimize resource allocation, batch sizing, and paral-lelism. Stojkovic et al. introduced DynamoLLM [12], an energy-aware frame-work that dynamically adjusts GPU resources (i.e., parallelism, frequencies) to reduce energy consumption and satisfy latency constraints. Dai et al. proposed C2MAB-V [5], a cost-aware multi-armed bandit algorithm that learns optimal LLM combinations across cloud and local deployments, balancing query qual-ity and inference cost. Liu et al. introduced OptLLM [7], an offline framework that predicts LLM performance and generates Pareto-optimal query allocations, minimizing cost or maximizing accuracy under given budget and performance goals. Ong et al. introduced RouteLLM [9], a learning scheme trained on hu-man preference data to direct queries between LLM instances, cutting inference costs while preserving user-aligned output quality. Yao et al. used diffusion-based reinforcement learning for coordinating edge–cloud LLM query execution [14]. Edge-LLM [4] and EdgeShard [15] applied model partitioning and device selec-tion on the edge-cloud without QoS guarantees. Existing approaches optimize primarily for latency and overlook heterogeneity across LLMs, quantization lev-els, and devices. They also lack predictive scheduling mechanisms. To address these gaps, LMEdge : (i) performs QoS-aware per-query orchestration; (ii) em-ploys ML predictors for query-specific performance estimation; (iii) combines BILP optimization with a lightweight heuristic; (iv) provides a benchmark of over 59 000 query-model-quantization-device measurements; and (v) is validated on a heterogeneous Kubernetes edge testbed using thousands of real queries. 
+
+3 Problem Formulation 
+
+We denote Q as a continuous stream of queries, each with an arrival time tq . At scheduling epoch t, LMEdge considers the set of newly arrived queries Qt together LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 3
+
+with deferred queries from epoch Dt−1 for processing. We represent each query 
+
+q ∈ Q by an input feature vector ϕq , derived from the prompt (e.g., length, lexical diversity). We also define the edge cluster as a hierarchical pool of heterogeneous compute resources I = {I RR ∪ I RC }, where IRR and IRC denote the sets of resource-rich (ERR) and -constrained (ERC) edge instances. At each schedul-ing epoch t, LMEdge monitors the following metrics for each instance i ∈ I : (i) Available computation Ωi, including the number of free CPU/GPU units ( ΩCmp i )and memory in GB ( ΩM em i ); (ii) Available bandwidth μi, denoting the currently available uplink/downlink capacity between edge instance i and LMEdge , which constrains prompt upload and response delivery for queries assigned to i; and 
+
+(iii) Concurrency limit ρi, the maximum number of inferences that instance i
+
+can execute in parallel without violating its service-level guarantees, abstract-ing provider quotas. Let M denote the set of deployed models, including both LLMs with multi-billion parameters. Each model m ∈ M has: (i) Quantization levels Cm, denoting the set of precision formats (e.g., Q4, Q8, FP16) supported by model m ∈ M ; and (ii) Deployment status α : M × C × I → { 0, 1}, where 
+
+α(m, c, i ) = 1 indicates that compute instance i ∈ I hosts model m at quantiza-tion c, and α(m, c, i ) = 0 otherwise. We use ML-based models to predict query-specific behavior across model, quantization, and instance combinations. Each predictor takes the query fea-tures from the vector ϕq , along with model-instance details. These models are: 
+
+(i) Inference time Fm,c q,i , predicts inference time for serving q using model m
+
+at quantization c on instance i; (ii) Accuracy Am,c q,i , predicts the response accu-racy of model m at quantization c when applied to q on instance i; (iii) Compute demand Zm,c q,i , predicts CPU/GPU demands for serving q with model m at quan-tization c on instance i; (iv) Memory demand Rm,c q,i , predicts memory demands for serving q with model m at quantization c on instance i; and (v) Response size Lm,c q,i , predicts response size for q using model m with quantization c on instance i. We also define the serving time of each query q ∈ Q as the sum of model inference delay and communication delay. We use a binary assignment variable Bm,c q,i ∈ { 0, 1} to indicate whether query q is assigned to model m ∈ M 
+
+at quantization level c ∈ C m deployed on instance i ∈ I . Thus, in Eq. (1) ensures that each query is mapped at most to one model-quantization-instance triple: 
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+X
+
+> i∈I
+
+Bm,c q,i · α(m, c, i ) ≤ 1, ∀q ∈ {Q t ∪ D t−1}. (1) We define the total response time T m,c q,i of query q serving by model m with quantization c on instance i as: 
+
+T m,c q,i = Fm,c q,i 
+
+| {z } 
+
+> Inference delay
+
++ (δin q + Lm,c q,i )
+
+μi
+
+| {z }
+
+> Transmission delay
+
+· (1 + λ · li
+
+ρi
+
+)
+
+| {z }
+
+> Congestion control
+
+| {z }
+
+> Congestion-aware delay
+
+. (2) where δin q is the input size of query q, li is the number of active inferences on i,and λ is a tunable congestion penalty. While Fm,c q,i predicts model-specific com-4 Reza Farahani et al. 
+
+putation delay, it omits queuing and serialization overheads under fluctuating load. The congestion-aware multiplier augments the transmission term to cap-ture contention, enabling LMEdge to favor less-loaded instances and yielding less end-to-end latency. We define the best achievable accuracy of q ∈ Q as the max-imum predicted accuracy across all model–quantization–instance combinations: 
+
+abest  
+
+> q
+
+= max  
+
+> m,c,i
+
+Am,c q,i . (3) We then enforce that the selected assignment (m, c, i ) for query q achieves accu-racy within a tolerated fraction of abest  
+
+> q
+
+:
+
+Am,c q,i ≥ (1 − θ) · abest  
+
+> q
+
+∀q ∈ {Q t ∪ D t−1} and Bm,c q,i = 1 (4) where θ ∈ [0 , 1] bounds the permissible accuracy loss, with small values enforc-ing near-optimal accuracy and larger values allowing lower-accuracy but faster or more resource-efficient assignments. For example, if abest  
+
+> q
+
+= 90% and θ = 0 .1,any assignment with at least 81 % accuracy is acceptable, enabling LMEdge to trade a 9 % accuracy reduction for better latency. To guarantee feasibility, query assignments at epoch t must not exceed the available capacity of any compute instance i ∈ I across compute, memory, bandwidth, and concurrency dimen-sions. In addition, Eqs. (5)–(6) ensure that the total computational demands of scheduled queries in Qt ∪ D t−1 do not exceed the available resources of i ∈ I :
+
+X
+
+> q∈{Q t∪D t−1}
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+Bm,c q,i · Z m,c q,i ≤ ΩCmp  
+
+> i
+
+, (5) 
+
+X
+
+> q∈{Q t∪D t−1}
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+Bm,c q,i · R m,c q,i ≤ ΩMem  
+
+> i
+
+. (6) Moreover, Eq. (7) ensures that the cumulative input and output sizes of queries assigned to i ∈ I do not exceed its available bandwidth μi:
+
+X
+
+> q∈{Q t∪D t−1}
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+Bm,c q,i · (δin q + Lm,c q,i ) ≤ μi. (7) In addition, Eq. (8) ensures that the sum of already running inferences li and newly scheduled assignments does not exceed the concurrency threshold ρi, en-suring that provider-imposed concurrency quotas are never violated. 
+
+X
+
+> q∈{Q t∪D t−1}
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+Bm,c q,i ≤ ρi − li. (8) Finally, the BILP model (Eq. 9) assigns each query q ∈ {Q t ∪ D t−1} to a model–quantization–instance triple, minimizing the total response time: 
+
+Minimize X
+
+> q∈{Q t∪D t−1}
+
+X
+
+> m∈M
+
+X
+
+> c∈C m
+
+X
+
+> i∈I
+
+Bm,c q,i · T m,c q,i ,
+
+s.t. constraints Eqs. (1)–(8) , vars. Bm,c q,i ∈ { 0, 1}.
+
+(9) Queries that cannot be placed within defined constraints are deferred into Dt
+
+for reconsideration in epoch t + 1 .LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 5CPU/GPU Usage Prediction 
+
+> Accuracy Prediction
+> Users
+> Queries
+
+...   
+
+> C1Cn
+> m1
+> m2
+> mn
+> C2
+> LLM Models (M: models, C: quantization)
+> Edge Cluster
+> Compute Instances Storage
+
+... 
+
+...  Resource-constrained 
+
+> Edge Devices (ERC) Inference Time Prediction
+> Registry
+> Response Size
+> Memory Usage Prediction
+> Resource
+> Monitoring
+> Feature
+> Extraction
+> Execution Scheduling
+> Resource-rich
+> Edge Devices
+> (ERR)
+
+Fig. 1: LMEdge system architecture. 
+
+4 LMEdge System Architecture 
+
+Fig. 1 illustrates the modular LMEdge architecture. As a control-plane service, 
+
+LMEdge orchestrates LLM queries across heterogeneous edge devices through six modules: 1) Feature extraction transforms each query into a feature vec-tor comprising structural (e.g., prompt length, sentence count) and linguistic (e.g., lexical diversity, unique word count) features. 2) Prediction estimates query-specific accuracy, latency, resource usage, and response size for each model-quantization-instance combination. 3) Resource monitoring tracks resource availability, including CPU/GPU utilization, memory, bandwidth, and concur-rency limits. 4) Scheduling combines predictions and resource states to select the model, quantization level, and execution placement that satisfy QoS and resource constraints while minimizing response time. 5) Execution invokes the selected model on the assigned instance and reports runtime observations for adaptation and retraining. 6) Registry stores query features, prediction out-puts, and execution traces to support reproducibility, predictor refinement, and similarity-based reuse. 
+
+5 LMEdge Heuristic Algorithm 
+
+The LMEdge algorithm (Alg. 1) efficiently approximates the NP-hard optimiza-tion problem in Eq. (9) for scalable online scheduling. Given incoming and de-ferred queries, deployed LLMs and quantizations, available compute instances, QoS parameters, and monitoring data, it produces a scheduling plan Sched t
+
+and an updated deferred-query set Dt. LMEdge follows a non-preemptive ex-ecution model and consists of three phases: 1) Prediction: for each query 
+
+q ∈ {Q t ∪ D t−1}, deployed model m ∈ M , quantization c ∈ C m, and com-pute instance i ∈ I , the algorithm first checks deployability via α(m, c, i ) (lines 2–3). For feasible combinations, it predicts accuracy, latency, CPU/GPU uti-lization, memory usage, and response size, storing the results in P (line 5). It also records the best achievable accuracy abest q for subsequent filtering (line 6). 
+
+2) Ranking and sorting: the algorithm merges newly arrived and deferred queries (line 7), estimates the minimum achievable response time ηq across all feasible assignments using Eq. (2) (lines 8–13), and sorts queries in ascending order of ηq , breaking ties by arrival time (line 14). 3) Scheduling: queries are 6 Reza Farahani et al. 
+
+Algorithm 1: LMEdge Scheduling Algorithm 
+
+Input: Qt, Dt−1, M, Cm, I, θ, λ 
+
+Output: Sched t, Dt 
+
+> 1
+
+Pt ← ∅ , Dt ← ∅  
+
+> 2
+
+for q ∈ {Q t ∪ D t−1} do  
+
+> 3
+
+for (m, c, i ) ∈ M × C m × I do  
+
+> 4
+
+if α(m, c, i ) = 1 then  
+
+> 5
+
+Pt[q, m, c, i ] ← {F m,c q,i , Am,c q,i , Zm,c q,i , Rm,c q,i , Lm,c q,i }// Prediction phase  
+
+> 6
+
+abest  
+
+> q
+
+← max m,c,i Am,c q,i  
+
+> 7
+
+Qt ← {Q t ∪ D t−1} 
+
+> 8
+
+for q ∈ Q t do  
+
+> 9
+
+ηq ← ∞  
+
+> 10
+
+for (m, c, i ) ∈ M × C m × I do  
+
+> 11
+
+if α(m, c, i ) = 1 then  
+
+> 12
+
+T m,c q,i ← F m,c q,i + (δin q +Lm,c q,i ) 
+
+> μi
+
+·
+
+
+
+1 + λ liρi
+
+ 
+
+> 13
+
+ηq ← min( ηq , T m,c q,i ) // Ranking phase  
+
+> 14
+
+Qt ← Sort (Qt, (ηq , t q ) ↑) // Sorting phase  
+
+> 15
+
+for q ∈ Q t do  
+
+> 16
+
+Sq ← ∅  
+
+> 17
+
+for (m, c, i ) ∈ M × C m × I do  
+
+> 18
+
+if α(m, c, i ) = 1 then  
+
+> 19
+
+T m,c q,i ← F m,c q,i + (δin q +Lm,c q,i ) 
+
+> μi
+
+·
+
+
+
+1 + λ liρi
+
+ 
+
+> 20
+
+if Am,c q,i ≥ (1 − θ) · abest  
+
+> q
+
+then  
+
+> 21
+
+if Zm,c q,i ≤ ΩCmp i and Rm,c q,i ≤ ΩM em i and δin q + Lm,c q,i ≤ μi and li ≤ ρi
+
+then  
+
+> 22
+
+Sq ← Sq ∪ { (m, c, i, T m,c q,i )} 
+
+> 23
+
+if Sq̸ = ∅ then  
+
+> 24
+
+(m∗, c ∗, i ∗) ← arg min (m,c,i )∈Sq T m,c q,i  
+
+> 25
+
+Sched t ← Sched t ∪ (q, m ∗, c ∗, i ∗) // Scheduling phase  
+
+> 26
+
+ΩCmp i∗ ← ΩCmp i∗ − Z m∗,c ∗ 
+
+> q,i ∗
+
+; ΩM em i∗ ← ΩM em i∗ − R m∗,c ∗ 
+
+> q,i ∗
+
+; μi∗ ← μi∗ − (δin q + Lm∗,c ∗ 
+
+> q,i ∗
+
+);
+
+li∗ ← li∗ + 1  
+
+> 27
+
+else  
+
+> 28
+
+Dt ← D t ∪ { q} 
+
+> 29
+
+return Sched t, Dt
+
+processed in sorted order (line 15). For each query, feasible model-quantization-instance assignments are evaluated against accuracy and resource constraints (lines 17–22). The assignment with the minimum estimated response time is selected and added to Sched t (lines 23–25) and updates the selected resources (lines 26–27); otherwise, the query is deferred to Dt (lines 28–29). The algorithm finally returns Sched t and Dt (line 30). Alg. (1) has a worst-case time complexity of O (|Q t| · |M| · |C m| · |I| ), covering prediction, ranking, and scheduling phases. 
+
+6 Evaluation Setup 
+
+We built a realistic edge testbed comprising two Kubernetes clusters with 12 
+
+virtual and 45 physical instances. Both clusters run Kubernetes 1.32.3 with 
+
+containerd 1.7.24 and are interconnected via Submariner 0.20.0 (Globalnet mode). A minimal Istio 1.25.2 deployment handles query routing, while con-tainerized Ollama backends serve multiple quantized LLMs. Model weights are LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 7
+
+Table 1: LLM models deployed across the devices.                              
+
+> Model Params Quantization Level ERR VMs
+> Gemma2 2BQ4_0 Gemma3 1BQ{3,4}_K_ {S, M }
+> 12 BQ4_K_M Llama3.1 8BQ8_0, F16 Llama3.2 1BQ4_K_M, Q8_0
+> 3BQ{2-4}_K_ {S, M, L }, Q4_0 Qwen3 0.6BQ4_K_ {S, M }, Q8_0, BF16
+> 1.7BQ4_K_M Mistral 7BQ8_0
+> ERC NJNs
+> Gemma3 1BQ{3,4}_K_ {S, M }
+> Llama3.2 1BQ8_0 TinyLlama 1.1BQ{2-4}_K_ {S, M, L }, Q {4,8}_0 ERC RPis
+
+stored in a centralized MinIO S3-compatible repository with 1 TB capacity. The ERR cluster consists of a master node (12 CPU cores, 32 GB RAM) and 12 
+
+worker VMs running Ubuntu 22.04 LTS: 2 × large (8 CPU/ 32 GB ), 6 × medium (4 CPU/ 24 GB ), and 4 × small (2 CPU/ 16 GB ). The ERC cluster comprises a master node (24 CPU cores, 32 GB RAM), 37 Raspberry Pi devices, and 6
+
+NVIDIA Jetson Nano devices, interconnected through two TP-LINK switches. We deploy 29 LLM configurations across the ERR and ERC layers, spanning 
+
+8 open-source model families (e.g., Gemma2 and Llama 3.2) with sizes rang-ing from 0.6B to 12 B parameters. Models are configured using 10 quantization formats alongside FP16 and BF16 precision. Resource-constrained ERC devices (Raspberry Pi and Jetson Nano) host lightweight quantized models, whereas ERR instances additionally serve larger models of up to 12 B parameters. Table 1 summarizes the deployment. We evaluate LMEdge using 1422 queries from five benchmark datasets covering mathematics, code generation, history, common-sense reasoning, and truthfulness. The workload comprises three MMLU subsets (biology, world history, and geography), 200 randomly sampled queries from each of GSM8K , CommonsenseQA , and TruthfulQA , and all 164 tasks from HumanEval .All datasets provide ground-truth answers, enabling accuracy assessment. We use the Nvidia NeMoCurator prompt complexity classifier [3] to assess query complexity based on factors such as reasoning, creativity, and required knowl-edge. Fig. 2a shows the kernel density estimation (KDE) of complexity scores, indicating that the 1422 queries span a broad range of difficulty levels, while Fig. 2b presents the KDE of prompt token counts, showing variation in query length. Our benchmarking dataset comprises over 59 000 measurements span-ning diverse query, model, quantization, and device combinations. Each record captures CPU/GPU and memory utilization, inference latency, response size, and accuracy. Figs. 2c and 2d illustrate representative distributions of accu-racy and inference time. The bimodal accuracy distribution reflects the coexis-tence of exact-match tasks (e.g., MMLU ) and semantic-similarity evaluations (e.g., 
+
+TruthfulQA ), while the broad range of log-scaled inference times highlights the impact of model size, quantization level, and hardware heterogeneity. These vari-ations motivate the need for orchestration mechanisms that jointly select model, quantization, and execution placement under resource and latency constraints. 8 Reza Farahani et al. 1   
+
+> 2
+> 3
+> 4
+> 0.1 0.2 0.3 0.4
+> Prompt Complexity Score
+> Density
+> Biology
+> CommonSense
+> Geography
+> Mathematics
+> Programming
+> History
+> TruthfulQA
+
+(a) Prompt complexity (KDE). Prompt Token Count (log)  
+
+> Density
+> Biology
+> Geography
+> Mathematics
+> Programming
+> History
+> TruthfulQA
+> CommonSense
+
+(b) Prompt token count (KDE). 0 1    
+
+> 00.2 0.8 10.4 0.6
+> 5K
+> 15K
+> 25K
+> 35K
+> 2K
+> 1K
+> Accuracy
+> Count
+
+(c) Accuracy. Inference Time (log)  
+
+> 0.5 K
+> 1 K
+> 1.5 K
+> Count
+
+(d) Inference time (s). 
+
+Fig. 2: Distribution of query complexity, accuracy, and inference time in the benchmarking dataset. We model accuracy prediction as a binary classification task, indicating whether a model produces a correct answer for a given query. As shown in Fig. 2c, most datasets naturally provide binary correctness labels, while TruthfulQA 
+
+yields continuous semantic-similarity scores. To obtain a unified target variable, 
+
+TruthfulQA scores above 0.7 are mapped to correct predictions and the re-maining scores to incorrect ones. In contrast, latency, CPU/GPU utilization, memory consumption, and response size are modeled as regression tasks. We evaluate lightweight predictors, including Random Forest (RF) and XGBoost (XGB), selecting the best-performing model for each prediction task. We implemented LMEdge in Python 3.12.0 using the PuLP library [1] and the 
+
+CPLEX solver for both the heuristic scheduler and BILP formulation. To emulate realistic network conditions, the two Kubernetes clusters replay measured 4G LTE bandwidth traces [11] using tc/netem . Distinct traces are assigned to each cluster, while time offsets across instances introduce heterogeneous and non-synchronous bandwidth dynamics. Resource utilization is monitored every 10 s 
+
+using Prometheus , cAdvisor , and PromQL . Deployment, configuration, and met-ric collection are automated through Ansible , Helm , and custom shell scripts. Query arrivals follow a Poisson process with rates ν ∈ 0.0004 , 0.0008 , 0.001 re-quests/ms (0.4, 0.8, and 1 query/s per instance). Scheduling is performed in fixed 
+
+10 s epochs over both newly arrived and deferred queries. We set ρi to the num-ber of CPU cores or the empirically determined maximum number of concurrent LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 90.1  0.3  0.5 0 0.2  0.4 
+
+> Model
+> Structural
+> Linguistic
+> Dev.
+> Task Type
+
+(a) Inf. time. 0.1  0.2  0.3 0 0.4  
+
+> Linguistic
+> Structural
+> Model
+> Task Type
+
+(b) Acc. 0.4 0.2  0.6  0.8  
+
+> Dev.
+> Model
+> 0
+
+(c) CPU/GPU. Dev.   
+
+> Model
+> 0.4 0.2 0.6 0.8 0
+
+(d) Mem. usage. 0.2  0.4  0.6  0.8  
+
+> Model
+> 0
+> Structural
+> Linguistic
+> Dev.
+> Task Type
+
+(e) Res. size. 
+
+Fig. 3: Feature importance across the five prediction models. GPU inference streams. Unless otherwise stated, λ = 0 .5 and θ = 0 .1, balancing congestion awareness and accuracy preservation. Queries are dispatched to the selected model via REST-based HTTP APIs using JSON payloads, with each model employing its default tokenizer context window. We compare LMEdge against two per-query orchestration baselines: Random ,which uniformly assigns queries across devices without considering resource avail-ability, and Load-aware [6], which routes queries to the least utilized device based on real-time resource monitoring. Other approaches discussed in Section 2 operate at coarser granularities (e.g., batching or session-level scheduling) and are therefore not directly comparable. 
+
+7 Evaluation Results 
+
+We evaluate the performance of ML-based predictors using metrics reported in Tables 2–2 and Fig. 3. XGB ( ntrees = 100 , dmax = 7 , ψ = 0 .1) achieves the highest inference-time prediction accuracy, with R2 = 0 .71 , RM SE = 0 .59 ,and SDAE = 0 .14 , while requiring only 0.07 s for inference ( 3.9 μs per query). As shown in Fig. 3a, model-related features are the strongest predictors of la-tency, followed by structural and linguistic query characteristics. The XGB clas-sifier ( ntrees = 100 , dmax = 7 , ψ = 0 .2) achieves the highest classification per-formance, with macro precision, recall, and F1-score of 0.83 , 0.79 , and 0.81 ,respectively, while requiring only 0.04 s for inference. As shown in Fig. 3b, lin-guistic and structural query features are the strongest predictors of inference cor-rectness, whereas model-related features have a comparatively smaller impact. XGB ( ntrees = 100 , dmax = 5 , ψ = 0 .3) accurately predicts CPU/GPU utiliza-tion, achieving R2 = 0 .97 , RM SE = 177 .3, and SDAE = 0 .06 with negligible inference overhead. Fig. 3c shows that device characteristics dominate resource consumption, while model-related features provide the second most influential contribution. XGB ( ntrees = 100 , dmax = 7 , ψ = 0 .2) achieves highly accurate memory-usage prediction ( R2 = 0 .98 , RM SE = 206 .6, SDAE = 0 .05 ). As 10 Reza Farahani et al. 
+
+Table 2: Performance of ML-based prediction models.                                                    
+
+> Prediction ML model R2RMSE SDAE Inf. time Inf. time XGB 0.71 0.59 0.14 0.07
+> RF 0.66 0.63 0.15 0.45
+> MLP 0.66 0.64 0.15 0.13
+> CPU usage XGB 0.97 177.3 0.06 0.04
+> RF 0.97 177.2 0.06 0.10
+> MLP 0.97 177.54 0.06 0.14
+> Mem. usage XGB 0.98 206.6 0.05 0.05
+> RF 0.98 207.6 0.06 0.12
+> MLP 0.98 207.74 0.06 0.12
+> Resp. size XGB 0.61 0.77 0.12 0.08
+> RF 0.59 0.79 0.12 0.40
+> MLP 0.61 0.79 0.10 0.20
+
+Table 3. Performance of ML-based prediction models.             
+
+> Prediction ML model Precision Recall F1-score Inf. time Accuracy XGB 0.83 0.79 0.81 0.04
+> RF 0.81 0.78 0.79 0.17
+> MLP 0.72 0.60 0.61 0.07
+
+shown in Fig. 3d, memory consumption is primarily determined by model-related features, with quantization level emerging as the most influential factor. XGB (ntrees = 200 , dmax = 7 , ψ = 0 .1) achieves moderate response-size prediction ac-curacy ( R2 = 0 .61 , RM SE = 0 .77 , SDAE = 0 .12 ) with minimal inference overhead ( 0.08 s ). This level of accuracy is sufficient, as response size plays a sec-ondary role compared to latency and inference quality in scheduling decisions. As shown in Fig. 3e, response size is primarily influenced by model character-istics, followed by structural and linguistic query features, mirroring the trends observed for inference-time prediction. We compare the BILP formulation and the LMEdge heuristic under query arrival rates ν ∈ 0.0004 , 0.0008 , 0.001 . While the heuristic consistently executes within sub-second scheduling times, BILP runtime increases rapidly with work-load intensity. The heuristic achieves speedups of up to 1565 % at ν = 0 .0004 
+
+and 7012 % at ν = 0 .0008 , highlighting the limited scalability of exact optimiza-tion under realistic traffic conditions. Thus, the remainder of this section reports heuristic-based results when comparing LMEdge against the baseline schemes. Fig. 4a shows that LMEdge consistently achieves the lowest response times across all arrival rates. Unlike Load-aware, which considers only instantaneous resource availability, and Random, which ignores both resource and QoS con-straints, LMEdge jointly optimizes model, quantization, and placement decisions. As shown in Fig. 4b, Random attains the highest serving ratio by processing all queries regardless of constraints, whereas LMEdge deliberately defers queries that violate accuracy or congestion requirements. Nevertheless, LMEdge consis-tently outperforms Load-aware and approaches Random’s throughput at higher arrival rates. Fig. 4c further demonstrates that LMEdge maintains stable ac-curacy through the strict tolerance parameter θ = 0 .1, while Random and Load-aware exhibit larger fluctuations under increasing load. Fig. 4d reveals distinct resource-utilization patterns. Random under-utilizes the available re-sources, whereas Load-aware concentrates workload on ERR resources and en-gages ERC devices only after saturation. In contrast, LMEdge balances workload LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters 11 Response Time (s)  150 
+
+100 
+
+50 
+
+0 0.0004  0.0008  0.001 
+
+Random  Load-aware  LMEdge 
+
+(a) Response time. 0
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1
+
+> Serving Ratio
+
+0.0004  0.0008  0.001 
+
+Random  Load-aware  LMEdge  (b) Serving ratio. Accuracy 
+
+0.0004  0.0008  0.001 
+
+0
+
+0.1 
+
+0.3 
+
+0.2 
+
+Random  Load-aware  LMEdge 
+
+(c) Accuracy. Resource Utilization       
+
+> Random - RR Load-aware - RR LMEdge - RR
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 0.0004 0.0008 0.001
+> Load-aware - RC Random - RC LMEdge - RC
+
+(d) Resource utilization. 
+
+Fig. 4: Performance of LMEdge vs. baselines under different query arrival rates. Biol.  Comm.  Geo. Math. Prog.  Hist.  Truth. 
+
+> Llama3.2 (SLM)
+> Llama3.2 (LLM)
+> Llama3.1 (LLM)
+> TinyLlama (SLM)
+> Gemma3 (SLM)
+> Gemma3 (LLM)
+> Qwen3 (SLM)
+> Gemma2 (SLM)
+> Mistral (LLM)
+
+(a) Random. Llama3.2 (LLM)     
+
+> Llama3.1 (LLM)
+> TinyLlama (SLM)
+> Gemma3 (LLM)
+> Gemma2 (SLM)
+> Mistral (LLM)
+> Biol. Comm. Geo. Math. Prog. Hist. Truth.
+
+(b) Load-aware. Llama3.2 (SLM)     
+
+> Llama3.2 (LLM)
+> Llama3.1 (LLM)
+> TinyLlama (SLM)
+> Gemma3 (SLM)
+> Gemma3 (LLM)
+> Qwen3 (SLM)
+> Gemma2 (SLM)
+> Mistral (LLM)
+> Biol. Comm. Geo. Math. Prog. Hist. Truth.
+
+(c) LMEdge. 
+
+Fig. 5: Query distribution across model configurations in different approaches. across both layers, maintaining high ERR utilization while steadily exploiting ERC resources. The heatmaps in Fig. 5 explain these trends. Random produces scattered assignments that ignore query characteristics, while Load-aware dis-proportionately favors large LLMs, leading to ERR congestion. LMEdge instead matches workload complexity to model capabilities, assigning lightweight LLMs to simpler queries and reserving larger LLMs for accuracy-sensitive tasks such as TruthfulQA and mathematics. This balanced use of LLMs reduces latency, improves resource utilization, and preserves accuracy across the edge devices. 12 Reza Farahani et al. 
+
+8 Conclusion 
+
+This paper introduced LMEdge , an orchestration service for serving LLM queries for edge infrastructures. We developed five ML-based predictive models, formu-lated the problem as a BILP optimization model, and proposed a lightweight online heuristic for efficient per-query orchestration. We constructed a bench-marking dataset with over 59 000 rows covering diverse queries, models, quanti-zations, and devices, supporting reproducibility. Experiments on a realistic setup with 57 instances and 29 LLM configurations demonstrate that LMEdge outper-forms baseline methods in terms of response time, accuracy, serving ratio, and resource utilization. Future work will investigate online learning, energy-aware scheduling, and larger GPU-equipped edge clusters. 
+
+References 
+
+1. https://pypi.org/project/PuLP/ , accessed: 2. Demandsage, https://www.demandsage.com/chatgpt-statistics/ , Retrieved: 2026-05-29 3. NemoCurator Prompt Task and Complexity Classifier. https://huggingface.co/ nvidia/prompt-task-and-complexity-classifier , accessed: 2026-05-29 4. Cai, F., et al.: Edge-llm: A Collaborative Framework for Large Language Model Serving in Edge Computing. In: Intl. Conf. on Web Services. IEEE (2024) 5. Dai, X., et al.: Cost-Effective Online Multi-LLM Selection with Versatile Reward Models. arXiv preprint arXiv:2405.16587 (2024) 6. Jang, S., Morabito, R.: Edge-First Language Model Inference: Models, Metrics, and Tradeoffs. arXiv preprint arXiv:2505.16508 (2025) 7. Liu, Y., et al.: OptLLM: Optimal Assignment of Queries to Large Language Mod-els. In: Intl. Conf. on Web Services. IEEE (2024) 8. Oh, H., et al.: ExeGPT: Constraint-Aware Resource Scheduling for LLM Inference. In: Proc. of the 29th ACM Intl. Conf. on Architectural Support for Programming Languages and Operating Systems (2024) 9. Ong, I., et al.: RouteLLM: Learning to Route LLMs from Preference Data. In: The 13th Intl. Conf. on Learning Representations (2024) 10. Patel, P., et al.: Splitwise: Efficient Generative LLM Inference using Phase Split-ting. In: 51st Intl. Symp. on Computer Architecture. IEEE (2024) 11. Raca, D., et al.: Beyond Throughput: A 4G LTE Dataset with Channel and Context Metrics. In: Proc. of the 9th ACM Multimedia Systems Conf. (2018) 12. Stojkovic, J., et al.: DynamoLLM: Designing LLM Inference Clusters for Perfor-mance and Energy Efficiency. In: Intl. Symp. on High Performance Computer Ar-chitecture. IEEE (2025) 13. Xu, M., et al.: Serving Long-Context LLMs at the Mobile Edge: Test-Time Rein-forcement Learning-based Model Caching and Inference Offloading. arXiv preprint arXiv:2501.14205 (2025) 14. Yao, Z., et al.: Enhancing LLM QoS through Cloud-Edge Collaboration: ADiffusion-based Multi-Agent Reinforcement Learning Approach. Tran. on Services Computing (2025) 15. Zhang, M., et al.: Edgeshard: Efficient LLM Inference via Collaborative Edge Com-puting. IEEE Internet of Things Journal (2024)

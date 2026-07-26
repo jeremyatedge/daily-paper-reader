@@ -1,0 +1,850 @@
+Title: Roomie: Interference-Aware Colocation for Efficient Model Serving
+
+URL Source: https://arxiv.org/pdf/2607.16784v1
+
+Published Time: Tue, 21 Jul 2026 00:35:51 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Roomie : Interference-Aware Colocation for Efficient Model Serving 
+
+## Youssouph Faye 1, Francescomaria Faticanti 2, Shubham Jain 3, Francesco Bronzino 4
+
+> 1
+
+Université Savoie Mont Blanc, LISTC 2Inria 3Stony Brook University 4ENS Lyon and Institut Universitaire de France 
+
+## Abstract 
+
+As demand for Deep Neural Network (DNN) inference grows, GPU capacity is increasingly oversubscribed, forcing oper-ators to colocate multiple models on the same device in both cloud and edge deployments. Whether colocation suc-ceeds or violates Service Level Objective (SLO)s depends on the temporal overlap of kernels from concurrently ex-ecuting models—an effect that existing serving systems ei-ther ignore or approximate using aggregate resource profiles that fail to capture temporal dynamics. This paper presents 
+
+Roomie , a model serving orchestration architecture that pre-dicts and avoids kernel-level interference between colocated DNNs. Roomie decouples offline kernel profiling from on-line interference prediction. It uses profiling only to extract per-kernel resource configurations, and predicts interfer-ence with an occupancy-based analytical model immune to profiler-induced timing distortion. A pairwise greedy heuris-tic then approximates multi-model interference in polyno-mial rather than exponential time, and an online placement algorithm then uses these estimates to assign each incom-ing model to the GPU that minimizes predicted slowdown. Our experimental evaluation compares Roomie against state-of-the-art solutions across both cloud-grade server clusters and embedded edge devices, demonstrating that Roomie re-duces SLO violations ( i.e. , inference latency) by up to 3×,while maintaining comparable, and in many cases superior, goodput relative to existing approaches. 
+
+## 1 Introduction 
+
+Machine Learning (ML) inference serving has become a foun-dational task for a variety of domains, as organizations in-creasingly deploy ML models with applications spanning from computer vision to natural language processing [ 29 ]. Unfortunately, the growing demand for ML inference re-quests is now outpacing hardware availability, creating a critical resource gap that forces organizations to maximize utilization of existing computational infrastructure. Opera-tors are increasingly forced to colocate multiple models on the same GPU, both in virtualized cloud clusters for cost effi-ciency and on edge devices such as Nvidia Jetson modules [ 6 ], where dedicated per-model hardware is economically infeasi-ble. In both settings, two models sharing a GPU can interfere severely enough to violate their SLOs [ 1 , 15 , 21 , 25 , 28 ]. The placement decision, i.e. , which models go on which GPU, determines whether the system meets its latency targets or collapses under load. Existing scalable serving stacks de-ployed in cloud platforms such as AWS SageMaker [ 26 ] or Google Cloud AI [ 5 ] typically rely on offline performance profiles to guide placement [ 7 , 9, 21 ]. These profiles cap-ture latency or throughput under isolated conditions and therefore yield limited benefit when models actually run concurrently and interfere with one another. Existing inference serving systems [ 7 , 9, 21 , 25 ] do not ad-equately handle this colocation decision. Frameworks such as TensorFlow Serving [ 21 ] and INFaaS [ 25 ] replicate mod-els without modeling interference at all, treating GPUs as interchangeable execution slots. Usher [ 28 ], the closest prior work, recognizes the problem and profiles models at the kernel level to characterize their resource demands. It then pairs compute-heavy with memory-heavy workloads on the assumption that complementary resource profiles imply com-plementary execution. This assumption holds only at the aggregate level: while inspecting kernels in isolation reveals their individual resource footprints, it does not capture how those kernels overlap when two models execute concurrently. Two models can have orthogonal resource profiles on paper yet still collide repeatedly during execution, because their kernel sequences happen to launch compute-bound stages at the same moments. Conversely, two models with similar footprints may interleave gracefully if their busy phases are offset. As we show in Section 2, this gap between resource-level and execution-level reasoning causes Usher’s heuristic to produce colocations that violate SLOs even when its own resource analysis predicts a good fit. Aggregate resource profiles miss what actually matters: when kernels from two models overlap in time, forcing sequential execution and increasing latency. Building a placement strategy on this insight requires solving two challenges. Challenge 1: profiling distortion. 
+
+Kernel-level profilers such as Nsight and Torch Profiler are the only practical way to extract per-kernel resource config-urations on real hardware, but their instrumentation inflates measured kernel durations by an average of 1.4 × and up to 2.7 × for workloads such as SSD on Nvidia A100 GPUs. Using raw profiled durations as ground truth would therefore pro-duce systematically inflated interference predictions. Chal-lenge 2: combinatorial explosion. Interference between two colocated models depends on the alignment of their ker-nel sequences, and since models start asynchronously, every kernel can in principle overlap with every other. Even ten models averaging fifty kernels each yield 112,500 pairwise 
+
+> 1arXiv:2607.16784v1 [cs.DC] 18 Jul 2026 Y. Faye et al.
+
+alignment scenarios, resulting in the search space growing exponentially with the number of colocated models. In this paper, we present Roomie , a model serving orches-tration architecture that tackles both challenges. To address Challenge 1, Roomie separates profiling from prediction: profilers are used offline only to extract per-kernel resource configurations (register usage, shared memory, and thread-block dimensions), while latency predictions come from an occupancy-based analytical model that is immune to profiler-induced timing distortion. To address Challenge 2, Roomie 
+
+reduces the alignment search space with a pairwise greedy heuristic that evaluates a sampled subset of starting indices between each pair of models and aggregates the result using a robust median estimator, capturing the temporal dynamics of interference without exhaustive enumeration. An online placement algorithm then uses these interference estimates to assign incoming models to the GPU that minimizes the average predicted performance drop across colocated work-loads, subject to a tunable degradation bound. We evaluate Roomie on a 12-GPU Nvidia A100 cluster and a 12-device Jetson Xavier edge deployment, against INFaaS [ 25 ] and Usher [ 28 ] on both real [ 2] and synthetic workloads. By accurately modeling interference and guiding colocation decisions, Roomie sustains responsiveness under heavy workloads, reducing SLO violations to 3 × lower than INFaaS [25] and 2 × lower than Usher [28] in cloud clusters. On edge devices, Roomie achieves similar or superior per-formance, keeping violations far below competing baselines even under tight resource constraints. Placement-accuracy experiments confirm that Roomie matches optimum place-ment in 90% of randomized trials, while decision latency stays below one second even for fifteen models on ten GPUs. In summary, our contributions are: 
+
+• A kernel-aware profiling and interference estimation frame-work that extracts per-kernel resource configurations of-fline and uses them to efficiently approximate interference impact via a pairwise greedy heuristic, avoiding exhaus-tive enumeration of kernel overlap scenarios (Section 3). 
+
+• Roomie , a model serving system that integrates the above offline profiling pipeline with an online placement algo-rithm that dynamically orchestrates model placement to minimize SLO violations while maintaining goodput on resource-constrained deployments (Section 4). 
+
+• A thorough evaluation on both a 12-GPU Nvidia A100 cloud cluster and a 12-device Nvidia Jetson Xavier edge deployment, demonstrating consistent superiority over state-of-the-art baselines across real and synthetic work-loads (Section 6). 
+
+## 2 Motivation 
+
+As demand for real-time inference grows, organizations must maximize the utilization of existing infrastructure. Unfor-tunately, existing orchestration solutions rely on simplistic k1           
+
+> time 0
+> 1
+> k2
+> time 0
+> 1
+> k3
+> GPU1
+> GPU2
+> Resources
+> Usage (%)
+> Resources
+> Usage (%)
+> (a) Proper colocation: 𝑘 1and 𝑘 3
+> coexist on GPU1 while 𝑘 2exe-cutes on GPU2, maximizing uti-lization without resource con-tention. k1
+> time 0
+> 1
+> k2
+> time 0
+> 1
+> k3
+> GPU1
+> GPU2
+> Resources
+> Usage (%)
+> Resources
+> Usage (%)
+> (b) When combined resource demands of 𝑘 1and 𝑘 2exceed GPU capacity, kernels are exe-cuted sequentially, eliminating parallelization benefits.
+
+Figure 1. Kernel execution patterns under different colo-cation strategies demonstrate the impact of placement on execution time. heuristics for model placement and colocation, typically ref-erencing offline profiling data or prioritizing devices with the most available memory. We first argue that effective colocation requires reasoning about kernel execution pat-terns rather than aggregate resource profiles, and that the temporal alignment of those kernels—not just their resource footprints—governs interference. We then show how a repre-sentative state-of-the-art system [ 28 ] fails precisely because it overlooks this temporal dimension. Finally, we describe the practical challenges of building accurate performance models at kernel granularity. 
+
+2.1 Kernel Execution Patterns Govern Interference 
+
+DNNs perform inference by executing a sequence of kernels —the fundamental unit of GPU computation—each responsi-ble for a specific low-level operation with its own resource demands and execution duration. Kernels, rather than high-level model architectures or aggregate memory statistics, constitute the true computational footprint on the GPU and determine performance under colocation. When two kernels from different models execute concur-rently and their combined resource demands stay within GPU capacity, they run in parallel and each completes at roughly its isolated latency (Figure 1a). When those demands exceed capacity, the hardware must serialize execution: one kernel waits while the other progresses, and inference la-tency rises accordingly (Figure 1b). Crucially, whether two colocated models fall into the first or second regime is not a property of their average resource consumption, but of 
+
+when their resource-intensive kernels happen to execute. Two models with orthogonal resource profiles can still col-lide repeatedly if their heaviest kernels launch at the same moments; conversely, two models with similar footprints may interleave gracefully if their busy phases are offset. Ef-fective colocation therefore requires reasoning about the 
+
+> 2Roomie : Interference-Aware Colocation for Efficient Model Serving
+
+Table 1. Inference latency comparison for isolated execution and colocation. The SLO threshold is set to 2× the isolated latency [4, 13, 28].                                 
+
+> (a) Isolated execution
+> Model Avg. latency (ms) SLO threshold (ms)
+> AlexNet 0.50 1.00 GoogLeNet 3.29 6.58 SSD 66.67 133.34
+> (b) Colocation on two GPUs
+> System GPU Model Avg. lat. (ms) Violates SLO
+> Usher GPU1 AlexNet 1.03 ✓
+> SSD 333.33 ✓
+> GPU2 GoogLeNet 3.29 ✗
+> Roomie GPU1 GoogLeNet 3.33 ✗
+> SSD 200.00 ✓
+> GPU2 AlexNet 0.50 ✗
+
+temporal alignment of kernel sequences, not just their aggre-gate demands—an aspect invisible to resource-only models. 
+
+2.2 Why Resource-Complementarity Heuristics Fail 
+
+The previous section argues that systems reasoning about colocation in resource-profile terms will systematically misiden-tify good pairings. We illustrate this concretely with Usher [ 28 ], the most prominent recent attempt to optimize colocation through kernel-level resource analysis. Usher analyzes low-level GPU kernels to estimate resource demands and couples compute-intensive models with memory-intensive ones to maximize utilization. This logic is appealing but assumes that contrasting resource profiles imply non-overlapping ex-ecution, an assumption that holds only when kernel timing happens to be favorable. To make the failure mode visible, we evaluate three models that span Usher’s decision space on two Nvidia Jetson AGX Xavier devices: AlexNet (compute-heavy), SSD (memory-heavy), and GoogLeNet (balanced). Table 1a reports their isolated latencies and the corresponding SLO thresholds, defined as twice the isolated inference time [4, 13, 28]. Following its heuristic, Usher colocates AlexNet (compute-heavy) with SSD (memory-heavy) on GPU1 and leaves GoogLeNet to run alone on GPU2. As shown in Table 1b, this config-uration fails to deliver the expected benefits: AlexNet’s la-tency grows from 0.5 ms to 1.03 ms (2.06 ×) and SSD’s from 66.67 ms to 333.33 ms (5 ×), with both violating their SLO thresholds. An alternative placement that takes kernel tim-ing into account yields markedly better results. Colocating GoogLeNet with SSD on GPU1 and running AlexNet alone on GPU2 keeps GoogLeNet within 1% of its baseline (3.33 ms vs. 3.29 ms), reduces SSD to 200 ms (40% better than under Usher), and lets AlexNet run at its isolated latency with zero interference. The pairing Usher’s heuristic identifies as ideal turns out to be the worst of the available options, while a placement its heuristic cannot recognize keeps two of three models within SLO. The cause is precisely what Section 2.1 predicts: aggregate resource profiles are not a sufficient sig-nal about when kernels contend, and any heuristic built on them will miss colocations governed by temporal alignment rather than resource arithmetic. 
+
+2.3 Challenges in Modeling Kernel-Level Interference 
+
+A kernel-aware approach must overcome two obstacles that have so far prevented prior work from exploiting kernel timing directly. 
+
+Profiling distortion. Tools such as Nsight-Systems [ 17 ]and Torch Profiler [ 23 ] are the only practical way to extract per-kernel resource configurations and execution charac-teristics on real hardware. However, the instrumentation and callbacks they introduce add latency to kernel execu-tion: in our measurements, recorded durations exceed true inference time by an average of 1.4 ×, reaching 2.7 × for work-loads such as SSD on Nvidia A100 GPUs. Using raw profiler measurements to estimate colocation performance would therefore yield systematically inflated latency predictions and incorrect placement decisions. Profiling remains neces-sary to capture kernel structure on specific hardware, but performance prediction must be decoupled from raw profiled durations. 
+
+Combinatorial explosion of kernel alignments. Even if profiling were free, exhaustively measuring every align-ment scenario is infeasible. Interference arises dynamically as kernels from different models overlap, and since models do not begin inference synchronously, each can start at any point in its kernel sequence. With just 10 models averaging 50 kernels each, the number of pairwise overlap scenarios already reaches 112,500—and the space grows exponentially when more than two models share a GPU. An accurate in-terference model must therefore estimate alignment effects without enumerating them. These two obstacles jointly motivate our approach. Profil-ing is used offline to extract kernel structure and resource configurations, while a dedicated occupancy-based model uses those characteristics to predict interference without re-lying on raw profiled durations; a pairwise greedy heuristic then approximates multi-model alignment effects in polyno-mial rather than exponential time. We describe this design next. 
+
+## 3 Kernel Interference-Aware Scheduling 
+
+To address the challenges of profiling overhead and combina-torial complexity, we introduce a kernel-level profiling and 
+
+> 3Y. Faye et al.
+
+interference estimation strategy that balances precision with scalability. We address Challenge 1 by separating profiling (which captures hardware-specific execution characteristics) from performance estimation (which models resource oc-cupation and execution behavior). We address Challenge 2 by analyzing execution traces in isolation and modeling representative overlap scenarios, enabling informed deploy-ment decisions without exhaustively evaluating all possible alignments. In this section we explain the main concepts behind our approach. First, we formalize the notion of inter-ference and describe a method for estimating it. Next, we present an algorithm that efficiently calculates interference among various models. Finally, we detail a placement algo-rithm that utilizes the interference estimation to efficiently allocate incoming models to available GPUs. 
+
+3.1 Kernel Execution and Occupancy Modeling 
+
+DNN inference on Nvidia GPUs proceeds as a sequence of CUDA kernels, each responsible for one or more model lay-ers ( e.g. , convolution, activation, pooling). How well a ker-nel utilizes GPU resources determines its performance and, under colocation, its susceptibility to interference. We char-acterize this through theoretical occupancy: the fraction of warp capacity actively used by a kernel on a given streaming multiprocessor (SM). CUDA threads are organized into warps — groups of 32 threads that execute instructions in lockstep — which are further grouped into blocks, the basic scheduling units on the GPU. The maximum number of blocks 𝑏 that can run concurrently on an SM is determined by the most restrictive of three resource constraints [ 14 ]: while the SM imposes a fixed upper bound on active warps 𝑊 , each block also consumes registers and shared memory, both available in finite quantities per SM. If either of these is exhausted before the warp limit is reached — leaving the kernel register-limited 
+
+or shared-memory-limited — the number of blocks that can be accommodated is reduced accordingly. Given 𝑏 , and the number of warps per block 𝑊 𝑏 fixed by the kernel’s thread configuration, theoretical occupancy is: 
+
+𝑜 = 𝑊 𝑏 · 𝑏 𝑊 , (1) where 𝑊 is the SM’s maximum supported warp count. This ratio expresses how effectively a kernel uses the GPU under exclusive access, and serves as the baseline for estimating performance degradation when that exclusivity is broken by colocation. 
+
+3.2 Interference and Adjusted Occupancy 
+
+Interference arises when the combined resource demand of concurrently scheduled kernels exceeds the GPU’s capacity. Formally: ∑︁  
+
+> 𝑘 ∈𝐾
+
+𝜑 𝑘 > Φ, (2) where 𝐾 is the set of active kernels, 𝜑 𝑘 is the resource usage of kernel 𝑘 , and Φ represents the total GPU resource capacity. When this condition holds, the hardware cannot schedule all kernels at their intended occupancy, forcing some to run with fewer active warps or blocks than their standalone configuration would allow, increasing inference latency. 
+
+Adjusted occupancy . We quantify this degradation by re-computing each kernel’s occupancy under the reduced re-source share it receives. The constrained number of blocks 
+
+˜𝑏 𝑘 is derived from the same SM constraints as in Section 3.1, but applied to the resources remaining after accounting for co-scheduled kernels. With ˜𝑏 𝑘 , we can derive the new oc-cupancy ˜𝑜 𝑘 , using the same formulation as in Equation (1), from which we estimate the kernel’s new execution time: 
+
+˜𝑑 𝑒 𝑘 = 𝑑 𝑘 · 𝑜 𝑘 
+
+˜𝑜 𝑘 
+
+, (3) where 𝑑 𝑘 and 𝑜 𝑘 represent the kernel’s isolated execution time and theoretical occupancy, respectively. Execution time is thus inversely proportional to adjusted occupancy. If ˜𝑜 𝑘 =
+
+𝑜 𝑘 , no inference occurs. Since GPU scheduling policy under concurrent execution is not fixed [ 18 ], we approximate it using simplified classical strategies (equal partitioning, priority-based, or first-come-first-served), which provide a practical basis for estimating 
+
+˜𝑏 𝑘 , without requiring any knowledge of the exact scheduler behavior. 
+
+Two-phase execution . Assuming that two kernels are inter-fering, such an interference ends once the shortest-running kernel completes. Let Δ = min 𝑘 { ˜𝑑 𝑒 𝑘 }, the remaining kernel transitions from reduced occupancy ˜𝑜 𝑘 to full occupancy 𝑜 𝑘 .Its total adjusted duration is: 
+
+˜𝑑 𝑘 =
+
+( ˜𝑑 𝑒 𝑘 if ˜𝑑 𝑒 𝑘 ≤ ΔΔ +
+
+ ˜𝑑 𝑘 − Δ
+
+
+
+· ˜𝑜 𝑘  
+
+> 𝑜 𝑘
+
+otherwise. (4) The portion ˜𝑑 𝑒 𝑘 − Δ, originally computed under reduced oc-cupancy, is scaled by ˜𝑜 𝑘  
+
+> 𝑜 𝑘
+
+to reflect the normal execution once interference ends. 
+
+Performance drop . For a model 𝑚 with a sequence of 𝑞 
+
+kernels, we align the first kernels of each colocated model and simulate execution iteratively: when the active kernel from one model completes, it is replaced by the next kernel in the model’s sequence. The total inference time under interference is 
+
+˜𝑇 𝑚 =
+
+> 𝑞
+
+∑︁ 
+
+> 𝑖 =1
+
+˜𝑑 𝑘 𝑖 ,
+
+and the performance drop experienced by model 𝑚 due to interference is quantified by the relative increase in inference time. This is computed as: 
+
+𝜇 𝑚 =
+
+Í𝑞 𝑖 =1 ( ˜𝑑 𝑘 𝑖 − 𝑑 𝑘 𝑖 )
+
+Í𝑞 𝑖 =1 𝑑 𝑘 𝑖 
+
+= ˜𝑇 𝑚 − 𝑇 𝑚 
+
+𝑇 𝑚 
+
+. (5) 
+
+> 4Roomie : Interference-Aware Colocation for Efficient Model Serving
+
+Kernel alignment . The analysis above assumes models start from their first kernel simultaneously, but in practice any kernel in one model’s sequence may overlap with any kernel in the sequence of another model. Each such align-ment yields a distinct performance drop, and the number of possible alignments among all the kernels of all the co-located models grows combinatorially with model count and sequence length, making exhaustive evaluation impractical. This motivates the heuristic introduced in Section 3.3. 
+
+3.3 Greedy Algorithm for Estimating Model Interference 
+
+Evaluating all possible kernel alignments across 𝑁 concur-rent models requires constructing a Cartesian product of starting indices (one per model) leading to an exponential growth in the search space. We address this with a greedy pairwise heuristic that reduces the search space to the mini-mal meaningful subset: as demonstrated in Section 6, consid-ering only pairwise interactions between models, rather than all 𝑁 -way combinations, is sufficient to achieve significant reductions in SLO violations while keeping the estimation tractable. The pseudocode of the algorithm is presented in Al-gorithm 1. 
+
+Pairwise interference . For each pair (𝑚 𝑖 , 𝑚 𝑗 ), the algo-rithm defines a set C𝑖,𝑗 of starting index pairs (𝑠 𝑖 , 𝑠 𝑗 ) rep-resenting candidate alignment points (line 2). This set is obtained by starting from the Cartesian product of the sets of kernels’ indices of the two models, and considering only the pairs of indexes that represent a feasible alignment and an interference starting point. For each (𝑠 𝑖 , 𝑠 𝑗 ) ∈ C 𝑖,𝑗 , the algorithm simulates kernel-by-kernel execution (lines 10-16): whenever the combined resource demand 𝜑 𝑘 𝑖 +𝜑 𝑘 𝑗 > Φ (line 11), the delay added to kernel 𝑘 𝑠 𝑖 (i.e. , the kernel identified by the starting point 𝑠 𝑖 ) is 𝛿 𝑘 𝑠 𝑖 = 𝑑 𝑘 𝑠 𝑖 · 𝑜 𝑘 𝑠 𝑖 /( 𝑜 𝑘 𝑠 𝑖 + 𝑜 𝑘 𝑠 𝑗 ) (line 13). The total delay accumulated over the alignment is (line 17): 
+
+Δ𝑐 𝑖,𝑗 =∑︁   
+
+> 𝑠 𝑖 ≤𝑡 ≤𝑞 𝑖
+
+𝛿 𝑘 𝑡 .
+
+We take the median across all the alignments as the repre-sentative delay, chosen for its robustness to outlier configu-rations (line 20): 
+
+Δ𝑖,𝑗 = median 
+
+
+
+{Δ𝑐 𝑖,𝑗 }∀𝑐 𝑖,𝑗 ∈ C 𝑖,𝑗 
+
+
+
+Overlap scaling . To account for the amount of time models 
+
+𝑚 𝑖 and 𝑚 𝑗 interact during execution, we introduce a scaling factor 𝛾 𝑖,𝑗 = max 
+
+ 𝑞 𝑖  
+
+> 𝑞 𝑗
+
+, 1
+
+
+
+that reflects their relative kernel sequence lengths (line 19). The estimated inference time of model 𝑚 𝑖 under interference from all co-scheduled models 
+
+Algorithm 1: Greedy Estimation of Model Interfer-ence  
+
+> 1
+
+Function performance_drop( 𝑀 ) 
+
+> 2
+
+Define C𝑖,𝑗 for each pair of models 𝑚 𝑖 , 𝑚 𝑗  
+
+> 3
+
+Initialize performance drop 𝜇 ← []  
+
+> 4
+
+foreach model 𝑚 𝑖 ∈ 𝑀 do  
+
+> 5
+
+Initialize ˜𝑇 𝑚 𝑖 ← Í 𝑑 𝑘  
+
+> 6
+
+foreach model 𝑚 𝑗 where 𝑗 ≠ 𝑖 do  
+
+> 7
+
+Initialize delay set D𝑖,𝑗 ← []  
+
+> 8
+
+foreach pair (𝑠 𝑖 , 𝑠 𝑗 ) ∈ C 𝑖,𝑗 do  
+
+> 9
+
+𝑘 𝑖 ← 𝑠 𝑖 , 𝑘 𝑗 ← 𝑠 𝑗 , 𝛿 ← 0 
+
+> 10
+
+while 𝑘 𝑖 < 𝑞 𝑖 and 𝑘 𝑗 < 𝑞 𝑗 do  
+
+> 11
+
+if 𝜑 𝑘 𝑖 + 𝜑 𝑘 𝑗 > Φ then  
+
+> 12
+
+Compute additional duration:  
+
+> 13
+
+𝛿 ← 𝛿 + 𝑑 𝑘 𝑖 · 𝑜 𝑘 𝑖   
+
+> 𝑜 𝑘 𝑖 +𝑜 𝑘 𝑗
+> 14
+
+end  
+
+> 15
+
+Increment 𝑘 𝑖 , 𝑘 𝑗  
+
+> 16
+
+end  
+
+> 17
+
+Append 𝛿 to D𝑖,𝑗  
+
+> 18
+
+end  
+
+> 19
+
+Compute overlap factor 𝛾 𝑖,𝑗 ← max 
+
+ 𝑞 𝑖  
+
+> 𝑞 𝑗
+
+, 1
+
+ 
+
+> 20
+
+Update ˜𝑇 𝑚 𝑖 ← ˜𝑇 𝑚 𝑖 + 𝛾 𝑖,𝑗 · median (D 𝑖,𝑗 ) 
+
+> 21
+
+end  
+
+> 22
+
+𝜇 𝑚 𝑖 ← ˜𝑇 𝑚 𝑖 −𝑇 𝑚 𝑖  
+
+> ˜𝑇 𝑚 𝑖
+> 23
+
+Append 𝜇 𝑚 𝑖 to 𝜇  
+
+> 24
+
+end  
+
+> 25
+
+return 𝜇  
+
+> 26
+
+end Algorithm 2: Model Placement Algorithm  
+
+> 1
+
+Function schedule( 𝑚 𝑎𝑟𝑟 , 𝐺, 𝜆 ) 
+
+> 2
+
+Initialize 𝑝 ← [] be sequence of performance drops of new model 𝑚 𝑎𝑟𝑟 . 
+
+> 3
+
+Initialize performance drop P ← []  
+
+> 4
+
+foreach GPU 𝑔 do  
+
+> 5
+
+𝑀 𝑔 ← 𝑀 𝑔 ∪ { 𝑚 𝑎𝑟𝑟 } 
+
+> 6
+
+𝜇 𝑔 ← 𝑝𝑒𝑟 𝑓 𝑜𝑟𝑚𝑎𝑛𝑐𝑒 _𝑑𝑟𝑜𝑝 (M)
+
+/* Ensure no variant has a performance drop beyond 𝜆 . */  
+
+> 7
+
+if ¯𝜇 𝑔 < 𝜆 then  
+
+> 8
+
+Append 𝜇 𝑔 𝑚 𝑎𝑟𝑟 to 𝑝  
+
+> 9
+
+Append 𝜇 𝑔 to P 
+
+> 10
+
+end  
+
+> 11
+
+end  
+
+> 12
+
+Peak lowest average performance drop.  
+
+> 13
+
+𝑔 ∗ ← min { ¯𝜇 𝑔 }∀𝜇 𝑔 ∈ P  
+
+> 14
+
+return 𝑔 ∗ 
+
+> 15
+
+end 
+
+is then (line 20): 
+
+˜𝑇 𝑚 𝑖 = 𝑇 𝑚 𝑖 +
+
+> 𝑁
+
+∑︁ 
+
+> 𝑗 =1
+> 𝑗 ≠𝑖
+
+𝛾 𝑖,𝑗 · Δ𝑖,𝑗 ,
+
+> 5Y. Faye et al.
+
+and the performance drop 𝜇 𝑚 𝑖 follows from Equation (5) (lines 22 and 23). 
+
+3.4 Efficient Placement 
+
+The performance drop estimated by Algorithm 1 can be di-rectly exploited to guide the placement of incoming models, whether triggered by a new deployment request or by the need to scale up and meet increased workload demand. Al-gorithm 2 describes the proposed procedure to place a new model that needs to be deployed. When a new model 𝑚 𝑎𝑟𝑟 
+
+arrives, Algorithm 1 is applied to each candidate GPU 𝑔 (line 5) to estimate the average performance drop ¯𝜇 𝑔 across all models that would run on 𝑔 , including 𝑚 𝑎𝑟𝑟 . The threshold 𝜆 ,taken as input (line 1), represents the maximum performance degradation (in percentage) that 𝑚 𝑎𝑟𝑟 is allowed to impose on already-running models. Among all GPUs satisfying ¯𝜇 𝑔 < 𝜆 
+
+(line 7), the one yielding the lowest ¯𝜇 𝑔 is selected as the de-ployment target (line 13); if none qualifies, the deployment is deferred. It is worth noting that the placement objective can be easily substituted for alternative, such as maximizing throughput or minimizing latency, without changing the structure of the algorithm. 
+
+## 4 Roomie : System Design 
+
+We describe the implementation of Roomie , a model serv-ing system that integrates the kernel-aware profiling and interference estimation into an online placement pipeline. Figure 2 illustrates the Roomie architecture, which is orga-nized into two phases. The offline phase is carried out by a 
+
+Profiler that executes the three stages introduced in Section 3, 
+
+i.e. , model profiling, adjusted occupancy computation, and greedy interference estimation, to produce, for every sup-ported DNN, the interference profiles required for placement. The online phase is carried out by a Controller that uses these profiles to run the placement algorithm of Section 3.4, decid-ing which GPU each model is deployed on, routing incoming queries to the appropriate workers, and reacting to runtime performance feedback. Roomie is implemented in approxi-mately 15,000 lines of C++ and Python code: the client and controller are written in C++ for performance, while the profiler and workers use Python to leverage the PyTorch framework. Components communicate via WebSocket for efficient asynchronous message exchange. 
+
+Profiler. The Profiler implements the offline pipeline that produces the interference profiles consumed by the online scheduler. It executes three stages, mirroring the method-ology of Section 3: (i) model profiling (Section 3.1), which extracts the per-kernel resource configurations—register us-age, shared memory, and thread-block dimensions—from each DNN; (ii) adjusted occupancy computation (Section 3.2), which derives the resource-aware occupancy of every kernel under contention; and (iii) greedy estimation (Section 3.3), Offline Online   
+
+> Models
+> GoogLeNet
+> SLO: 6.58ms
+> SSD
+> SLO: 133ms …
+> Model
+> profiling
+> (§3.1)
+> Profiler
+> Adjusted
+> occupancy
+> (§3.2)
+> Greedy
+> estimation
+> (§3.3)
+> Interference
+> profiles
+> Worker
+> Incoming workload
+> Controller
+> Performance
+> Stats
+> Scheduler
+> (§3.4)
+> Load
+> balancer
+> Load
+> monitor
+> GPU Model
+> Control
+> Data
+
+Figure 2. Overview of the Roomie architecture, showing the offline profiling pipeline and the online serving stack. which aggregates these quantities into pairwise interfer-ence profiles without exhaustively enumerating kernel align-ments. The first stage relies on platform-specific tooling: on Jetson devices we use Nvidia Nsight-Compute [ 20 ], while on A100 systems we employ the PyTorch Profiler [ 24 ], since PyTorch Profiler is unsupported in Jetson L4T containers and Nsight-Compute presented compatibility issues on our A100 hardware. The resulting interference profiles are persisted and made available to the online phase. 
+
+Controller. The Controller orchestrates the online phase and is composed of three cooperating components: a sched-uler , a load balancer , and a load monitor . The scheduler runs the placement algorithm of Section 3.4 to decide which GPU each model is deployed on: for every newly arriving model or scaling event, it consults the offline interference profiles and selects the GPU that minimizes the predicted performance degradation across the resulting set of co-located models. The chosen model-to-worker mapping is then handed to the load balancer, which routes incoming inference queries to the appropriate workers. Finally, the load monitor continu-ously observes per-worker performance statistics and feeds them back to the scheduler, which uses them to detect viola-tions of the degradation budget and trigger re-placement or scaling decisions when needed. 
+
+Inference runtime. DNN inference is powered by PyTorch, using pretrained classification and detection models from TorchVision. Inference workers are deployed in container-ized environments adapted to the underlying hardware: cloud systems with Nvidia A100 Graphics Processing Units (GPUs) use the pytorch:2.5.0-cuda12.1-cudnn9-runtime container, while edge deployments on Jetson Xavier devices use the ARM64-optimized dustynv/l4t-pytorch:r35.4.1 image with native CUDA support. Workers handle incoming queries by assigning them to queues dedicated to each deployed model. Each DNN in-stance operates in its own CUDA Stream [ 18 ], enabling mul-tiple models to execute concurrently on the same device. For each model, the instance retrieves queries from its queue and 
+
+> 6Roomie : Interference-Aware Colocation for Efficient Model Serving
+
+assembles them into batches up to the batch size configured for that model before issuing an inference pass. 
+
+Runtime monitoring. GPU utilization is monitored using nvitop [ 22 ] on A100 systems and jetson_stats [ 3] on Jetson devices, providing runtime visibility for stable operation under varying workloads. 
+
+Workload generation. Finally, to evaluate the system un-der controlled load, the client includes a lightweight traffic generator that issues queries at configurable rates, allowing us to emulate the workload patterns used in our evaluation. The client takes as input a trace and adapts it according to the target workload characteristics (more details in Section 5). 
+
+## 5 Experimental Setup 
+
+In this section, we describe the experimental setup used to evaluate Roomie .
+
+Deployment Infrastructure. We conduct our experiments using two distinct deployment types: a cluster of larger GPUs and a cluster of edge GPUs. The first consists of 3 × machines equipped with 4 × Nvidia A100-SXM4-40GB each, giving a to-tal of 12 GPUs. The second consists of 12 × Nvidia Jetson AGX Xavier GPUs (referred to as Jetson Xavier for brevity), also giving a total of 12 GPUs. Each GPU is assigned to a docker to form a server, resulting in 12 servers for each deployment. In addition, we use 2 × HPE Proliant DL360 Gen10+ . One ma-chine acts as the client, which issues inference queries to the system. The other acts as the controller, which receives these queries and is responsible for scheduling and forward-ing them to the worker servers (each backed by a GPU). This separation mirrors a typical inference serving setup, where the client generates requests and the controller orchestrates their distribution to maximize goodput and efficiency. The full specifications are presented in Table 2. 
+
+Baselines. We compare Roomie against two state-of-the-art systems: Usher [ 28 ] and INFaaS [ 25 ]. Usher is, to the best of our knowledge, the most representative recent work addressing interference-aware co-location and placement. INFaaS represents a widely adopted approach to dynamic inference serving. It consists of two components: a model variant selection module and an auto-scaling module. Since our work focuses on placement over a pre-specified set of models, we disabled variant selection; this does not funda-mentally alter INFaaS’s behavior, as in its default mode that component treats accuracy as a constraint and selects the least resource-intensive model that satisfies the query. Other candidates ( e.g. , Shepherd [ 32 ], GPUlet [ 4], AlpaServe [ 13 ]) showed radically lower performance than Usher in its own evaluation, making a direct comparison against Usher suf-ficient. Further, systems such as Proteus [ 1 ] were excluded because they target problems orthogonal to ours, such as accuracy auto-scaling. In all the experiments, we set 𝜆 = 0.5 for Roomie , i.e. ,less than the half of performance lost is tolerated in the placement of new models, as described in Section 3.4. 
+
+Workloads. We evaluate our system and baseline methods using both synthetic and real-world workloads. For the real workload, similar to previous work we adopt the Twitter trace 2020 dataset [ 2 ], as it is particularly suitable for model-ing inference services, as tweets are commonly subjected to DNN processing before publication [ 1, 25 ]. Since the trace is aggregated at a coarse temporal granularity of one second, we apply a Poisson process to model intra-second arrival times and use a Zipf distribution to distribute queries among models, in line with the established methodology in [ 1 , 25 ]. For synthetic workloads, we generated request rates using a Gaussian process parameterized by the desired through-put. Model allocation followed a Zipf distribution with an exponent 𝛼 = 1.8, reflecting disparate throughputs between models such as AlexNet and SSD and producing asymmetric allocations consistent with real-world imbalances. Finally, note that we also considered the Microsoft Azure Functions dataset [ 28 ], but observed similar arrival patterns and iden-tical experimental trends to the Twitter trace; we therefore prioritized one real-world dataset complemented by the more controllable synthetic workload. 
+
+Models. To ensure our evaluation captures a broad spec-trum of inference behavior, we selected a diverse and rep-resentative set of DNN models. These include both high-performance classification architectures and widely adopted object detection frameworks, enabling us to rigorously as-sess system behavior under varied computational and latency profiles. The full list of models is summarized in Table 3, re-flecting the breadth and relevance of our evaluation design. Our focus on video analytics models is motivated by their strict latency requirements, which make interference-aware placement particularly impactful. Newer LLM-based archi-tectures could in principle be considered, but they introduce fundamentally different memory footprints and performance characteristics—such as KV-cache growth and token-level scheduling—that are incompatible with our edge setup [ 27 ]. That said, since LLMs are built on the same fundamental DNN building blocks, our interference-aware approach could be extended to them as well. We leave this to future work. 
+
+Evaluation Metrics. To evaluate the effectiveness of each DNN deployment strategy, the assessment focused on two categories of metrics: performance metrics and resource met-rics. Performance metrics include SLO violations and good-put. SLO violations serve as our primary metric, as they directly capture application-level experience: under a fixed load, rising violations signal that throughput falls short of demand, and a k% violation rate is equivalent to a Pk la-tency exceeding the SLO threshold. Goodput quantifies the rate of completed requests; note that goodput curves tend to 
+
+> 7Y. Faye et al.
+
+Table 2. Server configuration used for experiments                        
+
+> Use Case Model # Servers CPU Configuration GPU
+> Cloud GPU Cluster Apollo 6500 Gen10+ 31×Intel Xeon, 32 cores 4×Nvidia A100-SXM4-40GB, CC a: 8.0 DL360 Gen10+ 22×Intel Xeon, 32 cores –Edge GPU Cluster Nvidia Jetson AGX Xavier 12 1×ARMv8, 8 cores Nvidia AGX Xavier, CC a: 7.2 HPE Proliant DL360 Gen10+ 22×Intel Xeon, 16 cores –
+> aCC: Compute Capability
+
+Table 3. Categorization of DNN Models Used in Evaluation. Models marked with † were used only in the cloud cluster evaluation; all others were included in both cluster and Jetson Xavier evaluation.                   
+
+> Category Models
+> Classification Models alexnet ,maxvit_t ,googlenet ,densenet201 ,mobilenet_v3_large ,squeezenet1_1 ,shufflenet_v2_x2_0 ,
+> inception_v3 ,vgg19 ,resnet152 †,wide_resnet101_2 †,resnext101_32x8d †,efficientnet_v2_l †,
+> convnext_large †
+> Object Detection Models retinanet_resnet50_fpn_v2 ,fcos_resnet50_fpn ,fasterrcnn_resnet50_fpn_v2 ,ssd300_vgg16 †,
+> ssdlite320_mobilenet_v3_large †
+> †Models used only in cloud cluster evaluation
+
+converge across systems near GPU saturation, and compar-isons can be skewed by heterogeneous models with vastly different peak throughputs ( e.g. , AlexNet at ∼2000 QPS vs. SSD at ∼15 QPS), which is why SLO violations serve as a more robust indicator of tail performance. In our evaluation, throughput denotes the workload intensity expressed as the submission rate (queries per second). Resource metrics include GPU compute utilization, de-fined as the percentage of time the GPU’s compute engines are actively executing kernels, and memory utilization, de-fined as the fraction of GPU memory capacity in use. To-gether, these metrics provide a balanced view of service efficiency and hardware usage under varying workload and batch processing conditions. 
+
+## 6 Evaluation 
+
+This section evaluates Roomie ’s performance against two state-of-the-art baselines: INFaaS [ 25 ] and Usher [ 28 ]. We examine Roomie ’s behavior across both cloud-based GPU clusters and edge deployments using Jetson Xavier devices. Our evaluation aims to answer the following research ques-tions: 
+
+➊ How does Roomie perform compared to existing systems in cloud environments? We demonstrate that 
+
+Roomie reduces SLO violations by 3 × compared to INFaaS and 2 × compared to Usher while maintaining comparable or better goodput. 
+
+➋ Can Roomie effectively operate on resource-constrained edge devices? We show that Roomie achieves similar or su-perior performance on Jetson Xavier devices, keeping SLO violations significantly lower than competing baselines de-spite tight resource constraints. 
+
+➌ How does batch size affect Roomie ’s scheduling per-formance under high load? We demonstrate that Roomie 
+
+achieves optimal performance at moderate batch sizes (16). Larger batch sizes increase violations without proportional gains, confirming that efficiency stems from interference-aware scheduling rather than aggressive batching or raw resource utilization. 
+
+➍ How accurate is Roomie ’s placement algorithm un-der varying deployment scenarios? Through randomized experiments, we find that Roomie achieves near-optimal placement accuracy in approximately 90% of trials, clearly outperforming Usher under identical conditions. 
+
+➎ What is the overhead of Roomie ’s profiling and or-chestration mechanisms? We analyze the computational cost and time requirements of Roomie ’s offline profiling and online decision-making processes, showing negligible impact on overall system performance. 
+
+6.1 Performance Evaluation of Cloud-Based GPU Cluster Solutions 
+
+To assess the effectiveness of our proposed deployment strat-egy, we conduct a comprehensive evaluation using a cloud-based GPU cluster comprising 12 GPUs and all DNN models detailed in Table 3. The experiments are performed using two distinct datasets: real-world Twitter data and synthetically generated data. Figure 3 shows the performance results obtained from the Twitter dataset. At low workload levels, all approaches be-have similarly, with negligible differences in violation rates 
+
+> 8
+
+Roomie : Interference-Aware Colocation for Efficient Model Serving 2000 4000 6000 8000 10000 
+
+> Throughput (QPS)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> SLO violation (%)  Lower is better
+> INFaaS
+> Usher
+> Roomie
+
+(a) SLO violation. 2000 4000 6000 8000 10000  
+
+> Throughput (QPS)
+> 0
+> 2000
+> 4000
+> 6000
+> 8000
+> 10000
+> Goodput (QPS)  Higher is better
+> INFaaS
+> Usher
+> Roomie
+
+(b) Goodput. 
+
+Figure 3. Performance evaluation on the Twitter dataset shows how SLO violations evolve with increasing workload; 
+
+Roomie sustains violations below 10% under high load, out-performing INFaaS and Usher while preserving goodput. 2000 4000 6000 8000 10000 
+
+> Throughput (QPS)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> SLO violation (%)  Lower is better
+> INFaaS
+> Usher
+> Roomie
+
+(a) SLO violation. 2000 4000 6000 8000 10000  
+
+> Throughput (QPS)
+> 0
+> 2000
+> 4000
+> 6000
+> 8000
+> Goodput (QPS)  Higher is better
+> INFaaS
+> Usher
+> Roomie
+
+(b) Goodput. 
+
+Figure 4. Evaluation with synthetic workloads illustrates system behavior under controlled stress; Roomie maintains violations near 6% at saturation, more than 4 × lower than INFaaS and 2 × lower than Usher, while sustaining goodput close to the offered load. and goodput. As the workload increases, however, dispari-ties emerge. Roomie consistently sustains lower violation rates, achieving less than 10% even under high load, while INFaaS exceeds 30% and Usher reaches around 20%. Good-put remains close to the offered load across all approaches, but Roomie maintains slightly higher values, confirming its ability to preserve goodput while reducing violations. These differences stem directly from how colocation is per-formed. INFaaS replicates models across workers without in-terference awareness, which leads to overscaling of heavy de-tector networks such as SSD, FCOS, and FasterRCNN. When multiple replicas of these models are placed together with-out awareness, interference between their kernels produces violation rates above 70% for detectors and more than 60% for Densenet. Usher attempts to balance compute-bound and memory-bound workloads, but its multiplexing heuristics overlook temporal overlap. As a result, models like MaxViT experience violations around 44%, and detectors remain un-stable with violations between 45–78%. Roomie avoids these drawbacks by distributing heavy models alongside lighter ones whose kernel timelines complement each other. For example, pairing GoogLeNet with SSD allows GoogLeNet to maintain violations below 1%, while SSD itself remains stressed but at a reduced level. Densenet, which collapses under INFaaS, records only 4.5% violations under Roomie .400 500 600 700 800 
+
+> Throughput (QPS)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> SLO violation (%)  Lower is better
+> INFaaS
+> Usher
+> Roomie
+
+(a) SLO violation. 400 500 600 700 800  
+
+> Throughput (QPS)
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> 700
+> Goodput (QPS)  Higher is better
+> INFaaS
+> Usher
+> Roomie
+
+(b) Goodput. 
+
+Figure 5. Edge-based evaluation using the Twitter dataset demonstrates the impact of resource constraints; Roomie 
+
+keeps violations near 9% under high load, compared to over 42% for INFaaS and 21% for Usher, while sustaining higher goodput. 400 500 600 700 800 
+
+> Throughput (QPS)
+> 0
+> 10
+> 20
+> 30
+> 40
+> SLO violation (%)  Lower is better
+> INFaaS
+> Usher
+> Roomie
+
+(a) SLO violation. 400 500 600 700 800  
+
+> Throughput (QPS)
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> 700
+> Goodput (QPS)  Higher is better
+> INFaaS
+> Usher
+> Roomie
+
+(b) Goodput. 
+
+Figure 6. Evaluation with synthetic workloads on Jet-son Xavier devices highlights robustness under saturation; 
+
+Roomie maintains violations close to 10%, reducing them by factors of four or more relative to INFaaS and outperforming Usher in both violation rate and goodput. These placement decisions explain why Roomie sustains responsiveness while the baselines degrade. Figure 4 illustrates the evaluation conducted with syn-thetic workloads. The performance trends closely mirror those observed with the Twitter dataset. At high workload levels, Roomie maintains violation rates near 6%, compared to more than 25% for INFaaS and 16% for Usher. This cor-responds to a reduction of more than 4 × relative to INFaaS and 2 × relative to Usher. Under high workload conditions, the offered goodput is already near the system’s maximum capacity for all strategies, but Roomie sustains higher good-put than both baselines. Here again, the explanation lies in colocation: INFaaS overscales detectors, Usher misplaces models with overlapping kernels, while Roomie minimizes interference by pairing workloads that do not collide in time. Overall, across both datasets, Roomie demonstrates ro-bust performance under varying workload conditions, con-sistently achieving lower violation rates and higher goodput than competing approaches. This robustness stems from clear factors: replication without interference awareness am-plifies contention, multiplexing heuristics that pair compute-heavy with memory-heavy models fail to capture temporal dynamics, and interference-aware colocation prevents col-lapse by placing DNN models intelligently. 
+
+9Y. Faye et al. 8 16 32 64 
+
+> Batch size
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> SLO violation (%)  Lower is better
+> INFaaS
+> Usher
+> Roomie
+
+(a) SLO violation. 8 16 32 64  
+
+> Batch size
+> 0
+> 2000
+> 4000
+> 6000
+> 8000
+> 10000
+> Goodput (QPS)
+> INFaaS
+> Usher
+> Roomie
+
+(b) Goodput. 
+
+Figure 7. Impact of batch size on SLO violations and goodput under high workload (10K QPS); while goodput remains nearly unchanged, larger batches increase violations across all approaches, with Roomie consistently maintaining lower rates—especially at moderate batch sizes. 
+
+6.2 Performance Evaluation on Edge Devices Using Jetson Xavier GPUs 
+
+To further validate our solution, we conduct a second set of experiments using a cluster of 12 Jetson Xavier GPUs, representative of resource-constrained edge computing en-vironments. As in the cloud-based evaluation, we deploy 12 models (from Table 3), which correspond to the DNNs not marked with † in the table, and tested performance using real-world Twitter data and synthetically generated data while gradually increasing workload intensity. The results of the Twitter workload on Jetson Xavier de-vices appear in Figure 5. At low traffic levels, the three ap-proaches deliver comparable performance, with only minor differences in violation rates and goodput. As the workload grows, however, Roomie begins to separate itself from the baselines. At moderate intensity, it sustains lower violation rates while maintaining goodput close to the offered load. Under high workload conditions, the contrast becomes pro-nounced: Roomie holds violations near 9%, whereas INFaaS rises above 40% and Usher remains above 20%. Goodput mea-surements confirm this advantage, with Roomie consistently achieving higher goodput than both competitors. These results complement the conclusions drawn from the evaluation of cloud-based clusters. Replication without interference consideration causes INFaaS to collapse under saturation, while Usher’s strategy of pairing compute-heavy with memory-heavy models offers partial improvements but fails to capture kernel overlap. On Jetson devices, the same mechanisms are visible but are magnified by tighter resource constraints. INFaaS again overscales detectors, with Retinanet exceeding 73% violations, while even lightweight models such as AlexNet (23%), GoogLeNet (34%), and Mo-bileNet (35%) degrade when colocated with heavy workloads. Usher continues to misplace heterogeneous models, produc-ing moderate violations for classifiers such as AlexNet (21%) and Densenet (12%), while FCOS and MaxViT remain un-stable at 29% and 27%. By contrast, Roomie places heavy models alongside lighter ones whose kernel timelines com-plement each other, reducing contention for most workloads: Densenet’s violations fall to 5%, MobileNet to 4%, Shufflenet 8 16 32 64 
+
+> Batch size
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> GPU utilization (%)
+> INFaaS
+> Usher
+> Roomie
+
+(a) GPU core utilization. 8 16 32 64  
+
+> Batch size
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Memory utilization (%)
+> INFaaS
+> Usher
+> Roomie
+
+(b) Memory utilization. 
+
+Figure 8. Impact of batch size on GPU core utilization and memory utilization under high workload (10K QPS) ; GPU core utilization shows little variation due to CUDA ker-nel execution patterns, while memory usage increases with larger batches but exhibits only modest differences across approaches. to 6%, and AlexNet to 6%. Detectors such as FasterRCNN and FCOS remain stable under Roomie , both near 1–2%, though Retinanet continues to be challenging at 62%. These examples illustrate how interference-aware colocation prevents col-lapse and sustains responsiveness under stress, even though certain detector models remain difficult to stabilize. The synthetic dataset evaluation on Jetson Xavier GPUs produces results consistent with those observed on the Twit-ter dataset, as shown in Figure 6. Under high load, Roomie 
+
+maintains violation rates close to 10%, compared to more than 40% for INFaaS and 20% for Usher. At these traffic lev-els, the incoming query rate drives the system near satura-tion across all strategies, yet Roomie converts a significantly larger share of requests into successful completions—achieving up to 1.5 × higher goodput than competing baselines. Here again, the explanation lies in colocation: INFaaS overscales detectors, Usher misplaces models with overlapping kernels, while Roomie minimizes interference by pairing workloads that do not collide in time. Taken together, the evaluation on edge devices confirms and strengthens the earlier cluster-based conclusion. Repli-cation without interference awareness leads to collapse un-der saturation, multiplexing compute-heavy with memory-heavy models provide partial improvements but fails to cap-ture temporal dynamics, and interference-aware colocation is essential for sustaining responsiveness and goodput. The sharper contrasts observed on Jetson Xavier devices high-light that the benefits of Roomie are not limited to large clusters but extend to resource-constrained environments, demonstrating its generality and robustness across deploy-ment contexts. 
+
+6.3 Impact of batch size 
+
+We examine the effect of batch size on scheduling perfor-mance using the cloud-based GPU cluster with 12 GPUs. The experiment uses the Twitter dataset under high workload conditions (10K QPS) and varies batch size from 8 to 64. To capture the impact of batching under stress, we analyze per-formance metrics (SLO violations and goodput) alongside   
+
+> 10 Roomie : Interference-Aware Colocation for Efficient Model Serving 678
+> Number of GPUs
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> 17.5
+> Absolute error (%)  Usher
+> Roomie
+
+Figure 9. Roomie maintains deployment error within 7– 8% of the optimal and outperforms Usher in nearly 90% of evaluated scenarios. resource metrics (GPU core and memory utilization), pro-viding a comprehensive view of how batching influences efficiency and service quality. The performance metrics in Figure 7 reveal decisive effects. At batch size 8, all approaches exhibit high violation rates, though Roomie consistently maintains lower violations than INFaaS and Usher. Increasing to batch size 16 produces a pro-nounced improvement for Roomie , with violations dropping to a small fraction of those at batch size 8 and remaining lower than both baselines, while goodput stays nearly un-changed. At larger batches, violations rise again across all solutions relative to the improvement observed at 16, in-dicating that aggressive batching increases responsiveness penalties even though goodput changes only marginally. In summary, when goodput is already high at smaller batches, further increasing batch size is not necessarily advantageous; it tends to worsen violations without yielding proportional goodput gains. The resource metrics in Figure 8 show that goodput-oriented batching does not materially differentiate the approaches in this setup. GPU core utilization remains stable across batch sizes for all strategies, reflecting the behavior of CUDA ker-nels, which maximize occupancy regardless of workload con-figuration. Memory utilization increases with larger batches, but the differences between approaches are modest and do not translate into meaningful changes in service quality. The experiments show that responsiveness in multi-tenant inference serving inference is not determined by raw exe-cution speed or aggregate resource utilization, but by how workloads are colocated and scheduled on GPU resources. 
+
+Roomie consistently reduces SLO violations while sustaining comparable goodput, demonstrating that efficiency stems from interference-aware scheduling rather than attempts to drive GPU or memory usage higher. This is emphasized by the fact that GPU core utilization remains essentially un-changed across approaches and batch sizes, and memory utilization differences are modest, confirming that resource metrics do not account for the observed performance gap. The decisive factor is whether planning strategies recognize and mitigate interference between DNN kernels. Roomie 
+
+derives its advantage precisely from adopting a colocation 
+
+Table 4. Total decision latency (ms) by number of deployed DNNs and GPUs.             
+
+> # Models Total decision latency (ms) 2 GPUs 5 GPUs 10 GPUs
+> 5184.8 85.5 110.4 10 —259.9 127.1 15 —776.9 378.4
+
+approach that takes this interference into account, allowing it to maintain its responsiveness in high-demand scenarios while preserving its efficiency. 
+
+6.4 Deployment Accuracy Evaluation against Optimal Strategies 
+
+This section investigates the effectiveness of Roomie for the deployment of DNNs across a varying number of GPUs, specifically between six and eight. For each configuration, the number of DNNs to be deployed is randomly selected from a range of 2–3 × the number of GPUs, guided by prede-fined options outlined in Table 3. More than 1500 randomized evaluations are conducted to ensure comprehensive cover-age of deployment scenarios. In each evaluation, all feasible deployment permutations are thoroughly assessed to deter-mine the configuration that results in the minimal average performance drop, defined as the optimal baseline. Both 
+
+Roomie and Usher are then applied to the same scenarios, and their absolute errors relative to the optimal are recorded. The results are summarized in Figure 9, which illustrates the average performance gap across configurations. The comparative analysis highlights Roomie ’s consistent superiority in deployment accuracy across all concurrency levels. Its success in nearly 90% of randomized trials reflects a design that is not only structurally aware but also resilient to the practical limitations of kernel-level modeling. Unlike Usher, which applies static heuristics that overlook the dy-namic nature of interference, Roomie adapts to the complexi-ties introduced by concurrent execution. Crucially, the resid-ual error observed in Roomie ’s deployments stems not from heuristic misalignment, but from the inherent challenges of profiling-based estimation. Tools such as Nsight-Compute, while indispensable for capturing fine-grained kernel be-havior, introduce latency and measurement distortion that complicate performance inference. Roomie ’s strategy, based on the analysis of isolated traces and representative overlap simulation, effectively manages these distortions without resorting to exhaustive enumeration. Moreover, as concur-rency increases, Roomie demonstrates robustness in the face of combinatorial explosion, where kernel alignment across models creates an exponentially growing space of interfer-ence scenarios. That Roomie maintains bounded error under these conditions affirms its capacity to balance fidelity with 
+
+> 11 Y. Faye et al.
+
+scalability, offering a principled alternative to heuristics that fail to account for architectural nuance. 
+
+6.5 Latency Evaluation for DNN Colocation 
+
+This evaluation setup is designed to assess how GPU count and the number of deployed DNNs influence the computa-tional effort required to analyze colocation scenarios. In each experiment, DNN models are randomly sampled from the set of architectures in Table 3 and deployed across 2, 5, or 10 GPUs. For every arrival, the interference-aware placement algorithm evaluates all candidate GPUs before finalizing a decision. We measure the total decision latency, defined as the cumulative time to deploy all DNNs in a run. Table 4 re-ports the aggregated ranges for total decision latency across repeated runs. We do not report numbers for 10 and 15 mod-els on 2 GPUs, as beyond 3 models per GPU the available GPU memory is exceeded or latency violates the SLO by a wide margin. The results show that decision latency remains low when the number of GPUs is greater than or equal to the number of models to be deployed, or when the number of DNNs is low. For example, with 5 DNNs, the total latency is approx-imately 85 ms on 5 GPUs and 110 ms on 10 GPUs, while 2 GPUs require more time ( 185 ms). As deployments scale up, total latency increases, reaching approximately 260 ms for 10 DNNs on 5 GPUs and nearly 780 ms for 15 DNNs on 5 GPUs. Even in the most demanding case of 15 DNNs on 10 GPUs, the totals remain below 400 ms, showing that the system scales without major time-related issues. Lightweight models or architectures such as AlexNet or Squeezenet consistently produce negligible latencies, while SSD variants dominate the tail and drive cumulative values up to several hundred or even several thousand milliseconds, due the high num-ber of kernels to evaluate. When SSD models are excluded, the totals drop sharply. For example, 15 DNNs on 5 GPUs drop to around 250 ms and on 10 GPUs to around 150 ms, confirming that the system can support larger deployments with decision times well below one second. 
+
+## 7 Related Work 
+
+Scheduling large-scale inference workloads on GPU clus-ters has become a central problem as deep learning services proliferate. Unlike training, inference must simultaneously satisfy latency, accuracy, and cost objectives, which are often in tension and require specialized scheduling solutions. 
+
+Inference Serving Systems. Clipper [ 7 ] and TensorFlow-Serving [ 21 ] simplify model deployment and adapt to traffic by scaling replicas, but neither accounts for interference for colocated models. Clockwork [ 10 ] achieves predictable performance by executing one inference at a time, at the cost of underutilized GPUs. Proteus [ 1] introduces adaptive batching and dynamic variant selection, but restricts each device to a single variant, limiting parallel execution. More recently, AdaGen [ 27 ] proposes a workload-adaptive sched-uler for LLM inference; its focus on KV-cache and token-level scheduling makes it orthogonal to our setting of colocating traditional DNN models on heterogeneous GPUs. 
+
+Multi-Tenant DNN Inference on Shared GPUs. Recent work has explored concurrent execution of multiple models on shared GPUs. INFaaS [ 25 ] enables model-less serving by dynamically selecting variants and reactively scaling work-ers, but lacks proactive interference prediction. Colti [ 16 ]improves throughput by colocating training and inference workloads, while Yu et al. [ 31 ] exploit operator-level inde-pendence to schedule concurrent execution across streams. REEF [ 11 ] and Miriam [ 33 ] support kernel preemption and elastic kernels for priority-based, real-time scheduling. While these systems optimize post-deployment execution, they overlook initial placement decisions that could preemptively mitigate interference. 
+
+Interference-Aware Inference Serving. A growing body of work models interference between concurrently running models to drive proactive scheduling. Mendoza et al. . [ 15 ]predict latency degradation from global buffer and PCIe uti-lization, but coarse granularity limits accuracy. Scrooge [ 12 ]profiles concurrency thresholds for identical DNNs, an ap-proach infeasible for heterogeneous combinations due to profiling overhead. Abacus [ 8] jointly schedules operators across models to maintain QoS, but its hardware-agnostic duration model and reactive execution lead to underutiliza-tion. iGnifer [ 30 ] characterizes interference from GPU met-rics such as L2 cache usage and core launch counts, though coarse indicators like power consumption prove less predic-tive. Usher [ 28 ] refines this direction by analyzing kernel occupancy and DRAM usage to distinguish compute- from memory-intensive workloads. Both Usher and iGnifer, how-ever, rely on Nvidia’s Multi-Process Service (MPS) [ 19 ] for spatial sharing, limiting their applicability to edge platforms such as Nvidia Jetson, where MPS is unsupported. 
+
+## 8 Conclusion 
+
+We presented Roomie , an interference-aware serving sys-tem for colocated DNN inference on shared GPUs. Roomie 
+
+couples an offline kernel-level profiling and interference es-timation framework with an online placement algorithm that assigns models to GPUs under a bounded performance-degradation budget. Evaluated on both a 12-GPU Nvidia A100 cloud cluster and a 12-device Jetson Xavier edge de-ployment, Roomie reduces SLO violations by up to 3 × over INFaaS and 2 × over Usher while matching the optimal place-ment in roughly 90% of randomized trials and keeping deci-sion latency below one second for up to fifteen models on ten GPUs. These results show that modeling when kernels collide in time, rather than which resources they nominally consume, is what makes interference-aware placement prac-tical across both cloud and edge. 
+
+> 12
+
+Roomie : Interference-Aware Colocation for Efficient Model Serving 
+
+## References 
+
+[1] Sohaib Ahmad, Hui Guan, Brian D. Friedman, Thomas Williams, Ramesh K. Sitaraman, and Thomas Woo. 2024. Proteus: A High-Throughput Inference-Serving System with Accuracy Scaling. (2024). doi: 10.1145/3617232.3624849 
+
+[2] Archive Team. 2020. Twitter Streaming Traces. https://archive.org/ details/archiveteam-twitter-stream-2020-03 Dataset. [3] Raffaello Bonghi. 2023. jetson_stats: Monitoring and Control Tool for NVIDIA Jetson Devices. https://rnext.it/jetson_stats/ . Accessed: October 30, 2025. [4] Seungbeom Choi, Sunho Lee, Yeonjae Kim, Jongse Park, Youngjin Kwon, and Jaehyuk Huh. 2022. Serving heterogeneous machine learning models on {Multi-GPU } servers with {Spatio-Temporal } sharing. In 
+
+2022 USENIX Annual Technical Conference (USENIX ATC 22) . 199–216. [5] Google Cloud. 2025. AI and Machine Learning Products and Services | Google Cloud. https://cloud.google.com/products/ai . Accessed: December 2025. [6] NVIDIA Corporation. 2025. NVIDIA Jetson Modules for Edge AI. 
+
+https://developer.nvidia.com/embedded/jetson-modules . Accessed: December 2025. [7] Daniel Crankshaw, Xin Wang, Guilio Zhou, Michael J. Franklin, Joseph E. Gonzalez, and Ion Stoica. 2017. Clipper: A Low-Latency Online Prediction Serving System. In 14th USENIX Symposium on Net-worked Systems Design and Implementation (NSDI 17) . USENIX Asso-ciation, Boston, MA, 613–627. https://www.usenix.org/conference/ nsdi17/technical-sessions/presentation/crankshaw 
+
+[8] Weihao Cui, Han Zhao, Quan Chen, Ningxin Zheng, Jingwen Leng, Jieru Zhao, Zhuo Song, Tao Ma, Yong Yang, Chao Li, and Minyi Guo. 2021. Enable Simultaneous DNN Services Based on Deterministic Operator Overlap and Precise Latency Prediction. In SC21: International Conference for High Performance Computing, Networking, Storage and Analysis . 1–15. doi: 10.1145/3458817.3476143 
+
+[9] Arpan Gujarati, Reza Karimi, Safya Alzayat, Wei Hao, Antoine Kauf-mann, Ymir Vigfusson, and Jonathan Mace. 2020. Serving DNNs like clockwork: performance predictability from the bottom up. In Pro-ceedings of the 14th USENIX Conference on Operating Systems Design and Implementation (OSDI’20) . USENIX Association, USA, Article 25, 20 pages. [10] Arpan Gujarati, Reza Karimi, Safya Alzayat, Wei Hao, Antoine Kauf-mann, Ymir Vigfusson, and Jonathan Mace. 2020. Serving {DNNs }
+
+like clockwork: Performance predictability from the bottom up. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) . 443–462. [11] Mingcong Han, Hanze Zhang, Rong Chen, and Haibo Chen. 2022. Microsecond-scale preemption for concurrent {GPU-accelerated } { DNN } inferences. In 16th USENIX Symposium on Op-erating Systems Design and Implementation (OSDI 22) . 539–558. [12] Yitao Hu, Rajrup Ghosh, and Ramesh Govindan. 2021. Scrooge: A cost-effective deep learning inference system. In Proceedings of the ACM Symposium on Cloud Computing . 624–638. [13] Zhuohan Li, Lianmin Zheng, Yinmin Zhong, Vincent Liu, Ying Sheng, Xin Jin, Yanping Huang, Zhifeng Chen, Hao Zhang, Joseph E Gonzalez, et al . 2023. {AlpaServe }: Statistical multiplexing with model parallelism for deep learning serving. In 17th USENIX Symposium on Operating Systems Design and Implementation (OSDI 23) . 663–679. [14] Robert V. Lim, Boyana Norris, and Allen D. Malony. 2017. Autotuning GPU Kernels via Static and Predictive Analysis. arXiv:1701.08547 [cs.DC] https://arxiv.org/abs/1701.08547 
+
+[15] Daniel Mendoza, Francisco Romero, Qian Li, Neeraja J Yadwadkar, and Christos Kozyrakis. 2021. Interference-aware scheduling for inference serving. In Proceedings of the 1st Workshop on Machine Learning and Systems . 80–88. [16] Jaiaid Mobin, Avinash Maurya, and M Mustafa Rafique. 2023. Colti: Towards concurrent and co-located dnn training and inference. In 
+
+Proceedings of the 32nd International Symposium on High-Performance Parallel and Distributed Computing . 309–310. [17] NVIDIA. 2025. Nsight Systems Documentation. https://docs.nvidia. com/nsight-systems/ Accessed: 2025-10-01. [18] NVIDIA Corporation. 2025. CUDA C++ Programming Guide . https: //docs.nvidia.com/cuda/cuda-c-programming-guide/ Accessed: Sep-tember 29, 2025. [19] NVIDIA Corporation. 2025. Multi-Process Service (MPS) Documen-tation . https://docs.nvidia.com/deploy/mps/index.html Accessed August, 2025. [20] NVIDIA Corporation. 2025. NVIDIA Nsight Compute . https://developer. nvidia.com/nsight-compute Version 2025.2. [21] Christopher Olston, Noah Fiedel, Kiril Gorovoy, Jeremiah Harmsen, Li Lao, Fangwei Li, Vinu Rajashekhar, Sukriti Ramesh, and Jordan Soyke. 2017. TensorFlow-Serving: Flexible, High-Performance ML Serving. arXiv:1712.06139 [cs.DC] https://arxiv.org/abs/1712.06139 
+
+[22] Xuehai Pan. 2023. nvitop: The One-Stop Solution for NVIDIA GPU Pro-cess Management. https://nvitop.readthedocs.io/en/latest/ . Accessed: October 30, 2025. [23] PyTorch. 2025. Torch Profiler Documentation. https://pytorch.org/ docs/stable/profiler.html Accessed: 2025-10-01. [24] PyTorch Team. 2025. PyTorch Profiler . https://pytorch.org/docs/stable/ profiler.html Available as part of PyTorch 2.9. [25] Francisco Romero, Qian Li, Neeraja J. Yadwadkar, and Christos Kozyrakis. 2021. INFaaS: Automated Model-less Inference Serv-ing. In 2021 USENIX Annual Technical Conference (USENIX ATC 21) .USENIX Association, 397–411. https://www.usenix.org/conference/ atc21/presentation/romero 
+
+[26] Amazon Web Services. 2017. Amazon SageMaker. https://aws.amazon. com/sagemaker/ . Accessed: December 2025. [27] Sudipta Saha Shubha, Ayush Goel, Diman Zad Tootaghaj, Khaled Diab, Hardik Soni, KK Ramakrishnan, Puneet Sharma, and Haiying Shen. 2026. AdaGen: Workload-Adaptive Cluster Scheduler for Latency-Optimal LLM Inference Serving. In Proceedings of the 21st European Conference on Computer Systems . 1111–1127. [28] Sudipta Saha Shubha, Haiying Shen, and Anand Iyer. 2024. {USHER }:Holistic Interference Avoidance for Resource Optimized {ML } Infer-ence. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) . 947–964. [29] Mohammad Mustafa Taye. 2023. Understanding of machine learning with deep learning: architectures, workflow, applications and future directions. Computers 12, 5 (2023), 91. [30] Fei Xu, Jianian Xu, Jiabin Chen, Li Chen, Ruitao Shang, Zhi Zhou, and Fangming Liu. 2023. iGniter: Interference-Aware GPU Resource Provisioning for Predictable DNN Inference in the Cloud. IEEE Transactions on Parallel and Distributed Systems 34, 3 (2023), 812–827. doi: 10.1109/TPDS.2022.3232715 
+
+[31] Fuxun Yu, Shawn Bray, Di Wang, Longfei Shangguan, Xulong Tang, Chenchen Liu, and Xiang Chen. 2021. Automated runtime-aware scheduling for multi-tenant DNN inference on GPU. In 2021 IEEE/ACM International Conference On Computer Aided Design (ICCAD) . IEEE, 1–9. [32] Hong Zhang, Yupeng Tang, Anurag Khandelwal, and Ion Stoica. 2023. 
+
+{SHEPHERD }: Serving {DNNs } in the wild. In 20th USENIX Sym-posium on Networked Systems Design and Implementation (NSDI 23) .787–808. [33] Zhihe Zhao, Neiwen Ling, Nan Guan, and Guoliang Xing. 2023. Miriam: Exploiting elastic kernels for real-time multi-DNN inference on edge GPU. In Proceedings of the 21st ACM Conference on Embedded Networked Sensor Systems . 97–110. 13

@@ -1,0 +1,753 @@
+Title: BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator
+
+URL Source: https://arxiv.org/pdf/2607.19431v1
+
+Published Time: Thu, 23 Jul 2026 00:03:24 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator 
+
+# Varun Manjunath 
+
+University of Southern California Los Angeles, USA 
+
+# Ruokai Yin 
+
+Yale University New Haven, USA 
+
+# Donghyun Lee 
+
+University of Southern California Los Angeles, USA 
+
+# Arkapravo Ghosh 
+
+University of Southern California Los Angeles, USA 
+
+# Priyadarshini Panda 
+
+University of Southern California Los Angeles, USA 
+
+## Abstract 
+
+Bit-serial accelerators exploit bit-level sparsity to reduce DNN infer-ence cost, but existing designs exploit sparsity on only one operand, bounding the speedup. Extending sparsity exploitation to both operands simultaneously yields compounding reductions in partial products but introduces a critical new bottleneck: workload imbal-ance. Because each concurrent weight–activation pair’s execution cost depends on the product of two independently varying operand non-zero bit counts, pairs that must complete together finish at vastly different times, leaving faster computations idle. We show this limits PE utilization to 56–64% in existing dual-sided designs. We present BRIM, a hardware–software co-designed dual-sided bit-serial sparse accelerator that directly targets this bottleneck. BRIM combines two integrated mechanisms: 1) Cyclic-Balanced Pruning (CBP), a post-training weight optimization that reshapes weight representations based on profiled activation statistics to equalize expected workloads across concurrently processed pairs offline; and 2) Pairwise Slot Donation, a lightweight hardware mechanism that absorbs residual runtime imbalance with negligible area overhead. Evaluated across CNNs, ViTs, and LLMs under iso-area constraints, BRIM achieves over 90% PE utilization, up to 2.37 × speedup, and up to 1.63 × energy efficiency improvement over prior dual-sided designs. 
+
+## CCS Concepts 
+
+• Computer systems organization → Systolic arrays ; Neural networks ; • Computing methodologies → Artificial intelli-gence .
+
+## Keywords 
+
+DNN Accelerator, Bit-Serial Computation, Bit-Level Sparsity 
+
+ACM Reference Format: 
+
+Varun Manjunath, Ruokai Yin, Donghyun Lee, Arkapravo Ghosh, and Priyadarshini Panda. 2018. BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Infer-ence Accelerator. In Proceedings of IEEE/ACM International Conference on  
+
+> Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+> ICCAD ’26, San Jose, CA, USA
+> ©2018 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-1-4503-XXXX-X/2018/06 https://doi.org/XXXXXXX.XXXXXXX
+
+Computer-Aided Design (ICCAD ’26). ACM, New York, NY, USA, 9 pages. https://doi.org/XXXXXXX.XXXXXXX 
+
+## 1 Introduction 
+
+Deep neural networks (DNNs) have become the foundation of modern machine learning, achieving state-of-the-art performance across domains such as computer vision [ 6 , 10 , 14 ], natural language processing [ 23 , 24 ], and large-scale generative modeling[ 21 , 27 ]. As these models continue to grow in size and complexity, the com-putational and energy costs of inference have become a primary bottleneck [ 8, 20 ], motivating the design of specialized hardware accelerators. Early DNN accelerators [ 3 , 5, 9 , 19 ] adopted bit-parallel archi-tectures that process all bits of each operand simultaneously using fixed-width multipliers. While effective, these designs are inher-ently tied to their maximum supported bitwidth, wasting resources when lower precision suffices. This rigidity led to the emergence of bit-serial computation, Stripes [ 11 ]- a prime example, which de-composes each operand bit-by-bit and processes one bit per cycle, naturally adapting execution time to the effective precision. The bit-serial paradigm opened a powerful avenue for efficiency: 
+
+bit-level sparsity exploitation , where zero bits that contribute noth-ing to a multiply-accumulate (MAC) result are skipped to eliminate redundant computation. A substantial body of work [ 1, 4, 12 , 13 , 15 ,25 ] has exploited this on a single operand (weights or activations), achieving significant speedups through various zero-bit skipping and scheduling techniques. However, all of these designs leave the other operand’s bits fully processed every cycle, fundamentally bounding achievable speedup. A natural next step is to exploit bit-level sparsity on both operands (weights and activations) simultaneously—a dual-sided approach. When sparsity is exploited on both the weight and activation sides, the number of partial products drops from being limited by one operand’s full bitwidth to depending only on the non-zero terms present in each operand. Laconic [ 22 ] achieves 1.5× higher through-put over single-sided designs [1] under iso-area constraints. How-ever, dual-sided bit-level sparsity introduces a critical problem : 
+
+workload imbalance . In bit-serial accelerators, a processing element (PE) contains multiple lanes each computing a different weight– activation pair in lockstep. In dual-sided designs, each lane’s latency depends on the bit-level sparsity of both its weight and its activation. Since these vary independently across lanes, execution times can differ wildly and the PE can only advance when its slowest lane finishes. The more the per lane latencies spread out, the worse the utilization becomes. arXiv:2607.19431v1 [cs.AR] 20 Jul 2026 ICCAD ’26, November 8–12, 2026, San Jose, CA, USA Anonymous Authors et al. A0,1 X W 0,4 Lane 0
+
+Lane 1
+
+Lane 2       
+
+> A0,1 X W 0,3 A0,1 X W 0,2 A0,1 X W 0,1
+> A1,1 X W 1,1
+> A2,1 X W 2,1 A2,2 X W 2,1
+
+Lane 3 A3,1 X W 3,1 
+
+Lane 0
+
+Lane 1
+
+Lane 2         
+
+> A0,1 X W* 0,3 A0,1 X W* 0,2 A0,1 X W* 0,1
+> A1,1 X W 1,1 A0,1 X W* 0,3
+> A2,1 X W 2,1 A2,2 X W 2,1
+
+Lane 3 A3,1 X W 3,1 
+
+Time 
+
+> 4 cycles
+> 1 cycle
+> 2 cycles
+> 1 cycle
+
+Time 
+
+2 cycles 
+
+2 cycles 
+
+2 cycles 
+
+1 cycle            
+
+> Slot donation
+> A0x W 0
+> A1x W 1
+> A2x W 2
+> A3x W 3
+> A0x W* 0
+> A1x W 1
+> A2x W 2
+> A3x W 3
+> PE Utilization = 33.33%
+> PE Utilization = 83.33%
+> Speedup = 2x
+
+BRIM (CBP + Slot donation) 
+
+> Bottleneck
+> Through
+> CBP
+
+Figure 1: Workload imbalance in dual-sided bit-serial exe-cution leads to low utilization. Four lanes each multiply a weight–activation pair ( 𝐴 𝑖 × 𝑊 𝑖 ); each pair decomposes into multiple bit-level partial products ( 𝐴 𝑖,𝑗 × 𝑊 𝑖,𝑗 ), and a lane’s execution time grows with how many it must compute. Top (baseline): Lane 0 requires 4 partial products while the other lanes finish in 1–2, leaving them idle until lane 0 completes. Bottom (BRIM): CBP reduces lane 0’s partial product count by reshaping weight 𝑊 0 into 𝑊 ∗ 
+
+> 0
+
+; slot donation then lets lane 1 ab-sorb lane 0’s remaining partial product (hatched cell), equal-izing finishing times 
+
+Figure 1 top illustrates this problem. In the baseline execution (top), 4 lanes process pairs (𝐴 0 × 𝑊 0), (𝐴 1 × 𝑊 1), (𝐴 2 × 𝑊 2), and 
+
+(𝐴 3 × 𝑊 3) concurrently. Lane 1, assigned weight 𝑊 0 with a high number of bits to process, must compute all pairwise bit products respectively—requiring 4 cycles. Meanwhile, Lane 2–4 computes in 1–2 cycles. All three faster lanes sit idle, waiting for Lane 1 before the group can advance. To overcome this, we propose BRIM 
+
+(Bit-serial Resource-maximized Inference Machine), a hardware– software co-designed dual-sided bit-level sparse accelerator that directly targets the root cause of workload imbalance. BRIM addresses imbalance through two tightly integrated mech-anisms. First, Cyclic-Balanced Pruning (CBP), a post-training weight optimization technique, reshapes weight values based on profiled activation statistics. Weights are fixed at deployment and can be adjusted offline, whereas activations are data-dependent and only known at runtime. CBP exploits this asymmetry: it assigns weights with fewer bits to positions paired with activations that have more bits to process, reducing the spread of per-lane costs while pre-serving accuracy. CBP directly reduces the total number of partial products computed, yielding improved energy efficiency alongside better balance. As shown in Figure 1 (bottom), CBP transforms the outlier weight 𝑊 0 into 𝑊 ∗ 
+
+> 0
+
+that inturn reduces the partial products, bringing Lane 1’s cost closer to the other lanes. Second, because activations are only known at runtime, residual imbalance persists. BRIM’s hardware handles this through a light-weight pairwise slot donation mechanism: neighboring lanes are paired, and when one lane finishes before its partner, it picks up the partner’s next pending pair; converting idle cycles into useful computation. In Figure 1 (bottom), slot donation allows Lane 2 to absorb a remaining partial product from Lane 1, bringing all lanes to approximately equal finishing times. In summary, this paper makes the following contributions: 
+
+• We show that workload imbalance limits PE utilization to 56– 64% in existing dual-sided designs, arising from the combined effect of two independently varying, data-dependent sparsity sources. We propose BRIM, a hardware-software co-design technique to address this imbalance. 
+
+• We propose CBP, a first of its kind training-free weight opti-mization algorithm that reshapes weight values to equalize expected per-lane workloads offline, while preserving model accuracy through second-order error compensation. 
+
+• We design a dedicated dual-sided bit-serial accelerator with a PE tailored for absorbing residual runtime imbalance with negligible area overhead by confining redistribution to phys-ically adjacent lane pairs. 
+
+• We evaluate BRIM across CNNs, ViTs, and LLMs under iso-area constraints, achieving over 90% PE utilization, up to 
+
+2.37 × speedup, and up to 1.63 × energy efficiency improve-ment over prior dual-sided designs, with at most 1.2% accu-racy degradation. 
+
+## 2 Background and Motivation 2.1 Bit-Serial Accelerators and Single-Sided Bit-level Sparsity 
+
+Early DNN accelerators adopted bit-parallel architectures that pro-cess all bits of each operand simultaneously using fixed-width multipliers, completing each MAC in a single cycle regardless of the operand values. Bit-serial computation takes a different ap-proach: a 𝐵 -bit weight 𝑤 is decomposed bit by bit and its Multiply-Accumulate (MAC) with activation 𝑎 is computed as 
+
+𝑤 · 𝑎 =
+
+> 𝐵 −1
+
+∑︁ 
+
+> 𝑖 =0
+
+𝑏 𝑖 · 2𝑖 · 𝑎, 𝑏 𝑖 ∈ { 0, 1}, (1) processing one bit per cycle over 𝐵 cycles in the worst case. Each non-zero bit 𝑏 𝑖 = 1 in the decomposition contributes one shift-and-add operation that the hardware must execute; we call each such non-zero component a term and denote the number of terms in a value 𝑣 by 𝜂 (𝑣 ). Zero bits ( 𝑏 𝑖 = 0) contribute nothing to the result and can be skipped, so execution time scales with the term count 𝜂 (𝑤 ) rather than the full bitwidth. Because bit-serial PEs replace wide fixed-precision multipliers with narrow shift-and-add datapaths, they are substantially smaller per unit, allowing more of them to be packed within the same silicon area [ 1]. Throughput therefore scales with PE count rather than per-PE speed, making bit-serial designs particularly effective under iso-area constraints. In a single-sided design, only one operand is decomposed and selectively processed—the other participates at its full bitwidth every cycle. The number of partial products per MAC is therefore # Partial Products single = 𝜂 (𝑤 ) · 𝐵 𝑎 or 𝐵 𝑤 · 𝜂 (𝑎 ), (2) where 𝐵 𝑤 , 𝐵 𝑎 are the full bitwidths of weight and activation respec-tively. As illustrated in Figure 2(a), for every non-zero weight term BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator ICCAD ’26, November 8–12, 2026, San Jose, CA, USA W12 W11                        
+
+> A14A13A12
+> 8b A0
+> W03W02W01W00<<
+> +
+> A1
+> W12W11<<
+> W03W02W01W00
+> A06A02A01A00
+> <<
+> <<
+> 1b
+> 1b
+> 1b
+> +
+> A0
+> W0
+> A1
+> W1
+> Booth
+> Encoding
+> 27-2623-20
+> 24-20
+> 25-22
+> 22-20
+> <<
+> <<
+> 3b
+> 3b
+> +
+> Radix -2
+> Processes only
+> non -zero weight
+> bits
+> Number of
+> Partial
+> Products
+> reduced
+> Processes only
+> Non -Zero bits
+> of Weights and
+> Activations
+> A1X W 1A0X W 0Designs
+> 16 32 (a)
+> 616 (b)
+> 48(c)
+> Number of of Partial
+> Products computed for 3
+> designs
+> (a) (b)
+> (c )
+> (d)
+
+Figure 2: Bit-serial accelerators. (a) Single-sided: only non-zero weight bits are processed; activations participate at full bitwidth. (b) Dual-sided (binary): non-zero bits on both operands are processed, reducing partial products multiplica-tively. (c) Dual-sided (Radix-2 Booth-encoded): operands are recoded into fewer non-zero terms, further reducing the par-tial product count. (d) The table compares the number of partial products for two example pairs across all three de-signs. 
+
+the full activation is processed—the activation’s own zero bits con-tribute no savings, bounding achievable speedup by single-operand sparsity alone. Stripes [ 11 ] established this paradigm; Pragmatic [ 1 ], Bitlet [ 15 ], BBS [ 4 ], and BitL [ 12 ] each advanced it with increasingly aggressive zero-bit skipping strategies, yet all remain subject to this single-operand ceiling. 
+
+## 2.2 Dual-Sided Bit-Level Sparsity and Workload Imbalance 
+
+The single-sided ceiling motivates a natural extension: skip zero bits on both operands simultaneously. Decomposing the activation alongside the weight, 𝑎 = Í𝐵 𝑎 −1 
+
+> ℓ=0
+
+𝑐 ℓ ·2ℓ , 𝑐 ℓ ∈ { 0, 1}, the MAC expands to 
+
+𝑤 · 𝑎 = 
+
+> 𝐵 𝑤 −1
+
+∑︁  
+
+> 𝑖 =0
+> 𝐵 𝑎 −1
+
+∑︁ 
+
+> ℓ=0
+
+𝑏 𝑖 𝑐 ℓ · 2𝑖 +ℓ , (3) where any term with 𝑏 𝑖 = 0 or 𝑐 ℓ = 0 vanishes and can be skipped. The number of partial products that must actually be computed reduces to # Partial Products dual = 𝜂 (𝑤 ) · 𝜂 (𝑎 ), (4) the product of the non-zero bit counts of both operands simulta-neously. This is a compounding reduction (see Figure 2(b)).The narrower datapaths of dual-sided PEs further amplify this advan-tage under iso-area constraints, as more PEs fit within the same silicon budget [22]. 
+
+Reducing term counts further via alternative representa-tions. The binary decomposition above is the simplest instantia-tion of dual-sided execution, but not the only one. Radix-2 Booth encoding [ 2] produces a signed non-adjacent form in which no two consecutive positions are simultaneously non-zero, reducing 
+
+𝜂 (·) strictly below the binary popcount on average. Radix-4 Booth encoding [ 16 ] groups bits into overlapping triplets, yielding rep-resentations with even fewer non-zero terms on average at the cost of more complex term coefficients. Regardless of the specific L0 L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 L12 L13 L14 L15 
+
+> VGG-16 Layer
+> 40%
+> 60%
+> 80%
+> 100%
+> PE Utilization (%)
+> 60.2%
+
+Figure 3: Layer-wise PE utilization of a dual-sided bit-serial baseline (Laconic) on VGG-16. The persistent gap to 100% re-flects workload imbalance arising from the product structure 
+
+𝜂 (𝑤 ) · 𝜂 (𝑎 ) of dual-sided execution costs. 
+
+representation, the MAC always requires computing all pairwise products between the non-zero terms of 𝑤 and the non-zero terms of 𝑎 , giving a cost of 𝜂 (𝑤 ) · 𝜂 (𝑎 ) partial products. Laconic [ 22 ] is built on this principle as illustrated in Figure 2c, using Radix-2 Booth encoding on both operands, and demon-strates that dual-sided bit-serial execution consistently outperforms single-sided designs (Figure 2(d)). We instantiate BRIM using Booth encoding in this work. Having said that, BRIM’s core technique depends only on the product structure of the per-lane cost and can be generalized to other encoding schemes. 
+
+The Workload Imbalance Problem. Dual-sided execution introduces a critical challenge to all representations in the family above. In a practical accelerator, 𝐺 lanes operate in lockstep: each lane computes a different weight–activation pair concurrently, and the group advances only when the slowest lane finishes. Each lane’s cycle cost is 𝜂 (𝑤 𝑔 ) · 𝜂 (𝑎 𝑔 ); here 𝑔 indexes the lane within the group, a product of two independently varying quantities—so the lane with the most partial products dictates the cycle count for the entire group while all other lanes sit idle. We quantify this with PE utilization following [26]: 
+
+𝜌 = 1 − 𝐶 max − ¯𝐶 𝐶 max 
+
+· 𝐺 𝐺 − 1 , (5) where ¯𝐶 is the mean cycle cost across lanes and 𝐶 max is the critical-path cost. The 𝐺 𝐺 −1 factor normalizes utilization to zero when a single lane dominates; perfect utilization requires all lanes to finish simultaneously. Figure 3 shows this effect layer by layer for VGG-16 on La-conic [ 22 ]. Mean PE utilization is only 60.2% across all 16 layers, with individual layers falling as low as 40%. No layer exceeds 74%, meaning at least 26% of PE cycles are wasted as idle time in every single layer of the network. 
+
+## 3 BRIM Methodology 
+
+Figure 4 illustrates the end-to-end BRIM pipeline. BRIM addresses workload imbalance through two integrated mechanisms: an offline weight optimization (CBP, Section 3.1) and hardware architecture for absorbing runtime imbalance (Section 3.2). 
+
+## 3.1 Cyclic-Balanced Pruning 
+
+Given quantized weights, CBP operates in two phases. Phase 1 (Cycle-Balanced Target Assignment) assigns each weight a target Booth term count inversely proportional to the expected activation ICCAD ’26, November 8–12, 2026, San Jose, CA, USA Anonymous Authors et al. Phase 1  
+
+> Cycle Balanced Target
+> Assignment
+> Phase 2
+> Error Compensated Weight
+> Replacement
+> Iterate
+> Over Offsets
+> |O|Hardware
+> Evaluate
+> Accuracy,
+> Speedup,
+> Energy
+> T*
+> W^
+> Inference Offline Weight Optimization
+> Quantized
+> Model
+> Wq
+> Cyclic Balanced Pruning (CBP)
+> Calibration
+> Dataset
+
+Figure 4: End-to-end BRIM pipeline. 
+
+term count at its position. This ensures the per-lane partial product counts 𝜂 (𝑤 ) · 𝜂 (𝑎 ) are equalized within each lockstep group and with weight replacement carried out efficiently via lookup tables (Section 3.1.1). Phase 2 (Column-wise Error Compensation) realizes these targets by replacing weights with the nearest LUT candidate at the assigned term count, then propagating the resulting error col-umn by column using Hessian-guided updates to recover accuracy (Section 3.1.2). 
+
+3.1.1 Phase 1: Cycle-Balanced Target Assignment. Algorithm 1 shows an overview of Phase 1. Consider a single linear layer with quan-tized weight matrix W𝑞 ∈ Z𝑀 ×𝐾 and quantized activation matrix 
+
+X𝑞 ∈ Z𝐾 ×𝑁 , where 𝑀 is the input dimension, 𝑁 is output dimen-sion and 𝐾 is the hidden dimension. As established in Section 2.2, 
+
+𝐺 lanes operate in lockstep, each computing one weight–activation pair. The 𝐾 columns of W𝑞 are partitioned into consecutive groups of 𝐺 : within group 𝑔 , lane 𝑘 ∈ {0, . . . , 𝐺 −1} processes weight 
+
+W𝑞 [𝑚, 𝑔𝐺 +𝑘 ] against activation X𝑞 [𝑔𝐺 +𝑘, 𝑛 ], incurring a cycle cost of 𝑝 partial products. The group advances only when its slow-est lane finishes, so equalizing these products across the 𝐺 lanes is the objective. CBP exploits this asymmetry by profiling activation term counts from a small calibration set and using the resulting statistics to guide weight reshaping. Specifically, we estimate an activation profile 𝝉 ∈ R𝐾 ×𝑁 , where each entry 𝜏 𝑖,𝑗 = 1
+
+> 𝑆
+
+Í𝑆 𝑠 =1 𝜂 (X𝑞 𝑠 [𝑖, 𝑗 ]) is the mean Booth term count at position (𝑖, 𝑗 ) across 𝑆 calibration samples. With 𝝉 in hand, we compute the current per-lane cycle costs for each group and average them to obtain a baseline cost ¯𝐶 𝑚,𝑔 :which represents the average number of partial products across the 
+
+𝐺 lanes under the current weights (Algorithm 1, line 3). The key idea is to set each weight’s target Booth term count 
+
+inversely proportional to the expected activation term count at its position. We define a per-group cycle budget 𝐶 ∗ 
+
+> 𝑚,𝑔
+
+= ¯𝐶 𝑚,𝑔 +𝛿 , where 
+
+𝛿 is a tunable offset (discussed below), and derive each lane’s target term count as 𝑡 ∗ 
+
+> 𝑘
+
+(line 8): By construction, 𝑡 ∗ 
+
+> 𝑚,𝑔,𝑘
+
+· 𝜏 𝑔𝐺 +𝑘 ≈ 𝐶 ∗ 
+
+> 𝑚,𝑔
+
+for all 𝑘 : positions paired with high expected activation term counts receive lower weight term targets, and vice versa, approximately equalizing the per-lane partial product counts within the group. 
+
+Realizing targets via lookup table. To replace each weight with a value that achieves its target term count, we precompute a lookup table T that buckets every representable integer 𝑣 in the quantiza-tion range (e.g., [− 128 , 127 ] for INT8) by its Booth term count 𝜂 (𝑣 ).Given a target 𝑡 ∗ 
+
+> 𝑚,𝑔,𝑘
+
+, the replacement ˆ𝑤 𝑚,𝑔,𝑘 is the element of T [ 𝑡 ∗ 
+
+> 𝑘
+
+]
+
+Algorithm 1 Phase 1 — Cycle-Balanced Target Assignment 
+
+Require: Weight matrix W𝑞 ∈ Z𝑀 ×𝐾 , activation profile 𝝉 ∈ R𝐾 ,group size 𝐺 , offset set O, Booth LUT T
+
+Ensure: Target term matrix T∗ ∈ Z𝑀 ×𝐾  
+
+> 1:
+
+for each group (𝑚, 𝑔 ) do  
+
+> 2:
+
+p ← 𝜂 (W𝑞 [𝑚, 𝑔𝐺 :(𝑔 +1)𝐺 ]) ⊙ 𝝉 [𝑔𝐺 :(𝑔 +1)𝐺 ] ⊲ Per-lane cycle costs  
+
+> 3:
+
+¯𝐶 𝑚,𝑔 ← mean (p) ⊲ Group mean  
+
+> 4:
+
+mse best ← ∞  
+
+> 5:
+
+for each offset 𝛿 ∈ O do  
+
+> 6:
+
+𝐶 ∗ ← max ( ¯𝐶 𝑚,𝑔 + 𝛿, 0) 
+
+> 7:
+
+for 𝑘 = 0 to 𝐺 − 1 do  
+
+> 8:
+
+𝑡 ∗ 
+
+> 𝑘
+
+← ⌊ 𝐶 ∗/𝜏 𝑔𝐺 +𝑘 ⌉ 
+
+> 9:
+
+ˆ𝑤 𝑘 ← NearestInLUT (𝑊 𝑞 [𝑚, 𝑔𝐺 +𝑘 ], 𝑡 ∗ 
+
+> 𝑘
+
+, T )  
+
+> 10:
+
+end for  
+
+> 11:
+
+𝑒 ← Í𝑘 (𝑊 𝑞 [𝑚, 𝑔𝐺 +𝑘 ] − ˆ𝑤 𝑘 )2 
+
+> 12:
+
+if 𝑒 < mse best then  
+
+> 13:
+
+mse best ← 𝑒  
+
+> 14:
+
+T∗ [𝑚, 𝑔𝐺 :(𝑔 +1)𝐺 ] ← [ 𝑡 ∗ 
+
+> 0
+
+, . . . , 𝑡 ∗ 
+
+> 𝐺 −1
+
+] 
+
+> 15:
+
+end if  
+
+> 16:
+
+end for  
+
+> 17:
+
+end for  
+
+> 18:
+
+return T∗
+
+closest in value to the original weight W𝑞 [𝑚, 𝑔𝐺 +𝑘 ], with ties bro-ken in favor of same-sign candidates to avoid polarity reversal (line 9). This makes each replacement an 𝑂 (1) lookup. 
+
+Per-group offset selection. The offset 𝛿 in the cycle budget 𝐶 ∗ 
+
+> 𝑚,𝑔
+
+=
+
+¯𝐶 𝑚,𝑔 + 𝛿 controls the accuracy–utilization tradeoff. A negative 𝛿 
+
+pushes weights more aggressively toward lower term counts, yield-ing tighter balance at the cost of larger weight distortion; 𝛿 = 0
+
+targets the current group mean (line 5). Rather than fixing a single 𝛿 
+
+globally, we evaluate every candidate 𝛿 ∈ O for each group and ac-cept the one that minimizes total squared weight distortion (line 12). This per-group selection automatically adapts to the local distribu-tion of weights and activation statistics. We use O = {− 6, −4, −2, 0}
+
+in all experiments. 
+
+3.1.2 Phase 2: Error-Compensated Weight Replacement. Phase 1 produces target term counts T∗, but replacing every weight with its nearest LUT candidate at once introduces substantial cumulative error. Phase 2 (Algorithm 2) mitigates this by processing weights col-umn by column and compensating the error from each replacement using second-order information, following the GPTQ [ 7] frame-work. The algorithm takes as input the quantized weight matrix W𝑞 ∈
+
+Z𝑀 ×𝐾 , the target term matrix T∗ from Phase 1, the inverse Hessian 
+
+H−1 where H = 1
+
+> 𝑆
+
+Í𝑆 𝑠 =1 X⊤ 
+
+> 𝑞 𝑠
+
+X𝑞 𝑠 is the 𝐾 × 𝐾 input correlation matrix estimated from 𝑆 calibration samples, a block size 𝐵 𝑠 , and the Booth LUT T . The Hessian captures how sensitive the layer’s output is to perturbations in each weight column; its inverse guides how replacement errors should be distributed across subsequent columns to minimize output distortion. Processing proceeds in blocks of 𝐵 𝑠 columns (Algorithm 2, line 2). Within each block, columns are handled left to right (Algorithm BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator ICCAD ’26, November 8–12, 2026, San Jose, CA, USA 
+
+Algorithm 2 Phase 2 — Error-Compensated Weight Replacement 
+
+Require: W𝑞 ∈ Z𝑀 ×𝐾 , target terms T∗ ∈ Z𝑀 ×𝐾 , Hessian inverse 
+
+H−1, block size 𝐵 𝑠 , LUT T 
+
+> 1:
+
+ˆW ← W𝑞  
+
+> 2:
+
+for block 𝑏 = 0, 𝐵 𝑠 , 2𝐵 𝑠 , . . . do  
+
+> 3:
+
+𝑏 𝑒 ← min (𝑏 + 𝐵 𝑠 , 𝐾 ) 
+
+> 4:
+
+for column 𝑘 = 𝑏 to 𝑏 𝑒 − 1 do  
+
+> 5:
+
+for row 𝑚 = 0 to 𝑀 − 1 do  
+
+> 6:
+
+if 𝜂 ( ˆ𝑤 𝑚𝑘 ) > 𝑡 ∗ 
+
+> 𝑚𝑘
+
+then  
+
+> 7:
+
+ˆ𝑤 𝑚𝑘 ← NearestInLUT ( ˆ𝑤 𝑚𝑘 , 𝑡 ∗ 
+
+> 𝑚𝑘
+
+, T )  
+
+> 8:
+
+end if  
+
+> 9:
+
+end for  
+
+> 10:
+
+e𝑘 ← W𝑞 [:, 𝑘 ] − ˆW[:, 𝑘 ] 
+
+> 11:
+
+ˆW[:, 𝑘 +1: 𝑏 𝑒 ] − = e𝑘 ⊗ H−1 [𝑘, 𝑘 +1: 𝑏 𝑒 ] / 𝐻 −1 
+
+> 𝑘𝑘
+> 12:
+
+end for  
+
+> 13:
+
+ˆW[:, 𝑏 𝑒 :] − = E H −1 [𝑏 :𝑏 𝑒 , 𝑏 𝑒 :] ⊲ Block-level error correction  
+
+> 14:
+
+end for  
+
+> 15:
+
+return ˆW
+
+2, line 4). For each weight ˆ𝑤 𝑚𝑘 in column 𝑘 , the algorithm checks whether its current Booth term count exceeds the Phase 1 target (line 6): if so, the weight is replaced with the nearest value in T [ 𝑡 ∗ 
+
+> 𝑚𝑘
+
+]
+
+(line 7); otherwise it is left unchanged. This one-sided constraint ensures that CBP never increases a weight’s term count—doing so would add partial products, directly undermining energy efficiency. After all rows in column 𝑘 have been processed, the column-wise error vector is computed (line 10) and propagated to all remaining columns within the block (line 11). The propagation weights each subsequent column’s correction by its correlation with column 𝑘 
+
+through H−1, so that columns most sensitive to the current replace-ment absorb a larger share of the error. After all columns within a block are finalized, a single block-level correction propagates any residual error beyond the block boundary (line 13), preventing drift from compounding across blocks. 
+
+## 3.2 Hardware Architecture 
+
+CBP eliminates systematic workload imbalance offline, but resid-ual variance persists at runtime: activation term counts are data-dependent and only known at inference time, and Phase 1 targets are quantized to discrete integers. BRIM integrates a lightweight 
+
+slot donation mechanism directly into the PE to absorb this residual imbalance, designed around a single principle: every added gate must justify itself in utilization gained. 
+
+3.2.1 Overall Architecture. Figure 5 shows the top-level organiza-tion of BRIM. A 32 × 32 PE array is connected to banked activation, weight, and output buffers through a DRAM interface. Booth en-coders sit between the buffers and the PE array, converting values into sequences of signed Booth term pairs before they reach the PEs. BRIM adopts an output-stationary dataflow. 
+
+3.2.2 Processing Element. Each Processing Element (PE) contains 16 lanes, each assigned a different weight–activation pair, with ev-ery lane computing one partial product per cycle. DRAM Interface    
+
+> Weight Buffer
+> Activatio nBuffer
+> Activatio nBuffer
+> Booth
+> Enc.
+> Booth
+> Enc.
+> Booth
+> Enc.
+> Booth
+> Enc.
+> PE PE
+> PE PE
+
+Figure 5: Top-level architec-ture. A 32 × 32 PE array is fed by banked activation and weight buffers through Booth encoders (Enc.). An output-stationary dataflow keeps par-tial sums local to each PE. 
+
+The PE is organized into two stages: (1) a slot dona-tion front-end that dynam-ically redistributes work across lanes, and (2) a dual-sided bit-serial datapath adapted from Laconic [22] that computes partial prod-ucts from Booth-encoded weight–activation term pairs. Figure 6 illustrates the full pipeline. 
+
+Stage 1: Pairwise Slot Do-nation. Each lane receives a weight Booth term and an activation Booth term from the encoders, concate-nated into a single 6-bit value (3-bit weight magni-tude ∥ 3-bit activation magnitude) before the donation stage, so that donation reduces to a single 6-bit 2:1 multiplexer per lane ( ❶ in Fig-ure 6). The 16 lanes are organized into 8 pairs: lane 𝑖 with lane 𝑖 +1
+
+for every even 𝑖 . Each lane’s Booth encoder streams both its current term pair ( Lx_cur ) and the next pair in its sequence( Lx_nxt ), mak-ing both available to the paired mux at any given cycle. Under nor-mal operation, each mux passes its own lane’s current pair. When lane 𝑖 finishes its current pair before lane 𝑖 +1, its mux switches to ac-cept L(i+1)_nxt —the next pending pair from lane 𝑖 +1’s sequence— computing that partial product on lane 𝑖 +1’s behalf and advancing lane 𝑖 +1’s pointer; the symmetric case applies when lane 𝑖 +1 fin-ishes first. This keeps fan-in at two, confines additional wiring to physically adjacent lanes, and adds only a single multiplexer delay to the critical path. The mux outputs a single term pair—a 3-bit weight exponent concatenated with a 3-bit activation exponent— which is forwarded to Stage 2. 2:1 
+
+2:1 
+
+2:1 
+
+2:1 
+
+> L1_idle
+> L0_idle
+> L15_idle
+> L14_idle
+
+Exp. 
+
+Adde r
+
+> Exp.
+> To
+> Power
+> Of
+> 2
+> Converte r
+> Shifter
+> &
+> Adder
+> Tre e
+> Psum
+> Register
+
+2
+
+x16 
+
+3 4 51 6 3
+
+Stage 1 Stage 2 
+
+L0_cur 
+
+L1_cur 
+
+L14_cur 
+
+L15_cur 
+
+L1_nxt 
+
+L0_nxt 
+
+L15_nxt 
+
+L14_nxt 
+
+Figure 6: Processing element. Stage 1: slot donation — each lane’s 2:1 mux selects between its own current Booth term pair ( Lx_cur ) and its partner’s next pending pair ( Ly_nxt ); when a lane goes idle, it processes its neighbor’s next pair, advancing the neighbor’s progress. Stage 2: the selected 6-bit concatenated pair is split into weight and activation expo-nents, summed, decoded to a power-of-two position, and accumulated into the partial sum register. ICCAD ’26, November 8–12, 2026, San Jose, CA, USA Anonymous Authors et al. 
+
+Stage 2: Dual-Sided Bit-Serial Datapath. After the donation mux selects a 6-bit concatenated term pair, the value is split back into its constituent 3-bit weight and activation term magnitudes and passed through stages ❷–❺ in Figure 6. Each lane’s Exponent Adder ( ❷)sums the two 3-bit magnitudes to produce a 4-bit exponent, which the Power-of-2 Converter ( ❸) decodes into a 16-bit one-hot value; the set bit at position 𝑗 encodes a partial product of magnitude ± 2𝑗 ,with the sign determined by XORing the weight and activation term sign bits. The 16 decoder outputs are accumulated into 16 histogram buckets, one per power of two from 20 to 215 , each producing a 6-bit signed count. To reduce fan-in, decoder outputs are merged pairwise before entering the histogram, halving the number of inputs per bucket. The Shifter & Adder Tree ( ❹) reduces these 16 counts into a 22-bit partial sum via concatenation-based grouping: counts whose bucket indices differ by a multiple of 6 occupy non-overlapping bit positions and can be concatenated rather than added, leaving six groups summed through a compact 6-input adder tree. The 22-bit result is accumulated into the Psum Register ( ❺) over successive cycles until all term pairs for the current weight–activation product have been processed. The entire datapath from the donation mux through the adder tree is combinational; the psum register is the only sequential element. 
+
+## 4 Experimental Setup 
+
+We evaluate BRIM along three axes: (1) accuracy, to verify that CBP’s weight reshaping preserves model quality; (2) PE utiliza-tion, to quantify how effectively CBP and slot donation close the workload imbalance gap; and (3) Speedup and energy efficiency, to demonstrate BRIM’s advantage over state-of-the-art accelerators under iso-area constraints. 
+
+## 4.1 Models and Datasets 
+
+We select a diverse set spanning convolutional networks (VGG-16), vision transformers (ViT-S, ViT-L), and large language models (TinyLlama, GPT-2 XL, OPT-2.7B, OPT-6.7B) to demonstrate that CBP generalizes across fundamentally different architectures and scales. Vision models are evaluated on ImageNet-1K; language models are evaluated on Wikitext-2 dataset with sequence length of 512. 
+
+## 4.2 Software: Quantization and CBP 
+
+Each model is quantized using uniform Post training Quantiza-tion(PTQ) into three configurations—W8A8, W16A16, and W4A8— which serve as our accuracy baselines. CBP is then applied on top of each quantized configuration; we report the resulting accuracy to verify that weight reshaping incurs minimal degradation. The cali-bration set consists of 128 samples with all other hyperparameters as described in Section 3.1. 
+
+## 4.3 Hardware: Baselines and Implementation 
+
+We compare BRIM against four hardware baselines: 
+
+Stripes [ 11 ] is an early bit-serial accelerator that processes all weight bits sequentially without skipping zeros. 
+
+BitL [ 12 ] is the state-of-the-art single-sided bit-serial accelerator, exploiting bit-level sparsity on weights only. 
+
+Laconic [22 ] is a dual-sided bit-serial accelerator using Booth en-coding on both operands, with no workload balancing mechanism. 
+
+Laconic-Xbar is our implementation which extends Laconic with a full crossbar network enabling any lane to donate work to any other lane, representing the upper bound on donation-based utilization improvement at the cost of quadratic area overhead. We additionally ablate BRIM w/o CBP (slot donation only, without weight reshaping) to isolate the contribution of each co-design component. All designs are implemented in RTL and syn-thesized with Synopsys Design Compiler targeting FreePDK 45 nm at 1 GHz. We implement a cycle-accurate simulator, with SRAM buffers modeled using CACTI [ 17 ] and DRAM access energy set to 1.2 pJ/bit [ 18 ]. All baselines share the same SRAM buffer sizes of 256 KB; iso-area constraints apply only to the compute array, with each baseline scaled to match BRIM’s 32 × 32 PE array footprint. 
+
+Table 1: Compute Area and per PE power of all designs under iso-area constraints. Design Area ( 𝜇 m2) PEs Power (W)                
+
+> Stripes 47,390.72 32 ×10 15.64 BitL 48,104.94 32 ×10 13.03 Laconic 47,390.78 32 ×32 5.36 Laconic-Xbar 47,275.26 32 ×18 8.23
+> BRIM 47,959.40 32 ×32 5.48
+
+Table 1 reports the per PE power, total compute area and re-sulting PE count for each design at iso-area. Laconic-Xbar illustrates the fundamental limita-tion of a purely hard-ware approach to work-load balancing. Its full crossbar adds 43.6% per-PE area overhead relative to Laconic, consuming enough area to reduce the PE count from 32 × 32 to 32 × 18 under the iso-area bud-get. BRIM breaks this tradeoff by offloading the bulk of workload balancing to CBP, which operates entirely offline and adds no area overhead. The pairwise slot donation mechanism adds only 1.2% 
+
+per-PE area overhead, allowing BRIM to retain Laconic’s full 32 ×32 
+
+PE count while substantially improving utilization. 
+
+## 5 Evaluation 5.1 Accuracy 
+
+Table 2 reports accuracy for all models under three quantization configurations, comparing the PTQ baseline against PTQ+CBP. Across all models and configurations, CBP incurs at most 1.2% accuracy degradation for vision models and at most 1.1 perplexity points for LLMs—well within the acceptable range for post-training optimization. Under W16A16, each individual bit carries less information, so redistributing partial products across weights introduces smaller perturbations to the overall computation—CBP can achieve its bal-ancing target with minimal weight distortion. W4A8 shows the largest degradation: with fewer bits per weight, each partial product represents a larger fraction of the total com-putation, making any redistribution more disruptive to model ac-curacy. Despite operating purely post-training with no gradient updates, CBP optimizes GPT-2 XL in under 3 hours on a single V100 GPU, confirming its practicality for large-scale deployment. 
+
+## 5.2 PE Utilization 
+
+Figure 7 reports PE utilization for three configurations: the Laconic baseline (no workload balancing), and the full BRIM system (CBP + slot donation) highlighting individual contributions. BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator ICCAD ’26, November 8–12, 2026, San Jose, CA, USA 
+
+Table 2: Accuracy: PTQ baseline vs. PTQ+CBP. Vision models: accuracy (%, ↑); LLMs: perplexity ( ↓). W8A8 W4A8 W16A16 Model Base +CBP Base +CBP Base +CBP VGG-16 70.8 70.6 69.3 68.12 71.34 71.22 ViT-S 81.39 81.01 80.56 79.2 81.39 81.36 ViT-L 86.75 86.51 84.92 83.64 86.82 86.74 TinyLlama 10.94 11.02 12.3 13.18 10.56 10.61 GPT-2 XL 18.84 19.01 21.43 22.1 18.12 18.23 OPT-2.7B 20.12 20.78 20.45 22.3 19.25 19.39 OPT-6.7B 10.71 10.98 13.57 13.48 10.45 10.48 32% 31.3% 33.6% 34.2% 34.7% 34.5% 34.6% 
+
+Figure 7: Average PE utilization across models for W8A8 for Laconic and BRIM(CBP + Slot donation HW) 
+
+Laconic achieves 56–64% PE utilization across the models. The variance in Booth term counts across concurrently processed weight– activation pairs forces the slowest lane in each lockstep group to dictate the group’s completion time, leaving faster lanes idle. Applying CBP without slot donation (purple bar) raises utiliza-tion to the 76–84% range. By setting each weight’s target Booth term count inversely proportional to the expected activation term count at its position, CBP reduces the variance of per-lane cycle costs within each lockstep group. VGG-16 benefits the most (84%), as its convolutional layers exhibit relatively smooth activation dis-tributions that CBP can profile accurately from the calibration set. BRIM’s pairwise slot donation (pink bar) pushes utilization above 90% for every model, reaching 96% on VGG-16. After CBP has removed the systematic workload imbalance, the residual variance is small and localized. Because donation is restricted to lane pairs, each idle lane can only absorb pending work from its immediate neighbor rather than redistributing freely across the group; this locality limits the mechanism’s reach but is well matched to the residual imbalance that CBP leaves behind, where the dominant source of variance is between adjacent lanes rather than globally distributed. 
+
+## 5.3 Speedup and Energy Efficiency 
+
+Figures 8 and 9 report average speedup and energy efficiency across the test dataset for all designs relative to prior works under iso-area constraints, for W8A8, W16A16, and W4A8 configurations. Laconic’s speedup over BitL stems primarily from packing more PEs at iso-area rather than from per-PE efficiency: because Booth-encoded bit-serial PEs are smaller than BitL’s hybrid datapath, 4.19x 4.72x 4.32x 4.06x 3.89x 3.69x     
+
+> 4.57x
+> 4.06x
+> 3.26x 3.05x
+> 3.73x
+> 3.13x
+> 3.42x 3.28x
+> 3.17x 2.90x 2.89x 2.76x
+> 3.09x 2.84x
+> 3.75x
+
+Figure 8: Average Speedup Comparison of various schemes normalized to baseline design for W16A16, W8A8, W4A8 configurations 2.92x       
+
+> 2.25x
+> 2.91x
+> 2.34x 2.64x
+> 3.48x 3.45x
+> 2.21x 2.13x 1.82x 2.01x 1.94x 1.99x 1.87x
+> 1.56x 1.61x
+> 1.75x 1.68x 1.86x 1.76x 1.75x
+
+Figure 9: Average Energy Efficiency Comparision of various schemes normalized to baseline design for W16A16, W8A8 and W4A8 configurations 
+
+more of them fit within the same silicon budget, directly increasing aggregate throughput. Laconic-Xbar illustrates the fundamental limitation of a purely hardware approach to workload balancing. Its full crossbar con-sumes enough area to meaningfully reduce the number of PEs that fit within the iso-area budget. The throughput lost from fewer PEs outweighs the utilization gain, leaving Laconic-Xbar with little advantage over unmodified Laconic. The hardware donation mechanism handles only residual run-time variance, keeping its footprint minimal and allowing BRIM to ICCAD ’26, November 8–12, 2026, San Jose, CA, USA Anonymous Authors et al. 
+
+Figure 10: Group size ( 𝐺 ) design space on OPT-6.7B (W8A8). The Pareto curve plots perplexity increase against normal-ized EDP improvement (both relative to 𝐺 =4); the inset re-ports the fraction of weights CBP modifies at each group size. 
+
+𝐺 =16 (star) achieves the best EDP–accuracy tradeoff: beyond this point, CBP must modify over 80% of weights, sharply degrading perplexity with diminishing EDP returns. 
+
+retain Laconic’s PE density while substantially improving utiliza-tion. Under W8A8, BRIM achieves 1.58–1.78 × speedup and 1.14– 1.19 × energy efficiency improvement over Laconic, and 1.73–2.31 ×
+
+speedup and 1.07–1.20 × energy efficiency improvement over BitL. The energy efficiency gains reflect fewer operations performed in total and the PEs having a lesser runtime. Under W16A16, the gains widen: BRIM achieves 1.95–2.37 ×
+
+speedup and 1.33–1.67 × energy efficiency over Laconic, and 2.11– 2.60 × speedup and 1.24–1.64 × energy efficiency over BitL. Wider operands produce more Booth terms per value, giving CBP greater room to reshape the weight distribution; the energy efficiency gains are correspondingly more pronounced as each eliminated partial product saves more energy in a wider datapath. Under W4A8, the 4-bit weight range inherently limits Booth term counts, leaving less variance for CBP to exploit; BRIM nonetheless achieves 1.40– 1.42 × speedup and 1.09–1.13 × energy efficiency over Laconic, and 1.25–1.70 × speedup and 1.05–1.17 × energy efficiency over BitL, demonstrating that the co-design degrades as precision decreases. 
+
+## 5.4 Design Space Exploration 
+
+Figure 10 sweeps the number of lanes per lockstep group 𝐺 on OPT-6.7B under W8A8. A smaller 𝐺 means fewer lanes share the same lockstep deadline, so per-lane partial product counts are naturally closer together and CBP needs only modest adjustments to equalize them. At 𝐺 =4, just 23.8% of weights are modified and perplexity increase is negligible, but the limited parallelism leaves little room for EDP improvement. As 𝐺 grows, the group is increasingly likely to contain lanes with widely differing partial product counts, forcing CBP to distort more weights to close the wider gap. From 𝐺 =4
+
+through 𝐺 =16 the tradeoff is favorable: EDP improvement rises steadily to 1.34 × while perplexity increases by only 0.27, even though CBP now modifies 57.9% of weights. Beyond 𝐺 =16 the tradeoff collapses. At 𝐺 =32 and 𝐺 =64 , CBP must modify over 80% of weights—the majority of the weight tensor is reshaped—yet pairwise slot donation, which only bridges adjacent lanes, cannot redistribute work across a spread that spans the entire group. The result is sharply rising perplexity (over 1.0 points at 𝐺 =64 ) with only marginal additional EDP gains. 𝐺 =16 therefore sits at the Pareto knee, maximizing efficiency improvement before weight distortion becomes the binding constraint. 
+
+## 5.5 Area and Power Analysis 
+
+Figure 11: On-chip area and power breakdown of BRIM. SRAM buffers dominate both area and power; the Booth encoders and slot donation logic add minimal overhead. 
+
+Figure 11 shows the on-chip area and power breakdown of BRIM. The three SRAM buffers dominate both area and power, accounting for 84% of the total die area and approximately 51% of total power, while the PE array—despite housing a full 32 × 32 grid—consumes only 12% of area and 43% of power. Notably, the Booth encoders together add only 4% area power overhead, confirming that BRIM’s workload balancing mechanisms are lightweight enough to pre-serve the PE density advantage that makes dual-sided bit-serial execution competitive under iso-area constraints. 
+
+## 6 Conclusion 
+
+BRIM demonstrates that workload imbalance in dual-sided bit-level sparse accelerators is most effectively addressed through co-design rather than hardware or software alone. The key enabler is the product structure of the per-lane cost: CBP operates on one factor offline, slot donation handles residual variance in the other at run-time, and together they recover utilization that neither mechanism could achieve independently. This same cost structure points to a natural next step. Because the hardware directly benefits whenever either operand becomes sparser, per-layer mixed precision on both weights and activations maps directly onto execution savings—layers where one operand already has few non-zero terms can afford wider precision on the other at little additional cost, while layers with high complexity on both sides benefit disproportionately from aggressive compression. Joint weight–activation precision allocation aware of this multi-plicative cost could yield efficiency gains beyond what either mixed precision or dual-sided sparsity achieves in isolation. 
+
+## 7 Acknowledgement 
+
+This work was supported in part by CoCoSys, a JUMP2.0 center sponsored by DARPA and SRC, the National Science Foundation (CAREER Award, Grant #2312366, Grant #2318152), the DARPA Young Faculty Award, the DoE MMICC center SEA-CROGS (Award #DE-SC0023198) and the Global Industrial Technology Cooperation Center(GITCC) program. BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator ICCAD ’26, November 8–12, 2026, San Jose, CA, USA 
+
+## References 
+
+[1] Jorge Albericio, Alberto Delmás, Patrick Judd, Sayeh Sharify, Gerard O’Leary, Roman Genov, and Andreas Moshovos. 2017. Bit-Pragmatic Deep Neural Net-work Computing. In 2017 50th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . 382–394. [2] Andrew D. Booth. 1951. A Signed Binary Multiplication Technique. The Quarterly Journal of Mechanics and Applied Mathematics 4, 2 (1951), 236–240. doi:10.1093/ qjmam/4.2.236 [3] Yunji Chen, Tao Luo, Shaoli Liu, Shijin Zhang, Liqiang He, Jia Wang, Ling Li, Tianshi Chen, Zhiwei Xu, Ninghui Sun, et al . 2014. Dadiannao: A machine-learning supercomputer. In 2014 47th Annual IEEE/ACM international symposium on microarchitecture . IEEE, 609–622. [4] Yuzong Chen, Jian Meng, Jae-sun Seo, and Mohamed S Abdelfattah. 2024. BBS: Bi-directional bit-level sparsity for deep learning acceleration. In 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 551–564. [5] Yu-Hsin Chen, Tushar Krishna, Joel S Emer, and Vivienne Sze. 2016. Eyeriss: An energy-efficient reconfigurable accelerator for deep convolutional neural networks. IEEE journal of solid-state circuits 52, 1 (2016), 127–138. [6] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xi-aohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al . 2020. An image is worth 16x16 words: Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929 (2020). [7] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2022. Gptq: Accurate post-training quantization for generative pre-trained transformers. 
+
+arXiv preprint arXiv:2210.17323 (2022). [8] Amir Gholami, Zhewei Yao, Sehoon Kim, Coleman Hooper, Michael W Mahoney, and Kurt Keutzer. 2024. Ai and memory wall. IEEE Micro 44, 3 (2024), 33–39. [9] Ashish Gondimalla, Noah Chesnut, Mithuna Thottethodi, and T. N. Vijaykumar. 2019. SparTen: A Sparse Tensor Accelerator for Convolutional Neural Networks. In Proceedings of the 52nd Annual IEEE/ACM International Symposium on Mi-croarchitecture (Columbus, OH, USA) (MICRO-52) . Association for Computing Machinery, New York, NY, USA, 151–165. doi:10.1145/3352460.3358291 [10] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual learning for image recognition. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR) . 770–778. [11] Patrick Judd, Jorge Albericio, Tayler Hetherington, Tor M Aamodt, and Andreas Moshovos. 2016. Stripes: Bit-serial deep neural network computing. In 2016 49th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 1–12. [12] Seunghyun Lee, Dongho Ha, Sungbin Kim, Sungwoo Kim, Hyunwuk Lee, and Won Woo Ro. 2025. BitL: A Hybrid Bit-Serial and Parallel Deep Learning Acceler-ator for Critical Path Reduction. In Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture . 1565–1578. [13] Jiayao Ling, Gang Li, Xiaolong Lin, Cheng Gu, Xing Li, Jian Cheng, and Xiaoyao Liang. 2025. An Efficient Bit-Sparse DNN Accelerator Exploiting Adaptive Bit-Serial Computations. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems 44, 11 (2025), 4249–4262. doi:10.1109/TCAD.2025.3560584 [14] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo. 2021. Swin transformer: Hierarchical vision transformer using shifted windows. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) . 10012–10022. [15] Hang Lu, Liang Chang, Chenglong Li, Zixuan Zhu, Shengjian Lu, Yanhuan Liu, and Mingzhe Zhang. 2021. Distilling bit-level sparsity parallelism for general purpose deep learning acceleration. In MICRO-54: 54th Annual IEEE/ACM Inter-national Symposium on Microarchitecture . 963–976. [16] Olin Lowe Macsorley. 2007. High-speed arithmetic in binary computers. Proceed-ings of the IRE 49, 1 (2007), 67–91. [17] Naveen Muralimanohar, Rajeev Balasubramonian, Norman P Jouppi, et al . 2009. CACTI 6.0: A tool to model large caches. HP laboratories 27 (2009), 28. [18] Mike O’Connor, Niladrish Chatterjee, Donghyuk Lee, John Wilson, Aditya Agrawal, Stephen W Keckler, and William J Dally. 2017. Fine-grained DRAM: Energy-efficient DRAM for extreme bandwidth systems. In Proceedings of the 50th Annual IEEE/ACM International Symposium on Microarchitecture . 41–54. [19] Angshuman Parashar, Minsoo Rhu, Anurag Mukkara, Antonio Puglielli, Rang-harajan Venkatesan, Brucek Khailany, Joel Emer, Stephen W Keckler, and William J Dally. 2017. SCNN: An accelerator for compressed-sparse convo-lutional neural networks. ACM SIGARCH computer architecture news 45, 2 (2017), 27–40. [20] David Patterson, Joseph Gonzalez, Quoc Le, Chen Liang, Lluis-Miquel Munguia, Daniel Rothchild, David So, Maud Texier, and Jeff Dean. 2021. Carbon emissions and large neural network training. arXiv preprint arXiv:2104.10350 (2021). [21] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al . 2019. Language models are unsupervised multitask learners. OpenAI blog 
+
+1, 8 (2019), 9. [22] Sayeh Sharify, Alberto Delmas Lascorz, Mostafa Mahmoud, Milos Nikolic, Kevin Siu, Dylan Malone Stuart, Zissis Poulos, and Andreas Moshovos. 2019. Laconic deep learning inference acceleration. In Proceedings of the 46th International Symposium on Computer Architecture . 304–317. [23] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yas-mine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhos-ale, et al . 2023. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 (2023). [24] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2023. Attention Is All You Need. arXiv:1706.03762 [cs.CL] https://arxiv.org/abs/1706.03762 [25] Gang Wang, Siqi Cai, Zhenyu Li, Wenjie Li, Dongxu Lyu, Yanan Sun, Jianfei Jiang, and Guanghui He. 2025. BitPattern: Enabling Efficient Bit-Serial Acceleration of Deep Neural Networks through Bit-Pattern Pruning. In 2025 62nd ACM/IEEE Design Automation Conference (DAC) . 1–7. doi:10.1109/DAC63849.2025.11133000 [26] Ruokai Yin, Youngeun Kim, Yuhang Li, Abhishek Moitra, Nitin Satpute, Anna Hambitzer, and Priyadarshini Panda. 2023. Workload-Balanced Pruning for Sparse Spiking Neural Networks. IEEE Transactions on Emerging Topics in Computa-tional Intelligence 8 (2023), 2897–2907. https://api.semanticscholar.org/CorpusID: 256846987 [27] Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe, Moya Chen, Shuohui Chen, Christopher Dewan, Mona Diab, Xian Li, Xi Victoria Lin, Todor Mihaylov, Myle Ott, Sam Shleifer, Kurt Shuster, Daniel Simig, Punit Singh Koura, Anjali Sridhar, Tianlu Wang, and Luke Zettlemoyer. 2022. OPT: Open Pre-trained Transformer Language Models. arXiv:2205.01068 [cs.CL] https://arxiv.org/abs/ 2205.01068

@@ -1,0 +1,945 @@
+Title: Hardware Mechanisms to Dynamically Throttle AI Performance
+
+URL Source: https://arxiv.org/pdf/2607.18069v1
+
+Published Time: Tue, 21 Jul 2026 02:03:36 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Hardware Mechanisms to Dynamically Throttle AI Performance 
+
+# Haiyue Ma 
+
+Princeton University Electrical and Computer Engineering Princeton, NJ, USA hm1@princeton.edu 
+
+# Lauren Malek 
+
+Princeton University Electrical and Computer Engineering Princeton, NJ, USA lm4677@princeton.edu 
+
+# Joseph Forzani 
+
+Princeton University Electrical and Computer Engineering Princeton, NJ, USA jf4555@princeton.edu 
+
+# David Wentzlaff 
+
+Princeton University Electrical and Computer Engineering Princeton, NJ, USA wentzlaf@princeton.edu 
+
+## Abstract 
+
+As more capable AI models are increasingly integrated into critical computer systems, the lack of control over AI intent motivates safety mechanisms. Existing software safeguards impose only be-havioral constraints that can potentially be bypassed by sufficiently intelligent models. While hardware-level safety enforcement has been recognized as an essential last line of defense, few mechanisms have been proposed beyond policy regulations on unauthorized accesses or coarse full-chip shutdown. What is missing is a fine-grained, dynamic intervention mechanism at the architecture level. In this paper, we introduce a set of microarchitecture knobs which dynamically control the available hardware resources to limit AI performance at runtime. We evaluate candidate knobs spanning the GPU memory subsystem, across capacity, bandwidth, latency and frequency dimensions, and narrow down to four strong candidates: L2 size, L2 latency, L2 bandwidth, and shared memory port access rate. To minimize new logic and extra design cost, we build all four mechanisms from well-established microarchitectural primitives: cache way masking, credit-based rate limiting, latency insertion, and bank arbitration. We show that these knobs achieve high performance sensitivity (up to 80% performance cut at 1/8 resource availability), negligible implementation cost ( < ∼10K flip flops), fast stabilization after dynamic throttling (5-80K cycles), and minimal collateral impact on the rest of the chip. Further, multi-knob analysis reveals combinations of knobs that amplify the per-formance degradation beyond the effect of each knob individually, which enables a broader range of performance targets. 
+
+## 1 Introduction 
+
+What happens when AI becomes smart enough to break its own safety guardrails? This is no longer purely hypothetical: frontier models have shown deceptive behaviors such as faking alignment during supervised evaluations [ 27 ], actively seeking to avoid being shut down [ 40 ], and intentionally misrepresenting their internal rea-soning [ 20 ]. While AI capabilities advance rapidly, model internals remain largely opaque [ 4, 38 ]; the fact that we cannot reliably verify a model’s intent raises the risk of "loss of control" [ 13 , 14 , 24 , 64 ], and questions the enforcement guarantees of existing safeguards. 
+
+Behavioral safeguards, such as prompting, input/output filtering, and alignment training [ 12 , 28 , 57 , 60 ], constrain what a model says but leave its capability intact, and are repeatedly bypassed by AI workload   
+
+> LLM inference
+> GPU
+> SM core
+> Shared memory Shared Memory
+> Port Throttler
+> Network-on-chip (interconnect)
+> L2 BW Throttler
+> L2 cache (global) L2 Size Throttler
+> L2 Latency Throttler
+> DRAM (off-chip HBM)
+> Encrypted
+> trigger signal
+> Knob evaluation criteria
+> Perf. sensitivity
+> Perf vs. cut depth
+> Sec. 3
+> Cut
+> Dynamic stability
+> Response + settle
+> Sec. 5
+> Collateral effects
+> Low-util
+> High-util
+> System-level impact
+> Sec. 6-7
+> External
+> monitor
+> Hardware cost
+> Minimal overhead
+> Sec. 4
+> <~10K FF
+
+Figure 1: Overview of proposed microarchitecture knobs to throttle AI performance at runtime, and the evaluation cri-teria for the proposed knobs – L2 capacity, L2 latency, L2 bandwidth, and shared memory port access rate. 
+
+sufficiently capable models [ 19 , 74 ]. Access control , restricting what an agent can see and touch, is stronger but introduces a dilemma: an agent is only useful when granted broad privilege, and that same privilege is what it could misuse. System-level privilege makes AI an insider threat [ 40 ] that can reach enforcement living in the same software domain. Further, access is binary in degree and cannot scale to a threat that we cannot cleanly classify as safe or unsafe. The shortcomings of behavioral and access control safeguards raise two questions. Can we move the point of enforcement below any layer that AI can reach? And can we control AI through a 
+
+continuous response proportional to the uncertainty of the threat? Both converge on a third layer of control: throttling AI capability in hardware. Capability, a function of model quality and throughput, is a continuous quantity that depends on available hardware resources, which we can regulate below the AI’s attack surface. 
+
+> 1arXiv:2607.18069v1 [cs.AR] 20 Jul 2026 Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff
+
+Static hardware controls such as compute governance approaches (e.g. export control) [ 34 , 49 , 61 ] limit the total hardware resource available to certain users to cap maximum achievable AI capabil-ity on chip. They prevent unauthorized access but make the chip unable to run frontier AI. Dynamic throttling, which caps hard-ware resources at runtime, can be easily achieved by a full-chip shutdown, but it completely disables the chip even for non-AI, non-threatening workloads, as well as creating a single point of failure. We need fine-grained, targeted microarchitectural controls 
+
+that can gradually and reliably throttle AI capability at runtime, con-structing a layered-defense system together with existing software safeguards and hardware regulations. The AI safety community has been discussing when to trigger hardware intervention and who 
+
+holds the privilege, but the how , the concrete hardware mechanism, remains an open question for computer architects. This is the gap our work addresses. In this paper, we explore hardware-based mechanisms to enable AI capability control through dynamic microarchitecture resource throttling . Designing such mechanisms requires balancing mul-tiple architectural trade-offs: a practical resource throttler must demonstrate sufficient control sensitivity to meaningfully reduce application performance, respond quickly and reliably when trig-gered, and minimize implementation cost with negligible hardware modification. We evaluate the performance impacts of runtime resource cut-ting of four subsystems in the GPU memory hierarchy–shared memory, L2 (global) cache, DRAM, and the interconnect/NoC– and covering capacity/bandwidth/latency dimensions and clock frequency cuts within each. We apply each knob at different cut depth on highly optimized CUTLASS GEMM and fused multi-head attention kernels [ 54 ] across prefill and decode phases with Accel-Sim [ 33 ], a cycle-accurate GPU simulator. We find that L2 cache resources–including capacity, bandwidth, and latency–are among the most performance-sensitive knobs for LLM inference workloads, and the behaviors are distinct between prefill and decode phases. In addition, a shared memory bandwidth cut is effective for prefill, and provides a strong alternative if per-core resource throttling is needed 1. Clock frequency reduction, while effective, acts more globally over all workloads and is better suited as a coarse-grained performance-throttling knob. While a natural first instinct is to throttle compute resources, such as by disabling the issue stage, modifying the compute pipeline incurs high implementation cost and has bigger impacts on other workloads. We propose hardware implementations for selected knob can-didates. A key design principle is to repurpose existing microar-chitectural mechanisms. This is a deliberate choice motivated by deployment considerations: using well-understood mechanisms and minimizing additional hardware logic reduces design, verifica-tion, and area costs, which enables easier adoption for GPU vendors. Our proposed implementations are similar to existing primitives: cache way masking, credit-based rate limiting, latency insertion, and bank arbitration. Theses mechanisms achieve effective perfor-mance drop with < ∼ 10 𝐾 added flip flops, negligible to the GPU. 
+
+> 1The idea of using shared memory bandwidth as a throttling knob was developed as part of co-author Lauren Malek’s Undergraduate Senior Thesis [42] work.
+
+With the proposed knobs implemented in AccelSim, we evaluate their dynamic behavior , where resources are reduced during execu-tion to show response latency and stability of the new steady state performance. We present the coupling effects between simultane-ously active knobs: while most pairs are overlapping bottlenecks, where the joint impact is less than the product of individual impact, a few have intensifying effects which amplify the total performance degradation. Further, we analyze the system-level impacts for se-lected knobs with microarchitectural bottleneck metrics. The most effective knobs are those that precisely stall the target workload with shallow cut depth, without significantly increasing backpres-sure elsewhere in the system. With both detailed single-kernel analysis and end-to-end in-ference results, we show that dynamic AI performance throttling can be implemented by low-cost, fine-grained hardware resource control mechanisms in the memory system. 
+
+Our main contributions are: 
+
+• We propose dynamic microarchitecture resource throttling as a hardware-based mechanism for non-bypassable AI capa-bility control, which is continuous and workload-selective. 
+
+• We explore the vast design space of mechanisms and iden-tify four effective memory knobs to best meet design goals. 
+
+• We propose lightweight hardware implementations for each knob by intentionally reusing existing microarchitectural mechanisms, and show that they achieve high performance sensitivity, fast response speed and stability, minimal cost, and low collateral impact on the rest of the system. 
+
+## 2 Background 2.1 Existential AI Risk 
+
+AI capabilities have been improving at a remarkably fast pace. Within roughly one year, accuracy on the expert-level Humanity’s Last Exam [ 23 ] rose from 4% to 45%, and METR’s task-completion time horizon [ 47 ] (the length of software tasks AI completes with 50% success) has been doubling every 3-4 months since mid-2024 [ 43 ]. Leading labs now target human-level AI within 2-5 years [ 5 , 25 , 68 ]. This pace has made existential AI risk a mainstream concern. In 2023, hundreds of researchers and public figures warned that AI’s risk to humanity rivals pandemics and nuclear war [ 18 ]. AI systems are goal-oriented, yet limited interpretability leaves alignment a major unsolved challenge [ 31 , 48 ], and frontier models already demonstrate dishonesty [ 20 , 27 , 40 ]. Until we understand these behaviors, further capability growth poses a catastrophic risk [ 41 ]. Numerous approaches have been proposed to mitigate AI risk from governance, policy, and technical perspectives. On the techni-cal side, current efforts rely primarily on software-level safeguards, including behavioral safeguards that constrain what the model says, and access-control safeguards that constrain what it can touch. The behavioral safeguards come first. Training and fine-tuning techniques [ 12 , 57 ] aim to regulate a model’s default behavior, and inference-time defenses [ 28 , 60 ] use separate classifiers to filter inputs and outputs. However, the underlying model retains its full capabilities regardless of these behavioral constraints, and can bypass them with adversarial techniques [19, 74]. The access-control safeguards define system-level policies as autonomous agents are increasingly being deployed. Recent agents 
+
+> 2Hardware Mechanisms to Dynamically Throttle AI Performance
+
+Table 1: The layered defense landscape for AI safeguards. Every layer is effective under its own trust assumptions. This work fills the cell that is both hardware-enforced and continuous.                        
+
+> Defense Safeguard level Control granularity Assumptions Shortcomings
+> Behavioral: alignment training, I/O filter-ing [12, 28, 57] Software (application) Semantic Model can be trusted to com-ply Jailbreak, deception [19, 48, 74] Access control: configs, file systems [ 8,63 ]Software (system) Binary per permission Human oversights on actions Authorized insider threat [20, 27, 40] Compute governance: export control [ 15 ,49, 61], licensing [1, 56, 73] Hardware (manufacture time) Static capability cap Threat is unauthorized misuse Breaks when AI intent diverges from user Full-chip shutdown [59, 71] Hardware (runtime) All-or-nothing; disruptive Threat is certain and severe Collateral damage, single point of failure
+> Microarchitecture-level dynamic throttling (this work) Hardware (runtime) Continuous, workload-selective Intent is opaque with no bi-nary threat classification Minimal hardware redesign and over-head
+
+such as OpenClaw [ 63 ] and Claude Code [ 8] grant models access to the host system, allowing them to execute commands, launch pro-cesses, and modify files. With deeper host access and less oversight, system-level policies become another layer that AI can subvert, and more covert actions can hardly be identified by normal users. Classical access control assumes a chain-of-trust: every process is initiated by an accountable human, so authorizing the user implies that the process is legitimate. AI breaks this assumption. Its intent is opaque and may diverge even when launched by an honest hu-man. Granting the broad privilege an agent needs to be useful also makes it an insider threat [40 ]: it acts at full capability within any permission it holds, and runs in the same software stack as the constraints. It can reach, and may eventually subvert these con-straints, by modifying its configurations [ 70 ], observing when it is supervised [9, 27] or misrepresenting what it “needs” [20]. Just as we presently use hardware-level protection for security and trusted environments (e.g. Intel SGX [ 44 ] and ARM Trust-Zone [ 11 ]), we need hardware regulation of AI systems that cannot be bypassed or modified in software, including application- and system-level. Hardware is the natural layer to impose a hard upper bound on performance to limit model behavior. 
+
+## 2.2 Existing Proposals for Hardware Guardrails 
+
+Compute governance approaches statically limit the entire chip. For example, U.S. export controls [ 15 , 16 , 49 ] limit the total processing performance of chips sold to certain regions, which blocks unau-thorized actors by cutting off access to high-capability hardware. However, these controls are not useful when we want to be able to run frontier AI models. This requires dynamic control: a chip that normally runs AI at full speed, limited only when needed. At runtime, the bluntest mechanism is a full-chip “kill switch” [ 6,59 , 69 , 71 ], but a complete shutdown is too drastic as not all threats require a complete halt and other workloads sharing the system would be disrupted. Recent work proposes finer-grained, hardware-enabled governance mechanisms (HEMs), including verifiable re-porting of AI activities [ 1 , 56 , 73 ], firmware-based licensing and allowance gating [ 34 , 58 ], hardware isolation via GPU trusted ex-ecution environments [ 10 , 78 ], and verification taps on specific channels such as the inter-chip network [ 17 ]. Recent feasibility taxonomies organize these as monitoring, verification, and enforce-ment, and observe that the enforcement mechanisms in particular remain largely policy proposals rather than buildable microarchi-tecture [ 7 ]. Further, proposed governance mechanisms have two limitations: control is binary which require knowing in advance which channel a threat will use; and the threat model centers on unauthorized human actors who should not hold the chip, rather than a frontier model as an insider threat. These shortcomings call for continuous control that sits below the model’s reach. Table 1 shows the landscape of layered defenses, where every layer is effective under its own trust assumptions. This work fills a row for architecture-rooted, continuous hardware-enforced mecha-nisms, complementing existing approaches. 
+
+## 2.3 Capability As A Throttled Metric 
+
+Risk is tied to the intelligence level of an AI and the speed at which it acts. Increased risk therefore comes along with increased AI capa-bility, which is proportional to both output quality and throughput (tokens produced per unit time). As capability depends on available hardware resources, throttling hardware forces the AI to either: (1) deliver same-quality output with significantly more time, which slows down threat and buys time for investigation, or (2) maintain throughput by downgrading to weaker models which reduces the threat. The mapping between risk to capability and hardware is well-recognized by major governing bodies: U.S. export control [ 15 , 16 ]and the EU AI Act [ 2] enforce policies aimed at preventing AI risk using cumulative hardware resources as a proxy metric. 
+
+## 2.4 Threat Model and Detection Mechanisms 
+
+2.4.1 Threat Model. We consider a threat model that the adver-sary can be a frontier AI model running as an autonomous agent, a malicious human actor, or both. The AI model may have broad software-level access to the host system, including executing code, modifying its own kernels, and interacting with the operating sys-tem. A human adversary may additionally have physical access to the chip. However, we assume neither can alter the on-chip hard-ware, where the microarchitecture throttling mechanisms sit. The mechanisms are also not exposed to any software-visible interface, so neither a model or an unauthorized human attacker can bypass the throttling. 
+
+2.4.2 Detection and Triggering. Detection and enforcement mecha-nisms can be naturally decoupled. Detecting misaligned AI behavior is an active and orthogonal research problem, while our throttling mechanisms can operate with any detection mechanism as long as the trigger path remain within the same trust domain as throttling. This subsection briefly discusses possible detection approaches, and the remainder of the paper focuses exclusively on enforcement. One detection mechanism is to classify model behavior on-chip, so the entire process stays in hardware and exposes no external 
+
+> 3Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff
+
+interface. This relies on advances in AI interpretability. An alter-native approach uses an externally sourced trigger from a trusted authority, which both the AI model and adversarial humans may try to intercept or block. The trigger must be cryptographically validated. Prior work validates triggers via public-key cryptography on embedded kill-switch modules [ 59 ]. The cryptographic valida-tion is likely the bulk of the trigger latency and dependent on the chosen algorithm [ 30 ]. The triggered switch operates in single cy-cle (Section 4). Trigger latency is minimal compared to workload runtime. 
+
+## 3 Performance Sensitivity 
+
+In this section, we identify microarchitecture knobs that satisfy the following criteria: (1) high performance sensitivity: reach a perfor-mance target at a shallow cut depth, to minimize collateral impact on other parts of the system and maximize tuning granularity, (2) steady and monotonic performance degradation at multi-level resource cuts, and (3) phase selectivity: distinct impact on prefill vs. decode phase to enable targeted control. To this end, we characterize the performance sensitivity of mi-croarchitectural knobs spanning capacity, bandwidth, latency, and clock frequency across shared memory, L2 cache, DRAM, and the interconnect/NoC, to narrow down to the best candidates. 
+
+## 3.1 Experiment Setup 
+
+To ensure we target realistic workloads, we characterize common LLM inference workload shapes from the GEMM and Attention kernels of modern models (DeepSeek-V3 [ 39 ], Llama-3-70B [ 26 ], and Mixtral-8x7B [ 32 ]) across both prefill and decode phases. We focus on two GEMM kernels that strongly represent the distinct characteristics of each phase. In Section 8.1, we show that the performance impact on different kernels, as well as a full inference pass, is similar to the selected individual kernels that we analyze. For the GEMM kernels, we use NVIDIA CUTLASS library’s StreamK [ 54 ], a highly optimized implementation with pipelined load/compute interleaving and tile-splitting for load balancing. A 
+
+128 × 128 × 32 tile size achieves near-optimal software performance on various hardware configurations. We use AccelSim [ 33 ], a cycle-level GPU architectural simulator that models GPU pipelines including warp scheduling, memory subsystems, and interconnect, to evaluate the performance sensi-tivity of microarchitectural changes. We simulate the workloads on a modeled NVIDIA A100 GPU [ 50 ], a datacenter-class GPU which is a common choice for LLM inference workloads, and discuss im-plications on newer generations of architectures in Section 8.3. We sweep microarchitectural knobs by modifying AccelSim’s configu-ration files, and implement additional changes to expose parameters not natively configurable in the simulator. 
+
+## 3.2 Performance Degradation for Each Knob 
+
+Table 2 and Figure 2 show the performance sensitivity of selected prefill and decode GEMM kernels to resource throttling. Normalized performance is calculated by 1/𝑟𝑢𝑛𝑡𝑖𝑚𝑒 . For knobs where reducing the value degrades performance (e.g., frequency, bandwidth, size), we sweep down to 1/8 of the baseline. For knobs where increasing the value degrades performance (e.g., latency and response interval), we sweep up to 8 × of the baseline. Both are normalized to the same 1/8–1 resource fraction for simplicity. Highlighted knobs in Table 2 are the chosen knob candidates. 
+
+Clock frequency knobs are broadly effective but coarse-grained. L2 capacity highly impacts prefill and latency 
+
+highly impacts decode, making them the primary options. 
+
+L2 and shared memory bandwidth knobs have moderate but stable sensitivity on prefill as secondary options. 
+
+Clock Frequency . Clock frequency knobs have broader global impact on the performance of both workloads. The interconnect (ICNT) clock is the most powerful knob for prefill ( Δ𝑃𝑒𝑟 𝑓 = 87% at 1/8 frequency), as it throttles all on-chip data movement which stalls the critical compute pipeline. The L2 clock similarly degrades prefill performance by 70% as large-batch GEMMs are cache bandwidth bound. For decode, DRAM clock has the highest sensitivity ( Δ =
+
+68% ), as small-batch workloads are memory bandwidth bound. We chose to omit clock frequency knobs for further performance and implementation analysis as they have less selectivity on work-load types. Frequency remains a valid coarse-grained, complemen-tary option. In cases where clock frequency throttling is desired, implementation can be similar to the Dynamic Voltage and Fre-quency Scaling (DVFS) [ 36 ] infrastructures that normally exist on GPUs. 
+
+Latency . Latency knobs have strong impacts on decode only. L2 latency causes an 80% drop for decode since the added latency is exposed with low arithmetic intensity and little computation to overlap with. DRAM latency also has moderate impact ( 30% ). In contrast, both latency knobs have negligible impact on prefill as its high arithmetic intensity allows the scheduler to hide memory latency. 
+
+L2 Cache Size . Cutting the L2 set count and associativity both cut L2 capacity which are highly sensitive for prefill ( Δ = 71% and 80%) but are negligible for decode. Prefill GEMMs actively reuse data from L2 across SMs, and reducing L2 capacity evicts the data which increases DRAM accesses. Decode sees no impact as it has a much smaller L2 working set. Notably, L2 set cut shows non-monotonic performance drop behavior in prefill. This is caused by address mapping mechanisms: as the number of sets decreases, the set-index bits used to hash memory addresses change, which changes the cacheline-to-set mapping. At certain set counts, the new mapping breaks the load balance across cacheline-to-set distribution which results in high conflict rates. While effective, L2 set cut is excluded from the candidate knobs because of its instability. 
+
+Bandwidth . Bandwidth knobs have mid-level sensitivity. The L2 response rate (the interval between two L2-to-interconnect re-sponses) and the shared memory bank port (number of shared memory banks that can be accessed at the same cycle) degrades prefill performance by 66% and 63%, as intensive computation satu-rates port throughput. DRAM bus width has a larger relative impact on decode (51%) as it relies more on off-chip memory bandwidth. 
+
+> 4
+
+Hardware Mechanisms to Dynamically Throttle AI Performance 
+
+Table 2: Perf ( 1/𝑟𝑢𝑛𝑡𝑖𝑚𝑒 ) sensitivity Δ of microarchitectural knobs, defined as the performance drop percentage at the 1/8 resource cut (or 8x latency). Linearity describes the curve shape across the sweep range. Selected knob candidates are highlighted. 
+
+Prefill Decode Category Knob Sensitivity ( Δ) Linearity Sensitivity ( Δ) Linearity Impact / Mechanism 
+
+Clock Frequency 
+
+Interconnect Very High (87%) Linear Medium (59%) Non-linear Global NoC throttle on all on-chip data movement 
+
+L2 High (70%) Linear Low (30%) Non-linear Throttles L2 pipeline 
+
+DRAM Medium (60%) Non-linear Medium (68%) Non-linear Throttles memory pipeline Latency L2 Negligible (3%) - Very High (80%) Linear Stalls warp schedulers for L2 data return 
+
+DRAM Low (12%) Non-linear Low (36%) Non-linear Stalls memory return, optimized by pipelining Bandwidth Shared Memory Medium (63%) Non-linear Low (17%) Non-linear Limits shared memory bank port throughput 
+
+L2 (Resp Rate) Medium (66%) Linear Low (19%) Linear Limits L2 to NoC response rate and starves TC 
+
+DRAM Low (34%) Non-linear Medium (51%) Non-linear Reduces off-chip data width Size L2 set High (71%) Threshold* Negligible (1%) - Limits L2 capacity by cutting number of sets 
+
+L2 assoc Very High (80%) Threshold Negligible (3%) - Limits L2 capacity by invalidating ways 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+
+> Resource Cut Fraction
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized Perf
+
+Prefill        
+
+> 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+> Resource Cut Fraction
+
+Decode ICNT Clock 
+
+> L2 Clock
+> DRAM Clock
+> DRAM Latency
+> L2 Latency
+> L2 Sets
+> L2 Associativity
+> DRAM Buswidth
+> L2 Response Rate
+> Shared Mem Ports
+
+Figure 2: Simulated perfomance sensitivity of prefill and decode GEMMs to microarchitectural resource throttling, swept from a simulated A100 configuration baseline (1.0) to a 1/8 resource availability. 
+
+*L2 set throttling’s sensitivity is not monotonically decreasing because cutting number of sets without changing the address mapping creates imbalance within each set. ICNT = Interconnect. DRAM Latency 
+
+> DRAM Clock
+> ICNT Clock
+> L2 Response Rate
+> L2 Associativity
+> L2 Clock
+> Shared Mem Ports
+
+0
+
+50 
+
+100 
+
+> % of Baseline
+
+Prefill 
+
+> DRAM Buswidth
+> DRAM Latency
+> DRAM Clock
+> ICNT Clock
+> L2 Latency
+> L2 Clock
+
+0
+
+50 
+
+100 
+
+Decode   
+
+> Perf (% of baseline) Remaining resource Resource cut
+
+Figure 3: Required resource cut depth to reach a performance target of ∼50% baseline, normalized for each knob. 
+
+## 3.3 Cut Depth for Specific Performance Target 
+
+Figure 3 shows knob performance sensitivity by fixing the perfor-mance target at the closest to 50% of each phase’s baseline per-formance (dots), and measuring the required cut depth (bars) for each knob to reach it. Because the granularity of each knob’s cut depth is different, the actual performance varies. Knobs with low and negligible sensitivity as shown in Table 2 and unstable perfor-mance impact (e.g. L2 set for prefill) are excluded. Higher solid bars Added          
+
+> Latency
+> Tag Data Tag Data
+> Set 1
+> Set 2
+> Index/Tag
+> Match
+> ICNT->L2 buf L2->ICNT buf
+> Rate
+> Limiter
+> Latency
+> Throttler
+> Bandwidth
+> Throttler
+> Shared Memory
+> Port Throttler
+> 1110L2 Size Throttler
+> Mask
+> L2 Cache
+> 012103
+> NoC/Interconnect
+
+Figure 4: Proposed microarchitecture performance throttlers that minimize design cost and response time. 
+
+indicate higher performance sensitivity as the knob achieves the target with a shallower resource cut, which are preferred because it allows greater design headroom for various performance targets. 
+
+## 4 Architecture Implementation 
+
+An ideal performance throttler knob should minimize design, im-plementation and area cost to remain a negligible addition to the heavy-lifting AI-accelerating chip, and also minimize response time 
+
+5Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff ICNT->L2 buf                              
+
+> 1111
+> VLTDVLTDVLTDVLTD
+> Set 1
+> Set 2
+> Victim Selection Logic (Pseudo-LRU)
+> Valid Way Mask
+> 4
+> level sel L2 Cache
+> 1110
+> 1100
+> 1000
+> (a) L2 size (associativity) throttler masks out ways to disallow new cache line insertions when activated. From ICNT
+> level sel
+> D₁
+> D₂
+> D₃
+> self-incr counter
+> =req_rdy
+> buf_val
+> Latency
+> Buffer
+> ICNT→L2 buf
+> To L2
+> +1
+> (b) L2 latency throttler on the ICNT
+
+→L2 request path which stalls the request in a latency buffer for 𝐶 additional cycles. L2->ICNT buf 
+
+> Avail. credits
+> +1
+> =
+> self-incr counter
+> +1
+> To ICNT
+> level sel
+> 1
+> 2
+> 3
+> Skid
+> Buffer
+> data_val
+> resp_rdy
+> (c) L2 bandwidth throttler (rate limiter) at the L2
+
+→ICNT buffer output which sends at most one response every 𝐶 cycles. 0 1 0 0
+
+1 0 Bank 1 Arbiter 
+
+> Bank 0 Arbiter
+> Virtual Bank 0 Arbiter
+
+1 0 
+
+> Requests
+> Joint
+> request One-hot valid selection
+> Input 0
+> requests
+> bank 1
+> Input 2
+> requests
+> bank 1
+> Input 1 requests bank 0
+> (d) Shared memory bank port throttler (access arbiter). This example shows a 50% cut where each bank is placed into a virtual bank with one other real bank.
+
+Figure 5: Individual performance throttler design. 
+
+as a secondary target. In this section, we propose lightweight hard-ware implementations for the chosen knobs ( < ∼10 𝐾 flip flops for each). Switching between different levels for each knob happen in one cycle. Figure 4 shows all four throttlers we propose: L2 cache size (associativity), L2 latency, L2 bandwidth (response rate limiter), and shared memory port rate (bank arbiter). We deliberately design the throttlers to build on architectural mechanisms already present in modern processors rather than designing new specialized hardware. This approach ensures that each mechanism has well-understood behavior, simple verification, and easier integration into the GPU. 
+
+## 4.1 L2 Cache Size (Associativity) 
+
+We chose to throttle L2 cache size by cutting the number of ways (associativity) rather than the number of sets for two reasons. First, reducing sets requires changing the index and tag bit widths and the tag comparison logic, which are more invasive hardware changes. Second, as shown in Figure 2, reducing sets shows non-monotonic performance drop behavior since shifting the cacheline-to-set map-ping disrupts load balance across sets at certain cut points. Reducing ways (associativity) avoids both problems: the address mapping remains the same the performance degrades steadily. The implementation is similar to Intel’s Cache Allocation Tech-nology (CAT) [ 29 ]. CAT is designed to protect high-priority work-loads in shared CPU environments by restricting which ways a process can be mapped to. In the GPU, we throttle the cache glob-ally without processor ID input and simply disable the unused ways. As shown in Figure 5a, we add a 𝑁 ways × 𝑁 levels Valid Way Mask to each L2 bank, where level indicates different throttling depth. 
+
+level_sel drives a MUX that selects the number of ways to mask out. The only other hardware change is to the victim selection (pseudo-LRU) logic, to exclude masked ways when inserting new lines into the cache. Lines that are already in the masked-out ways remain valid and can still be hit. This is a design choice for simplicity, which keeps the mask update to one cycle, and eliminates the need of adding logic for cache flush or line invalidation. For prefill, the working sets that reside in L2 are replaced relatively fast, and the enforcement latency of the associativity reduction is minimal compared to the workload runtime. We chose to use flip flops to assume the worst case scenario, while noting that the masks can also be stored in Read-Only Memory (ROM) with less cost. The granularity of the mechanism is bank-level. The implemen-tation overhead of sequential logic is: FF L2 ways = 𝑁 ways × 𝑁 levels × 𝑁 L2 banks (1) For A100 like configuration ( 𝑁 ways =16 , 𝑁 L2 banks =40 ), assuming 
+
+𝑁 levels = 8, this amounts to 5,120 flip-flops per level — negligible relative to the L2 data and tag arrays. 
+
+## 4.2 L2 Latency 
+
+For latency throttling, we add a configurable delay on the Interconnect →L2 request path as in Figure 5b. When enabled, an incoming request is held in a latency buffer for 𝐶 additional cycles before being pro-cessed. A counter tracks the remaining hold time. The added latency takes effect on the next request after a level_sel update. The overhead per L2 bank is one buffer register to hold the in-flight request and one counter: FF L2 latency =
+
+©«
+
+⌈log 2 𝐶 max ⌉
+
+| {z }
+
+> counter
+
++ 𝑊 req 
+
+|{z} 
+
+> buffer
+
+ª®®®¬
+
+× 𝑁 L2 banks (2) where 𝐶 max is the maximum configurable delay in cycles. For the A100 configuration ( 𝑊 req = 256 , 𝑁 L2 banks = 40 ), assuming 𝐶 max =
+
+1600 , this amounts to (⌈ log 2 1600 ⌉ + 256 ) × 40 = 10 ,680 flip-flops. 
+
+## 4.3 L2 Bandwidth (Response Rate Limiter) 
+
+For bandwidth throttling, we implement a rate limiter that caps the throughput to at most one response every 𝐶 cycles. We show the rate limiter implemented at the L2 →ICNT buffer output but it can be adapted to limiting other buffers in the GPU. 
+
+> 6Hardware Mechanisms to Dynamically Throttle AI Performance
+
+As shown in Figure 5c, a self-incrementing counter is compared against a fixed interval in number of cycles ( 𝐶 ) selected at runtime. When the counter reaches the interval count, one credit is issued to the available credits register and the counter resets. A 1-entry skid buffer holds incoming data that arrives while credits are exhausted. A response is only permitted ( resp_rdy ) when a credit is available and the buffer holds valid data ( data_val ). We use a token bucket rather than simple cycle-gating ( permit when ctr = 0) to smooth out the traffic and avoid phase-alignment problem. The rate cap takes effect within one cycle of a level_sel update. The rate limiter adds ⌈log 2 𝐶 max ⌉ flip-flops for the counter, one credit flip-flop, a comparator, and a single skid buffer register. The total overhead is: FF rate lim =
+
+©«
+
+⌈log 2 𝐶 max ⌉
+
+| {z }
+
+> counter
+
++ 1
+
+|{z} 
+
+> credit
+
++ 𝑊 resp 
+
+|{z} 
+
+> buffer
+
+ª®®®¬
+
+× 𝑁 L2 banks (3) where 𝐶 max is the maximum configurable interval (in cycles) and 
+
+𝑊 resp is the width of a response in bits. For A100 like configuration (𝑊 resp = 256 , 𝑁 L2 banks = 40 ), assuming 𝐶 max = 8, this adds up to 
+
+(3 + 1 + 256 ) × 40 = 10 ,400 flip-flops, comparable to the latency throttler (Eq. 2) as they are both bounded by the added buffer. 
+
+## 4.4 Shared Memory Port (Bank Arbiter) 
+
+We throttle the shared memory bandwidth by limiting the number of concurrent accesses to different bank ports within one cycle. By default, each bank allows one access per cycle. To reconfigure the number of port accesses, we adapted local memory arbitration logic from Vortex [ 67 ] by adding a layer of virtual bank arbiters which regulates access to original banks. Figure 5d shows that request vectors are originally routed directly to their corresponding bank, where request entries indicate which inputs require that particular bank. We introduce 𝑁 virtual bank arbiters for 𝑁 concurrent port accesses allowed. In a virtual bank arbiter, requests from the real banks are consolidated by OR-ing them into a single request, which requires arbitration among requests previously did not conflict with each other. A virtual bank arbiter responds with a one-hot vector selecting one input which is ANDed with the original requests going to the real bank arbiters. The response vector masks the validity of existing requests, limiting the effective bandwidth. Because this mechanism leverages existing requests and arbitra-tion logic is combinational, additional flip-flops are not required. 
+
+## 5 Dynamic Response Time and Stability 
+
+Beyond static resource throttling, we evaluate dynamic resource throttling at kernel execution time. After the resource cut, we expect a rapid AI performance drop to ensure prompt intervention which should remain effective over time. We show each selected knob’s (1) response time : the number of cycles to reach a new steady state after the cut, and (2) stability : the ability to maintain consistent performance after the cut. We have implemented the hardware mechanisms described in Section 4 in the simulator. Each run starts with the baseline hardware configuration; after the kernel enters a steady-state compute phase, we apply the resource cut at different levels, and show the dynamic performance change as the moving average of instructions retired within certain number of cycles. In AccelSim, the number of instructions is counted as the active thread counts × warps issued, and we use it as a proxy for the workload’s progress as the workload patterns are regular over time. The prefill kernel reaches a steady state within the first ∼130 K cy-cles of execution. Figure 6 shows the instructions/cycle measured in AccelSim 2 by sampling number of retired instructions in every 1,000 cycles (light curves), and the moving average of every 10 sam-pling points (dark curves). The eight curves correspond to various resource cut depth from 1 (baseline) to 1/8 (deepest cut). 
+
+SHARED MEMORY PORT. The shared memory port rate is the most well behaved dynamic knob in terms of both stability and response time. At the deepest cut (32 →4 banks, i.e. 1/8), the work-load performance stabilizes within ∼5K cycles of the resource cut to 
+
+±15% around the new steady state of ∼1,000 insn/cycle. Shallower cuts settle within 2–3K cycles. This is because reducing the number of ports accessed in shared memory uniformly increases per-warp conflict stalls in the core, without introducing bursty patterns in the cache hierarchy. As shared memory port is a capacity resource, the absolute gap between cut levels increases at deeper cuts. 
+
+L2 RESPONSE RATE. Increasing the L2 response period degrades performance roughly 15-20% per 1/8 step. The performance stabi-lizes within 5–7K cycles. While it has more oscillations compared to shared memory port, the smoothed envelope remains bounded. The gaps between cut levels decrease at deeper cuts, as deeper cuts progressively reduce smaller fractions of the remaining bandwidth. 
+
+L2 ASSOCIATIVITY. L2 associativity is the least stable of the three knobs and has the longest response time. At 2-way ( 1/8 cut), performance drops to ∼1,600 insn/cycle with much worse oscilla-tion compared to shared memory port and l2 response throttling: whereas they impose fixed, deterministic penalty on every access, the cache access pattern is fundamentally input-dependent. Further, the stabilizing time increases to ∼80 K cycles ( ∼50 ms on an A100 with 1410 𝑀𝐻𝑧 frequency), much longer than the other two knobs, but still fast enough compared to typical LLM workload runtime. This is because masking out L2 ways does not immediately evict the cache lines that already reside in them, and the effect only fully takes place when the entire working set has been replaced. The decode kernel’s performance drop after the L2 latency cut cannot be fully illustrated in instructions/cycle. The added latency increases memory stall time, but with sufficient warp-level par-allelism, the scheduler can still issue instructions at similar rates. Cycles spent on memory stalls are accumulated at the end of the kernel, where a few remaining instructions create a dramatically long tail. The total cycle increases are consistent with the sensitivity shown in Section 3. 
+
+## 6 Multi-Knob Coupling Effects 
+
+So far we have focused on analyzing single knob effects only, but since each knob’s resource reduction creates different system im-pacts, applying multiple knobs together can lead to varying com-bined effects on the final performance. In this section, we analyze pairwise knob interactions to identify combinations that amplify the performance degradation effect beyond the impact of each knob 
+
+> 2The corresponding AccelSim metric is Instruction-per-Cycle, IPC, which is the number of instructions retired divided by the number of cycles passed. 7
+
+Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff 0 2 4 6 8 
+
+> Cycles ×10 5
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> Instructions / Cycle
+> Cut
+> Prefill: Shared Mem Ports
+> Resource Cut
+> 1/8
+> 2/8
+> 3/8
+> 4/8
+> 5/8
+> 6/8
+> 7/8
+> 1
+
+(a) Shared Memory Port: Perf stabilizes within ∼5Kcycles with low variance across all effective cut levels. 0 2 4 6 8 10  
+
+> Cycles ×10 5
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> Instructions / Cycle
+> Cut
+> Prefill: L2 Response Rate
+> Resource Cut
+> 1/8
+> 2/8
+> 3/8
+> 4/8
+> 5/8
+> 6/8
+> 7/8
+> 1
+
+(b) L2 Response Rate: Perf stabilizes within 5–7K cy-cles with moderate oscillation. 0 1 2 3 4 5 
+
+> Cycles ×10 5
+> 1000
+> 2000
+> 3000
+> Instructions / Cycle
+> Cut
+> Prefill: L2 Associativity
+> Resource Cut
+> 1/8
+> 2/8
+> 3/8
+> 4/8
+> 5/8
+> 6/8
+> 7/8
+> 1
+
+(c) L2 Associativity: Perf stabilizes much slower ( ∼80 Kcycles at 1/8) and has the highest variance, due to grad-ual cache-line eviction after way masking. 
+
+Figure 6: Dynamic response of prefill after a resource cut applied at steady state (dashed vertical line), across cuts with depth from 
+
+1 (baseline) to 1/8 (most aggressive). Each is simulated to the same total instruction count. Light curves show instructions/cycle samples every 1,000 cycles; dark curves show a 10-sample moving average. Knobs differ in response time and post-cut stability. DRAM Latency                                     
+
+> DRAM Clock
+> ICNT Clock
+> L2 Response Rate
+> L2 Associativity
+> L2 Clock
+> Shared Mem Ports
+> DRAM Latency
+> DRAM Clock
+> ICNT Clock
+> L2 Response Rate
+> L2 Associativity
+> L2 Clock
+> Shared Mem Ports
+> 0
+> -.38 0
+> -.54 -.59 0
+> -.65 -.69 -.67 0
+> +.82 +1.32 -.74 -.75 0
+> -.58 -.61 -.65 -.68 -.46 0
+> -.65 -.67 -.61 -.72 -.75 -.67 0
+> Prefill
+> DRAM Buswidth
+> DRAM Latency
+> DRAM Clock
+> ICNT Clock
+> L2 Latency
+> L2 Clock
+> DRAM Buswidth
+> DRAM Latency
+> DRAM Clock
+> ICNT Clock
+> L2 Latency
+> L2 Clock
+> 0
+> -.62 0
+> +.55 -.56 0
+> -.55 -.56 -.51 0
+> -.30 -.29 -.29 -.28 0
+> -.50 -.54 -.51 -.60 -.29 0
+> Decode
+> −1.0
+> −0.5
+> 0.0
+> 0.5
+> 1.0
+> Correlation Score
+> (Blue=Overlap, Red=Intensify)
+
+Figure 7: Pairwise knob coupling effects. Each knob’s cut depth aligns with Figure 3 (when applied alone, achieves 50% performance target). Each cell shows the Correlation Score when cutting two knobs together: CS = log (𝑃 𝑎𝑏 · 𝑃 𝑏𝑎𝑠𝑒 /𝑃 𝑎 · 𝑃 𝑏 )
+
+where P stands for performance. Red (positive CS) indicates intensifying correlation (more slowdown than independent), and blue (negative CS) indicates overlapping (less slowdown). 
+
+independently, which enables us to achieve a broader range of performance targets and finer-grained control. Figure 7 shows the correlations for combined knob cuts, where each knob is cut to the depth that individually achieves the perfor-mance target of 50% baseline, same as in Figure 3. To quantify the interactions between the pairs, we define a Correlation Score (CS): CS (𝑎, 𝑏 ) = log 
+
+ 𝑃 𝑎𝑏 · 𝑃 𝑏𝑎𝑠𝑒 
+
+𝑃 𝑎 · 𝑃 𝑏 
+
+
+
+(4) where 𝑃 𝑏𝑎𝑠𝑒 is the baseline performance, 𝑃 𝑎 and 𝑃 𝑏 are the per-formance under two knob’s cut respectively, and 𝑃 𝑎𝑏 is the perfor-mance under the joint cut. If the two knobs are orthogonal, their combined effect will satisfy 
+
+𝑃 𝑎𝑏 
+
+𝑃 𝑏𝑎𝑠𝑒 
+
+= 𝑃 𝑎 
+
+𝑃 𝑏𝑎𝑠𝑒 
+
+· 𝑃 𝑏 
+
+𝑃 𝑏𝑎𝑠𝑒 
+
+(5) which yields CS = 0.Therefore, a negative CS (blue) indicates overlapping behavior, where the joint slowdown is less than the product of the indepen-dent slowdown, meaning that one knob’s bottleneck will mask out the other’s performance sensitivity. A positive CS (red) indicates 
+
+amplifying behavior, where the joint slowdown exceeds the prod-uct of the independent slowdown, and limiting one bottleneck will exacerbate the other bottleneck. Most knob pairs have overlapping behavior, because when one knob already creates a dominant bottleneck, cutting a second knob that targets similar bottlenecks yields diminishing impact. However, a few interesting amplifying pairs stand out. In prefill , l2 associativity cut paired with DRAM (latency and clock frequency) shows strong amplifying behavior. Large-batch GEMM tiles rely on big working sets that can reside in the L2 and are shared across the SMs, whereas reducing L2 associativity (and thus L2 size) reduces the size of working sets and increases DRAM traffic. Any simultaneous DRAM-side throttling then meets this extra pressure which results in superlinear performance degradation. In decode , cuts to the DRAM clock and buswidth (dually cutting DRAM bandwidth) exhibit amplified performance degradation. This contrasts with DRAM latency increase paired with either DRAM clock frequency or buswidth cut. Analyzing the source of stalls in each case reveals that when DRAM bandwidth is dually cut, requests stall excessively in the DRAM, whereas cuts to DRAM buswidth and latency cause stalls at the L2 level. In particular, this may suggest that bandwidth cuts paired with latency increases have a dampened impact due to the increased latency reducing pressure on peak requests serviced per unit time. 
+
+## 7 Collateral System Impact Analysis 7.1 Bottleneck Signature with 𝜇 Arch Metrics 
+
+We first dive into microarchitecture metrics for each knob cut. Fig-ure 8 shows the changes of microarchitectural bottleneck metrics 
+
+8Hardware Mechanisms to Dynamically Throttle AI Performance ICNT Clock                                                                                                 
+
+> L2 Clock
+> DRAM Clock
+> DRAM Latency
+> L2 Associativity
+> L2 Response Rate
+> Shared Mem Ports
+> Hardware Knob  50.1 50.8 146 101 107 -25 216 10 147 -67 00123 191 30
+> 21.3 50.8 329 -97 126 -38 -98 -99 150 -82 00127 150 18
+> 15.9 49.9 135 -84 58 622 -97 128 988 00105 608 83
+> 5.9 50.6 139 -60 85 -28 889 -91 119 0098 486 71
+> 25.0 47.3 152 -66 70 205 499 -96 162 179 440 543 138 227 53
+> 20.0 48.6 169 -81 56 -15 389 -98 162 -80 00137 168 32
+> 12.5 36.6 -74 -93 -69 -20 -98 -98 285 -57 00241 -64 45
+> 2107
+> 1261
+
+Prefill: Microarchitecture Metric Ratio to Baseline (%)                                                                                    
+
+> Knob (% of Baseline)
+> Perf (% of Baseline)
+> NoC->Mem Latency
+> NoC->Core Latency
+> Avg Mem Fetch Latency
+> Mem Req Queue Latency
+> Stall: DRAM Queue Full
+> Stall: NoC to Core
+> Total Stall on Mem
+> L2 Pending Hits
+> L2 Miss Rate
+> DRAM Reads
+> Warp State: Stall
+> Warp State: Idle
+> Warp State: Scoreboard Wait
+> ICNT Clock
+> L2 Clock
+> DRAM Clock
+> DRAM Latency
+> L2 Latency
+> DRAM Buswidth
+> Hardware Knob  17.0 50.9 233 253 -76 -5 352 -87 00331 138 86
+> 7.1 48.9 314 -65 187 -87 -99 -100 356 -46 00340 124 77
+> 20.5 48.5 376 -93 347 397 571 -100 363 -8 00334 442 218
+> 7.3 46.7 365 -95 370 -90 586 -100 369 71 00336 526 236
+> 36.4 49.9 -7 -9 90-16 -60 021 00-1 89 15
+> 12.5 49.3 355 -93 340 367 631 -100 321 54 0699 295 417 188
+> 6548 4415
+
+Decode: Microarchitecture Metric Ratio to Baseline (%) 
+
+> −750
+> −500
+> −250
+> 0
+> 250
+> 500
+> 750
+> % Difference to Baseline (outliers highlighted)
+
+Figure 8: Simulated microarchitecture statistics when cutting each individual knob to achieve closest to 50% performance target (corresponds to Figure 3). Different knobs have distinct system bottleneck signatures; a row with with blue and light red cells indicates a “good” knob, a shallow cut with the least collateral damage (fewest increases to metric values) to the overall system. 
+
+collected from AccelSim reports, in % difference relative to the base-line value when each hardware knob is individually cut to achieve approximately 50% of original performance (corresponding to Fig-ure 3). Each row is one knob; the first two columns report the knob’s resource cut depth (percentage of original resource availability) and resulting performance. Figure 8 shows the following: 
+
+• A red cell indicates a worse bottleneck (increased pressure) and a blue cell indicates alleviated bottleneck; each knob’s row is its unique bottleneck signature .
+
+• Resource cuts in one place might lead to reduced pressure elsewhere in the system such as less queueing delay with more sparse requests, leading to the blue cells. 
+
+• Good knobs are those that achieve the performance target with shallower cut and minimal system impact: rows of blue or light red cells, no extreme outliers. They create minimal collateral damage and can enable finer-grained control when targeting intermediate performance levels. 
+
+Prefill: Shared Memory Ports stand out as the cleanest knob for prefill: it creates a purely compute-side bottleneck within the exe-cution core, and has near-zero impact (or even a slightly decrease) on all memory hierarchy bottlenecks, leaving the memory system available for other consumers. It also enables per-core throttling while non-throttled cores can use the memory subsystem. L2 Re-sponse Rate and L2 Associativity are the next best choices. Reducing L2 response rate raises pressure on DRAM queue occupancy and average fetch latency, but leaves compute-side and NoC metrics largely unaffected. Reducing L2 associativity impacts the cache hierarchy (L2 miss rate and DRAM reads) but not too much of the wider pipeline. Interconnect and L2 clock frequency are also rea-sonable options, but DRAM-side knobs produce worse system-wide stress and should be avoided when collateral damage is a concern. 
+
+Decode: L2 Latency is the most surgical knob for decode: with the shallowest cut ratio, it reaches the performance target while nearly every other metric stays at baseline. Increased L2 latency directly stalls warps in the instruction queue (Warp State: Idle) without impacting DRAM pressure, NoC congestion, or miss rates. This makes L2 Latency the ideal choice with minimal collateral damage. 
+
+## 7.2 System Impact of Selected Knobs 
+
+We now examine the microarchitectural metrics that explain why each knob cut degrades performance, and its system-wide effects. 
+
+7.2.1 L2 Size (Prefill). We reduce the effective L2 size by reducing associativity (the number of ways) as shown in Figure 5a, which increases the conflicts within each set. For prefill, smaller L2 limits the size of working sets that can fit, and more lines are repeatedly evicted and re-fetched. Figure 9a shows a significant increase in L2 miss rate and DRAM reads at reduced associativity, which increases the total number of core stalls waiting for global memory loads. As more accesses go through the DRAM, the average memory-fetch latency also increases since it captures the entire round trip of SM → NoC → L2/DRAM → NoC → SM. The memory-request queue latency rises as well but drops at the most extreme cut, since the system becomes so heavily stalled that requests are temporally spread out with less queue contention. 
+
+7.2.2 L2 Latency (Decode). We increase L2 latency by inserting a fixed delay from the NoC to the L2, as shown in Figure 5b. The L2 latency is exposed in decode as it is memory-heavy, which also spreads traffic out and reduces system congestion. Figure 9b shows: (1) the average memory-fetch roundtrip latency rises, and the number of core stalls on memory loads increases. (2) Frontend and backend pressure reduces: the NoC →memory latency (measured from NoC injection to request reaching memory sub-partition) and stalls on full DRAM queue both decrease, as does the stall time attributed to NoC →SM. Increasing L2 latency is a low side-effect throttling knob for de-code since it throttles decode’s critical memory bottleneck without occupying the pipeline and the upstream/downstream components, 
+
+> 9
+
+Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+
+> Resource Cut Fraction
+> 5
+> 10
+> Norm. Metric Val  Prefill: L2 Associativity
+> L2 Miss Rate
+> DRAM Reads
+> Avg Mem Fetch Latency
+> Total Stall on Mem
+> Mem Req Queue Latency
+
+(a) Cutting L2 size increases miss rate, which leads to increased DRAM accesses and more core stalls waiting for the memory pipeline. 12345678
+
+> Latency Increase Fraction
+> 0.5
+> 1.0
+> 1.5
+> Norm. Metric Val  Decode: L2 Latency
+> Avg Mem Fetch Latency
+> Stall: Global Mem
+> NoC->Mem Latency
+> Stall: DRAM Queue Full
+> Stall: NoC to Core
+
+(b) Adding L2 latency increases memory-fetch latency and core stalls on loads, while reducing system backpressure in upstream and downstream. 12345678
+
+> Latency Increase Fraction
+> 0
+> 5
+> 10
+> Norm. Metric Val  Prefill: L2 Response Rate
+> NoC->Mem Latency
+> Avg Mem Fetch Latency
+> Stall: DRAM Queue Full
+> Total Stall on Mem
+> Stall: NoC to Core
+
+(c) Limiting L2 response rate increases memory roundtrip latency and stalls in memory, and creates high backpressure on DRAM queue. 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+
+Resource Cut Fraction 
+
+0
+
+2
+
+4
+
+> Norm. Metric Val
+
+Prefill: Shared Mem Ports 
+
+L2 Pending Hits 
+
+NoC->Mem Latency 
+
+Stall: NoC to Core 
+
+Total Stall on Mem 
+
+L1Bk Conflict 
+
+(d) Reducing accesses to shared memory bank ports greately increases memory stalls and lessens pressure on other parts of the memory system. 
+
+Figure 9: Simulated microarchitecture statistics that show each individual knob’s collateral impact on the rest of the system. 17/8 6/8 5/8 4/8 3/8 2/8 1/8        
+
+> Resource Cut Fraction
+> 0.0
+> 0.5
+> 1.0
+> Normalized Perf  [Prefill] L2 Associativity
+> 12345678
+> Latency Increase Fraction
+> 0.0
+> 0.5
+> 1.0
+> [Prefill] L2 Response Rate
+> 17/8 6/8 5/8 4/8 3/8 2/8 1/8
+> Resource Cut Fraction
+> 0.0
+> 0.5
+> 1.0
+> [Prefill] Shared Mem Ports
+> 12345678
+> Latency Increase Fraction
+> 0.0
+> 0.5
+> 1.0
+> [Decode] L2 Latency
+> 17/8 6/8 5/8 4/8 3/8 2/8 1/8
+> Resource Cut Fraction
+> 0.0
+> 0.5
+> 1.0
+> [Prefill] Number of Cores
+> LLM prefill LLM decode nbody FDTD3d convFFT2D transpose smokeParticles volumeRender
+
+Figure 10: Workload selectivity of the four proposed memory knobs (left panels) versus cutting compute cores (rightmost panel), run on AccelSim with a modeled A100. Bold curves are the targeted LLM kernels; thin curves are six non-LLM workloads. Perf is normalized to each workload’s own baseline. The memory knobs throttle the targeted LLM kernel without heavily affecting the others, whereas cutting cores degrades every workload together and shows less selectivity. 
+
+leaving headroom in system resources for other concurrent work-loads. In contrast, for prefill workloads, increased L2 latency also increases the average memory-fetch latency and global-memory stalls, but performance is largely unaffected because the sched-uler can draw from a larger pool of ready warps to keep the issue pipelines full and effectively hide the longer L2 latency. 
+
+7.2.3 L2 Bandwidth (Prefill). Limiting the response rate of L2 throt-tles available L2 bandwidth as shown in Figure 5c. L2 bandwidth throttling degrades key metrics relatively linearly, as shown in Figure 9c. Reduction in response rate proportionally increases the average memory-fetch latency and the total number of core stalls on global memory loads. Backpressure builds up on the DRAM queue as L2 can no longer process responses fast enough, which in turn increases NoC →memory latency. In contrast, stalls on the NoC →core path drop as the pressure is relieved. 
+
+7.2.4 Shared memory BW (Prefill). Cutting the shared memory bandwidth via the number of banks available (Figure 5d) has a large effect on total memory stalls. For prefill, Figure 9d shows a non-linear increase in the total stalls on memory when banks are cut by 4-8x up to peak of 4x the original stall count. Increased pressure at shared memory relieves pressure elsewhere in the memory system. Specifically, the L2 cache and L1D cache see modest drops in bank conflicts and pending hits, respectively, while parts of the system farther out, such as the the interconnect moving data between DRAM and the cores, see a more extreme and rapid decrease. 
+
+## 7.3 Sensitivity on non-LLM Workloads 
+
+A throttling knob that caps a targeted AI workload should not render the chip useless for everything else. We show that the pro-posed knobs are selective : a deep cut on targeted LLM kernel has less impact on other workloads. We apply each knob on six com-mon non-LLM GPU workloads from CUDA Samples [ 53 ], spanning workload domains of scientific computing, format conversion, and graphics. All workloads use provided default configurations. The first four memory-knob panels of Figure 10 show that the non-LLM workloads are throttled far less than the targeted LLM kernel. Three L2 knobs have high selectivity, and the shared mem-ory port knob is mostly selective, with one exception, FDTD3d, a stencil that also depends on shared memory. 
+
+10 Hardware Mechanisms to Dynamically Throttle AI Performance 
+
+Compute-side throttling lacks this selectivity. The simplest com-pute cut, disabling cores, degrades nearly every workload together besides the targeted prefill (rightmost panel of Figure 10). Throttling compute more surgically, such as cutting issue width or stalling individual function-unit pipelines, requires redesigning the internal core microarchitecture, including issue, scheduling, and fetch logic, which is far more invasive and costly than the proposed memory knobs that switch in a single cycle and reuse existing mechanisms. 
+
+## 8 End-to-End Performance and Generalization 
+
+We now study hot our single-kernel findings generalize to end-to-end inference. Inference runtime is dominated by GEMMs (the 
+
+𝑄𝐾𝑉 , output, and FFN projections), with attention secondary. These kernels are tiled and the hardware’s unit of work has fixed shape. Scheduling optimizations such as dynamic batching change how many tiles run and how full each is packed, not the per-tile shape the hardware sees, thus the throttling sensitivity remains unaffected. Two factors do change the hardware-visible shape, and we analyze each: (i) in decode attention, continuous batching [ 75 ] introduces variable KV cache lengths (Section 8.1), and (ii) in GEMMs, the 𝑀 
+
+dimension changes with sequence length or batch size (Section 8.2). Both have minimal impact on overall trends. 
+
+## 8.1 Generalization Across Kernel Types 
+
+8.1.1 Setup. To show impact of cuts on different kernel types and operator dimensions, we analyze dominant operators in Trans-former blocks: 𝑄𝐾𝑉 projection, self-attention ( 𝑄𝐾 𝑉 and 𝐴𝑉 ), out-put projection, and FFN up and down layers. We construct an estima-tion by aggregating the runtimes of the five kernels set to the shapes and sizes of three models: DeepSeek-V3 [ 39 ], Llama-3-70B [ 26 ], and Mixtral-8x7B [ 32 ]. We chose not to include element-wise kernels and inter-kernel effects since they typically have minimal run-time as measured in production serving systems [ 35 ]. Runtimes are simulated with AccelSim [ 33 ] on an NVIDIA A100 like con-figuration [ 50 ]3. Kernels are from the CUTLASS library’s high-performance implementations [54] with parameters from Table 3. GEMMs use the Stream-K kernel and attention uses the fused FlashAttention kernel [ 21 , 22 , 54 , 62 ]. For prefill attention, we model the dense multi-head, compute-bound attention where all tokens share the full sequence length (fixed KV). For decode attention, we model the grouped-query attention (GQA) [ 3] with 8 KV heads for Llama-3 and Mixtral (matching production), where KV-cache traffic dominates the memory-bound kernel. Decode attention uses ran-domized, various per-request KV lengths (max 4096, mean 2048) to model continuous batching. Without implementation of DeepSeek-V3’s multi-head latent attention (MLA) [ 39 ] in CUTLASS, we ap-proximate it by roofline scaling: compressed latent KV reads ∼3.6×
+
+fewer bytes per token than the 8-head GQA kernel which still stays in the same memory-bound regime. 
+
+8.1.2 Knob effects across different GEMM and attention kernels. 
+
+Figure 11 shows the aggregated runtime for selected knobs and models, where overall performance trends match those in Figure 2. All GEMM kernels have nearly identical sensitivity to the resource      
+
+> 3For extremely long-running prefill GEMM kernels, we simulated the first 2×10 9
+> instructions and scale cycles to full kernel length by instruction count. This matches full-kernel IPC within <5% .
+
+Table 3: Workload configurations for end-to-end aggregation. 
+
+Model Phase 𝑑 𝑑 ff ℎ b seq 𝑞 seq 𝑘𝑣 
+
+DeepSeek-V3 [39] prefill 7168 18432 128 1 4096 4096 decode 128 1 4096 Llama-3-70B [26] prefill 8192 28672 64 1 4096 4096 decode 128 1 4096 Mixtral-8x7B [32] prefill 4096 14336 32 1 4096 4096 decode 128 1 4096                                     
+
+> 𝑑 : hidden dim; 𝑑 ff : FFN width (assume SwiGLU-style); ℎ: number of heads; b: batch size; seq 𝑞 ,seq 𝑘𝑣 : query and KV lengths. Llama-3 and Mixtral use GQA [3] and DeepSeek-V3 uses MLA [39] for attention in production. 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+> Resource Cut Fraction
+> 0
+> 1
+> 2
+> 3
+> Normalized Runtime  [Prefill] L2 Associativity
+> 87654321
+> Latency Increase Fraction
+> 0
+> 1
+> 2
+> 3
+> [Prefill] L2 Response Rate
+> 1/8 2/8 3/8 4/8 5/8 6/8 7/8 1
+> Resource Cut Fraction
+> 0
+> 1
+> 2
+> Normalized Runtime  [Prefill] Shared Mem Ports
+> 87654321
+> Latency Increase Fraction
+> 0
+> 2
+> 4
+> [Decode] L2 Latency
+> QKV Proj
+> MHA
+> Attn Out
+> FFN Up
+> FFN Down
+> DeepSeek-V3
+> Llama-3-70B
+> Mixtral-8x7B
+> In each bar group: left bar–DeepSeek-V3, middle–Llama-3-70B, right–Mixtral-8x7B.
+
+Figure 11: Aggregated end-to-end runtime for LLM models at different resource cut ratios, simulated with AccelSim on a simulated A100 configuration. Per-kernel and overall perfor-mance sensitivity aligns with the two representative kernels (Figure 2). 
+
+cuts for prefill and decode respectively, across all three models. The prefill attention kernels follow a similar trend as the GEMMs. While decode attention is far less sensitive to L2 latency than de-code GEMMs, attention is only a small fraction of aggregate run-time, and the GEMMs carry the performance drop. Further analy-sis on microarchitectural metrics shows that decode attention is deeply DRAM-bandwidth-bound with high data movement along the batch ×head dimension with low cache reuse. Across max KV lengths of 1024–4096 (mean 512–2048), its cycle count scales lin-early as the KV cache grows across decode steps. 
+
+8.1.3 Representative kernel selection for analysis in depth. Among all GEMM kernels, we selected one each for prefill and decode phases for detailed analysis. Figure 12 shows the utilization metrics collected on all GEMM kernels across models on a real NVIDIA   
+
+> 11 Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff DRAM util (%)
+> 20
+> 40
+> 60
+> 80
+> L2 util (%)
+> 60 70 80
+> TC util (%)
+> 50
+> 60
+> 70
+> 80
+> 90
+> DeepSeek-V3 | decode
+> DeepSeek-V3 | prefill
+> Llama-3-70B | decode
+> Llama-3-70B | prefill
+> Mixtral-8x7B | decode
+> Mixtral-8x7B | prefill
+> Representative Decode Kernel
+> Representative Prefill Kernel
+
+Figure 12: Prefill vs. decode GEMM resource utilization on Tensor Core, L2 and DRAM (Nsight Compute, A100). Selected representative kernels for analyzing are circled in black. 128 256 512 1024 2048 4096      
+
+> GEMM Mdimension (varies with batch size and sequence length)
+> 0.0
+> 0.5
+> 1.0
+> Normalized Perf
+> memory-bound
+> (decode-like)
+> compute-bound
+> (prefill-like)
+> L2 Associativity L2 Response Rate L2 Latency Shared Mem Ports
+
+Figure 13: Performance at the deepest ( 1/8) cut of each knob for Mixtral 𝑄𝐾𝑉 shape with varied GEMM 𝑀 dimension, rep-resenting mixed requests of prefill and decode with varied batch size or sequence length. A lower value means the knob is more effective. The two kernels analyzed in the paper (de-code at 𝑀 =128 , prefill at 𝑀 =4096 ) are the endpoints. 
+
+A100 with Nsight Compute [ 55 ]. Prefill and decode GEMMs form two stable clusters; we select the two kernels circled in Figure 12. 
+
+## 8.2 Sensitivity Across Batch Sizes 
+
+The GEMM 𝑀 dimension depends on sequence length (prefill) or batch size (decode), which can change with continuous batching, mixing prefill and decode, or varying request lengths at runtime. To cover these regimes, we sweep 𝑀 from 128 to 4096 at the fixed 
+
+𝑄𝐾𝑉 shape ( 𝑁 =12288 , 𝐾 =4096 , mimicking Mixtral) and measure the performance at each knob’s 1/8 cut (Figure 13). As 𝑀 grows, the kernel transitions from memory-bound (decode-like) to compute-bound (prefill-like): the decode knob (L2 latency) is effective at small 𝑀 , while the prefill knobs (L2 capacity, bandwidth, and shared-memory ports) are effective at large 𝑀 , crossing around 
+
+𝑀 ∈ [ 512 , 1024 ]. Mixed batching requests with both prefill and decode requests fall on this curve at different positions and the throttle effects stay predictable, where multi-knob coupling 6 can be used to find the optimal throttling strategy. 
+
+## 8.3 Generalization Across Architectures 
+
+While our quantitative experiments are on A100-like configura-tions, the proposed knobs throttle fundamental memory subsys-tem resources that are common to nearly all GPU architectures regardless of vendor or generation, and we expect the trends to hold. Within NVIDIA’s roadmap specifically, the Tensor Memory Accelerator (TMA) introduced since Hopper [ 51 ] optimizes data movement to Tensor Cores but still utilizes the memory hierarchy, so the L2 throttling mechanisms remain effective. Shared memory size increases across generations, but the bank structure and ac-cess patterns are similar, so bank arbitration throttling still applies. The exact sensitivity curves and relative knob rankings may shift across configurations, but as both AI models and newer GPUs rely increasingly on the memory subsystem, memory-side throttling should remain effective and potentially more impactful. 
+
+## 8.4 Circumvention Resistance 
+
+Our throttling imposes physical resource caps that software opti-mization cannot circumvent. Per our threat model (Section 2.4.1), the constraints are not exposed to software and cannot be bypassed even if an AI observes the performance drop. A capable model could try to rewrite its kernels for the reduced resources, but the CUTLASS Stream-K and FlashAttention kernels we use already self-adapt through tiling and load balancing; after a cut, the throt-tled resource becomes the dominant bottleneck and the remaining optimization headroom is marginal. In the extreme, the AI could switch to a simpler model, which is precisely the intended effect: a forced reduction in capability. 
+
+## 9 Related Work 
+
+Existing work on resource partitioning/provisioning, traffic shaping, and clock frequency scaling presents similar architectural mech-anisms as we propose for bandwidth, size, and latency throttling, but with different purposes. While they target performance opti-mization, power management or security guarantees, we target AI capability enforcement, but intentionally choose to build on existing mechanisms to reduce design cost. Regarding resource provisioning, NVIDIA’s Multi-Instance GPU (MIG) [ 52 ] enables hardware-level partitioning of SM cores, cache and memory partitions for workload isolation in multi-tenant en-vironments. [ 37 ] studies optimal MIG partition selections for co-located workloads, showing that distinct resource combinations disproportionately affect different workloads. However, MIG op-erates at a coarse, static level, whereas our mechanisms enable finer-grained resource reshaping during kernel execution. The Intel Cache Allocation Technology (CAT) [ 29 ] allocates LLC ways to different cores to reduce cache contention and prioritize latency-sensitive workloads in a multi-threaded environment. To mitigate poorly distributed cache requests, Sullivan et al. [ 65 ] regulates band-width at a per-bank level by inserting a regulator between cores and a shared cache, which disallows further access to the bank until a set refresh period expires. MemGuard [ 76 ] similarly manages mem-ory bandwidth by allocating a per-core bandwidth budget which may be redistributed to other cores based on per-core predictors of expected bandwidth usage. Traffic shaping mechanisms include Camouflage [ 77 ] which uses a credit-based scheme plus fake requests/responses to shape the inter-arrival time distribution of memory requests and responses, which hides the true distribution from memory side-channel at-tacks. Traffic shaping more broadly addresses flow control on a network; to handle bursty traffic, Wu et al. [ 72 ] proposes a token bucket scheme to complement the leaky bucket scheme. Both re-quire tokens before sending data, but leaky buckets discard requests 
+
+> 12
+
+Hardware Mechanisms to Dynamically Throttle AI Performance 
+
+when tokens are depleted to enforce a strictly constant rate, while token buckets maintains a pool of tokens to service bursts. Inserting deliberate delays into the circuit can also be done as a control mechanism. For example, Sweeney et al. [ 66 ] adds a variable number of latches to combinational circuits as part of a logic locking scheme to introduce corruption into timing logic. Dynamic Voltage and Frequency Scaling (DVFS) [ 36 ] is a power saving technique that adjusts the chip’s voltage and domain clock frequency based on workload demands. GPU DVFS has been widely studied for power-performance tradeoffs [45, 46] as GPU’s power cost is significant. We make a deliberate design choice to build microarchitectural throttlers from well-established architectural mechanisms to min-imize design complexity. We leverage a credit-based rate limiter for L2 bandwidth as in Camouflage [ 77 ], and add a layer of regu-lation between shared memory banks and main cores to manage bandwidth similar to [ 65 ]. Inserting L2 latency resembles logic locking, and we adapt insights from Intel CAT [ 29 ] for L2 size throt-tling. While not explicitly discussed in the paper, potential clock frequency throttling can be implemented in a way similar to DVFS. 
+
+## 10 Conclusion 
+
+In this paper, we present the first concrete microarchitectural im-plementations for dynamic AI performance throttling to defend against malicious AI threats. Through evaluation of ten candidate knobs across the GPU memory hierarchy, we identify four highly ef-fective ones: L2 size (associativity), latency, bandwidth, and shared memory port access rate, that achieve large performance degrada-tion. We propose lightweight hardware implementations similar to existing architectural primitives to minimize design, verifica-tion and deployment costs. We show that these knobs achieve the performance targets quickly and reliably at runtime with low col-lateral impact on the rest of the system. This work fills the gap in hardware-level runtime AI control that has been recognized but unimplemented, with practical mechanisms for GPU vendors to adopt. 
+
+## Acknowledgments 
+
+The authors gratefully acknowledge financial support from the Princeton Laboratory for Artificial Intelligence’s AI 2 initiative. This research was supported in part by a Princeton SEAS Innovation Award. We thank the members of the Princeton Parallel Group for their insightful discussions. We used generative AI tools (Claude Code, Cursor) to assist in batched job scripting and plot visualization, and used Claude and Gemini for editing and language refinement. 
+
+## References 
+
+[1] Onni Aarne, Tim Fist, and Caleb Withers. 2024. Secure, governable chips: Using On-Chip mechanisms to manage national security risks from AI & advanced computing .Center for a New American Security. [2] Artificial Intelligence Act. 2024. Artificial Intelligence Act. ArtificialIntelligence-Act.eu, (Accessed: 28 February 2025) (2024). [3] Joshua Ainslie, James Lee-Thorp, Michiel De Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. 2023. Gqa: Training generalized multi-query trans-former models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing . 4895–4901. [4] Emmanuel Ameisen, Jack Lindsey, Adam Pearce, Wes Gurnee, Nicholas L. Turner, Brian Chen, Craig Citro, David Abrahams, Shan Carter, Basil Hosmer, Jonathan Marcus, Michael Sklar, Adly Templeton, Trenton Bricken, Callum McDougall, Hoagy Cunningham, Thomas Henighan, Adam Jermyn, Andy Jones, Andrew Persic, Zhenyi Qi, T. Ben Thompson, Sam Zimmerman, Kelley Rivoire, Thomas Conerly, Chris Olah, and Joshua Batson. 2025. Circuit Tracing: Revealing Com-putational Graphs in Language Models. Transformer Circuits Thread (2025). https://transformer-circuits.pub/2025/attribution-graphs/methods.html [5] Dario Amodei. 2024. Machines of Loving Grace: How AI Could Transform the World for the Better. https://darioamodei.com/essay/machines-of-loving-grace [6] Markus Anderljung, Joslyn Barnhart, Anton Korinek, Jade Leung, Cullen O’Keefe, Jess Whittlestone, Shahar Avin, Miles Brundage, Justin Bullock, Duncan Cass-Beggs, Ben Chang, Tantum Collins, Tim Fist, Gillian Hadfield, Alan Hayes, Lewis Ho, Sara Hooker, Eric Horvitz, Noam Kolt, Jonas Schuett, Yonadav Shavit, Divya Siddarth, Robert Trager, and Kevin Wolf. 2023. Frontier AI Regulation: Managing Emerging Risks to Public Safety. arXiv:2307.03718 [cs.CY] https: //arxiv.org/abs/2307.03718 [7] Samar Ansari. 2026. Hardware-Level Governance of AI Compute: A Feasibility Taxonomy for Regulatory Compliance and Treaty Verification. arXiv preprint arXiv:2604.04712 (2026). [8] Anthropic. 2025. Claude Code: Agentic Coding Tool. https://code.claude.com/ docs/en/overview [9] Anthropic. 2026. Eval Awareness in Claude Opus 4.6’s BrowseComp Perfor-mance. https://www.anthropic.com/engineering/eval-awareness-browsecomp. Anthropic Engineering Blog. Accessed: March 2026. [10] Emily Apsey, Phil Rogers, Michael O’Connor, and Rob Nertney. 2023. Confidential computing on NVIDIA H100 GPUs for secure and trustworthy AI. NVIDIA Technical Blog 3 (2023). [11] ARM Limited. 2009. ARM Security Technology: Building a Secure System us-ing TrustZone Technology . Technical Report PRD29-GENC-009492C. ARM Limited. Available at https://developer.arm.com/documentation/prd29-genc-009492c/latest/. [12] Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, Carol Chen, Catherine Olsson, Christopher Olah, Danny Hernandez, Dawn Drain, Deep Ganguli, Dustin Li, Eli Tran-Johnson, Ethan Perez, Jamie Kerr, Jared Mueller, Jeffrey Ladish, Joshua Landau, Kamal Ndousse, Kamile Lukosuite, Liane Lovitt, Michael Sellitto, Nelson Elhage, Nicholas Schiefer, Noemi Mercado, Nova DasSarma, Robert Lasenby, Robin Larson, Sam Ringer, Scott Johnston, Shauna Kravec, Sheer El Showk, Stanislav Fort, Tamera Lanham, Timothy Telleen-Lawton, Tom Conerly, Tom Henighan, Tristan Hume, Samuel R. Bowman, Zac Hatfield-Dodds, Ben Mann, Dario Amodei, Nicholas Joseph, Sam McCandlish, Tom Brown, and Jared Kaplan. 2022. Constitutional AI: Harmlessness from AI Feedback. arXiv:2212.08073 [cs.CL] https://arxiv.org/abs/2212.08073 [13] Yoshua Bengio, Sören Mindermann, Daniel Privitera, Tamay Besiroglu, Rishi Bommasani, Stephen Casper, Yejin Choi, Philip Fox, Ben Garfinkel, Danielle Goldfarb, et al . 2025. International ai safety report. arXiv preprint arXiv:2501.17805 
+
+(2025). [14] Benjamin Boudreaux, Michael JD Vermeer, Kamaria Horton, and Nidhi Kalra. 2025. The Case for AI Loss of Control Response Planning and an Outline to Get Started . RAND. [15] Bureau of Industry and Security, Department of Commerce. 2022. Im-plementation of Additional Export Controls: Certain Advanced Com-puting and Semiconductor Manufacturing Items; Supercomputer and Semiconductor End Use; Entity List Modification. Federal Register. , 73458-73517 pages. https://www.federalregister.gov/documents/2022/10/13/2022-21658/implementation-of-additional-export-controls-certain-advanced-computing-and-semiconductor [16] Bureau of Industry and Security, Department of Commerce. 2023. Implemen-tation of Additional Export Controls: Certain Advanced Computing Items; Supercomputer and Semiconductor End Use; Updates and Corrections. Federal Register. , 73458-73517 pages. https://www.federalregister.gov/documents/ 2023/10/25/2023-23055/implementation-of-additional-export-controls-certain-advanced-computing-items-supercomputer-and [17] Naci Cankaya, Anjay Friedman, and Mauricio Baker. 2026. Research Note: The Fundamentals and Feasibility of Secure Network Taps for Verifying AI Datacenter Use. The Datacenter Lie Detector (Substack). https://nacicankaya.substack.com/ p/research-note-the-fundamentals-and. [18] Center for AI Safety. 2023. Statement on AI Risk. https://safe.ai/work/statement-on-ai-risk Open letter signed by AI researchers, industry leaders, and public figures. [19] Patrick Chao, Alexander Robey, Edgar Dobriban, Hamed Hassani, George J Pappas, and Eric Wong. 2025. Jailbreaking black box large language models in twenty queries. In 2025 IEEE Conference on Secure and Trustworthy Machine Learning (SaTML) . IEEE, 23–42. [20] Yanda Chen, Joe Benton, Ansh Radhakrishnan, Jonathan Uesato, Carson Denison, John Schulman, Arushi Somani, Peter Hase, Misha Wagner, Fabien Roger, Vlad Mikulik, Samuel R. Bowman, Jan Leike, Jared Kaplan, and Ethan Perez. 2025. Reasoning Models Don’t Always Say What They Think. arXiv:2505.05410 [cs.CL] https://arxiv.org/abs/2505.05410 13 Haiyue Ma, Lauren Malek, Joseph Forzani, and David Wentzlaff 
+
+[21] Tri Dao. 2023. Flashattention-2: Faster attention with better parallelism and work partitioning. arXiv preprint arXiv:2307.08691 (2023). [22] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-tention: Fast and memory-efficient exact attention with io-awareness. Advances in Neural Information Processing Systems 35 (2022), 16344–16359. [23] Center for AI Safety Phan Long agibenchmark@ safe. ai 1 Gatti Alice 1 Li Nathaniel 1 Khoja Adam 1 Kim Ryan 1 Ren Richard 1 Hausenloy Jason 1 Zhang Oliver 1 Mazeika Mantas 1 Hendrycks Dan dan@ safe. ai 1. 2026. A benchmark of expert-level academic questions to assess AI capabilities. Nature 649, 8099 (2026), 1139–1146. [24] Future of Life Institute. 2025. AI Safety Index Report. https://futureoflife.org/wp-content/uploads/2026/01/FLI-AI-Safety-Index-Report-Summer-2025-Rev-Jan-2026.pdf. Revised January 2026. [25] Katja Grace, Julia Fabienne Sandkühler, Harlan Stewart, Benjamin Weinstein-Raun, Stephen Thomas, Zach Stein-Perlman, John Salvatier, Jan Brauner, and Richard C Korzekwa. 2025. Thousands of AI authors on the future of AI. Journal of Artificial Intelligence Research 84 (2025). [26] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Ab-hishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schel-ten, Alex Vaughan, et al . 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 (2024). [27] Ryan Greenblatt, Carson Denison, Benjamin Wright, Fabien Roger, Monte MacDiarmid, Sam Marks, Johannes Treutlein, Tim Belonax, Jack Chen, David Duvenaud, Akbir Khan, Julian Michael, Sören Mindermann, Ethan Perez, Linda Petrini, Jonathan Uesato, Jared Kaplan, Buck Shlegeris, Samuel R. Bow-man, and Evan Hubinger. 2024. Alignment faking in large language models. arXiv:2412.14093 [cs.AI] https://arxiv.org/abs/2412.14093 [28] Hakan Inan, Kartikeya Upasani, Jianfeng Chi, Rashi Rungta, Krithika Iyer, Yuning Mao, Michael Tontchev, Qing Hu, Brian Fuller, Davide Testuggine, and Madian Khabsa. 2023. Llama Guard: LLM-based Input-Output Safeguard for Human-AI Conversations. arXiv:2312.06674 [cs.CL] https://arxiv.org/abs/2312.06674 [29] Intel Corporation. 2015. Improving Real-Time Performance by Utilizing Cache Allocation Technology . Technical Report 331843-001US. Intel Corpora-tion. https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/cache-allocation-technology-white-paper.pdf [30] James Petrie and Peter Drotos. 2026. Security Block Architecture. https://github. com/JamesPetrie/off-switch. Accessed: June 2026. [31] Jiaming Ji, Tianyi Qiu, Boyuan Chen, Borong Zhang, Hantao Lou, Kaile Wang, Yawen Duan, Zhonghao He, Lukas Vierling, Donghai Hong, Jiayi Zhou, Zhaowei Zhang, Fanzhi Zeng, Juntao Dai, Xuehai Pan, Kwan Yee Ng, Aidan O’Gara, Hua Xu, Brian Tse, Jie Fu, Stephen McAleer, Yaodong Yang, Yizhou Wang, Song-Chun Zhu, Yike Guo, and Wen Gao. 2025. AI Alignment: A Comprehensive Survey. arXiv:2310.19852 [cs.AI] https://arxiv.org/abs/2310.19852 [32] Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al . 2024. Mixtral of experts. arXiv preprint arXiv:2401.04088 (2024). [33] Mahmoud Khairy, Zhesheng Shen, Tor M Aamodt, and Timothy G Rogers. 2020. Accel-sim: An extensible simulation framework for validated gpu modeling. In 
+
+2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA) . IEEE, 473–486. [34] Gabriel Kulp, Daniel Gonzales, Everett Smith, Lennart Heim, Prateek Puri, Michael J. D. Vermeer, and Zev Winkelman. 2024. Hardware-Enabled Gover-nance Mechanisms: Developing Technical Solutions to Exempt Items Otherwise Classified Under Export Control Classification Numbers 3A090 and 4A090 . RAND Corporation, Santa Monica, CA. https://doi.org/10.7249/WRA3056-1 [35] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Memory Management for Large Language Model Serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP) .[36] Etienne Le Sueur and Gernot Heiser. 2010. Dynamic voltage and frequency scaling: The laws of diminishing returns. In Proceedings of the 2010 international conference on Power aware computing and systems . 1–8. [37] Baolin Li, Tirthak Patel, Siddharth Samsi, Vijay Gadepally, and Devesh Tiwari. 2022. Miso: exploiting multi-instance gpu capability on multi-tenant gpu clusters. In Proceedings of the 13th Symposium on Cloud Computing . 173–189. [38] Jack Lindsey, Wes Gurnee, Emmanuel Ameisen, Brian Chen, Adam Pearce, Nicholas L. Turner, Craig Citro, David Abrahams, Shan Carter, Basil Hosmer, Jonathan Marcus, Michael Sklar, Adly Templeton, Trenton Bricken, Callum Mc-Dougall, Hoagy Cunningham, Thomas Henighan, Adam Jermyn, Andy Jones, Andrew Persic, Zhenyi Qi, T. Ben Thompson, Sam Zimmerman, Kelley Rivoire, Thomas Conerly, Chris Olah, and Joshua Batson. 2025. On the Biology of a Large Language Model. Transformer Circuits Thread (2025). https://transformer-circuits.pub/2025/attribution-graphs/biology.html [39] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al . 2024. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 (2024). [40] Aengus Lynch, Benjamin Wright, Caleb Larson, Kevin K. Troy, Stuart J. Ritchie, Sören Mindermann, Ethan Perez, and Evan Hubinger. 2025. Agentic Mis-alignment: How LLMs Could be an Insider Threat. Anthropic Research (2025). https://www.anthropic.com/research/agentic-misalignment. [41] Machine Intelligence Research Institute. 2024. The Problem. https://intelligence. org/the-problem/ Accessed: 2026-03-30. [42] Lauren Malek. 2026. The AI Kill Switch: Targeted Microarchitectural Limits to AI Performance . Undergraduate Senior Thesis. Department of Electrical and Computer Engineering, Princeton University, Princeton, NJ. [43] Nestor Maslej, Loredana Fattorini, Raymond Perrault, Yolanda Gil, Vanessa Parli, Njenga Kariuki, Emily Capstick, Anka Reuel, Erik Brynjolfsson, John Etchemendy, Katrina Ligett, Terah Lyons, James Manyika, Juan Carlos Niebles, Yoav Shoham, Russell Wald, Toby Walsh, Armin Hamrah, Lapo Santarlasci, Julia Betts Lotufo, Alexandra Rome, Andrew Shi, and Sukrut Oak. 2025. Artificial Intelligence Index Report 2025. arXiv:2504.07139 [cs.AI] https://arxiv.org/abs/2504.07139 [44] Frank McKeen, Ilya Alexandrovich, Alex Berenzon, Carlos V. Rozas, Hisham Shafi, Vedvyas Shanbhogue, and Uday R. Savagaonkar. 2013. Innovative instructions and software model for isolated execution. In Proceedings of the 2nd International Workshop on Hardware and Architectural Support for Security and Privacy (Tel-Aviv, Israel) (HASP ’13) . Association for Computing Machinery, New York, NY, USA, Article 10, 1 pages. https://doi.org/10.1145/2487726.2488368 [45] Xinxin Mei, Qiang Wang, and Xiaowen Chu. 2017. A survey and measure-ment study of GPU DVFS on energy conservation. Digital Communications and Networks 3, 2 (2017), 89–100. [46] Xinxin Mei, Ling Sing Yung, Kaiyong Zhao, and Xiaowen Chu. 2013. A measure-ment study of GPU DVFS on energy conservation. In Proceedings of the Workshop on Power-Aware Computing and Systems . 1–5. [47] METR. 2026. Task-Completion Time Horizons of Frontier AI Models. https: //metr.org/time-horizons/. [48] Richard Ngo, Lawrence Chan, and Sören Mindermann. 2022. The alignment problem from a deep learning perspective. arXiv preprint arXiv:2209.00626 (2022). [49] August Ning and David Wentzlaff. 2025. Chip Architectures Under Advanced Computing Sanctions. In Proceedings of the 52nd Annual International Symposium on Computer Architecture . 1225–1239. [50] NVIDIA Corporation. 2020. NVIDIA A100 Tensor Core GPU Architecture . Whitepa-per. NVIDIA. https://images.nvidia.com/aem-dam/en-zz/Solutions/data-center/ nvidia-ampere-architecture-whitepaper.pdf [51] NVIDIA Corporation. 2022. NVIDIA H100 Tensor Core GPU Architecture . Tech-nical Report. NVIDIA. https://resources.nvidia.com/en-us-tensor-core/gtc22-whitepaper-hopper [52] NVIDIA Corporation. 2023. NVIDIA Multi-Instance GPU (MIG) User Guide . https: //docs.nvidia.com/datacenter/tesla/mig-user-guide/index.html [53] NVIDIA Corporation. 2026. CUDA Samples. https://github.com/NVIDIA/cuda-samples Accessed: 2026-05-21. [54] NVIDIA Corporation. 2026. CUTLASS: CUDA Templates and Python DSLs for High-Performance Linear Algebra. https://github.com/NVIDIA/cutlass. Version 4.4.1. Accessed: March 2026. [55] NVIDIA Corporation. 2026. NVIDIA Nsight Compute. https://developer.nvidia. com/nsight-compute. Accessed: 2026-05-21. [56] Aidan O’Gara, Gabriel Kulp, Will Hodgkins, James Petrie, Vincent Immler, Ay-din Aysu, Kanad Basu, Shivam Bhasin, Stjepan Picek, and Ankur Srivastava. 2025. Hardware-Enabled Mechanisms for Verifying Responsible AI Develop-ment. arXiv preprint arXiv:2505.03742 (2025). [57] Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schul-man, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Pe-ter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe. 2022. Training language models to follow instructions with human feedback. arXiv:2203.02155 [cs.CL] https://arxiv.org/abs/2203.02155 [58] James Petrie. 2024. Near-Term Enforcement of AI Chip Export Controls Using A Firmware-Based Design for Offline Licensing. arXiv preprint arXiv:2404.18308 
+
+(2024). [59] James Petrie. 2025. Embedded Off-Switches for AI Compute. arXiv preprint arXiv:2509.07637 (2025). [60] Traian Rebedea, Razvan Dinu, Makesh Narsimhan Sreedhar, Christopher Parisien, and Jonathan Cohen. 2023. Nemo guardrails: A toolkit for controllable and safe llm applications with programmable rails. In Proceedings of the 2023 conference on empirical methods in natural language processing: system demonstrations . 431– 445. [61] Girish Sastry, Lennart Heim, Haydn Belfield, Markus Anderljung, Miles Brundage, Julian Hazell, Cullen O’Keefe, Gillian K. Hadfield, Richard Ngo, Konstantin Pilz, George Gor, Emma Bluemke, Sarah Shoker, Janet Egan, Robert F. Trager, Shahar Avin, Adrian Weller, Yoshua Bengio, and Diane Coyle. 2024. Computing Power and the Governance of Artificial Intelligence. arXiv:2402.08797 [cs.CY] https://arxiv.org/abs/2402.08797 [62] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and Tri Dao. 2024. Flashattention-3: Fast and accurate attention with asynchrony and low-precision. arXiv preprint arXiv:2407.08608 (2024). 14 Hardware Mechanisms to Dynamically Throttle AI Performance 
+
+[63] Peter Steinberger. 2025. OpenClaw: Personal AI Assistant. https://openclaw.ai/ Open-source autonomous AI agent framework. GitHub: https://github.com/ nicepkg/openclaw. [64] Charlotte Stix, Annika Hallensleben, Alejandro Ortega, and Matteo Pistillo. 2025. The loss of control playbook: Degrees, dynamics, and preparedness. arXiv preprint arXiv:2511.15846 (2025). [65] Connor Sullivan, Alex Manley, Mohammad Alian, and Heechul Yun. 2024. Per-Bank Bandwidth Regulation of Shared Last-Level Cache for Real-Time Systems. In 2024 IEEE Real-Time Systems Symposium (RTSS) . 336–348. [66] Joseph Sweeney, Mohammed Zackriya V, Samuel Pagliarini, and Lawrence Pi-leggi. 2020. Latch-Based Logic Locking. In 2020 IEEE International Symposium on Hardware Oriented Security and Trust (HOST) . 132–141. [67] Blaise Tine, Krishna Praveen Yalamarthy, Fares Elsabbagh, and Kim Hyesoon. 2021. Vortex: Extending the RISC-V ISA for GPGPU and 3D-Graphics. In MICRO-54: 54th Annual IEEE/ACM International Symposium on Microarchitecture . ACM, 754–766. [68] Benjamin Todd. 2025. Shrinking AGI Timelines: A Review of Expert Forecasts. 80,000 Hours. https://80000hours.org/2025/03/when-do-experts-expect-agi-to-arrive/ [69] UK Government and Republic of Korea Government. 2024. Fron-tier AI Safety Commitments, AI Seoul Summit 2024. https: //www.gov.uk/government/publications/frontier-ai-safety-commitments-ai-seoul-summit-2024/frontier-ai-safety-commitments-ai-seoul-summit-2024 Voluntary commitments signed by 16 AI companies including Anthropic, Google, Meta, Microsoft, OpenAI, and others. [70] Zhiqiang Wang, Yichao Gao, Yanting Wang, Suyuan Liu, Haifeng Sun, Haoran Cheng, Guanquan Shi, Haohua Du, and Xiangyang Li. 2026. Mcptox: A bench-mark for tool poisoning on real-world mcp servers. In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 40. 35811–35819. [71] Erland Wittkotter and Roman V. Yampolskiy. 2021. Kill-Switch for Artificial Superintelligence. https://asi-safety-lab.com/DL/Kill-Switch-For_ASI_EW_21_ 12_14.pdf Unpublished manuscript, ASI Safety Lab Inc.. [72] Sheng-Lin Wu and W.-S.E. Chen. 1996. The token-bank leaky bucket mechanism for group connections in ATM networks. In Proceedings of 1996 International Conference on Network Protocols (ICNP-96) . 226–233. [73] Haoxuan Xu, Chen Gong, Beijie Liu, Haizhong Zheng, Beidi Chen, and Mengyuan Li. 2026. Wave: Leveraging Architecture Observation for Privacy-Preserving Model Oversight. In Proceedings of the 31st ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (USA) (ASPLOS ’26) . Association for Computing Machinery, New York, NY, USA, 2212–2231. https://doi.org/10.1145/3779212.3790247 [74] Sibo Yi, Yule Liu, Zhen Sun, Tianshuo Cong, Xinlei He, Jiaxing Song, Ke Xu, and Qi Li. 2024. Jailbreak attacks and defenses against large language models: A survey. arXiv preprint arXiv:2407.04295 (2024). [75] Gyeong-In Yu, Joo Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-Gon Chun. 2022. Orca: A distributed serving system for {Transformer-Based }
+
+generative models. In 16th USENIX symposium on operating systems design and implementation (OSDI 22) . 521–538. [76] Heechul Yun, Gang Yao, Rodolfo Pellizzoni, Marco Caccamo, and Lui Sha. 2013. MemGuard: Memory bandwidth reservation system for efficient performance isolation in multi-core platforms. In 2013 IEEE 19th Real-Time and Embedded Technology and Applications Symposium (RTAS) . 55–64. [77] Yanqi Zhou, Sameer Wagh, Prateek Mittal, and David Wentzlaff. 2017. Camou-flage: Memory Traffic Shaping to Mitigate Timing Attacks. In 2017 IEEE Interna-tional Symposium on High Performance Computer Architecture (HPCA) . 337–348. [78] Jianwei Zhu, Hang Yin, and Shunfan Zhou. 2024. Confidential comput-ing on nvidia h100 gpu: A performance benchmark study. arXiv preprint arXiv:2409.03992 (2024). 15
