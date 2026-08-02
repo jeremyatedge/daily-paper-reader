@@ -1,0 +1,1399 @@
+Title: Application-Driven Architecture Exploration for Cross-Layer Heterogeneous Systems
+
+URL Source: https://arxiv.org/pdf/2607.23042v1
+
+Published Time: Tue, 28 Jul 2026 00:25:44 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Application-Driven Architecture Exploration for Cross-Layer Heterogeneous Systems 
+
+Yuchen Fan 1,* Minghong Sun 1,* Jikui Ma 1,* Yunpeng Xu 1,* Shunyu Mao 1,* 
+
+Liu He 1 Shunan Dong 1 Jiahao Yang 1 Yu Zhu 1 Xinhao Yang 1
+
+Tianyan Zhong 1 Haoran Sun 1 Daoqi Liu 1 Zongle Huang 1 Xinyuan Lin 1
+
+Huazhong Yang 1 Maokun Li 1 Yongpan Liu 1 Yu Wang 1
+
+Zhenhua Zhu 1,** Hongyang Jia 1,** Shuwen Deng 1,** 
+
+> 1
+
+Tsinghua University 
+
+Abstract 
+
+AI and HPC infrastructure increasingly serves workload port-folios that combine dense tensor computation, sparse kernels, large memory footprints, and communication-intensive col-lectives. Supporting such portfolios requires coordinated choices across accelerators, memory tiers, scale-up fabrics, and cluster networks. The resulting Cross-layer Heteroge-neous System (XHS) design space is difficult to explore: hard-ware choices change the legal task mappings, while rack power, switch radix, cabling, and cost constraints invalidate many candidates. Existing node-scale design-space explo-ration tools and fixed-platform distributed simulators ad-dress only parts of this problem. We present CHASE , an application-driven framework that searches physically feasible XHS architectures through the workloads they must execute. CHASE represents candidates as hierarchical typed graphs and rejects designs that vio-late deployment constraints. It avoids an intractable joint hardware-mapping search with a decoupled two-level loop: an inner mapper translates hardware-independent work-load DAGs into topology-aware event traces, a calibrated event-driven simulator evaluates each mapping, and an outer telemetry-guided optimizer evolves the hardware graph. We evaluate CHASE on sparse-computing and LLM work-loads. Its mapper remains within 6.06% of exhaustive op-tima while reducing mapping time by 60.5% on average relative to PEFT. Compute-model errors average 4.4–7.5%, and communication validation reproduces key trends across physical platforms. The outer search reaches near-global optima within 64 iterations. End-to-end case studies show that sparse workloads favor criticality-aware heterogeneous pods, whereas LLM inference favors scale-up islands; the resulting designs deliver 6.20 × and 2.12 × geomean speedups, respectively, while reducing cost and power relative to the baselines. 
+
+Keywords: architectural space exploration, event-driven sim-ulation, empirical calibration, workload mapping, SuperPOD 
+
+1 Introduction 
+
+AI and high-performance computing (HPC) infrastructure increasingly serves portfolios rather than a single workload class. Trillion-parameter large language models (LLMs) and extreme-scale simulations can require thousands of PFLOPs and tens of terabytes of memory, pushing execution from individual chips and servers to large clusters [ 32 , 40 , 42 , 55 ]. Their resource profiles, however, differ substantially across compute, memory, and communication. At the same time, world models [ 34 ] and HPC-AI conver-gence [ 15 ] place these different phases in shared, closed-loop pipelines. Emerging AI Factories combine simulation, data processing, training, and inference instead of operating them as isolated services [ 35 ]. Autonomous-agent development, for example, cycles through synthetic-data rendering, vision-language-action training, and real-time inference [ 6, 34 ]. AI-assisted scientific discovery similarly connects sparse solvers and large-scale simulations that generate physical-state data, AI models that choose the next simulation batch, and infer-ence services that screen candidates online [47, 51]. Serving these mixed pipelines motivates Cross-layer Het-erogeneous Systems (XHS) that combine CPUs, GPUs, and domain-specific accelerators; multi-tier memory such as UnifiedBus [ 49 ] and CXL [ 10 ]; and high-radix networks spanning package, node, rack, and cluster scales [ 19 , 27 ]. In this paper, “ cross-layer ” denotes joint reasoning over work-load behavior, node-level compute and memory composition, and pod- or cluster-level interconnect and deployment con-straints. Our question is architectural: how should compute devices, memory tiers, and networks be composed and con-nected for a target workload portfolio? 
+
+We present CHASE , an application-driven architecture exploration framework for XHS. Given target workloads, a hardware design space, and physical constraints, CHASE 
+
+returns an optimized, deployable architecture ranked us-ing candidate-specific workload mappings and event-level performance telemetry. Two coupled obstacles shape this exploration problem. 
+
+> *These authors contributed equally to this work.
+> ** These authors are corresponding authors. arXiv:2607.23042v1 [cs.DC] 25 Jul 2026
+
+Challenge 1 (C1): Different domains of workflows contain diverse phases that stress different system re-sources. No single resource mix is optimal across the work-load portfolio. Our cross-workload evaluation makes the mismatch concrete: the LLM-optimized architecture is 1.91 ×
+
+slower on HPC workloads than the HPC-optimized design, whereas the HPC-optimized architecture is 2.77 × slower on LLM workloads than the LLM-optimized design. LLM pre-training emphasizes dense tensor throughput and collective bandwidth [ 32 , 62 ], whereas sparse-matrix and graph com-putations are often limited by irregular memory accesses, reductions, and low-latency data movement [ 1 , 4 , 55 ]. A fixed, one-size-fits-all architecture consequently strands different resources in different phases. Converged deployments there-fore require a system-level compromise that serves heteroge-neous phases under shared budget, power, and operational constraints. 
+
+Challenge 2 (C2): physically constrained XHS de-sign. The candidate space is massive and discrete: systems vary in device ratios, scale-up fabrics, memory-pooling de-grees, and scale-out topologies. These choices are coupled to deployment constraints. Adding accelerators may increase peak throughput, but it also raises rack power, changes com-munication paths, and can violate cabling or switch-radix limits. Industry systems are therefore commonly assembled from vendor-defined units such as NVIDIA DGX [ 33 ], AMD MI350 [ 2 ], and TPU v4 Pods [ 19 ]. Although effective for their intended workloads, these fixed point solutions can overprovision compute for sparse or converged workloads and reduce cost efficiency [1, 55]. Existing tools cover only one side of this problem. Acceler-ator DSE frameworks such as MAGNet and Timeloop [ 24 , 37 ]search bounded node-scale spaces without cluster-level con-straints such as switch radix and rack power. Distributed-training simulators such as ASTRA-SIM [ 39 , 57 ] provide scalable evaluation but assume a fixed platform. This separa-tion exposes a topology-mapping deadlock : a hardware point 
+
+ℎ determines the resources, contention domains, and routes that define its legal mapping space 𝑆 ℎ . Hardware cannot be ranked fairly without an effective mapping, yet the mapping cannot be constructed before the hardware is known. A flat joint search over both spaces is intractable. CHASE breaks this cycle with two mechanisms. 
+
+Solution 1 (S1): Decoupled Two-Level Optimization. 
+
+CHASE places candidate-specific mapping in an inner loop and hardware evolution in an outer loop. For each architec-ture, the Mapper lowers hardware-independent workload DAGs into topology-aware event traces, and an event-driven 
+
+Simulator measures their performance. The TG-RL-driven 
+
+Optimizer then uses normalized bottleneck telemetry to pro-pose the next feasible hardware candidate. This decomposi-tion preserves hardware-mapping dependence without form-ing one monolithic search space. 
+
+Solution 2 (S2): Hierarchical Graph Modeling and Con-straint Filtering. CHASE represents hardware as typed graphs organized across package, node, rack, and cluster levels. Structured device and interconnect templates replace a flat enumeration of components. Predicates over budget, power, rack space, cable length, and switch radix reject in-valid graphs before mapping and simulation, so the optimizer spends its evaluation budget only on deployable candidates while retaining the explicit relationship between ℎ and 𝑆 ℎ .Because architecture rankings are only as reliable as their timing model, CHASE also includes a measurement-driven calibration path. It fits event parameters to commercial-platform measurements spanning NVLink, PCIe, and Infini-Band, then checks scale-out behavior across device counts, message sizes, and communication fanouts. These measure-ments ground the simulator before it is used inside the ex-ploration loop. We evaluate both the individual components and the end-to-end search. On tractable mapping instances, CHASE stays within 6.06% of exhaustive optima while reducing mapping time by 60.5% on average relative to PEFT. Compute-model errors average 4.4–7.5%, intra-machine communication er-rors average below 10%, and a held-out platform has 5.8% mean error. The optimizer reaches near-global architectures within 64 iterations. Finally, the discovered sparse-computing and LLM systems achieve 6.20 × and 2.12 × geomean speedups, respectively, while lowering cost and power relative to the baselines. This paper makes the following contributions: 
+
+• A constrained XHS formulation. We formulate archi-tecture exploration as a search over hierarchical hardware graphs whose legal workload-mapping spaces depend on topology. Explicit physical constraints remove undeploy-able candidates before expensive evaluation. 
+
+• An end-to-end exploration framework. To the best of our knowledge, CHASE is the first end-to-end DSE frame-work at XHS scale. Its decoupled two-level optimization integrates a workload Mapper , an event-driven Simulator ,and a TG-RL-driven Optimizer to resolve the topology-mapping deadlock. 
+
+• Calibration. We fit event models to commercial-cluster measurements and validate both point-level timing and scale-out trends, grounding architecture rankings in phys-ical data. 
+
+• Component and end-to-end evaluation. We quantify mapping quality, simulation fidelity, and optimizer conver-gence, then use sparse-computing and LLM case studies to expose distinct workload-dependent XHS designs with 6.20 × and 2.12 × geomean speedups.         
+
+> 210 610 410 210 010 2
+> Approx Comm/Mem BW Ratio
+> 10 1
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Approx Arithmetic Intensity
+> LLM Pre-train
+> LLM Fine-tune
+> LLM Inference
+> Recommender
+> Image Gen
+> RAG/Vector
+> Robotics (VLA)
+> Auto Driving
+> Dense Matrix (HPC)
+> Sparse Matrix (HPC)
+
+Figure 1. Characteristics of diverse HPC and AI work-loads, mapped by Arithmetic Intensity (FLOPs/Byte) and Communication-to-Memory Bandwidth Ratio. The variance strictly demonstrates that a hardware configuration optimal for one workload paradigm may perform poorly on another. 
+
+2 Background, Related Work and Motivation 
+
+The necessity for a systematic and agile architectural ex-ploration framework is driven by an inescapable conflict in the current computing landscape: the extreme diversity of emerging workload demands against the massive and highly constrained design space of modern hardware. 
+
+2.1 The Diversified Demands of Emerging Workloads (C1) 
+
+As artificial intelligence and high-performance computing converge into closed-loop workflows, computational tasks no longer exhibit uniform execution patterns. Instead, differ-ent phases of these workflows stress vastly different sys-tem resources, resulting in profound workload diversity (Challenge 1 (C1) ). As illustrated in Figure 1, distinct computational paradigms map to completely different regions of the operational space. 
+
+Dense LLM Workloads: Tasks such as large language model inference typically present high arithmetic intensity. They relentlessly stress dense tensor throughput and require massive collective communication bandwidth. [32, 62]. 
+
+Sparse Matrix Computation: Representing a vital class of scientific and HPC applications, sparse matrix computa-tion (e.g., iterative solvers represented by the HPCG bench-mark [ 12 ]) is memory-bound and control-intensive. These workloads exhibit low arithmetic intensity and are funda-mentally bottlenecked by operations like sparse matrix-vector multiplication (SpMV), irregular memory access patterns, and latency-sensitive fine-grained point-to-point (P2P) data movement. Consequently, they require extreme memory bandwidth and low-latency scalar processing rather than peak floating-point throughput [55]. Because the compute-to-communication ratio and data-movement behaviors vary so drastically, a fixed hardware architecture tuned for one workload regime suffers from se-vere resource underutilization or critical network bottlenecks when executing another. This stark diversity invalidates the traditional “one-size-fits-all” hardware approach. 𝑳 𝟐  Host -layer              
+
+> 𝑳 𝟑 Rack -layer
+> 𝑳 𝟒 Cluster -layer
+> 𝑳 𝟏 Package -layer
+> Computing
+> Instances Topology
+> Templates
+> Interconnect/
+> Switches
+> Tens or
+> Core
+> Scalar
+> Core
+> HBM
+> Stack
+> SRAM
+> 𝐿 1Instance
+> Device
+> DDR/
+> LPDDR
+> Switch Device
+> Memory
+> Instances
+> UCIe/ NVLink /
+> TSV…
+> I/O Die
+> PCIe/ UALink /
+> CXL/ NVLink …
+> 𝐿 2Instance
+> Chassis
+> CXL Mem
+> Device
+> JBOM Pool
+> Chassis Switch Tray
+> DAC Copper/
+> AEC Cable…
+> 𝐿 3Instance
+> Rack ⋯IB/RoCE/OCS
+> Switch
+> AOC/LPO/
+> CPO
+> 3D Vertical Stack
+> 2D Symmetric Star
+> Asymmetric Tile Mesh
+> Fully Connected Clique
+> Bipartite Mem Split
+> 1D Torus Ring/2D Torus
+> Single Star ToR
+> Disaggregated Islands
+> Multi Plane Direct Mesh
+> Symmetric Fat Tree
+> Asymmetric Sparse Graph
+> Multi Plane DragonFly
+> Layer
+> Hierarchy Physical
+> Constraints
+> Power
+> Limit
+> Radix/
+> Port Limit
+> Space
+> Limit
+> Total
+> Cost
+> ⋯
+
+Figure 2. The 4-layer hierarchical architecture of a typical XHS (Package, Node, Rack, Cluster). Physical constraints such as power, thermal limits, and wiring feasibility strictly bound the design space at each layer. 
+
+Table 1. Commercial XHS instantiations exhibit diverse choices in organization, interconnect, topology, and per-unit capability. Notation: (1) Cluster denotes compute racks : com-munication racks; (2) Rack denotes compute nodes : switch trays, except AL128 where it denotes accelerators : CPU nodes; (3) Node denotes accelerators : CPUs; (4) Profile re-ports FP16 PFLOPS / I/O BW / HBM BW / HBM capacity per accelerator unit; (5) Topo.: 1L/2L = 1-/2-layer, MP = multi-plane, Orth. = orthogonal, FC = fully connected. 
+
+System Cluster Rack Node Fabric Topo. Profile per Acc. 
+
+Huawei CM384 12:4 4:1 8:4 UB 2L-MP 0.8 / 0.78 / 1.6 / 128 Alibaba AL128 – 32:16 1 4:– 2 ALink 1L-Orth. –2 / 0.8 / – 2 / 144 NVIDIA GB200 – 18:9 4:2 NVLink5 1L-FC 5 / 1.8 / 8 / 192 AMD MI350 – 8∼16:0 ∼4 8:1 IF 1L-FC 4.6 / 1.08 / 8 / 288 AMD Helios – 18:6 4:1 UALoE 1L-FC 10 / 4.8 / 19.6 / 432  
+
+> 1
+
+For AL128, the rack-level ratio denotes accelerators : CPU nodes. The CPU count per accelerator node is not publicly specified.  
+
+> 2
+
+Not publicly available or unspecified. 
+
+2.2 The Rise and Fragmentation of Cross-Layer Systems (C2) 
+
+To sustain the diverse demands in C1 , the computing infras-tructure has evolved far beyond scale-up single nodes into 
+
+Cross-layer Heterogeneous Systems (XHS) . As shown in Figure 2, a typical XHS is an orchestrated hierarchy spanning four critical physical boundaries: 1) Package layer : hetero-geneous logic dies and co-packaged interconnects; 2) Node layer : multi-tier memory and PCIe/CXL fabrics; 3) Rack layer :disaggregated resource pooling and intra-rack switches con-strained by power delivery; 4) Cluster layer : high-radix net-works (e.g., InfiniBand, Ethernet) and optical transceivers. Currently, the industry attempts to tackle this massive design space through point-designed commercial products, often marketed as “Pods” or “SuperPODs.” However, instead of converging on a standardized architecture, state-of-the-art XHS instantiations from major vendors exhibit significant fragmentation (Table 1). At the node layer, the ratio of ac-celerators to host CPUs varies widely (e.g., 8:4 in Huawei 
+
+3Table 2. Comparison of representative DSE and system co-design frameworks. ✓: core support; ◦: partial or parameterized support; –: out of scope. “Phys. cons.” denotes the physical feasibility boundary.                                                                                        
+
+> Framework Target Level HW-DSE Map-DSE Topo-DSE Phys. cons. Eval. Workloads
+> MAGNet [50] NN accel. ASIC ✓✓–PPA RTL/model DNN MAESTRO [24] Dataflow ASIC ◦✓–PPA Analytic DNN Timeloop / Accelergy [37, 59] Tensor accel. ASIC/node ✓✓–PPA Analytic Tensor Sparseloop [60] Sparse accel. ASIC/node ✓✓–PPA Analytic Sparse GAMMA / ConfuciuX / DOSA [14, 20, 21] DNN optimizer ASIC ✓✓–PPA Cost model DNN ASTRA-sim2.0 [57] Training sim. Cluster ◦◦◦–Trace sim. DL/LLM TopoOpt/LIBRA [53, 58] Network DSE Cluster ◦✓✓Network Sim/proto DNN train vTrain / Calculon / AMPeD [5, 16, 31] LLM config. Cluster ◦◦◦Cost Profile/model LLM
+> CHASE XHS DSE Pkg–cluster ✓✓𝑺 𝒉 1✓Pwr/radix/cable Point+trend Sparse+LLM
+> 1Unlike prior accelerator-level DSE tools or cluster-level training simulators, CHASE searches physically feasible XHS hardware graphs and evaluates each candidate only after constructing its topology-dependent mapping space 𝑆 ℎ.
+
+CloudMatrix vs. 8:1 in AMD MI350 Series [ 2]). Furthermore, cluster-level routing topologies range from single-layer fully-connected cliques to multi-plane orthogonal networks. This fragmentation shows that the XHS design space is highly non-linear and constrained ( C2 ). The coupling of dis-crete topological choices with strict physical limitations (e.g., rack power caps and cable reach) creates a massive search space where manual tuning and trial-and-error prototyping easily settle in suboptimal local minima. 
+
+2.3 The Topology-Mapping Deadlock in Current DSE 
+
+While application-driven XHS customization is urgently needed to resolve the conflict between C1 and C2 , exist-ing Design Space Exploration (DSE) frameworks fall short of supporting this cross-layer scenario. Table 2 shows some presentative DSE and system co-design frameworks. Traditional accelerator DSE tools (e.g., MAGNet, Timeloop, MAESTRO [ 24 , 37 , 50 ]) focus heavily on bounded ASIC- or node-scale parameterization. They lack the abstraction for cluster-scale organization and ignore crit-ical physical constraints such as switch radix, cable lengths, and rack power envelopes. Conversely, distributed-system simulators (e.g., ASTRA-SIM [ 39 , 57 ]) provide scalable evalu-ation for extreme-scale runtimes, but they inherently require a fixed, pre-defined hardware platform and a pre-compiled execution trace to function. This disparity exposes a fundamental hurdle that prevents existing tools from solving C1 and C2 , which we identify as the topology-mapping deadlock: Hardware topology funda-mentally determines the software mapping space. We cannot accurately evaluate a hardware candidate without a valid workload mapping, yet we cannot generate a valid map-ping (tensor partitioning, collective scheduling, and routing) without knowing the specific devices, links, and contention domains exposed by that hardware candidate. Evaluating software mappings on a single fixed platform fails to compare alternative hardware architectures fairly. Therefore, to break this deadlock and effectively co-optimize across the workload ( C1 ) and system ( C2 ) spaces, an agile HPC Workload 
+
+> Targeted Workloads
+
+User’s Configuration Input 
+
+> Available Hardware
+> Custom Constraints
+
+CHASE  Output               
+
+> ①DAG.json
+> ②HW_List.json
+> ③Constr.json Optimizer
+> Simulator
+> Mapper
+> ①DAG ②HW List ③Constr aint s④Mapped Events ⑤Optimized Arch
+> ④
+> ⑤
+
+⋯   
+
+> LLM Workloa dGPU
+> CPU
+> Switch
+> DDR
+> Price Prof.
+
+⋯     
+
+> xxx xxx
+> xxx xxx
+> xxx xxx
+> xxx xxx
+> xxx xxx
+> HW
+> Space
+> Cost
+> Power
+> HPC Workload
+
+⋯      
+
+> LLM Workloa d
+> CPU0
+> GPU0 GPU1
+> GPU2 GPU1
+> CPU1
+> Host
+> Switch
+> GPU GPU
+> GPU GPU
+> CPU CPU
+
+⋯Host 
+
+Figure 3. User-facing input/output contract of CHASE .Users provide target workload DAGs, an available-hardware catalog, and deployment constraints; CHASE maps the work-loads onto candidate hardware, evaluates them through sim-ulation, and returns an optimized XHS architecture. framework that simultaneously evolves physically feasible hardware graphs and explores their corresponding topology-dependent software mappings is urgently required. 
+
+3 Framework Overview 
+
+We propose CHASE , an application-driven architecture ex-ploration framework for cross-layer heterogeneous systems. Figure 3 summarizes its user-facing contract: users spec-ify target workloads, hardware candidates, and constraints, while CHASE returns topology-aware mapped events and an optimized architecture. As illustrated in Figure 4, the framework bridges workload characteristics and physical constraints via a decoupled two-level optimization pipeline grounded in real-system calibration. 
+
+CHASE addresses the challenges identified in Section 2. For the physically constrained XHS space ( C2 ), it models ar-chitectures as hierarchical typed graphs and filters them with physical feasibility constraints. For diverse workloads ( C1 ), it abstracts applications into hardware-independent DAGs and instantiates them onto candidate-specific topologies. 
+
+CHASE employs three technical mechanisms. First, each hardware candidate ℎ defines its own topology-dependent                        
+
+> 4Temperature
+> Stage I
+> Workload Abstraction
+> Stage III
+> System Exploration & Optimization
+> Inner Loop ( 𝑺 𝒉 )
+> Outer Loop ( 𝑯 )
+> Stage IV
+> Real -System Calibration
+> Essential Physical
+> Constraints
+> Total Budget/Cost
+> Interconnect
+> Latency Limits
+> Package/Rank/Rack
+> Space Limits
+> Frontend
+> Workload Abstraction
+> Compiler
+> Applications
+> < / >
+> Parsing
+> Analysis
+> Optimization
+> Design
+> Space
+> Con -
+> straints
+> DAG
+> Model
+> Model
+> Event
+> Trace
+> Profiling Results
+> Optimizer
+> Specified
+> Model ℎTarget Metrics
+> of ℎunder best
+> task mapping
+> Throughput
+> Utilization
+> Congestion
+> Simulator Real Machine
+> Simulator
+> Mapper
+> Representative
+> Workloads
+> CPU Op GPU Op Comm
+> Representative
+> Cluster Configs
+> 16x A800 8x H800 ⋯
+> Optimized Output
+> Optimized HW architecture ෠ℎ∈𝐻
+> for a set of specific workloads
+> Constraints Satisfied Performance
+> Optimized Cost Space Power
+> Calibration
+> Stage II
+> Hardware Modeling
+> XHS Modeling
+> Heterogeneous Nodes
+> Interconnect Topology
+> Memory Hierarchy
+> ⋯
+> ⋯
+> ⋯
+> Event Trace
+> 𝑡 0Event 0
+> 𝑡 1Event 1
+> ⋯⋯
+> 𝑡 𝑛 Event 𝑛
+> Logical DAG
+> HW -Independent
+
+Figure 4. The end-to-end architecture of CHASE . The framework abstracts workloads into hardware-independent DAGs (Stage I), models physically constrained hardware graphs (Stage II), employs a decoupled two-level optimization loop (Stage III) to iteratively search topologies and software mappings, guided by a hardware-validated event-driven simulator (Stage IV). mapping space 𝑆 ℎ , preventing invalid single-platform com-parisons. Second, it applies physical constraint predicates to hierarchical hardware graphs before mapping and simula-tion. Third, it uses simulator telemetry to guide the outer-loop optimizer toward architecture edits that relieve mea-sured workload bottlenecks. 
+
+3.1 End-to-End Exploration Workflow 
+
+To align with the architectural components in Figure 4, the 
+
+CHASE workflow is organized into four interconnected stages: 
+
+Stage I: Hardware-Independent Workload Abstrac-tion. To reduce hardware-specific noise during the initial phase, CHASE employs a compiler frontend to parse and analyze the target applications (e.g., HPC sparse solvers, LLMs). The application is abstracted into a hardware-neutral Directed Acyclic Graph (DAG) [ 43 , 46 ]. This logical DAG retains algorithmic behaviors, such as computation volume (FLOPs) and data dependency sizes, keeping the workload representation independent of any specific hardware. 
+
+Stage II: Hardware Modeling and Constraint Filter-ing. CHASE treats XHS design space as a hierarchy of typed hardware graphs spanning package, node, rack, and cluster levels. Crucially, before any expensive simulation occurs, an essential Physical Constraint Verifier filters out invalid hardware configurations that violate power envelopes, total budget, switch radix boundaries, or volumetric space limits. 
+
+Stage III: System Exploration & Optimization. The core of CHASE lies in its exploration engine. A dedicated 
+
+Mapper projects the hardware-independent DAG onto a physically feasible hardware topology candidate, generating a hardware-aware event trace. Subsequently, a Hardware-Calibrated Simulator executes this trace to evaluate resource contention, queueing, and network bottlenecks [ 8 , 39 , 54 ]. The Optimizer then uses this telemetry to dynamically pro-pose evolved hardware candidates. 
+
+Stage IV: Real-System Calibration. To guarantee high fidelity, the simulation engine is empirically anchored against discrete operating points and macroscopic scale-out trends measured from commercial hardware platforms. 
+
+Final Output. Upon completing the exploration budget, 
+
+CHASE outputs the optimized, physically feasible XHS candi-date architecture ˆℎ, alongside its customized workload map-ping strategies and telemetry, tailored to the user’s targeted set of applications. 
+
+3.2 Decoupled Two-Level Optimization Strategy 
+
+A naïve approach to exploring the XHS design space would attempt to simultaneously optimize both the hardware ar-chitecture parameters and the software execution mapping. However, this joint search space is computationally intractable, consistent with the combinatorial growth observed in het-erogeneous task scheduling [3, 37, 46]. We use a fiber-bundle-inspired view 1 to organize this de-pendency. The base space represents the discrete hardware design space 𝐻 . For every specific hardware configuration 
+
+ℎ ∈ 𝐻 , the associated mapping space 𝑆 ℎ represents the possi-ble software mappings, including tensor partitioning, sched-uling, and routing choices. Because 𝑆 ℎ fundamentally de-pends on the resources and topology exposed by ℎ, CHASE 
+
+evaluates the candidates using a nested objective: 
+
+eO( ℎ) = max 
+
+𝑠 ∈𝑆 ℎ
+
+O( ℎ, 𝑠 ), ˆℎ ∈ arg max 
+
+ℎ∈𝐻 
+
+eO( ℎ). (1) This mathematical expression serves as a search organiza-tion framework rather than a claim that the implementation 
+
+> 1
+
+In mathematics, a fiber bundle [ 44 ] can be viewed as a collection of spaces attached to the points of another space: every point in the base space carries its own fiber, and the collection of all such fibers forms a structured whole. 
+
+> 5
+
+exhaustively solves the full XHS design space; in practice, 
+
+CHASE relies on heuristic search for the inner loop and reinforcement learning for the outer loop. Guided by this organization, CHASE avoids intractable monolithic search by employing a Decoupled Two-Level Exploration strategy: 
+
+• Inner Loop (Software Mapping Tuning): Given a fixed hardware architecture ℎ proposed by the outer loop, the 
+
+Mapper heuristically searches the mapping space 𝑆 ℎ to select a high-quality execution mapping 𝑠 . It adjusts tensor tiling, concurrency scheduling, and network routing to maximize performance on that specific topology. 
+
+• Outer Loop (Hardware Architecture Evolution): Re-ceiving the evaluated mapping performance via the Simu-lator , the Optimizer proposes updated XHS architectures 
+
+ℎ ∈ 𝐻 . It iteratively adjusts the heterogeneous node ratio, memory pooling capacity, and multi-plane interconnect topology through local graph edits, strictly sampling only those candidates that pass the physical constraint verifier. 
+
+3.3 Hardware-Validated Calibration Path 
+
+Event-driven simulation must be anchored to measured sys-tem behavior before it can be trusted for cross-layer XHS-scale projection. Prior simulation frameworks similarly rely on validated models to keep large-system studies meaning-ful [ 8 , 22 , 39 ]. To prevent the framework from generating physically detached rankings, CHASE introduces a hardware-validated calibration path that serves two critical roles: 
+
+1) Discrete-Point Anchoring. CHASE first calibrates the simulator at a set of discrete operating points on hetero-geneous testbeds. By matching observable quantities (e.g., protocol serialization overhead, effective link bandwidth, and tail latency [ 11 , 29 ]) to actual hardware, this step grounds the local event-delay parameters to physical realities rather than nominal specifications. 
+
+2) Scale-Out Trend Guardrail. Second, CHASE verifies the simulator’s behavior against real-system scale-out trends. By ensuring the simulated scaling curves align with physical measurements regarding congestion onset and queueing amplification, we establish a high-fidelity guardrail. This combined basis ensures that the simulator reliably evaluates large-scale XHS candidate topologies that cannot be built directly during the exploration phase. Detailed calibration methodologies and results are provided in Section 6 and 7. 
+
+4 Hardware Modeling 
+
+For systematic exploration, CHASE abstracts the vast XHS design space into a formal graph-based representation. De-tailed catalogs, templates, and formalisms are in Appendix A. 
+
+4.1 Multi-Layered Graph Representation 
+
+CHASE treats each candidate hardware architecture ℎ as a stack of typed physical graphs across 4 hierarchical layers: 
+
+ℎ = (𝐺 1, 𝐺 2, 𝐺 3, 𝐺 4), 𝐺 𝑘 = (𝑉 𝑘 , 𝐸 𝑘 , 𝜆 𝑘 , 𝜌 𝑘 ). (2) Here, 𝐺 𝑘 is the graph at physical layer 𝐿 𝑘 (𝑘 ∈ { 1, 2, 3, 4}), where 𝑉 𝑘 contains hardware entities, 𝐸 𝑘 contains links, 𝜆 𝑘 as-signs hardware types, and 𝜌 𝑘 stores physical attributes. The layers are: 1) Package-level (𝐿 1): heterogeneous dies and inter-faces. 2) Node-level (𝐿 2): multi-tier memory and board routing. 3) Rack-level (𝐿 3): memory pools and intra-rack switches. 4) 
+
+Cluster-level (𝐿 4): scale-out networks. Each layer’s graph space is generated from a Cartesian product: 
+
+D𝐿 𝑘 = N𝐿 𝑘 × I 𝐿 𝑘 × T 𝐿 𝑘 × Θ𝐿 𝑘 , (3) where N𝐿 𝑘 is the component inventory, I𝐿 𝑘 is the intercon-nect medium, T𝐿 𝑘 is the topology template, and Θ𝐿 𝑘 contains template parameters. To interface with the mapper and simulator, each vertex 
+
+𝑣 ∈ 𝑉 𝑘 and edge 𝑒 ∈ 𝐸 𝑘 exposes a metric vector: 
+
+𝜌 𝑘 (𝑥 ) = ⟨𝐶 peak , 𝐵 max , 𝐿 base , 𝑂 proto ,𝑃 idle , 𝑃 active , 𝐶𝑜𝑠𝑡 rcu , 𝑈 space ⟩. (4) Here, 𝑥 denotes an entity or link. 𝐶 peak is peak compute throughput, 𝐵 max is memory/link bandwidth, 𝐿 base is base latency, and 𝑂 proto captures protocol overheads. 𝑃 idle and 
+
+𝑃 active record power, 𝐶𝑜𝑠𝑡 rcu denotes relative cost, and 𝑈 space 
+
+records physical footprint. CHASE uses neutral values for inapplicable dimensions and relies on 𝜆 𝑘 (𝑥 ) for interpreta-tion. 
+
+4.2 Physical Constraint Filtering 
+
+A syntactically generated graph from Î D𝐿 𝑘 is often phys-ically invalid. To avoid wasting mapping and simulation cycles, CHASE applies a Physical Constraint Verifier .First, it enforces structural composition rules. For 𝑘 > 1, a node must be a native component or a valid subgraph from the preceding layer: 
+
+𝑉 𝑘 ⊆ C 𝐿 𝑘 ∪ { 𝐺 (𝑖 )  
+
+> 𝑘 −1
+
+| 𝐺 (𝑖 )  
+
+> 𝑘 −1
+
+∈ 𝐻 𝑘 −1,valid }. (5) Edges must connect compatible ports, bounded by the se-lected topology template. Second, it evaluates systemic predicates against physical constraints, restricting the space to feasible points 𝐻 valid :
+
+Dall =
+
+> 4
+
+Ö
+
+> 𝑘 =1
+
+D𝐿 𝑘 ,𝐻 valid = {ℎ ∈ D all | Φfeasible (ℎ)} ,
+
+Φfeasible (ℎ) = Φbudget (ℎ) ∧ Φpower (ℎ) ∧ Φthermal (ℎ)∧ Φradix (ℎ) ∧ Φspace (ℎ).
+
+(6) 
+
+Φfeasible is true only when all checks pass. These predicates filter configurations violating budget ( Φbudget ), power/cool-ing envelopes ( Φpower , Φthermal ), switch port limits ( Φradix ), 
+
+> 6
+
+Mapper Architecture                           
+
+> Workload JSON HW Topo JSON CLI Options
+> Tasks Tensors
+> Dependencies
+> Devices
+> Param Directed Links
+> Layers
+> Args
+> --mapper =heft|peft|greedy
+> --parallel =none|matrix|auto
+> Task
+> Graph IR
+> to_task_graph (H)
+> expand_parallel ()
+> annotate_comm_bytes()
+> Map
+> Engine
+> map(G,H)
+> Back -
+> end
+> write()
+> summarize()
+> Frontend
+> load_workload()
+> load_topology ()
+> Input
+> Hardware
+> Topology
+> compute_devices ()
+> Models
+> Workload
+> Task Metadata
+> Tensor Metadata
+> Task Graph
+> Task Nodes
+> Task Edge
+> Cost Model
+> Task Time
+> Transfer Time
+> Taskflow.json
+> COMP
+> Artifacts
+> Mapping
+> Plan
+> Task →Device
+> RunResult
+> Makespan
+> Taskflow
+> .svg
+> Visualization Bytes Counts
+> SEND
+> RECV COLL
+> Internal Pipeline
+> Entry Point
+> Pseudocode
+> Strategies
+> mapper:: write _taskflow ()
+> HEFT PEFT
+> PEFT -LC HOFT
+> Exhaustive
+> Input H_json ,W_json , opt
+> W = load_workload (W_json )
+> H = load_topology (H_json )
+> G = W.to_task_graph (H)
+> if opt.parallel :
+> G = expand_parallel (G)
+> G = annotate_comm (G)
+> M = select_mapper (opt)
+> P = M. map (G2, H)
+> R = summarize (G2, P)
+> write_taskflow (G2, P)
+> return RunResult (R)
+> AEFT
+> Graph
+> Refinement
+
+Figure 5. Overall architecture of the workload mapper. and volumetric/cabling constraints ( Φspace ). Only valid can-didates ℎ ∈ 𝐻 valid proceed to the optimization engine. 
+
+5 Decoupled Two-Level Optimization Engine 
+
+The core of CHASE is a dual-loop optimization engine that addresses the topology-mapping deadlock identified in Sec-tion 2. For any feasible hardware point ℎ, the engine first searches its unique mapping space 𝑆 ℎ via an inner-loop Map-per and evaluates the resulting trace via a Simulator . The outer-loop Optimizer then utilizes the evaluated performance to propose evolved hardware candidates. 
+
+5.1 Graph-Based Workload Mapper 
+
+The Mapper translates a hardware-independent workload DAG into a hardware-aware event trace for an XHS can-didate. It annotates the logical DAG with communication volumes and heuristically selects valid placements and sched-ules bounded by the topology’s resources. Figure 5 summarizes the mapper architecture. It takes workload, hardware topology, and mapping options as inputs. The frontend parses these to construct a task-graph IR. The graph-refinement stage optionally expands parallel tasks and annotates edges with communication sizes. The map engine uses a topology-aware cost model to estimate task execution and transfer times. Based on these estimates, it produces a mapping plan using algorithms like HEFT [ 46 ], PEFT [ 3], HOFT [ 30 ], AEFT [ 52 ], Greedy, or exhaustive search. We also introduce an optimized PEFT algorithm to handle het-erogeneous costs efficiently. Finally, the backend writes the mapped event trace. The mapper avoids exhaustive search by using list-scheduling heuristics. For large graphs, it optimizes PEFT scheduling overhead via cached cost estimates and locality-pruned de-vice selection, whose effectiveness is evaluated in the exper-imental section. Simulator Architecture 
+
+Input  DES -Based Simulation Engine  Output          
+
+> COMP
+> Chakra ET
+> per Rank
+> Hardware
+> Topology
+> COMM_COLL
+> SEND/RECV
+> MEM_LOAD/
+> STORE
+> RANK NODES
+> SWITCH/MEM
+> LINK BW/LAT
+> Workload
+> Engine
+> Event Queue
+> Unified Event Timeline Compute Network Memory
+> DAG Dependencies
+> Resource Model
+> Compute /Comm Cap
+> Node Type Dispatch
+> System
+> Layer
+> Compute
+> Comm.
+> Remote Mem
+> Roofline Calibration
+> Collective P2P
+> Queue Service
+> Simulator
+> Frontend Calibrated
+> Backends
+> Rank
+> Runtime Makespan
+> Time
+> Breakdown
+> Operator
+> Stats
+> Network
+> Scaling
+> Report
+
+Figure 6. Overall architecture of the real-hardware-calibrated heterogeneous-system simulator. 
+
+5.2 Hardware-Calibrated Heterogeneous-System Simulator 
+
+The hardware-aware trace is evaluated by a calibrated event-driven simulator. As shown in Figure 6, it advances compute, point-to-point, collective, and remote-memory events on a unified timeline. This preserves causal dependencies and ex-poses resource contention across compute devices, network fabrics, and memory providers. 
+
+Real-Hardware Calibration. To ensure physically mean-ingful rankings, the simulator avoids relying solely on nomi-nal specifications. Compute and communication timings are anchored by replay measurements from commercial systems and applied as calibrated performance models. Compute events combine measured operator behavior with roofline-style bounds [ 56 ], retaining analytical coverage for unseen candidates while remaining grounded in physical reality. 
+
+Explicit Heterogeneous Topology and Congestion Awareness. Unlike template-based simulators, CHASE mod-els candidates as explicit directed hardware graphs contain-ing heterogeneous compute, switch, and memory nodes con-nected by asymmetric links. Communication events route over this topology, consuming shared resources. Consequently, serialization, queueing, and hotspot contention naturally emerge, allowing rack- and cluster-level congestion to di-rectly impact the makespan. 
+
+Remote-Memory Modeling. CHASE treats remote-memory access as a first-class event rather than a fixed compute penalty. Remote accesses traverse the network, queue at the memory provider, and consume provider bandwidth. This isolates network latency from memory contention, yielding actionable telemetry for the outer optimizer. Ultimately, the simulator returns runtime, utilization, and bottleneck signals to the outer-loop Optimizer , which ranks the candidates. Af-ter the exploration budget is exhausted, CHASE reports the final desired architecture ˆℎ with its mapping and telemetry. 
+
+5.3 Hardware Architecture Optimizer 
+
+To navigate the massive outer-loop hardware space, CHASE 
+
+employs a Graph Neural Network (GNN)-based Reinforce-ment Learning (RL) agent. Instead of treating XHS design as 
+
+7Optimizer Architectur e                                     
+
+> Hardware State
+> Racks Slots Links
+> Masked
+> Legal Actions
+> Graph edit candidates
+> Objective
+> Context
+> Score Budget Power
+> Simulator
+> Telemetry
+> Util Queues Mem
+> Observation
+> Builder
+> Packs state Action set
+> Contex tTelemetry
+> Graph
+> Observation
+> Node Global
+> Action Prior tensors
+> 𝑿 𝒗 ,𝑬 ,𝒈 ,𝑨 ,𝒉
+> Edge
+> Node/ edge
+> Encoders
+> Linear
+> Projections
+> Message
+> Passing
+> Neighbor
+> Aggregation
+> Readout
+> and Fusion
+> 𝒛 𝑮 ,𝒛 𝑻 ,𝒛 𝑨 ,𝒉 𝒌
+> Actor Head
+> Legal -action logits 𝒍 𝒌
+> 𝝅 𝒂 𝒌 |𝒔 𝒕 ∝𝐞𝐱𝐩 𝒍 𝒌 +𝝀 𝒉 𝒉 𝒌
+> Masked Policy
+> Next candidate topology
+> Sampled
+> Graph Edit
+> Reward Score
+> Improvement, Penalties,
+> Global -best Bonus
+> Rollout Trajectory
+> 𝒔 𝒕 ,𝒂 𝒕 ,𝒓 𝒕 ,𝑽 𝒕 ,𝐥𝐨𝐠 𝝅 𝒕
+> GAE+PPO Update
+> Policy Loss, Value Loss,
+> Entropy, KL -to -prior
+> Critical Head
+> State value 𝑽 (𝒔 𝒕 )
+> Workload Environ.
+> Mapper/Simulator
+> Evaluatio n
+> Gradient Update
+> New Score and Telemetry
+
+Figure 7. Architecture of the hardware optimizer. The GNN policy encodes the current hardware graph, com-bines learned action logits with simulator-derived bottleneck telemetry, applies legality masks to prune physically invalid graph edits, and sends valid successor architectures back to the mapper–simulator loop for reward evaluation. a black-box environment, CHASE introduces three system-specific improvements to algorithms like TG-RL [ 41 , 63 ] to ensure convergence and feasibility. Figure 7 summarizes the optimizer. At each step, it observes the hardware graph and simulator feedback, masks constraint-violating actions, and scores remaining actions. The selected edit produces a can-didate architecture, evaluated by the mapper and simulator, providing reward and telemetry for the next step. 
+
+Legality-Constrained Action Masking. To guarantee feasibility and maximize sample efficiency, CHASE projects physical constraint predicates (Eq. 6) into the action space. Before each decision, a legality mask prunes topological edits (e.g., node insertion, rewiring) violating power, port, or budget limits. This prevents wasting simulation budget on impossible architectures. 
+
+Bottleneck-Guided Telemetry Prior. To accelerate con-vergence, CHASE injects system intelligence into the actor network. We use simulator telemetry (Section 5.2) to con-struct a heuristic prior ℎ(𝑜 𝑡 , 𝑎 ). Rather than relying solely on the GNN’s logits 𝑔 𝜃 (𝑜 𝑡 , 𝑎 ), the action distribution combines the policy with this prior: 
+
+𝜋 𝜃 (𝑎 | 𝑜 𝑡 ) = softmax 𝑎 ∈ A valid  
+
+> 𝑡
+
+(𝑔 𝜃 (𝑜 𝑡 , 𝑎 ) + 𝜆ℎ (𝑜 𝑡 , 𝑎 )) . (7) If telemetry flags remote-memory contention, the prior bi-ases actions toward adding memory capacity or link band-width. The coefficient 𝜆 decays to balance initial heuristics with late-stage RL exploitation. 
+
+Workload-Normalized Reward Stabilization. Optimiz-ing for a workload suite by aggregating raw runtimes desta-bilizes the RL gradient, as execution times span orders of magnitude (hours for LLMs vs. milliseconds for HPC traces). 
+
+CHASE addresses this by transforming the runtime cost into a workload-normalized log-improvement reward. This bal-ances performance scaling (via geometric mean speedup) and penalizes over-budget trajectories. GNN state embeddings, reward functions, and PPO hyper-parameters are detailed in Appendix B. 
+
+Table 3. Calibration and projection coverage. The first five rows are the architecture systems used for calibration across three anonymized commercial platforms; the final row is held out for projection validation. Accuracy distributions are reported separately in Figure 12. 
+
+Platform System Scale Fabric Use 
+
+Platform A A800-class 2–16 GPU NVLink & IB Calibration Platform A H800-class 2–8 GPU NVLink Calibration Platform A H20-class 2–8 GPU NVLink Calibration Platform B RTX4090-class 2 GPU PCIe Calibration Platform C C500-class 1 GPU PCIe Calibration Held-out L20-class 8 GPU NVLink Projection 
+
+6 Real-System Calibration & Scale Projection 
+
+Reliable architectural comparison requires that the simulator correctly orders candidate designs rather than reproducing cycle-exact behavior. CHASE treats calibration as a guardrail: the uncalibrated simulator (Section 5) provides roofline- and serialization-based upper bounds on event service times, and calibration fits efficiency corrections to match measured hardware. Corrections are fit on five architecture systems from three commercial platforms and projected onto larger unbuilt XHS candidates. 
+
+6.1 Calibration Methodology 
+
+For each compute operator 𝑜 , the simulator derives a roofline upper bound [ 56 ] max (𝑢 flop 
+
+𝑜 , 𝑢 mem 
+
+𝑜 ) from peak throughput and memory bandwidth. Calibration introduces three knobs per operator—FLOP efficiency 𝜙 𝑜 , bandwidth efficiency 𝛽 𝑜 ,and launch overhead ℓ𝑜 —yielding ˆ𝑡 𝑜 = ℓ𝑜 +max (𝑢 flop 
+
+𝑜 /𝜙 𝑜 , 𝑢 mem 
+
+𝑜 /𝛽 𝑜 ).Communication events are handled analogously: uncalibrated link-serialization time is corrected by protocol-startup la-tency and bandwidth-derating factors, with separate param-eters for point-to-point and collective transfers. Ground-truth timings come from calibration workloads processed by the Mapper into hardware-aware event traces. The trace specifies kernel launches, tensor movements, and collective events to replay on the physical platform to mea-sure event durations with warmup [ 43 ]. Since roofline ceil-ings are independent of calibration knobs, a single simulator pass produces all reference values, and each knob is recov-ered via weighted least-squares regression. Residuals are weighted by 1/𝑡 2 to minimize relative error, preventing large kernels from dominating. Efficiencies are clamped to (0, 1].When a single parameter set cannot cover all operator sizes, the calibrator splits the size axis into contiguous segments if it yields a statistically significant improvement. We separate hardware coverage from calibration accuracy: Table 3 reports the platforms used to fit and validate profiles, while Figure 12 details the calibration-error distribution. 
+
+> 8
+
+Table 4. HPCG workload configurations. NNZ denotes the number of nonzeros, and Iter. denotes iterations.                               
+
+> Workload Grid Rows NNZ Iter. Tasks
+> n16_i3 16 34,096 97,336 3131
+> n32_i5 32 332,768 830,584 5217
+> n64_i50 64 3262,144 6,859,000 50 2,152
+> n104_i100 104 31,124,864 29,791,000 100 4,302
+> n104_i500 104 31,124,864 29,791,000 500 21,502
+
+Table 5. Sparse direct solver workload configurations. NNZ denotes the number of nonzeros.             
+
+> Workload Rows NNZ Tasks
+> apache2 715,176 4,817,870 32,411
+> CoupCons3D 416,800 17,277,420 32,206
+> ecology1 1,000,000 4,996,000 29,426
+
+6.2 Hardware Coverage 
+
+As shown in Table 3, our dataset covers five architecture systems from three commercial platforms. These include NVLink-based scale-up hosts, PCIe-based hosts, and a multi-node configuration connected via 4 ×200 Gbps InfiniBand, spanning intra-machine NVLink/PCIe and inter-machine RDMA paths. The held-out L20-class platform evaluates whether fitted profiles can project to unseen systems. For each platform, we run workloads stressing compute and communication—sparse iterative solvers for irregular memory access and point-to-point transfers, and dense LLM forward passes for collective bandwidth. The replay traces and simulator-predicted upper bounds provide the observa-tions to fit calibration knobs per machine. 
+
+6.3 Scale-Out Projection 
+
+Per-machine profiles alone cannot cover the full XHS design space, as simulators may mispredict large-scale congestion or synchronization overheads [ 8, 22 ]. CHASE therefore pools the fitted profiles across platforms and treats each knob as a regression target over hardware attributes: peak throughput, memory/link bandwidth, link latency, device count, and hop-distance. Coefficients are fit via ridge regression, weighting each sample by its anchoring quality. Given any candidate ℎ ∈ 𝐻 valid , the regression model maps its hardware attributes to a complete set of calibration knobs, projecting profiles for unbuilt configurations. We reserve the L20-class 8-GPU NVLink platform as a held-out system to validate this projection model. Detailed L20 projection errors are reported in Section 7. 
+
+7 Evaluation 
+
+This section evaluates CHASE systematically across its core components and its end-to-end capability. The evaluation answers for four key questions: Q1 (Mapper): Does the hardware-aware mapper produce near-optimal schedules 
+
+Table 6. Model configurations for LLM workload. Req. Len. denotes the maximum request length.                                                 
+
+> Model Param. Attn. Type 𝐿 𝐻 𝑑 𝑑 FFN /EReq. Len. Qwen3.5 32B GQA Dense 64 24 5,120 17,408 262K Llama3.1 70B GQA Dense 80 64 8,192 28,672 128K GPT-3 13B MHA Dense 40 40 5,140 20,560 2K Gemma4 27B GQA Dense 60 32 5,376 21,504 262K Mixtral 8×7B GQA MoE 32 32 4,096 14,336 32K
+
+in tractable spaces, and is it competitive with other strong algorithms in large-scale scenarios? Q2 (Simulator): How accurately does the calibrated event-driven simulator match real-system measurements, and how does its simulation time compare with ASTRA-SIM [ 39 ]? Q3 (Optimizer): Can the outer-loop search engine find near-optimal hardware archi-tectures in small spaces, and does it outperform baseline strategies (e.g., Random, Greedy) in massive design spaces? 
+
+Q4 (Case Studies): Under realistic physical constraints, what workload-specific XHS architectures does the complete framework select for distinct application paradigms? 
+
+7.1 Experimental Workload 
+
+We evaluate two workload families stressing different archi-tectural dimensions. Sparse workloads represent memory-sensitive HPC/graph computations with irregular access. LLM inference captures dense tensor computation with reg-ular pipeline and tensor-parallel communication [32, 62]. 
+
+Sparse computation suite. This suite contains two trace families: HPCG (Table 4) [ 12 ] and sparse direct solvers (Ta-ble 5) [ 28 ]. HPCG represents iterative sparse linear solvers featuring irregular memory access, multigrid structures, tri-angular-solve dependencies, SpMV, and reductions. We gen-erate these by converting local HPCG kernel traces into our workload representation. To complement HPCG, we include GPU sparse direct solver traces following the Trojan Horse [ 28 ] aggregate-and-batch model. These capture state-of-the-art scheduling in sparse factorization, where fine-grained tasks are prioritized, aggregated, and batch-dispatched via DAG dependencies. 
+
+LLM inference suite. This suite (Table 6) covers rep-resentative decoder-only and MoE models: Qwen3.5 [ 38 ], Llama3.1 [ 13 ], GPT-3 [ 7 ], Gemma [ 45 ], and Mixtral [ 18 ]. They provide dense tensor computation with predictable shapes. Unlike irregular sparse DAGs, LLM inference exposes par-allelism through batched matrix multiplications, attention, and structured pipeline/tensor-parallel communication. Instantiated with a 2048 request length, model executions are converted into our common workload representation. The resulting traces stress accelerator throughput, memory bandwidth, and collective communication.               
+
+> 946 88 130 172 214 256 298 340 382 424 466 508 550 592 634
+> Task Count
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> Makespan (s)  Exhaustive
+> PEFT LC (ours)
+> Optimized Percentage
+> 0
+> 25
+> 50
+> 75
+> 100
+> Optimized Percentage (%)
+
+Figure 8. Mapper Near-Optimality: Bar chart showing the relative performance gap between CHASE ’s mapper and exhaustive optimal search on tractable hardware topologies. 10 2 10 3 10 4 10 5 10 6         
+
+> Task Count
+> 0
+> 25
+> 50
+> 100
+> 500
+> Runtime vs Ours (s)  Runtime
+> 10 210 310 410 510 6
+> Task Count
+> 0
+> 0.5
+> 1
+> 10
+> 100
+> Makespan vs Ours (s)  Makespan
+> PEFT_LC (Ours) PEFT AEFT GREEDY HEFT HOFT
+
+Figure 9. Mapper algorithm against other strong baseline al-gorithms: Runtime/Makespan comparison between CHASE Mapper and baselines (e.g., PEFT) on large-scale workloads. 
+
+7.2 Mapper Evaluation 
+
+The mapper bridges workload DAGs and hardware topolo-gies. We evaluate its quality through near-optimality on tractable spaces and mapping overhead on large workloads. 
+
+Near-Optimality Validation on Tractable Spaces. We study small-scale workloads where the mapping space Sℎ un-der a fixed topology ℎ can be enumerated. This provides the exact optimal mapping via exhaustive search as a baseline. On a 4-GPU ring topology, we evaluate 15 tractable HPCG workloads (46–634 tasks) by varying CG iterations. As Fig-ure 8 shows, our PEFT-LC algorithm approaches the global optimum, averaging a 6.06% gap (5.68% weighted average) from exhaustive search. Although exhaustive enumeration is infeasible for larger workloads, this exact validation confirms the mapper’s topology-aware decisions remain near-optimal. 
+
+Overhead Optimization at Scale. We evaluate map-ping overhead on large DAGs where exhaustive search is intractable, comparing CHASE against HEFT [ 46 ], PEFT [ 3], AEFT [ 52 ], and HOFT [ 30 ]. As shown in Figure 9, across 38 HPCG DAGs (130–500,014 tasks), CHASE reduces mapper runtime by 60.5% on average versus PEFT while matching its estimated makespan. Compared to HEFT, AEFT, and HOFT, 
+
+CHASE reduces mapper runtime by 63.6%, 64.4%, and 82.7%, respectively, while improving median makespan by 0.096%, 0.059%, and 0.039%. Thus, CHASE preserves PEFT’s schedule quality while significantly reducing mapper overhead. 4 8 16 32 64 128 256 512 1024 4 8 16 32 64 128 256 512 1024     
+
+> GPU Rank Count
+> 0
+> 2
+> 4
+> 6
+> 8
+> Wall Clock Time (s)
+> ASTRA-SIM CHASE G3 Circuit Ecology1 Speedup
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> Speedup
+
+Figure 10. Simulator performance against ASTRA-SIM: wall-clock simulation time (seconds) under matched workload traces and hardware configurations. 0.9 1.0 1.1 1.2       
+
+> Link/Node Count
+> 0246
+> Avg Link BW (Tbps)
+> 0.3  0.7  1.1  1.5
+> G/C TFLOPS (×1k)
+> 0.5
+> 0.7
+> 0.9
+> 1.1
+> 1.3
+> 1.5
+> 0.9
+> 1.0
+> 1.1
+> 1.2
+> Link/Node
+> Count
+> 0.0
+> 2.0
+> 4.0
+> 6.0
+> Avg Link
+> BW (Tbps)
+> 0.3
+> 0.7
+> 1.1
+> 1.5
+> G/C TFLOPS
+> (×1k)
+> 010 20 30
+> Update
+> 0.5
+> 1.0
+> 1.5
+> Best
+> Score
+> Best Score
+
+Figure 11. Optimization process. The outer-loop optimizer proposes physically valid hardware candidates, the mapper derives a topology-specific schedule for each candidate, the simulator returns performance and bottleneck telemetry, and the optimizer accordingly update the next candidate. 
+
+7.3 Simulator Evaluation 
+
+To ensure credible rankings, we evaluate the simulator’s fidelity against real hardware and its efficiency for inner-loop DSE. We use ASTRA-SIM [ 39 ] as the baseline, comparing wall-clock time under matched traces and hardware. 
+
+Accuracy against Real-System Measurements. Fol-lowing Section 6, we report the mean absolute relative error on each platform for compute and communication. Figure 12 shows the per-operator error distribution across GPU types and interconnects. Table 3 reports the platform coverage. Compute errors average 4.4–5.0% across NVIDIA GPUs and 7.5% on Metax C500. Intra-machine communication er-rors average below 10% on NVLink and PCIe fabrics. To test generalization, we apply the trained regression model to a held-out NVIDIA L20 cluster. The 5.8% mean error on L20 confirms accurate projection on unseen cases. 
+
+Simulation-Time Comparison against ASTRA-SIM. 
+
+We compare CHASE ’s host-side wall-clock time against ASTRA-SIM [ 39 ]. CHASE reduces simulation time by 15.5% over ASTRA-SIM on large LLM traces and sustains 2.10 × 10 5
+
+events per second, enabling extensive candidate evaluation (Figure 10). 
+
+7.4 Optimizer Evaluation 
+
+The outer-loop TG-RL Optimizer is responsible for navigat-ing the massive, physically constrained XHS design space. 
+
+10 assemb                                           
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> axpy colcount copy dot etree gemm gessm getrf mv nrm2 order postorder potrf scal spgemm spmv sptrsv ssssm sup_par symb trans trsm trsv tstrf
+> axpy
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> copy dot gemm gessm getrf mv nrm2 potrf scal spgemm spmv sptrsv ssssm trans trsm trsv tstrf p2p coll all
+> CPU Operator
+> GPU Operator
+> Communication
+> Compute All
+> 1x MetaX C500 (Plat.C)
+> 2x RTX 4090 (Plat.B)
+> 8x H20 (Plat.A)
+> 8x H800 (Plat.A)
+> 16x A800 (Plat.A)
+> Mean Calibration Error (%)
+
+Figure 12. Mean calibration error of the CHASE simulator across different operators and hardware platforms compared to real-system ground truth. C500 does not optimize tstrf kernel, leading to a outlier point. 0 10 20 30 40 50 60 
+
+> Update
+> 0
+> 30
+> 60
+> 90
+> 92
+> 94
+> 96
+> 98
+> 100
+> Performance Percentage
+> to Optimal (%)
+> 1 rack, design space size = 43
+> 2 racks, design space size = 3612
+> 3 racks, design space size = 158886
+
+Figure 13. Optimizer Near-Optimality: Trajectory of the best-found architecture’s performance gap to the true ex-haustive optimum in a tractable finite hardware space. Figure 11 shows the Optimization process on a projected search space. We evaluate its search efficiency and optimal-ity. 
+
+Near-Optimality in Tractable Hardware Spaces. We restrict the hardware design space H to a small, finite set (e.g., 158,886 valid candidates) where exhaustive simulation is possible. Figure 13 shows the gap between the optimizer-selected hardware ˆℎ and the exhaustive best ℎ∗ across search steps. On the tractable spaces, the TG-RL optimizer miti-gates the risk of being trapped in local minima, consistently converging to near-global optima within 64 iterations. 
+
+Search Efficiency in Massive Design Spaces. For prac-tical XHS exploration, the space H is computationally in-tractable. We compare our TG-RL optimizer against standard search baselines: Random Search, Greedy Search, and Simu-lated Annealing. Under the same simulator evaluation bud-get, our TG-RL optimizer, guided by workload-normalized rewards and legality masking, reaches a stable high-quality architecture within 16 iterations. In contrast, the baseline methods remain below the TG-RL solution quality even after 64 iterations, demonstrating the higher sample efficiency of TG-RL in massive design-space exploration. 
+
+7.5 Case Study 1: Sparse Computation 
+
+We first examine the architecture selected for the sparse computation suite. Sparse workloads expose irregular task DAGs with a mixture of dependency-critical factorization tasks and wider update phases, so the searched topology Rack1           
+
+> Rack2
+> 16-Port NVSWITCH
+> H200 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> CPU XEON 5 th 32C
+> GPU NVIDIA L40S
+> GPU NVIDIA L40S
+> GPU NVIDIA L40S
+> GPU NVIDIA L40S
+> PCIe 5.0 Switch
+> L40S PCIe CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H100 PCIe
+> GPU H100 PCIe
+> GPU H100 PCIe
+> GPU H100 PCIe
+> CPU XEON 5 th 64C
+> PCIe 5.0 Switch
+> H100 PCIe
+> CPU -GPU Host
+> 8x400G ETH OSFP
+> 8x400G IB  OSFP
+> NVLINK Gen4 PCIe4 x16
+> PCIe5 x16
+
+Figure 14. Sparse computation hardware architecture ob-tained through optimization. can reveal whether the optimizer simply prefers the fastest GPU host or differentiates resources by task role. The se-lected architecture in Figure 14 does not form a uniformly fastest-GPU pod. It contains a high-bandwidth H200-based execution island together with H100-based CPU-GPU hosts. This composition separates a high-performance tier from additional CPU-GPU hosts that provide parallel execution breadth under the same physical and cost constraints. As shown in Table 7, we use three Trojan Horse [ 28 ] factor-ization traces to interpret why this design pattern appears. 2
+
+The mapper places a large fraction of all analyzed tasks on the H200 host, and more importantly, it concentrates dependency-critical factorization operators on that host. For example, the getrf operator is almost entirely mapped to the H200 host across all three traces, while gessm is also strongly concentrated there for apache2 and ecology1 .This placement pattern matches the dependency structure of sparse factorization DAGs. Panel and frontier operations, e.g., getrf and gessm , act as high-fanout producers for later update tasks, so accelerating them shortens the effective DAG frontier. The H100-based hosts absorb off-critical-path update work and provide additional CPU/GPU ranks without assigning every task to the most expensive host type. 
+
+> 2
+
+These traces are used only for post-hoc mapping analysis in Table 7; we evaluate the complete workload suite during the sparse optimization run. 
+
+11 Table 7. Analysis subset for the sparse case study. These Trojan-horse traces [ 28 ] are selected from the full sparse optimization suite for post-hoc placement analysis; they are not the complete workload suite used by the optimizer. 
+
+Trace Tasks getrf gessm Spd. on H200 tier on H200 tier on H200 tier (×)(%) (%) (%) 
+
+CoupCons3D 60.3 100.0 77.0 3.93 
+
+apache2 54.4 98.6 93.1 2.32 
+
+ecology1 59.2 95.4 94.6 1.67 
+
+Table 8. Topology and performance summary for the sparse case study. Both systems are under the same cost and power constrains. 
+
+Metric El Capitan-like Baseline CHASE Topology 
+
+GPU composition 128 H100 SXM GPUs 8 H200 + 4 H100 + 4 L40S Host composition 32 compute nodes 1 HGX H200 + 1 HGX H100 + 1 L40S CPU ranks 64 5Geomean speedup 1.00 × 6.20 ×
+
+Table 8 shows the topology-level trade-off of the selected sparse-computation architecture against an El Capitan [ 25 ]-like baseline, a representative state-of-the-art exascale sys-tem. Although the optimized topology uses fewer high-end GPU resources than the baseline, it achieves a higher geometric-mean speedup under the same cost and power constrains. The resulting design suggests a simple allocation rule for sparse pods: use expensive high-bandwidth hosts where they shorten the DAG frontier, and use lower-cost heterogeneous hosts where additional execution breadth is sufficient. 
+
+Takeaway. Sparse workloads favor criticality-aware het-erogeneous pods rather than uniformly fastest-GPU pods: high-bandwidth resources should be concentrated on dependency-critical frontier operations, while cheaper CPU-GPU hosts provide parallel breadth for update work. 
+
+7.6 Case Study 2: LLM Workloads 
+
+The LLM case study exposes a different scale-up pattern. Dense transformer inference features regular GPU-resident computation and structured collectives. Thus, the main de-sign question is how to align model parallelism with hard-ware scale-up boundaries, rather than placing irregular tasks. As Table 9 summarizes, CHASE selects five HGX-style 8-GPU hosts (two H200, three H100), totaling 40 GPUs and 10 CPUs. This topology improves geomean performance by 2.12 × and reduces GPU count, cost, and power compared to the 64-GPU H100 SuperPOD baseline (Table 9). 
+
+Regular scale-up islands. The LLM topology comprises regular 8-GPU scale-up islands connected by rack-level fab-rics. This matches dense transformer execution, where GPU throughput, HBM bandwidth, and low-latency GPU-GPU Rack1                                                                                                   
+
+> 16 -Port NVSWITCH
+> H100 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> NVLINK Gen4
+> 16 -Port NVSWITCH
+> H100 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> NVLINK Gen4
+> 16 -Port NVSWITCH
+> H100 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> CPU XEON 5 th 64C
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> GPU H100 SXM5
+> NVLINK Gen4
+> 64 -Port ToR SWITCH
+> 16 -Port NVSWITCH
+> H200 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> NVLINK Gen4
+> Rack 3
+> 16 -Port NVSWITCH
+> H200 SXM CPU -GPU Host
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> CPU XEON 5 th 64C
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> GPU H200 SXM5
+> NVLINK Gen4
+> Rack 2
+> 8x400G ETH OSFP
+> 8x400G IB OSFP
+
+Figure 15. LLM-specific hardware architecture obtained through optimization. 
+
+Table 9. Topology and performance summary for the LLM case study. Both systems are under the same constrains. 
+
+Metric NVL72-like Baseline CHASE Topology 
+
+GPU composition 72 H100 SXM GPUs 16 H200 SXM + 24 H100 SXM Host composition 18 compute trays 2 HGX H200 + 3 HGX H100 CPU ranks 36 10 Geomean speedup 1.00 × 2.12 ×
+
+interconnects are critical. Unlike the sparse design, CHASE 
+
+avoids CPU-only or PCIe-attached hosts; CPUs do not shorten the critical path, and PCIe links weaken tensor-parallel com-munication. H200/H100 heterogeneity appears at the host level: H200s serve bandwidth-sensitive stages, while H100s provide cost-effective dense compute. 
+
+Collectives remain local to scale-up islands. The LLM traces generate significant collective traffic (e.g., 7.0 GB for Llama, 4.4 GB for Qwen/Gemma). The optimized topology changes where this communication occurs rather than re-moving it. For Qwen, Llama, Gemma, and Mixtral, the map-per selects tensor parallelism TP = 8 and pipeline paral-lelism PP = 5, fitting each TP group within one 8-GPU HGX host. Consequently, intra-host NVSwitch serves allreduce, allgather, and MoE collectives, restricting inter-host traffic to pipeline boundaries. The scale-out fabric acts as a pipeline network, not a primary collective substrate. 
+
+More GPUs do not always improve LLM performance. 
+
+A use-all-GPU policy on the 64-GPU baseline induces overly fine tensor parallelism. For Llama, the baseline chooses TP =
+
+64 and PP = 1 (25,729 tasks). The optimized 40-GPU topology induces TP = 8 and PP = 5 (3,249 tasks), improving runtime by 1.20 ×. Similarly, Gemma shifts from TP = 32 , PP = 2 to 
+
+TP = 8, PP = 5, improving runtime by 1.72 ×, and Mixtral achieves a 1.13 × speedup, where excessive tensor parallelism fragments operators and amplifies overheads. The superior 
+
+12 design provides a GPU count and boundaries matching use-ful model-parallel granularity without the largest pool. Table 9 compares this optimized topology against a com-mercial SuperPOD baseline. Overall, tensor-parallel groups should fit inside high-bandwidth scale-up islands, pipeline parallelism should connect these islands, and GPU count must match useful parallelism granularity rather than be maximized blindly. 
+
+Takeaway . Dense LLM workloads favor model-parallelism-aware scale-up islands: tensor-parallel groups should stay within high-bandwidth GPU domains, while pipeline parallelism connects those domains without forcing the system to use the largest possible GPU pool. 
+
+8 Conclusion 
+
+CHASE explores XHS as a coupled hardware-mapping prob-lem, modeling architectures as hierarchical typed graphs, pruning via physical constraints, and evaluating through a mapper, simulator, and optimizer. Achieving near-exhaustive mapping optima and near-global optima across 158,886 can-didates, it matches production compute behavior and reveals that sparse workloads favor criticality-aware pods while dense LLMs favor model-parallelism islands. XHS architec-tures should therefore be selected from workload depen-dency and physical constraints rather than homogeneous SuperPOD templates or isolated specs. 
+
+> 13
+
+References 
+
+[1] Sergi Abadal, Akshay Jain, Robert Guirado, Jorge López-Alonso, and Eduard Alarcón. 2021. Computing graph neural networks: A survey from algorithms to accelerators. ACM Computing Surveys (CSUR) 54, 9 (2021), 1–38. [2] AMD. 2025. AMD Instinct MI350 Series GPUs. Product documenta-tion. https://www.amd.com/en/products/accelerators/instinct/mi350. html Accessed 2026-06-01. [3] Hamid Arabnejad and Jorge G. Barbosa. 2014. List Scheduling Algo-rithm for Heterogeneous Systems by an Optimistic Cost Table. IEEE Transactions on Parallel and Distributed Systems 25, 3 (2014), 682–694. doi: 10.1109/TPDS.2013.57 
+
+[4] Grey Ballard, Erin Carson, James Demmel, Mark Hoemmen, Nicholas Knight, and Oded Schwartz. 2014. Communication Lower Bounds and Optimal Algorithms for Numerical Linear Algebra. Acta Numerica 23 (2014), 1–155. doi: 10.1017/S0962492914000038 
+
+[5] Jehyeon Bang, Yujeong Choi, Myeongwoo Kim, Yongdeok Kim, and Minsoo Rhu. 2024. vtrain: A simulation framework for evaluating cost-effective and compute-optimal large language model training. In 2024 57th IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 153–167. [6] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Xi Chen, Krzysztof Choromanski, Tianli Ding, Danny Driess, Avinava Dubey, Chelsea Finn, Pete Florence, Chuyuan Fu, Montse Gonzalez Arenas, Keerthana Gopalakrishnan, Kehang Han, Karol Hausman, Alexander Herzog, Jasmine Hsu, Brian Ichter, Alex Irpan, Nikhil Joshi, Ryan Julian, Dmitry Kalashnikov, Yuheng Kuang, Isabel Lee, Sergey Levine, Yao Lu, Henryk Michalewski, Igor Mordatch, Karl Pertsch, Kanishka Rao, Krista Reymann, Michael Ryoo, Grecia Salazar, Pannag Sanketi, Pierre Sermanet, Jaspiar Singh, Anikait Singh, Radu Soricut, Huong Tran, Vincent Vanhoucke, Quan Vuong, Ayzaan Wahid, Stefan Welker, Paul Wohlhart, Jialin Wu, Fei Xia, Ted Xiao, Peng Xu, Sichun Xu, Tianhe Yu, and Brianna Zitkovich. 2023. RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control. arXiv preprint arXiv:2307.15818. doi: 10.48550/arXiv.2307.15818 
+
+[7] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language Models are Few-Shot Learners. In Advances in Neural Information Processing Systems , H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin (Eds.), Vol. 33. Curran Associates, Inc., 1877–1901. https://proceedings.neurips.cc/paper_ files/paper/2020/file/1457c0d6bfcb4967418bfb8ac142f64a-Paper.pdf 
+
+[8] Henri Casanova, Arnaud Giersch, Arnaud Legrand, Martin Quinson, and Frédéric Suter. 2014. Versatile, Scalable, and Accurate Simulation of Distributed Applications and Platforms. J. Parallel and Distrib. Comput. 74, 10 (2014), 2899–2917. doi: 10.1016/j.jpdc.2014.06.008 
+
+[9] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie Yan, Meghan Cowan, Haichen Shen, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy. 2018. TVM: An Automated End-to-End Optimizing Compiler for Deep Learning. In 
+
+Proceedings of the 13th USENIX Symposium on Operating Systems De-sign and Implementation . USENIX Association, Carlsbad, CA, 578–594. 
+
+https://www.usenix.org/conference/osdi18/presentation/chen 
+
+[10] Compute Express Link Consortium 2023. Compute Express Link Specification Revision 3.1 . Compute Express Link Consor-tium. https://computeexpresslink.org/wp-content/uploads/2024/02/ CXL-3.1-Specification.pdf 
+
+[11] Jeffrey Dean and Luiz André Barroso. 2013. The Tail at Scale. Commun. ACM 56, 2 (2013), 74–80. doi: 10.1145/2408776.2408794 
+
+[12] Jack Dongarra, Michael A Heroux, and Piotr Luszczek. 2016. High-performance conjugate-gradient benchmark: A new metric for rank-ing high-performance computing systems. The International Jour-nal of High Performance Computing Applications 30, 1 (2016), 3– 10. arXiv:https://doi.org/10.1177/1094342015593158 doi: 10.1177/ 1094342015593158 
+
+[13] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, Amy Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravanku-mar, Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, Au-relien Rodriguez, Austen Gregerson, Ava Spataru, Baptiste Roziere, Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux, Chaya Nayak, Chloe Bi, Chris Marra, Chris McConnell, Christian Keller, Christophe Touret, Chunyang Wu, Corinne Wong, Cristian Can-ton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel Song, Danielle Pintz, Danny Livshits, Danny Wyatt, David Esiobu, Dhruv Choud-hary, Dhruv Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab AlBadawy, Elina Lobanova, Emily Di-nan, Eric Michael Smith, Filip Radenovic, Francisco Guzmán, Frank Zhang, Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Govind Thattai, Graeme Nail, Gregoire Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu, Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann, Ishan Misra, Ivan Evtimov, Jack Zhang, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu, Jie Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua Johnstun, Joshua Saxe, Junteng Jia, Kalyan Vasuden Alwala, Karthik Prasad, Kartikeya Up-asani, Kate Plawiak, Ke Li, Kenneth Heafield, Kevin Stone, Khalid El-Arini, Krithika Iyer, Kshitiz Malik, Kuenley Chiu, Kunal Bhalla, Kushal Lakhotia, Lauren Rantala-Yeary, Laurens van der Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis Martin, Lovish Madaan, Lubo Malo, Lukas Blecher, Lukas Landzaat, Luke de Oliveira, Madeline Muzzi, Mahesh Pasupuleti, Mannat Singh, Manohar Paluri, Marcin Kardas, Maria Tsimpoukelli, Mathew Oldham, Mathieu Rita, Maya Pavlova, Melanie Kambadur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal, Narjes Torabi, Nikolay Bashlykov, Niko-lay Bogoychev, Niladri Chatterji, Ning Zhang, Olivier Duchenne, Onur Çelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasic, Peter Weng, Prajjwal Bhargava, Pratik Dubal, Praveen Krish-nan, Punit Singh Koura, Puxin Xu, Qing He, Qingxiao Dong, Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Silveira Cabral, Robert Stojnic, Roberta Raileanu, Rohan Maheswari, Rohit Girdhar, Rohit Patel, Romain Sauvestre, Ronnie Polidoro, Roshan Sumbaly, Ross Taylor, Ruan Silva, Rui Hou, Rui Wang, Saghar Hosseini, Sahana Chennabasappa, Sanjay Singh, Sean Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan Narang, Sharath Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon Vandenhende, Soumya Batra, Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan, Sydney Borodinsky, Tamar Herman, Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom, Tobias Speckbacher, Todor Mihaylov, Tong Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor Gupta, Vignesh Ramanathan, Viktor Kerkez, Vincent Gonguet, Vir-ginie Do, Vish Vogeti, Vítor Albiero, Vladan Petrovic, Weiwei Chu, Wenhan Xiong, Wenyin Fu, Whitney Meers, Xavier Martinet, Xi-aodong Wang, Xiaofang Wang, Xiaoqing Ellen Tan, Xide Xia, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle Goldschlag, Yashesh Gaur, Yas-mine Babaei, Yi Wen, Yiwen Song, Yuchen Zhang, Yue Li, Yuning Mao, Zacharie Delpierre Coudert, Zheng Yan, Zhengxing Chen, Zoe Pa-pakipos, Aaditya Singh, Aayushi Srivastava, Abha Jain, Adam Kelsey, Adam Shajnfeld, Adithya Gangidi, Adolfo Victoria, Ahuva Goldstand, Ajay Menon, Ajay Sharma, Alex Boesenberg, Alexei Baevski, Allie 
+
+> 14
+
+Feinstein, Amanda Kallet, Amit Sangani, Amos Teo, Anam Yunus, Andrei Lupu, Andres Alvarado, Andrew Caples, Andrew Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit Ramchandani, Annie Dong, Annie Franco, Anuj Goyal, Aparajita Saraf, Arkabandhu Chowdhury, Ashley Gabriel, Ashwin Bharambe, Assaf Eisenman, Azadeh Yazdan, Beau James, Ben Maurer, Benjamin Leonhardi, Bernie Huang, Beth Loyd, Beto De Paola, Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Brandon Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton, Catalina Mejia, Ce Liu, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang Chu, Chris Cai, Chris Tindal, Christoph Feichtenhofer, Cynthia Gao, Damon Civin, Dana Beaty, Daniel Kreymer, Daniel Li, David Adkins, David Xu, Davide Testuggine, Delia David, Devi Parikh, Diana Liskovich, Didem Foss, Dingkang Wang, Duc Le, Dustin Hol-land, Edward Dowling, Eissa Jamil, Elaine Montgomery, Eleonora Presani, Emily Hahn, Emily Wood, Eric-Tuan Le, Erik Brinkman, Este-ban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun, Felix Kreuk, Feng Tian, Filippos Kokkinos, Firat Ozgenel, Francesco Caggioni, Frank Kanayet, Frank Seide, Gabriela Medina Florez, Gabriella Schwarz, Gada Badeer, Georgia Swee, Gil Halpern, Grant Herman, Grigory Sizov, Guangyi, Zhang, Guna Lakshminarayanan, Hakan Inan, Hamid Shojanazeri, Han Zou, Hannah Wang, Hanwen Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter Goldman, Hongyuan Zhan, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Ilias Leontiadis, Irina-Elena Veliche, Itai Gat, Jake Weissman, James Ge-boski, James Kohli, Janice Lam, Japhet Asher, Jean-Baptiste Gaya, Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny Zhen, Jeremy Reizenstein, Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Yang, Joe Cummings, Jon Carvill, Jon Shepard, Jonathan McPhie, Jonathan Torres, Josh Ginsburg, Junjie Wang, Kai Wu, Kam Hou U, Karan Saxena, Kartikay Khandelwal, Katayoun Zand, Kathy Matosich, Kaushik Veeraragha-van, Kelly Michelena, Keqian Li, Kiran Jagadeesh, Kun Huang, Kunal Chawla, Kyle Huang, Lailin Chen, Lakshya Garg, Lavender A, Le-andro Silva, Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Yu, Liron Moshkovich, Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish Bhatt, Martynas Mankus, Matan Hasson, Matthew Lennie, Matthias Reso, Maxim Groshev, Maxim Naumov, Maya Lathi, Meghan Keneally, Miao Liu, Michael L. Seltzer, Michal Valko, Michelle Restrepo, Mihir Patel, Mik Vyatskov, Mikayel Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Hermoso, Mo Metanat, Mohammad Raste-gari, Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha White, Navyata Bawa, Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikhil Mehta, Nikolay Pavlovich Laptev, Ning Dong, Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin Kent, Parth Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bon-trager, Pierre Roux, Piotr Dollar, Polina Zvyagina, Prashant Ratanchan-dani, Pritish Yuvraj, Qian Liang, Rachad Alao, Rachel Rodriguez, Rafi Ayub, Raghotham Murthy, Raghu Nayani, Rahul Mitra, Rangaprabhu Parthasarathy, Raymond Li, Rebekkah Hogan, Robin Battey, Rocky Wang, Russ Howes, Ruty Rinott, Sachin Mehta, Sachin Siby, Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha Sidorov, Satadru Pan, Saurabh Mahajan, Saurabh Verma, Seiji Ya-mamoto, Sharadh Ramaswamy, Shaun Lindsay, Shaun Lindsay, Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shishir Patil, Shiva Shankar, Shuqiang Zhang, Shuqiang Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith Chintala, Stephanie Max, Stephen Chen, Steve Kehoe, Steve Satterfield, Sudarshan Govindaprasad, Sumit Gupta, Sum-mer Deng, Sungmin Cho, Sunny Virk, Suraj Subramanian, Sy Choud-hury, Sydney Goldman, Tal Remez, Tamar Glaser, Tamara Best, Thilo Koehler, Thomas Robinson, Tianhe Li, Tianjun Zhang, Tim Matthews, Timothy Chou, Tzook Shaked, Varun Vontimitta, Victoria Ajayi, Vic-toria Montanez, Vijai Mohan, Vinay Satish Kumar, Vishal Mangla, Vlad Ionescu, Vlad Poenaru, Vlad Tiberiu Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang, Wenwen Jiang, Wes Bouaziz, Will Constable, Xiaocheng Tang, Xiaojian Wu, Xiaolan Wang, Xilun Wu, Xinbo Gao, Yaniv Kleinman, Yanjun Chen, Ye Hu, Ye Jia, Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin Nam, Yu, Wang, Yu Zhao, Yuchen Hao, Yundi Qian, Yunlu Li, Yuzi He, Zach Rait, Zachary DeVito, Zef Rosnbrick, Zhaoduo Wen, Zhenyu Yang, Zhiwei Zhao, and Zhiyu Ma. 2024. The Llama 3 Herd of Models. arXiv:2407.21783 [cs.AI] 
+
+https://arxiv.org/abs/2407.21783 
+
+[14] Charles Hong, Qijing Huang, Grace Dinh, Mahesh Subedar, and Yakun Sophia Shao. 2023. Dosa: Differentiable model-based one-loop search for dnn accelerators. In Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture . 209–224. [15] Eliu A Huerta, Asad Khan, Edward Davis, Colleen Bushell, William D Gropp, Daniel S Katz, Volodymyr Kindratenko, Seid Koric, William TC Kramer, Brendan McGinty, et al . 2020. Convergence of artificial intel-ligence and high performance computing on NSF-supported cyberin-frastructure. arXiv preprint arXiv:2003.08394 (2020). [16] Mikhail Isaev, Nic Mcdonald, Larry Dennison, and Richard Vuduc. 2023. Calculon: a methodology and tool for high-level co-design of systems and large language models. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis . 1–14. [17] Zhihao Jia, Sina Lin, Charles R. Qi, and Alex Aiken. 2019. Beyond Data and Model Parallelism for Deep Neural Networks. In Proceedings of Machine Learning and Systems . MLSys, Stanford, CA, 1–13. [18] Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Men-sch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, Gianna Lengyel, Guillaume Bour, Guillaume Lample, Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2024. Mixtral of Experts. arXiv:2401.04088 [cs.LG] https: //arxiv.org/abs/2401.04088 
+
+[19] Norman P. Jouppi, George Kurian, Sheng Li, Peter Ma, Rahul Na-garajan, Lifeng Nai, Nishant Patil, Suvinay Subramanian, Andrew Swing, Brian Towles, Cliff Young, Xiang Zhou, Zongwei Zhou, and David A. Patterson. 2023. TPU v4: An Optically Reconfigurable Supercomputer for Machine Learning with Hardware Support for Embeddings. In Proceedings of the 50th Annual International Sympo-sium on Computer Architecture . ACM, New York, NY, USA, 1147–1160. doi: 10.1145/3579371.3589350 
+
+[20] Sheng-Chun Kao, Geonhwa Jeong, and Tushar Krishna. 2020. Confu-ciux: Autonomous hardware resource assignment for dnn accelerators using reinforcement learning. In 2020 53rd Annual IEEE/ACM Interna-tional Symposium on Microarchitecture (MICRO) . IEEE, 622–636. [21] Sheng-Chun Kao and Tushar Krishna. 2020. Gamma: Automating the hw mapping of dnn models on accelerators via genetic algorithm. In 
+
+Proceedings of the 39th International Conference on Computer-Aided Design . 1–9. [22] Sagar Karandikar, Howard Mao, Donggyu Kim, David Biancolin, Alon Amid, Dayeol Lee, Nathan Pemberton, Emmanuel Amaro, Colin Schmidt, Aditya Chopra, Qijing Huang, Kyle Kovacs, Borivoje Nikolic, Randy H. Katz, Jonathan Bachrach, and Krste Asanović. 2018. FireSim: FPGA-Accelerated Cycle-Exact Scale-Out System Simulation in the Public Cloud. In Proceedings of the 45th Annual International Sym-posium on Computer Architecture . IEEE, Los Angeles, CA, 29–42. doi: 10.1109/ISCA.2018.00014 
+
+[23] John Kim, William J. Dally, Steve Scott, and Dennis Abts. 2008. Technology-Driven, Highly-Scalable Dragonfly Topology. In Proceed-ings of the 35th Annual International Symposium on Computer Archi-tecture . IEEE, Beijing, China, 77–88. doi: 10.1109/ISCA.2008.19 
+
+[24] Hyoukjun Kwon, Ananda Samajdar, and Tushar Krishna. 2019. Under-standing Reuse, Performance, and Hardware Cost of DNN Dataflows: A Data-Centric Approach. In Proceedings of the 52nd Annual IEEE/ACM 
+
+> 15
+
+International Symposium on Microarchitecture . IEEE, Columbus, OH, 754–768. doi: 10.1145/3352460.3358312 
+
+[25] Matthew LeGendre and Adam Bertsch. 2025. El Capitan System Readiness: L2 Milestone Summary . Technical Report. Lawrence Liv-ermore National Laboratory (LLNL), Livermore, CA (United States). doi: 10.2172/2584749 
+
+[26] Charles E. Leiserson. 1985. Fat-Trees: Universal Networks for Hardware-Efficient Supercomputing. IEEE Trans. Comput. C-34, 10 (1985), 892–901. doi: 10.1109/TC.1985.6312192 
+
+[27] Huaicheng Li, Daniel S. Berger, Lisa Hsu, Daniel Ernst, Pantea Zar-doshti, Stanko Novakovic, Monish Shah, Samir Rajadnya, Scott Lee, Ishwar Agarwal, Mark D. Hill, Marcus Fontoura, and Ricardo Bian-chini. 2023. Pond: CXL-Based Memory Pooling Systems for Cloud Platforms. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . ACM, New York, NY, USA, 574–587. doi: 10.1145/ 3575693.3578835 
+
+[28] Yida Li, Siwei Zhang, Yiduo Niu, Yang Du, Qingxiao Sun, Zhou Jin, and Weifeng Liu. 2026. Trojan Horse: Aggregate-and-Batch for Scaling Up Sparse Direct Solvers on GPU Clusters. In Proceedings of the 31st ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming (Sydney, NSW, Australia) (PPoPP ’26) . Association for Computing Machinery, New York, NY, USA, 369–383. doi: 10.1145/ 3774934.3786442 
+
+[29] Jinshu Liu, Hamid Hadian, Yuyue Wang, Daniel S. Berger, Marie Nguyen, Xun Jian, Sam H. Noh, and Huaicheng Li. 2025. Systematic CXL Memory Characterization and Performance Analysis at Scale. In 
+
+Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems . ACM, New York, NY, USA, 1203–1217. doi: 10.1145/3676641.3715987 
+
+[30] Thomas McSweeney, Neil Walton, and Mawussi Zounon. 2020. An Ef-ficient New Static Scheduling Heuristic for Accelerated Architectures. In Computational Science – ICCS 2020 , Valeria V. Krzhizhanovskaya, Gábor Závodszky, Michael H. Lees, Jack J. Dongarra, Peter M. A. Sloot, Sérgio Brissos, and João Teixeira (Eds.). Springer International Pub-lishing, Cham, 3–16. [31] Diksha Moolchandani, Joyjit Kundu, Frederik Ruelens, Peter Vrancx, Timon Evenblij, and Manu Perumkunnil. 2023. Amped: An analytical model for performance in distributed training of transformers. In 2023 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . IEEE, 306–315. [32] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGres-ley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia. 2021. Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM. In Proceedings of the International Conference for High Performance Computing, Net-working, Storage and Analysis . ACM, New York, NY, USA, 1–15. doi: 10.1145/3458817.3476209 
+
+[33] NVIDIA. 2023. NVIDIA DGX SuperPOD: Next Generation Scalable Infrastructure for AI Leadership Reference Architec-ture Featuring NVIDIA DGX H100. Reference Architecture. 
+
+https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-h100/latest/ Accessed 2026-06-01. [34] NVIDIA. 2025. CES 2025: AI Advancing at ’Incredible Pace,’ NVIDIA CEO Says. NVIDIA Blog. https://blogs.nvidia.com/blog/ces-2025-jensen-huang/ Accessed 2026-06-08. [35] NVIDIA. 2026. AI Factories. NVIDIA Data Center Solutions. https: //www.nvidia.com/en-us/solutions/ai-factories/ Accessed 2026-06-10. [36] NVIDIA. 2026. GB200 NVL72. Product documentation. https://www. nvidia.com/en-us/data-center/gb200-nvl72/ Accessed 2026-06-01. [37] Angshuman Parashar, Priyanka Raina, Yakun S. Shao, Yu-Hsin Chen, Victor A. Ying, Anurag Mukkara, Rangharajan Venkatesan, Brucek Khailany, Stephen W. Keckler, and Joel Emer. 2019. Timeloop: A Systematic Approach to DNN Accelerator Evaluation. In 2019 IEEE International Symposium on Performance Analysis of Systems and Soft-ware . IEEE, Madison, WI, 304–315. doi: 10.1109/ISPASS.2019.00042 
+
+[38] Qwen Team. 2026. Qwen3.5: Towards Native Multimodal Agents. 
+
+https://qwen.ai/blog?id=qwen3.5 
+
+[39] Saeed Rashidi, Srinivas Sridharan, Sudarshan Srinivasan, and Tushar Krishna. 2020. ASTRA-SIM: Enabling SW/HW Co-Design Exploration for Distributed DL Training Platforms. In 2020 IEEE International Symposium on Performance Analysis of Systems and Software . IEEE, Boston, MA, 81–92. doi: 10.1109/ISPASS48437.2020.00018 
+
+[40] Daniel Reed, Dennis Gannon, and Jack Dongarra. 2023. HPC forecast: Cloudy and uncertain. Commun. ACM 66, 2 (2023), 82–90. [41] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. 2017. Proximal Policy Optimization Algorithms. arXiv preprint arXiv:1707.06347. doi: 10.48550/arXiv.1707.06347 
+
+[42] Jaime Sevilla, Lennart Heim, Anson Ho, Tamay Besiroglu, Marius Hobbhahn, and Pablo Villalobos. 2022. Compute trends across three eras of machine learning. In 2022 international joint conference on neural networks (IJCNN) . IEEE, 1–8. [43] Srinivas Sridharan, Theodor-Adrian Badea, Andy Balogh, Bradford M. Beckmann, Brian Coutinho, Louis Feng, Sheng Fu, Sanshan Gao, Mehryar Garakani, Taekyung Heo, David Kanter, Josh Ladd, Ziwei Li, Winston Liu, Changhai Man, Dan Mihailescu, Spandan More, Joongun Park, Ashwin Ramachandran, Vinay Ramakrishnaiah, Saeed Rashidi, Vijay Janapa Reddi, Puneet Sharma, Phio Tian, William Won, Hanjiang Wu, Huan Xu, Jinsun Yoo, and Tushar Krishna. 2026. MLCommons Chakra: Advancing Performance Benchmarking and Co-design us-ing Standardized Execution Traces. arXiv preprint arXiv:2605.11333. doi: 10.48550/arXiv.2605.11333 Accepted at MLSys 2026. [44] Norman Earl Steenrod. 1999. The topology of fibre bundles . Vol. 14. Princeton university press. [45] Gemma Team, Thomas Mesnard, Cassidy Hardin, Robert Dadashi, Surya Bhupatiraju, Shreya Pathak, Laurent Sifre, Morgane Rivière, Mihir Sanjay Kale, Juliette Love, Pouya Tafti, Léonard Hussenot, Pier Giuseppe Sessa, Aakanksha Chowdhery, Adam Roberts, Aditya Barua, Alex Botev, Alex Castro-Ros, Ambrose Slone, Amélie Héliou, Andrea Tacchetti, Anna Bulanova, Antonia Paterson, Beth Tsai, Bobak Shahriari, Charline Le Lan, Christopher A. Choquette-Choo, Clément Crepy, Daniel Cer, Daphne Ippolito, David Reid, Elena Buchatskaya, Eric Ni, Eric Noland, Geng Yan, George Tucker, George-Christian Muraru, Grigory Rozhdestvenskiy, Henryk Michalewski, Ian Tenney, Ivan Grishchenko, Jacob Austin, James Keeling, Jane Labanowski, Jean-Baptiste Lespiau, Jeff Stanway, Jenny Brennan, Jeremy Chen, Johan Ferret, Justin Chiu, Justin Mao-Jones, Katherine Lee, Kathy Yu, Katie Millican, Lars Lowe Sjoesund, Lisa Lee, Lucas Dixon, Machel Reid, Maciej Mikuła, Mateo Wirth, Michael Sharman, Nikolai Chi-naev, Nithum Thain, Olivier Bachem, Oscar Chang, Oscar Wahltinez, Paige Bailey, Paul Michel, Petko Yotov, Rahma Chaabouni, Ramona Comanescu, Reena Jana, Rohan Anil, Ross McIlroy, Ruibo Liu, Ryan Mullins, Samuel L Smith, Sebastian Borgeaud, Sertan Girgin, Sholto Douglas, Shree Pandya, Siamak Shakeri, Soham De, Ted Klimenko, Tom Hennigan, Vlad Feinberg, Wojciech Stokowiec, Yu hui Chen, Zafarali Ahmed, Zhitao Gong, Tris Warkentin, Ludovic Peran, Minh Giang, Clément Farabet, Oriol Vinyals, Jeff Dean, Koray Kavukcuoglu, Demis Hassabis, Zoubin Ghahramani, Douglas Eck, Joelle Barral, Fer-nando Pereira, Eli Collins, Armand Joulin, Noah Fiedel, Evan Senter, Alek Andreev, and Kathleen Kenealy. 2024. Gemma: Open Models Based on Gemini Research and Technology. arXiv:2403.08295 [cs.CL] 
+
+https://arxiv.org/abs/2403.08295 
+
+[46] Haluk Topcuoglu, Salim Hariri, and Min-You Wu. 2002. Performance-Effective and Low-Complexity Task Scheduling for Heterogeneous Computing. IEEE Transactions on Parallel and Distributed Systems 13, 3 (2002), 260–274. doi: 10.1109/71.993206 
+
+> 16
+
+[47] Kevin Tran and Zachary W. Ulissi. 2018. Active learning across inter-metallics to guide discovery of electrocatalysts for CO 2 reduction and H2 evolution. Nature Catalysis 1 (2018), 696–703. doi: 10.1038/s41929-018-0142-1 
+
+[48] UnifiedBus. 2026. UnifiedBus SuperPoD Reference Architecture White Paper. Technical white paper. https://www.unifiedbus.com/en Ac-cessed 2026-06-01. [49] UnifiedBus Open Ecosystem 2025. UnifiedBus ™ (UB) Service Core Software Architecture Reference Design . UnifiedBus Open Ecosys-tem. https://www.openeuler.org/projects/ub-service-core/white-paper/UB-Service-Core-SW-Arch-RD-2.0-en.pdf Version 2.0. [50] Rangharajan Venkatesan, Yakun Sophia Shao, Miaorong Wang, Ja-son Clemons, Steve Dai, Matthew Fojtik, Ben Keller, Alicia Kline-felter, Nathaniel Pinckney, Priyanka Raina, Yanqing Zhang, Brian Zimmer, William J. Dally, Joel S. Emer, Stephen W. Keckler, and Brucek Khailany. 2019. MAGNet: A Modular Accelerator Generator for Neural Networks. In Proceedings of the 2019 IEEE/ACM Interna-tional Conference on Computer-Aided Design . IEEE, Westminster, CO, 1–8. doi: 10.1109/ICCAD45719.2019.8942127 
+
+[51] Hanchen Wang, Tianfan Fu, Yuanqi Du, Wenhao Gao, Kexin Huang, Ziming Liu, Payal Chandak, Shengchao Liu, Peter Van Katwyk, An-dreea Deac, et al . 2023. Scientific discovery in the age of artificial intelli-gence. Nature 620, 7972 (2023), 47–60. doi: 10.1038/s41586-023-06221-2 
+
+[52] Min Wang, Haoyuan Wang, Sibo Qiao, Jiawang Chen, Qin Xie, and Cuijuan Guo. 2025. Heterogeneous system list scheduling algorithm based on improved optimistic cost matrix. Future Generation Computer Systems 164 (2025), 107576. doi: 10.1016/j.future.2024.107576 
+
+[53] Weiyang Wang, Moein Khazraee, Zhizhen Zhong, Manya Ghobadi, Zhihao Jia, Dheevatsa Mudigere, Ying Zhang, and Anthony Kewitsch. 2023. {TopoOpt }: Co-optimizing network topology and parallelization strategy for distributed training jobs. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . 739–767. [54] Jeremiah J. Wilke and Joseph P. Kenny. 2015. Using Discrete Event Simu-lation for Programming Model Exploration at Extreme-Scale: Macroscale Components for the Structural Simulation Toolkit (SST) . Technical Report SAND2015-1027. Sandia National Laboratories. doi: 10.2172/ 1170619 
+
+[55] Samuel Williams, Leonid Oliker, Richard Vuduc, John Shalf, Katherine Yelick, and James Demmel. 2009. Optimization of Sparse Matrix-Vector Multiplication on Emerging Multicore Platforms. Parallel Comput. 35, 3 (2009), 178–194. doi: 10.1016/j.parco.2008.12.006 
+
+[56] Samuel Williams, Andrew Waterman, and David Patterson. 2009. Roofline: An Insightful Visual Performance Model for Multicore Ar-chitectures. Commun. ACM 52, 4 (2009), 65–76. doi: 10.1145/1498765. 1498785 
+
+[57] William Won, Taekyung Heo, Saeed Rashidi, Srinivas Sridharan, Sudar-shan Srinivasan, and Tushar Krishna. 2023. ASTRA-sim2.0: Modeling Hierarchical Networks and Disaggregated Systems for Large-Model Training at Scale. In 2023 IEEE International Symposium on Perfor-mance Analysis of Systems and Software . IEEE, Raleigh, NC, 283–294. doi: 10.1109/ISPASS57527.2023.00035 
+
+[58] William Won, Saeed Rashidi, Sudarshan Srinivasan, and Tushar Kr-ishna. 2024. LIBRA: Enabling workload-aware multi-dimensional network topology optimization for distributed training of large AI models. In 2024 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . IEEE, 205–216. [59] Yannan Nellie Wu, Joel S. Emer, and Vivienne Sze. 2019. Accelergy: An Architecture-Level Energy Estimation Methodology for Accelerator Designs. In Proceedings of the 2019 IEEE/ACM International Conference on Computer-Aided Design . IEEE, Westminster, CO, 1–8. doi: 10.1109/ ICCAD45719.2019.8942149 
+
+[60] Yannan Nellie Wu, Po-An Tsai, Angshuman Parashar, Vivienne Sze, and Joel S Emer. 2022. Sparseloop: An analytical approach to sparse tensor accelerator modeling. In 2022 55th IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 1377–1395. [61] Lianmin Zheng, Chengfan Jia, Minmin Sun, Zhao Wu, Cody Hao Yu, Ameer Haj-Ali, Yida Wang, Jun Yang, Danyang Zhuo, Koushik Sen, Joseph E. Gonzalez, and Ion Stoica. 2020. Ansor: Generating High-Performance Tensor Programs for Deep Learning. In Proceed-ings of the 14th USENIX Symposium on Operating Systems Design and Implementation . USENIX Association, Virtual Event, 863–879. 
+
+https://www.usenix.org/conference/osdi20/presentation/zheng 
+
+[62] Lianmin Zheng, Zhuohan Li, Hao Zhang, Yonghao Zhuang, Zhifeng Chen, Yanping Huang, Yida Wang, Yuanzhong Xu, Danyang Zhuo, Eric P. Xing, Joseph E. Gonzalez, and Ion Stoica. 2022. Alpa: Automat-ing Inter- and Intra-Operator Parallelism for Distributed Deep Learn-ing. In Proceedings of the 16th USENIX Symposium on Operating Systems Design and Implementation . USENIX Association, Carlsbad, CA, 559– 578. https://www.usenix.org/conference/osdi22/presentation/zheng-lianmin 
+
+[63] Jie Zhou, Ganqu Cui, Shengding Hu, Zhengyan Zhang, Cheng Yang, Zhiyuan Liu, Lifeng Wang, Changcheng Li, and Maosong Sun. 2020. Graph Neural Networks: A Review of Methods and Applications. AI Open 1 (2020), 57–81. doi: 10.1016/j.aiopen.2021.01.001 
+
+A Detailed Hardware Description Space Modeling 
+
+This appendix specifies the hardware description space D
+
+used by the architectural exploration engine. The design space is organized into four physical levels ( 𝐿 1 ∼ 𝐿 4). Within each level 𝐿 𝑘 , a generated hardware configuration graph 𝐺 𝑘 
+
+is instantiated from three parameter groups: the set of nodes (V𝐿 𝑘 ), the set of interconnect mediums ( E𝐿 𝑘 ), and the set of topology templates ( T𝐿 𝑘 ). 
+
+A.1 Metrics and Dimensional Tuple 
+
+Every candidate hardware entity 𝑣 ∈ V 𝐿 𝑘 and link 𝑒 ∈ E 𝐿 𝑘 in our design space is represented as a parameterized tuple M =
+
+⟨𝐶 peak , 𝐵 max , 𝐿 base , 𝑂 proto , 𝑃 idle , 𝑃 active , 𝐶𝑜𝑠𝑡 rcu , 𝑈 space ⟩, where the metric dimensions are defined as: 
+
+• Peak Compute ( 𝐶 peak ): Measured in TFLOPS (Tera Float-ing-point Operations Per Second). 
+
+• Bandwidth ( 𝐵 max ): Measured in GB/s for both memory interfaces and interconnect links. 
+
+• Base Latency ( 𝐿 base ): The modeled baseline delay mea-sured in nanoseconds (ns). 
+
+• Protocol Overhead ( 𝑂 proto ): The software/hardware pack-age serialization delay in ns. 
+
+• Power ( 𝑃 ): Divided into idle power ( 𝑃 idle ) and dynamic active power ( 𝑃 active ) in Watts (W). 
+
+• Relative Cost Baseline ( 𝐶𝑜𝑠𝑡 rcu ): Standardized in Rela-tive Cost Units (RCU) for budget modeling. 
+
+• Physical Dimension ( 𝑈 space or 𝐴𝑟𝑒𝑎 ): Standard U-space for rack enclosures, or silicon footprint in mm 2 for dies. 
+
+A.2 Multi-Level Description and Parametric Ranges 
+
+The parameter boundaries and concrete instances of each hierarchical layer are detailed as follows: 
+
+> 17
+
+• Package and Die Level ( 𝐿 1): This layer is bounded by single-socket packaging limits (OAM/Socket). To main-tain tractability for system-level architectural exploration, 
+
+𝐿 1 micro-architectural variables are coarse-grained into discrete selectable options. Inner implementations are by-passed, while keeping their external interfaces populated. 
+
+• Host and PCB Level ( 𝐿 2): Bounded by the server base-board. Nodes communicate via copper traces and general bus protocols, incurring packetization overheads. 
+
+• Rack and Pooling Level ( 𝐿 3): The disaggregation and pooling domain. Highly constrained by rack-level power delivery networks ( 𝑃 max_rack ) and spatial limits. 
+
+• Cluster and Scale-Out Level ( 𝐿 4): Inter-rack optical in-terconnect level, handling optoelectronic conversions and long-distance transport limits. A comprehensive list of physical hardware options, in-terconnect parameters, and topology templates is summa-rized in Table 10. The topology-template names use standard interconnection-network terminology where applicable, in-cluding fat-tree and dragonfly families [ 23 , 26 ]. Concrete numerical ranges are experiment inputs and will be finalized with the corresponding measurement and hardware-profile tables. 
+
+A.3 Composition Rules and Topological Constraints 
+
+Any accepted global hardware graph configuration 𝐻 ∈ D
+
+is recursively nested to preserve structural compatibility. Specifically, for any physical hierarchy layer 𝑘 ∈ { 2, 3, 4},the active node set V𝐿 𝑘 is represented as: 
+
+V𝐿 𝑘 ⊆ { Native Component Instances in 𝐿 𝑘 } ∪ { 𝐻 𝐿 𝑘 −1 } (8) Furthermore, the connectivity graph 𝐺 𝑘 = (V 𝐿 𝑘 , E𝐿 𝑘 ) is checked against the structural degree distribution and adja-cency pattern implied by the selected routing or topology template 𝜏 ∈ T 𝐿 𝑘 . Configurations that violate these com-position and connectivity rules are pruned by the physical constraint verifier during outer-loop exploration. 
+
+B Optimization Algorithm and Implementation Details 
+
+This appendix provides the formal definitions of the objective functions, reward signals, and Reinforcement Learning (RL) configurations used by the CHASE outer-loop Optimizer. 
+
+B.1 TG-RL Formulation and Objective 
+
+For a candidate ℎ and its best observed mapping ˆ𝑠 (ℎ) found by the inner loop, CHASE converts the simulator output into a feedback tuple: 
+
+𝐹 (ℎ) = ⟨𝑇 , 𝑈 , 𝑄, 𝑅, 𝐴 ⟩, (9) where 𝑇 is the end-to-end runtime, 𝑈 is the aggregated link utilization, 𝑄 is the maximum link-queue delay, 𝑅 is the remote-memory contention delay, and 𝐴 contains auxiliary statistics (compute utilization, hotspot domains, etc.). For minimization-oriented runs, the framework utilizes a weighted cost function: 
+
+𝐽 (ℎ) = 𝑤 𝑇 𝑇 +𝑤 𝐶 𝐶 ℎ +𝑤 𝑃 𝑃 ℎ +𝑤 𝑈 𝑈 +𝑤 𝑄 𝑄 +𝑤 𝑅 𝑅 +Ω(ℎ), (10) where 𝐶 ℎ and 𝑃 ℎ denote the candidate’s cost and peak-power estimates, respectively. Ω(ℎ) is a strict penalty applied to can-didates that pass initial syntactic generation but fail down-stream detailed feasibility checks. 
+
+B.2 Policy Model and Action Masking 
+
+To restrict the RL agent from exploring physically impossi-ble designs, CHASE enumerates candidate graph edits and applies a strict legality mask before sampling. The actor samples from the valid subset: 
+
+Avalid  
+
+> 𝑡
+
+= {𝑎 ∈ A ( ℎ𝑡 ) | 𝑀 space (ℎ𝑡 , 𝑎 )𝑀 phys (ℎ𝑡 , 𝑎 ) = 1}, (11) ensuring that actions violating budget, rack capacity, power envelopes, port availability, or structural connectivity are strictly probability-zero. The policy model employs a Graph Neural Network (GNN) to encode the candidate hardware graph and action con-text. The actor distribution combines learned logits with a telemetry-derived prior: 
+
+𝜋 𝜃 (𝑎 | 𝑜 𝑡 ) = softmax 𝑎 ∈ A valid  
+
+> 𝑡
+
+(𝑔 𝜃 (𝑜 𝑡 , 𝑎 ) + 𝜆ℎ (𝑜 𝑡 , 𝑎 )) , (12) where 𝑔 𝜃 is the learned action score, ℎ(𝑜 𝑡 , 𝑎 ) is a heuristic prior derived from bottleneck telemetry (e.g., compute sat-uration increases the prior for adding compute resources), and 𝜆 controls the prior’s strength. 
+
+B.3 Workload-Normalized Reward Function 
+
+For single-workload optimization, the base reward is the normalized cost improvement: 
+
+𝑟 base  
+
+> 𝑡
+
+= 𝐽 (ℎ𝑡 ) − 𝐽 (ℎ𝑡 +1)
+
+max (1, |𝐽 (ℎ𝑡 )|) . (13) When optimizing for a workload suite W containing di-verse applications (e.g., scaling LLMs and sparse solvers), raw score rewards are poorly scaled. CHASE aggregates performance using a workload-normalized geometric mean. Let 𝑇 base  
+
+> 𝑖
+
+be the baseline runtime for workload 𝑖 , 𝛼 𝑖 its suite weight, and 𝑇 𝑖 (ℎ) the candidate time. The workload-normalized log-improvement is: 
+
+𝐿 (ℎ) =∑︁  
+
+> 𝑖 ∈ W
+
+𝛼 𝑖 log 𝑇 𝑖 (ℎ)
+
+𝑇 base 
+
+> 𝑖
+
+, (14) and the suite reward is defined as the difference: 
+
+𝑟 suite  
+
+> 𝑡
+
+= 𝐿 (ℎ𝑡 ) − 𝐿 (ℎ𝑡 +1) = log 𝐺 (ℎ𝑡 +1)
+
+𝐺 (ℎ𝑡 ) , where (15) 
+
+𝐺 (ℎ) =
+
+Ö 
+
+> 𝑖 ∈ W
+
+𝑇 base 
+
+> 𝑖
+
+𝑇 𝑖 (ℎ)
+
+!𝛼 𝑖 
+
+. (16) 
+
+> 18
+
+B.4 Hyperparameters and Implementation Details 
+
+The TG-RL policy is trained using Proximal Policy Optimiza-tion (PPO) and Generalized Advantage Estimation (GAE). The update incorporates a clipped policy loss, a critic value loss, an entropy bonus, and a KL-style regularizer. Unless overridden, the default hyperparameters are: four PPO epochs per update, minibatch size of 16, discount factor 
+
+𝛾 = 0.95 , GAE parameter 𝜆 GAE = 0.90 , PPO clip range of 0.2, value-loss coefficient of 0.5, entropy coefficient of 0.01, prior regularization weight of 0.1, learning rate 3 × 10 −4,telemetry-prior weight 𝜆 = 1.0, duplicate-candidate penalty of 0.05, global-best bonus of 0.1, and reward clipping bounded to [− 5, 5]. A seed archive of 16 top-performing candidates is maintained to inject high-quality starting points. 
+
+C Related Work & Discussion 
+
+C.1 Related Work Scale-out AI systems. Recent production-oriented AI sys-tems show that cluster architecture is now an explicit per-formance variable. TPU v4 uses optical circuit switches and topology flexibility to improve scale, availability, utilization, power, and performance for machine-learning supercom-puters [ 19 ]. NVIDIA’s DGX SuperPOD and GB200 NVL72 descriptions similarly specify compute trays, switching, man-agement, storage, and high-speed fabrics as integrated sys-tem design requirements [ 33 , 36 ]. AMD MI350 platform de-scriptions and UnifiedBus SuperPoD materials further illus-trate that scale-up fabrics, accelerator packaging, and re-source pooling are active architectural variables rather than fixed background assumptions [ 2, 48 ]. Memory pooling sys-tems such as Pond further show that memory capacity and access locality can be treated as datacenter-level resource allocation problems rather than as fixed node-local proper-ties [ 27 ]. These systems motivate CHASE ’s scope: instead of evaluating one deployed architecture, CHASE explores alternative SuperPOD candidates under explicit physical con-straints and workload-specific mappings. 
+
+Accelerator DSE. Prior design space exploration frame-works have made accelerator design more systematic, es-pecially for DNN accelerators. MAGNet generates neural-network accelerator RTL and valid mappings from appli-cation and hardware constraints [ 50 ]. Timeloop evaluates DNN accelerator architectures and mappings through a sys-tematic loop-nest and memory-hierarchy model [ 37 ], MAE-STRO uses a data-centric representation to analyze reuse, performance, energy, throughput, and hardware cost for DNN mappings [ 24 ], and Accelergy estimates accelerator energy from architecture-level component and action de-scriptions [ 59 ]. These tools are effective at accelerator or node-level exploration, but their modeling boundary is dif-ferent from CHASE ’s. CHASE targets rack- and cluster-scale SuperPOD organization, where candidate validity depends on power, cooling, topology legality, switch radix, and wiring constraints in addition to local accelerator efficiency. 
+
+Simulation and traces. Simulation has long been used to study systems that are too costly or slow to evaluate directly. General distributed-system simulators such as SimGrid pro-vide scalable models for applications and platforms [ 8], and SST/macro uses discrete-event methods to study extreme-scale runtime behavior [ 54 ]. FireSim instead uses FPGA ac-celeration for cycle-exact scale-out system simulation [ 22 ]. For distributed training, ASTRA-SIM and ASTRA-sim2.0 model hierarchical accelerator fabrics, parallelization strate-gies, collective communication, disaggregated memory, and large-model training behavior [ 39 , 57 ]; MLCommons Chakra standardizes execution traces that can be consumed by simu-lators, emulators, and replay tools [ 43 ]. CHASE builds on the same need for trace-driven evaluation, but uses a different abstraction boundary: the mapper emits hardware-aware event traces from hardware-neutral DAGs, and the simulator is empirically calibrated at both discrete operating points and scale trends before being used for architectural ranking. 
+
+Mapping on fixed hardware. Task-graph scheduling and distributed training systems provide important mechanisms for CHASE ’s inner loop. HEFT and PEFT are representa-tive list-scheduling algorithms for heterogeneous systems, using upward-rank priority and optimistic cost tables to balance task precedence, compute cost, and communica-tion cost [ 3 , 46 ]. Compiler and training systems such as TVM, Ansor, FlexFlow, and Alpa automate operator opti-mization or parallel execution plans on a given hardware backend [ 9 , 17 , 61 , 62 ]; large-scale LLM training systems fur-ther show how tensor, pipeline, and data parallelism interact with GPU-cluster communication [ 32 ]. CHASE differs by treating these mapping decisions as a hardware-dependent mapping space 𝑆 ℎ : when the hardware point ℎ changes, the feasible placements, routes, and schedules change as well. This distinction is essential for SuperPOD exploration be-cause the outer loop must compare hardware candidates after each candidate has been paired with a valid mapping. 
+
+> 19
+
+Table 10. CHASE Architectural Hardware Description Space Parameters and Ranges. 
+
+Layer Component Type Entity/Template Name Parametric Boundary & Operational Ranges 
+
+𝐿 1: Package Node Die.Dense_Tensor 𝐶 peak ∈ [ 800 , 2000 ] TFLOPS, 𝑃 active ∝ 𝐶 peak (500W, 500 RCU @ 1500 TFLOPS) Node Die.Thin_Scalar 𝐶 peak ∈ [100 , 500 ] TFLOPS, 𝑃 active ≈ 120 W, handles sparse lookup control Node Mem.HBM4_Stack Capacity 𝐶 ∈ { 32 , 64 , 128 } GB, 𝐵 max = 2048 GB/s, 𝐿 base = 35 ns Node Mem.SRAM_Block Capacity 𝐶 ∈ [ 128 , 1024 ] MB, 𝐵 max = 15000 GB/s, 𝐿 base = 2 ns Interconnect Link.TSV 𝐵 max → ∞ , 𝐿 base < 1 ns, 𝑂 proto = 0 ns (limited by 3D vertical yield stress) Interconnect Link.UCIe_2.0 Lanes 𝑤 ∈ { 1, 2, 4, 8}, 𝐵 max = 128 × 𝑤 GB/s, 𝐿 base = 2 ns Interconnect Link.NVLink_C2C Custom die-to-die co-packaged interconnect, 𝐵 max = 450 GB/s Topology Topo.* (3D / 2D) 3D_Vertical_Stack , 2D_Symmetric_Star ,
+
+Asymmetric_Tile_Mesh 
+
+𝐿 2: Host Node Socket.L1_Instance Instantiated 𝐿 1 chips Node Mem.DDR5_DIMM 𝐶 ∈ { 16 , . . . , 256 } GB, 𝐵 max = 38 × ch GB/s, 𝐿 base ≈ 80 ∼ 85 ns, 
+
+𝑃 ≈ 15 WNode Mem.GDDR_BGA 𝐶 ∈ { 2, 3, 4} GB, 𝐵 max = (84 ∼ 128 ) × ch GB/s, 𝐿 base ≈ 80 ns, 
+
+𝑃 ≈ 1.8 WNode Mem.LPDDR_BGA 𝐶 ∈ { 2, 3, 4} GB, 𝐵 max = (51 ∼ 85 ) × ch GB/s, 𝐿 base ≈ 80 ns, 
+
+𝑃 ≈ 0.5 WNode Mem.CXL3_Device Capacity 𝐶 ∈ [ 512 , 4096 ] GB, 𝐵 max = 64 GB/s, 𝐿 base = 400 ns, 
+
+𝑃 ≈ 25 WNode Switch.PCIe Standard board-level routing switcher, 𝐿 base = 800 ns Interconnect Link.PCIe_7.0_xN Width 𝑁 ∈ { 8, 16 , 32 }, 𝐵 max = 16 × 𝑁 GB/s, 𝐿 base = 800 ns Interconnect Link.UALink_1.0 Channels 𝑐ℎ ∈ { 1, 2, 4}, 𝐵 max ∈ [ 12 .5, 25 ] × 𝑐ℎ GB/s Interconnect Link.NVLink Channels 𝑐ℎ ≤ 36 , 𝐵 max ∈ [ 25 , 50 ] × 𝑐ℎ GB/s Topology Topo.* (Intra-PCB) Fully_Connected_Clique , Bipartite_Memory_Split ,
+
+1D_Torus_Ring , 2D_Torus 
+
+𝐿 3: Rack Node Chassis.Dense_Compute Physical server enclosure, 𝑈 space ∈ { 2U, 4U, 8U} (Air / Liquid cooled) Node Chassis.JBOM_Pool Just a Bunch of Memory disaggregated pool drawer, 𝑈 space ∈[2U, 4U]
+
+Node Switch.CXL_4.0 Fabric switch, ports 𝑘 ∈ {32 , 64 , 128 }, 𝐵 max = 128 /port, 
+
+𝐿 base_hop = 80 ns Node Switch.NVLink_Tray Integrated interconnect switch, 𝑘 ∈ {36 , 72 }, 𝐵 max ∈[25 , 50 ] GB/s, 𝑃 ≥ 800 WInterconnect Link.DAC_Copper Passive Direct Attach Cable, 𝐿 base < 5 ns, length ≤ 2.5 m, 𝑃 ≈
+
+0 WInterconnect Link.AEC_Cable Active Electrical Cable with DSP, 𝐿 base ≈ + 5 ∼ 10 ns, length 
+
+≤ 7 m, 𝑃 ≈ 5 ∼ 10 WTopology Topo.* (Rack-fabric) Single_Star_ToR , Disaggregated_Sub_Islands ,
+
+Multi_Plane , Switchless_Direct_Mesh 
+
+𝐿 4: Cluster Node Switch.IB_XDR_Spine InfiniBand switch, 𝐵 port ∈ { 400 , 800 , 1600 } Gbps, 𝐿 base_hop =
+
+150 ns, 𝑂 proto = 50 ns Node Switch.RoCE_Ether Ethernet switch, 𝐿 base_hop = 300 ns, 𝑂 proto = 80 ns (microburst-sensitive) Node Switch.OCS_Core Optical Circuit Switch, 𝐵 max → ∞ , 𝐿 base_hop < 1 ns, reconfigu-ration 𝑇 recon = 2 ms Interconnect Link.AOC_Transceiver Active Optical Cable, distance ≤ 500 m, 𝐿 base = +20 ns, 𝑃 ≈
+
+16 WInterconnect Link.LPO_Transceiver Linear Pluggable Optics (no DSP), 𝐿 base ≈ 0 ns, 𝑃 ≈ 8 WInterconnect Link.CPO_Fiber Co-packaged fiber connection, 𝐵 port ∈ { 800 , 1600 } Gbps, 𝐿 base =
+
++10 ns, 𝑃 ≈ 5 WTopology Topo.* (Scale-out) Symmetric_Fat_Tree , DragonFly , Multi_Plane ,
+
+Asymmetric_Sparse_Graph

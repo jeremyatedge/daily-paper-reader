@@ -1,0 +1,409 @@
+Title: CONQuER: Hardware-Aware Mixed-Precision Quantisation with Online-Calibrated Surrogates
+
+URL Source: https://arxiv.org/pdf/2607.25884v1
+
+Published Time: Wed, 29 Jul 2026 01:11:29 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# CONQuER : Hardware-Aware Mixed-Precision Quantisation with Online-Calibrated Surrogates 
+
+1st Aidan Dakhama 
+
+School of Informatics University of Edinburgh 
+
+Edinburgh, United Kingdom adakhama@ed.ac.uk 
+
+2nd Ajitha Rajan 
+
+School of Informatics University of Edinburgh 
+
+Edinburgh, United Kingdom arajan@ed.ac.uk 
+
+Abstract —Deploying deep neural networks on resource-constrained hardware relies heavily on mixed-precision quanti-sation (MPQ). However, current deployment toolchains severely fragment this process. Quantisation typically occurs as ahardware-agnostic preprocessing step in front-end frameworks, disconnected from the downstream compilers that generate the physical machine code. This separation leads to suboptimal configurations where assigned bit-widths map poorly to the target machine’s heterogeneous hardware execution blocks such as tensor cores and variable-width vector units, incurring severe runtime execution penalties. Furthermore, evaluating these con-figurations via exhaustive hardware-in-the-loop (HIL) testing is computationally intractable due to the exponentially large search space. We present CONQuER , a unified, compiler-integrated infras-tructure for hardware-aware MPQ. CONQuER shifts quantisa-tion directly into the compiler pipeline at the MLIR TOSA level, enabling intelligent configuration handling based on compiler support. To evaluate this combinatorial search space of differ-ent combinations of model layers within practical compilation budgets, CONQuER couples an NSGA-II evolutionary algorithm with a dual-surrogate pre-screening engine. This engine evaluates theoretical cache memory bounds and feature space isotropy to immediately discard non-viable configurations. CONQuER 
+
+then executes only the strongest candidate policies on physical hardware via IREE , feeding the exact execution metrics into a logarithmic online calibrator. This calibrator continuously aligns the surrogate models with the ground-truth hardware behaviour during an NSGA-II evolutionary search. Evaluation across mobile CPUs, laptop CPUs, and discrete server GPUs demonstrates that optimal quantisation policies are strictly hardware-dependent. By tightly coupling quantisation with compiler lowering and physical execution, CONQuER dis-covers Pareto-optimal configurations that achieve up to 12.19 ×
+
+faster inference while keeping top-1 accuracy within 1.44% of the unquantised MLIR baseline. 
+
+Index Terms —MLIR, Mixed-Precision Quantisation, Neural Network Deployment, Compilers, Genetic Algorithms, Hardware-Aware Optimisation 
+
+I. Introduction 
+
+Deep neural networks deliver strong predictive performance, but deploying them efficiently on diverse, resource-constrained hardware remains difficult. Quantisation reduces the preci-sion of weights and activations to lower memory usage and 
+
+This work was supported by the Huawei Edinburgh Joint Lab project Ro-bustCheck: Testing Robustness of Compiler Optimisations and Deep Learning Frameworks .
+
+compute cost, and is now a standard part of practical de-ployment pipelines [1], [2]. However, applying a uniform bit-width across all layers ignores the fact that different parts of a network exhibit different sensitivity to quantisation noise, often resulting in unnecessary accuracy degradation. Mixed-precision quantisation (MPQ) addresses this limitation by assigning different precisions to different parts of the network. Additionally, modern AI hardware does not process all maths on a single, uniform arithmetic logic unit (ALU). Instead, chips are split into highly specialised blocks such as tensor cores and matrix engines for hyper-fast low-precision maths, vector units and standard ALUs with FP32 or FP16 preci-sion sitting alongside for more sensitive operations like layer normalisation and activations, while neural processing units support low precision maths operations in edge devices. The difficulty with MPQ, however, is no longer whether to quantise, but how to identify an effective policy under real hardware architecture constraints. Evaluating mixed-precision policies is bottlenecked by the deployment toolchain: exhaustively testing configurations for a standard 50-layer network requires years of compilation time. To navigate such massive combinatorial search spaces, evolutionary algorithms like NSGA-II have proven highly effective [3]. Furthermore, the utility of aconfiguration depends deeply on the physical behaviour of the target hardware. Recent work has shown that deployment-aware quantisation choices matter. HAQ uses reinforcement learning driven by hardware feedback to search mixed-precision policies for spe-cialised accelerators [4], and HAWQ-V3 formulates mixed-precision allocation as an optimisation problem bounded by hardware-related constraints [5]. At the deployment level, SeQTO demonstrates that selective quantisation combined with on-device profiling on a per-model basis can recover substantial accuracy for a given ONNX model [6]. These works reinforce an important point: realistic deployment metrics must be part of the optimisation loop. However, they also highlight a major practical limitation. Existing approaches either rely en-tirely on proxy/offline metrics that may correlate only weakly with actual hardware behaviour, or they depend on expensive hardware-in-the-loop (HIL) evaluation for every candidate configuration. In both cases, quantisation remains decoupled from the compilation pipeline, which can lead optimisation to arXiv:2607.25884v1 [cs.SE] 28 Jul 2026 consider mixed-precision configurations unsupported by the target backend. This gap matters in practice because modern ML deployment increasingly relies on compiler infrastructures such as MLIR to lower high-level models to heterogeneous hardware targets [7] offering more portability. Frameworks such as IREE already provide a robust lowering and execution pipeline through dialects such as TOSA and Linalg for CPU, GPU, and embedded targets [8]. Yet current workflows largely expect quantised models to be supplied by front-end frame-works (e.g., PyTorch, TensorFlow). This early binding creates a rigid dependency, forcing developers to manage separate, hardware-specific quantisation scripts for every framework they use. Shifting MPQ into the compiler’s middle-end – specifically at the framework-agnostic TOSA level – offers a highly compatible alternative. However, achieving this without being constrained by the rigid semantics of the MLIR quant 
+
+dialect remains an open tooling problem. We present CONQuER 1, a hardware-aware mixed-precision quantisation infrastructure built directly into the compiler pipeline. CONQuER accepts full-precision MLIR TOSA pro-grams, generates quantised candidates within the compiler, and searches for target-specific mixed-precision policies using a combination of lightweight hardware-aware filtering and direct on-device execution. This framing shifts quantisation from an external, framework-dependent preprocessing step to a unified, compiler-integrated optimisation. By operating natively in this middle layer, CONQuER provides a single, framework-agnostic entry point that tightly couples candidate generation with backend compiler lowering, ensuring that all explored configurations are physically viable for execution. The main contributions of this work are: 1) Native MLIR TOSA Quantisation Infrastructure. We introduce conquer-opt , a compiler toolchain that natively generates and manipulates quantised graphs directly at the TOSA dialect level. By operating at this intermediate representation (IR), the toolchain acts as a bridge: it decouples quantisation from restrictive front-end APIs and guarantees that evaluated mixed-precision policies are intrinsically supported by the compiler’s downstream lowering passes. This deep integration es-tablishes the necessary foundation for future explorations into quantisation-aware compiler optimisations. 2) Dual-Surrogate Pre-Screening Engine. To mitigate the prohibitive costs of exhaustive physical profiling, we propose a lightweight filtering mechanism. This engine couples a hardware surrogate (evaluating memory con-straints and compute bounds) with an accuracy surrogate (evaluating informational fragility via the feature space isotropy [9] of layer activations) to prune weak config-urations prior to compilation and execution. 3) Online-Calibrated Hardware-in-the-Loop Search. We implement an NSGA-II evolutionary search that incorpo-rates an online logarithmic calibrator. By executing only   
+
+> 1The source code of CONQuER is available at https://github.com/dakaidan/ CONQuER-Replication
+
+the most promising candidates on physical hardware, the system dynamically aligns the surrogate proxies with ground-truth behaviour across generations. We evaluate CONQuER across a diverse spectrum of ex-ecution targets, including mobile processors (Snapdragon 8 Elite, and Intel I5 1145g7), and discrete server hardware (NVIDIA A100 80GB). Through ablation and comparative analyses, our results demonstrate that effective mixed-precision policies are heavily hardware-dependent. CONQuER consis-tently discovers target-specific, Pareto-optimal configurations that yield superior latency, accuracy, and memory trade-offs compared to state-of-the-art hardware-agnostic and hardware-aware baselines. Furthermore, our cross-target transferabil-ity studies empirically validate that policies optimised for one hardware profile experience significant degradation when transferred to mismatched targets, underscoring the necessity of our integrated, online-calibrated approach. 
+
+II. CONQuER Search and Compiler Infrastructure CONQuER provides a unified compiler infrastructure by shifting mixed-precision quantisation from external front-end scripts directly into the MLIR toolchain. The architecture com-prises three primary components: native MLIR TOSA quan-tisation via conquer-opt , a dual-surrogate pre-screening engine, and an online-calibrated evolutionary search loop. 
+
+A. Native TOSA Quantisation and Profiling 
+
+The core pipeline is driven by conquer-opt , a custom toolchain that performs quantisation natively at the MLIR TOSA dialect level [10]. By operating on TOSA , the in-frastructure remains framework-agnostic and decouples the quantisation process from rigid front-end restrictions. Prior to the search phase, conquer-opt performs an initial calibration and profiling pass. A set of 256 images from the validation set is utilised to compute activation ranges (min/max clipping values) and to extract the covariance matri-ces of layer activations. The Shannon entropy of the resulting eigenvalues functions as the primary model-aware sensitivity metric, quantifying the isotropy [9] of the layer’s feature space to determine its fragility to quantisation noise. 
+
+B. Dual-Surrogate Pre-Screening Engine 
+
+To alleviate the computational cost of exhaustive hardware-in-the-loop (HIL) evaluation, CONQuER employs an over-sampling strategy coupled with a lightweight, dual-surrogate filtering engine. Candidate configurations are evaluated using these proxies before any physical compilation is permitted. 
+
+Hardware Surrogate: For a given candidate policy, CON-QuER generates a Quantised Graph where each node is annotated with precise structural metadata, including operator kind, target precision, tensor dimensions, and memory traffic (activations and constants) Figure 1. The surrogate estimates theoretical node latency using a roofline model [11], [12]: 
+
+Ctotal = max( Ccompute , C memory ) + Cdispatch Target Hardware Profile      
+
+> e.g., A100, i5, Snapdragon
+> Quantised IR Node
+> Op Kind, Shape, Precision
+> Memory Hierarchy
+> L1/L2/L3 Caps & BW
+> Compute Domains
+> Vector & Matrix Engines
+> Data Traffic
+> Working Set Bytes
+> Compute Workload
+> Estimated MACs/Ops
+> Memory Latency (Cmem )
+> Byte Traffic Effective Bandwidth
+> Compute Latency (Ccomp )
+> Compute Ops Target Throughput
+> Heuristic Penalties
+> Alignment, Layout, Precision Emulation
+> Dispatch Overhead (Cdisp )
+> Device Base Scale
+> Total Node Latency
+> max( Cmem , C comp ) + Cdisp
+> Fig. 1. Overview of the hardware latency estimation surrogate.
+
+Compute bounds ( Ccompute ) are derived from SIMD widths, while memory costs ( Cmemory ) are mapped against target cache capacities. Configurations that violate the physical mem-ory constraints of the target device are pruned immediately. 
+
+Accuracy Surrogate: To estimate task accuracy without executing full validation passes, CONQuER employs an information-theoretic sensitivity proxy inspired by feature space isotropy [9]. For a given layer, the compiler instruments the intermediate tensors to extract the covariance matrix of its activation feature vectors across the channel dimension, 
+
+C. By applying eigenvalue decomposition, we obtain the coefficients of the principal components ( λ). We then derive the normalised Shannon entropy, H, to quantify the isotropy (and therefore the informational fragility) of the layer: 
+
+H = − 1ln( C)
+
+> C
+
+X
+
+> i=1
+
+pi ln( pi), where pi = |λi|
+
+P |λj |
+
+A higher entropy ( H → 1) indicates an isotropic feature space where all principal components are equally critical, meaning the layer is highly fragile to perturbations. Conversely, a lower entropy implies dimensional redundancy (where the feature space is dominated by a few principal components) and greater robustness. Drawing on a first-order Taylor approximation, the total accuracy degradation penalty for a node is calculated as the sum of its activation and weight penalties. Each penalty is formulated as the product of this entropy-based fragility and the theoretical quantisation noise amplitude, approximated as 
+
+≈ 2−b for a b-bit integer format (and proportionally scaled to account for formats with lower dynamic range). 
+
+C. Online-Calibrated Evolutionary Search 
+
+The allocation of mixed-precision configurations is formu-lated as a multi-objective optimisation problem (minimising latency, accuracy degradation) and navigated using the NSGA-II algorithm [13]. As static proxies are susceptible to runtime anomalies and backend-specific compiler optimisations, CON-QuER incorporates an online calibration mechanism. During each generation, the most promising candidates identified by the surrogate engine are fully compiled and executed on the target hardware via IREE , using a distinct 512-image search split. Accuracy is measured directly from these hardware executions, while latency is estimated from a single input using 
+
+3 warm-up iterations followed by 10 timed runs. The resulting measurements are then incorporated into an online logarithmic calibrator, y = a ln( x) + b, which uses a sliding window of recent evaluations to continuously align the surrogate models with observed behaviour across successive generations. 
+
+III. Evaluation 
+
+The evaluation of CONQuER is structured to assess its op-timisation efficacy, search efficiency, component contributions, and hardware transferability. Specifically, the experiments ad-dress the following research questions:  
+
+> •
+
+RQ1 (Comparative Efficacy): To what extent does 
+
+CONQuER improve the Pareto-optimal trade-offs (la-tency, accuracy, and memory footprint) compared to state-of-the-art hardware-aware and hardware-agnostic quanti-sation methods across varied target devices?  
+
+> •
+
+RQ2 (Cross-Target Transferability): Do hardware-specific quantisation policies generated by CONQuER 
+
+demonstrate significant performance degradation when deployed on mismatched hardware targets, thereby ne-cessitating target-specific search?  
+
+> •
+
+RQ3 (Ablation Analysis): What are the individual and combined contributions of the hardware surrogate and the accuracy surrogate to the quality of the discovered configurations and overall search efficiency? 
+
+A. Experimental Setup 
+
+Datasets and Profiling Isolation: Experiments are con-ducted using the ImageNet dataset. To prevent quantisation overfitting, strict data isolation is enforced. A 256-image subset is reserved exclusively for the initial conquer-opt calibra-tion and sensitivity profiling. A separate, 512-image subset is utilised for the HIL evaluation within the genetic algorithm. Final Pareto-optimal configurations are independently tested on the remaining unseen images from the validation set. 
+
+Target Hardware and Benchmarks: The evaluation spans multiple target architectures to accurately reflect diverse de-ployment environments. The model benchmarks include Mo-bileNetV2, ResNet-18, ResNet-50, and efficientnet. The exper-imental executions are partitioned as follows:  
+
+> •
+
+Full CONQuER Execution (RQ1, RQ2): Executed on an Intel I5 1145g7 and a Snapdragon 8 Elite [14] using MobileNetV2, ResNet-18, and ResNet-50 to represent edge deployment constraints.  
+
+> •
+
+Ablation Studies (RQ3): Executed on a discrete Server GPU (NVIDIA A100 80GB) using the full suite of benchmark models. 
+
+Baselines and SOTA Comparison: Configurations discov-ered by CONQuER are benchmarked against three primary baselines across all applicable hardware targets: 1) FP32 Baseline: The unquantised MLIR execution, which serves as the upper bound for model accuracy and the baseline for latency and memory footprint. 2) InfoQ [15]: An analytical approach that measures global information flow and uses Integer Linear Programming (ILP) to allocate bit-widths under a specified resource budget. Due to runtime incompatibilities on ARM archi-tectures, InfoQ’s execution latency is evaluated natively using the PyTorch runtime rather than the compiled 
+
+IREE stack, and results are restricted to the NVIDIA A100 80GB and Intel I5 1145g7. 3) SeQTO [6]: A direct Hardware-in-the-Loop (HIL) method that uses a greedy, layer-by-layer tuning strategy. To ensure a fair comparison, the physical evaluation budget for both SeQTO and CONQuER was strictly capped at a maximum of 1,440 hardware inferences. 
+
+Methodology for Transferability and Ablation: To ad-dress RQ2, optimal policies derived for a specific hardware target (e.g. NVIDIA A100 80GB) are compiled and executed on mismatched target (e.g., Intel I5 1145g7) to quantify latency and memory penalties incurred by hardware-agnostic transfer. To address RQ3, the search infrastructure is evaluated under four surrogate configurations: No Proxy (pure HIL), Accuracy Proxy Only, Hardware Proxy Only, and Dual Proxy (Both). Due to the stochastic nature of evolutionary algorithms, all executions for CONQuER , InfoQ, SeQTO, and the ablation variants are repeated 5 times with varying random seeds. Results report the mean and variance. 
+
+IV. Results 
+
+A. RQ1: Comparative Efficacy 
+
+Below we benchmark CONQuER against two SOTA ap-proaches: SeQTO, and InfoQ. Each approach is evaluated across three hardware targets and models to evaluate latency and accuracy trade-offs. 
+
+Benchmark Comparison: SeQTO 
+
+We benchmark CONQuER against SeQTO, a greedy, layer-by-layer hardware-in-the-loop (HIL) tuning method. Because SeQTO is deterministic and generates a single configuration per run, both approaches were evaluated across 5 repetitions using different random seeds to account for execution variance. Table I details their performance across three hardware targets. The speedup is relative to the unquantised (PyTorch to MLIR) FP32 baseline and the corresponding drop in top-1 accuracy. “Best Case” configurations denote the fastest policy maintain-ing ≤ 5% accuracy degradation, falling back to ≤ 15% if a framework cannot find a compliant configuration. While SeQTO outputs standard ONNX models, we observed that certain configurations generated by SeQTO structurally failed to lower through the IREE compiler pipeline. This highlights a limitation of decoupled optimisation, and the frag-mented nature of model quantisation at the framework level: without integrating the target compiler directly into the search loop, theoretically valid MPQ policies can produce malformed or unsupported graphs that silently fail at deployment time. Across the configurations, all solutions which, when eval-uated, resulted in accuracy loss over 15% were excluded as outliers. No such cases were present with SeQTO, which always found reasonable solutions. Across all reps, there were some outlier cases present with CONQuER ; however, these were limited to a minority of the Pareto front, representing no more than 1 of the resulting optimal results per rep. 
+
+Performance on Discrete GPU (NVIDIA A100 80GB) 
+
+On the NVIDIA A100 80GB, CONQuER outperforms SeQTO in both latency reduction and accuracy preservation. This is most pronounced on ResNet-50, where CONQuER achieves a 12 .19 × speedup with a 1.44% accuracy drop, whereas SeQTO reaches a 1.49 × speedup with a 5.38% drop. On MobileNetV2, SeQTO fails to meet the 5% accuracy threshold, falling back to a policy with a 10 .82% accuracy drop and a 
+
+1.33 × speedup. CONQuER identifies a compliant policy with a 2.31 × speedup and a 2.08% accuracy drop. 
+
+Performance on Mobile CPU (Snapdragon 8 Elite) 
+
+On the Snapdragon 8 Elite, CONQuER finds a policy for ResNet-18 that yields a 3.31 × speedup with 0.00% accu-racy degradation, compared to SeQTO’s 1.82 × speedup. For MobileNetV2, SeQTO again misses the 5% bound, falling back to a configuration with a 6.10% accuracy drop and a latency regression ( 0.93 × speedup). CONQuER finds a configuration with a 1.25 × speedup and a 0.78% accuracy drop. On ResNet-50, SeQTO achieves a higher peak speedup (3.37 × vs. CONQuER ’s 1.51 ×) but incurs a 3.58% accuracy penalty, whereas CONQuER maintains a 0.00% accuracy loss. 
+
+Performance on Laptop CPU (Intel I5 1145g7) The Intel I5 1145g7 environment introduces a fundamental hard-ware constraint: the runtime unpacking penalty for storing parameters in FP16, which requires upcasting to 32-bit [16]. Consequently, neither CONQuER nor SeQTO achieve an absolute speedup ( ≥ 1.0×) over the FP32 baseline while maintaining high accuracy. However, CONQuER manages this latency regression more effectively on compact models. For TABLE I                                                                                                         
+
+> CONQuER vs. SeQTO. Speedups are relative to the unquantised FP32 baseline. The ‘Best’ columns indicate the fastest configuration maintaining ≤5% accuracy degradation (falling back to ≤15% if a framework fails to meet the threshold). Averages include 5 reps ( ±SD).
+> Target Model CONQuER (Ours) SeQTO [3]
+> Best Case Average ( ±SD) Best Case Average ( ±SD) Spd. Acc ↓Spd. Acc ↓Spd. Acc ↓Spd. Acc ↓
+> NVIDIA A100 80GB MobileNetV2 2.31 ×2.08% 2.05 ±0.16 ×2.23 ±11.12% 1.33 ×10.82% 1.31 ±0.02 ×10.38 ±0.44% ResNet-18 1.57 ×0.46% 1.38 ±0.21 ×4.34 ±3.62% 1.17 ×3.86% 1.16 ±0.18 ×3.97 ±0.27% ResNet-50 12.19 ×1.44% 7.52 ±3.82 ×6.57 ±1.29% 1.49 ×5.38% 1.44 ±0.06 ×5.41 ±0.05%
+> Intel I5 1145g7 MobileNetV2 0.96 ×0.39% 0.83 ±0.05 ×4.04 ±3.58% 0.95 ×0.00% 0.92 ±0.04 ×1.42 ±1.2% ResNet-18 0.98 ×1.56% 0.80 ±0.08 ×4.91 ±2.88% 0.95 ×0.00% 0.90 ±0.07 ×0.99 ±0.45% ResNet-50 0.84 ×0.00% 0.72 ±0.04 ×2.47 ±1.79% 0.95 ×0.00% 0.92 ±0.03 ×2.90 ±1.93%
+> Snapdragon 8 Elite MobileNetV2 1.25 ×0.78% 0.93 ±0.12 ×0.23 ±0.32% 0.93 ×6.10% 0.69 ±0.29 ×8.82 ±2.14% ResNet-18 3.31 ×0.00% 2.61 ±0.62 ×1.77 ±1.04% 1.82 ×0.00% 1.09 ±0.56 ×1.59 ±1.87% ResNet-50 1.51 ×0.00% 1.21 ±0.29 ×4.13 ±0.71% 3.37 ×3.58% 3.35 ±0.02 ×3.99 ±0.29%
+
+MobileNetV2 and ResNet-18, CONQuER limits the slowdown to 0.96 × and 0.98 ×, trading marginal accuracy drops ( 0.39% 
+
+and 1.56% ) to reduce the unpacking penalty. SeQTO maintains a 0.00% accuracy loss but exhibits a uniform 0.95 × slowdown across all three models. These results demonstrate that Se-QTO’s greedy, layer-by-layer methodology frequently traps the search in suboptimal local minima, resulting in either greater accuracy degradation or restricted latency improvements. By employing a globally aware search that strictly bounds accu-racy loss while prioritising latency, CONQuER successfully circumvents these local minima to discover superior, hardware-specific optima across diverse architectures and model scales. 
+
+Benchmark Comparison: InfoQ 
+
+We evaluate InfoQ as a representative hardware-agnostic analytical mixed-precision framework. InfoQ computes mixed-precision allocations analytically in a matter of min-utes, whereas CONQuER ’s hardware-in-the-loop evolutionary search requires several hours of compilation and physical exe-cution. However, this upfront speed comes with severe deploy-ment penalties that hinder practical use without Quantisation-Aware Training (QAT). Unlike CONQuER , InfoQ outputs PyTorch ScriptModule artifacts that rely on legacy quanti-sation and backend-specific operator containers. We observed that these artifacts structurally fail to lower through mod-ern Ahead-Of-Time (AOT) edge compilers, including IREE 
+
+(torch-mlir ) and ExecuTorch [17] (torch.export ). This translation failure is driven by InfoQ’s utilisation of sub-byte bit-widths (e.g., 2-bit, 4-bit) that lack correspond-ing MLIR legalisations, as well as its reliance on fbgemm 
+
+operators that are strictly bound to x86 instruction sets. Consequently, deploying InfoQ policies to the ARM-based Snapdragon 8 Elite is completely unsupported. To explore the latency-accuracy trade-offs of this analytical approach, we evaluate InfoQ across three compression targets: 4×, 6 ×, and ‘high’ (maximum logical compression, exceeding 10 × depending on model scale). Within InfoQ’s analytical formulation, these targets act as strict memory constraints applied to its Integer Linear Programming (ILP) solver. By setting these bounds, the ILP solver is forced to allocate mixed-precision bit-widths such that the resulting model’s memory footprint is guaranteed to be at least 4 times, 6 times, or maximally smaller than the unquantised 32-bit baseline. We first evaluate these generated policies under strict Post-Training Quantisation (PTQ) constraints to directly compare against CONQuER ’s zero-retraining paradigm. However, be-cause analytical methods like InfoQ aggressively truncate pre-cision without hardware-in-the-loop feedback, they typically rely on subsequent Quantisation-Aware Training (QAT) to recover functional accuracy. To evaluate this recovery, we also report InfoQ’s accuracy after applying QAT on the NVIDIA A100 80GB. We restrict this QAT phase to a 12-hour training budget to match the average wall-clock execution time of 
+
+CONQuER ’s evolutionary search. It is important to note that this is not a perfectly equivalent resource comparison: completing CONQuER ’s search within 12 hours primarily relies on sufficient standard CPU compute to concurrently compile candidates, while executing 12 hours of QAT requires continuous, access to dedicated training hardware. The results in Table II demonstrate that, without hardware-aware compiler integration, InfoQ frequently yields policies that struggle to balance latency improvements with accuracy retention in a PTQ setting. On the NVIDIA A100 80GB, InfoQ universally fails to achieve an absolute speedup ( ≥ 1.0×) over the FP32 baseline across all models and compression levels. For example, on ResNet-50, InfoQ’s 4 × configuration operates at a 0.77 × speedup (a latency regression) with a 4.34% 
+
+accuracy drop, while CONQuER achieves a 12 .19 × speedup with only a 1.44% drop. On MobileNetV2, InfoQ’s 4 × policy incurs a 21 .12% accuracy penalty and a 0.48 × slowdown, compared to CONQuER ’s 2.31 × speedup and 2.08% drop. On the Intel I5 1145g7, while InfoQ manages marginal speedups on ResNet architectures, its aggressive use of sub-byte truncation naturally leads to significant accuracy degra-dation under a zero-retraining constraint. For instance, the 6× and ‘high’ compressions on MobileNetV2 exhibit 99 .90% 
+
+and 99 .92% degradation, respectively. This expected drop at high compression rates demonstrates a core limitation of the TABLE II                                                                                                            
+
+> CoNQuER vs. InfoQ. Speedups are relative to the unquantised FP32 baseline. The ‘Best’ columns indicate the fastest configuration maintaining
+> ≤5% accuracy degradation. Absolute latency is reported alongside relative speedup.
+> Method Metric NVIDIA A100 80GB Intel I5 1145g7
+> MobileNetV2 ResNet-18 ResNet-50 MobileNetV2 ResNet-18 ResNet-50
+> CoNQuER (Ours)
+> Latency 6.78 ms 8.42 ms 8.43 ms 77.17 ms 53.69 ms 69.06 Speedup 2.31 ×1.57 ×12.19 ×0.96 ×0.98 ×0.84 ×
+> Acc ↓2.08% 0.46% 1.44% 0.39% 1.56% 0.00%
+> InfoQ (4x)
+> Latency 69.08 ms 20.74 ms 52.18 ms 88.72 ms 62.15 ms 60.77 ms Speedup 0.48 ×0.96 ×0.77 ×0.96 ×1.14 ×1.39 ×
+> Acc ↓21.12% 5.58% 4.34% 21.66% 6.02% 4.24% QAT Acc ↓+0.96% +0.04% -0.32% +0.96% +0.12% -0.32%
+> InfoQ (6x)
+> Latency 47.59 ms 20.55 ms 54.00 ms 174.88 ms 69.45 ms 50.05 ms Speedup 0.70 ×0.97 ×0.74 ×0.49 ×1.02 ×1.68 ×
+> Acc ↓99.92% 8.72% 92.46% 99.90% 8.90% 92.38% QAT Acc ↓-0.82% +1.22% -0.02% -0.82% +1.24% +0.12%
+> InfoQ (high)
+> Latency 48.23 ms 20.90 ms 54.89 ms 482.51 ms 36.36 ms 52.86 ms Speedup 0.69 ×0.95 ×0.73 ×0.18 ×1.95 ×1.59 ×
+> Acc ↓99.92% 99.84% 99.88% 99.92% 99.86% 99.88% QAT Acc ↓-0.90% -0.02% -1.04% -0.86% -0.02% -1.04%
+
+framework: these analytical policies require subsequent QAT to become viable, pushing the computational burden further down the pipeline. However, when QAT is applied, any re-gression in accuracy is resolved, and often the resultant model achieves higher accuracy on the training dataset than the orig-inal model. Ultimately, while InfoQ’s analytical approach is remarkably fast, these benchmarks highlight a critical software engineering trade-off. Investing computational budget into a compiler-integrated, hardware-in-the-loop search guarantees the generation of executable, high-performance policies that natively preserve accuracy, whereas rapid hardware-agnostic methods consistently yield artefacts that are not always fully compatible or that necessitate additional resource-intensive phases like QAT to recover functional performance. 
+
+B. RQ2: Cross-Target Transferability            
+
+> TABLE III
+> FP32 Baseline Latency Multiples relative to Native Quantised Optimums
+> MobileNetV2 ResNet-18 ResNet-50 Intel I5 1145g7 0.74 0.91 0.74 NVIDIA A100 80GB 2.20 1.53 13.44 Snapdragon 8 Elite 1.02 2.99 1.45
+
+To evaluate cross-target transferability, we extracted three representative mixed-precision policies from the Pareto front of each source hardware and model combination: the latency-optimal policy, the accuracy-optimal policy, and a balanced middle-ground policy. These policies were deployed onto mismatched target architectures, and their resulting relative latencies were averaged to quantify the transfer penalty. Cru-cially, across all evaluations, the best latency achieved by a transferred non-native policy never surpasses the best latency of the natively optimised policy. While a heavily quantised non-native policy might occasionally execute faster than a native policy optimised strictly for accuracy, when evaluating equivalent Pareto objectives, the hardware-aware native search remains strictly superior. Figure 2 reports the normalised latency penalties incurred by these hardware-agnostic transfers, using the natively optimised policy’s latency as the 1.0× baseline. This demonstrates that deploying a policy on a non-native target consistently results in a latency penalty across all evaluated models and hardware combinations. On the NVIDIA A100 80GB, executing a MobileNetV2 policy optimised for the Intel I5 1145g7 incurs a 1.37 × latency penalty, while transferring a Snapdragon 8 Elite-optimised policy yields a 1.29 × penalty. This regression is particularly pronounced on ResNet-50, where deploying the Snapdragon 8 Elite policy on the NVIDIA A100 80GB results in a
+
+1.79 × increase in latency over the native baseline. Conversely, transferring an NVIDIA A100 80GB-optimised policy to the Snapdragon 8 Elite introduces penalties ranging from 1.05 ×
+
+(ResNet-50) to 1.34 × (MobileNetV2). These variations indi-cate that quantisation policies tightly overfit to the specific compute and memory hierarchies of their target architecture. The relative severity of the transfer penalty is exacerbated by model scale and baseline execution time. For highly parametrised models such as ResNet-50, the unquantised FP32 latency is inherently high (e.g., 104.97 ms on the NVIDIA A100 80GB), meaning any valid mixed-precision configu-ration provides a substantial absolute speedup (reducing to 24.11 ms natively). Because the baseline latency is large, the relative differences between a natively optimal policy and a transferred policy are compressed, yielding smaller relative penalties (such as the 1.05 × penalty when transferring from the NVIDIA A100 80GB to the Snapdragon 8 Elite). Nonetheless, the native search consistently identifies the most performant execution path. NVIDIA A100 Intel Core i5 Snapdragon 8 Elite         
+
+> Deployment Target
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> Normalized Latency Penalty (x)
+> MobileNetV2
+> NVIDIA A100 Intel Core i5 Snapdragon 8 Elite
+> Deployment Target
+> ResNet-18
+> NVIDIA A100 Intel Core i5 Snapdragon 8 Elite
+> Deployment Target
+> ResNet-50
+> NVIDIA A100 Intel Core i5 Snapdragon 8 Elite Native Quantized Baseline Fig. 2. Cross-target transferability of mixed-precision policies across NVIDIA A100 80GB, Intel I5 1145g7, and Snapdragon 8 Elite. The y-axis shows the normalised latency penalty incurred when deploying a policy optimised for the source hardware onto a mismatched target. The black dashed line (1.0 ×)represents the native hardware-aware optimal policy, while the red dotted line indicates the unquantised FP32 baseline.
+
+An exception to the general latency improvement over FP32 is observed on the Intel I5 1145g7 target. As shown in Figure 2, all quantised policies on this hardware execute slower than the unquantised FP32 baseline (indicated by the red dotted line). Maintaining accuracy on this model often involves the retention of float types (e.g., FP16) in many of the solutions. However, FP16 is purely a storage type on this processor and must be unpacked to 32-bit at runtime, incurring an execution overhead that exceeds native FP32 operations. Despite these hardware constraints, target-specific search continues to provide measurable benefits over agnostic transfer. While the native search cannot overcome the fundamental unpacking penalty to beat the FP32 baseline, it explicitly minimises the resulting latency regression while reducing the model size. On MobileNetV2, the native i5 policy executes in 40.26 ms. In contrast, transferring policies optimised for the NVIDIA A100 80GB or Snapdragon 8 Elite – which are structurally unaware of this unpacking penalty – increases execution time to 50.00 ms and 51.76 ms, respectively. This results in relative penalties of 1.27 × and 1.29 × over the native quantised configuration. This demonstrates that direct hardware-in-the-loop optimisation is necessary to navigate target-specific bottlenecks, whether to maximise performance gains or to minimise architectural regressions. 
+
+C. RQ3: Ablation Analysis 
+
+To understand the individual and combined impact of 
+
+CONQuER ’s pre-screening mechanisms, we ablate the sur-rogate engine into four configurations: unguided search ( No Proxy ), accuracy-guided only (Accuracy-Only ), hardware-latency-guided only ( Latency-Only ), and the complete dual-surrogate system ( Dual ). The ablation was executed on an NVIDIA A100 80GB across all benchmark models. Table IV summarises the convergence speed, Hypervolume (HV), and Pareto front size, while Figure 3 illustrates the generational search stability. 
+
+Unguided Search: Naive evolutionary search relying solely on HIL evaluations ( No Proxy ) proves highly inefficient for MPQ. Without analytical surrogates to pre-filter the com-binatorial search space, the genetic algorithm expends its evaluation budget on fundamentally non-viable configurations. As shown in Table IV, this lack of guidance leads to search instability. On ResNet-18, the unguided search exhibits a high convergence variance ( ± 37.0 generations) and yields a heavily degraded average HV of 0.0042, compared to 0.0234 for the dual-proxy approach. This confirms that physical HIL feedback alone is too sparse and noisy to effectively navigate the MPQ space within practical compilation budgets. 
+
+Single Proxies: Introducing a single surrogate substantially improves upon the unguided baseline, but it exposes the search to objective skew (surrogate overfitting). When the algorithm is constrained along only one dimension, the search naturally biases away from the unconstrained dimension. While the HIL evaluation partially corrects this during the evolutionary loop, the overall generational trajectory remains skewed. When relying exclusively on the accuracy surrogate (Accuracy-Only ), the search generates populations with mini-mal accuracy degradation. However, because the surrogate is blind to physical execution bottlenecks, it frequently selects high-precision configurations that map poorly to the target hardware, resulting in median latencies up to 1.24 × slower than the optimal front on architectures like ResNet-50. Con-versely, the hardware-only surrogate ( Hardware-latency-Only )aggressively quantises to maximise arithmetic throughput; this achieves minimal latency but incurs notable accuracy drops, resulting in 3.1× worse accuracy loss from the baseline when compared to the dual-proxy. Consequently, single-proxy configurations skew the Pareto front heavily toward their respective objectives. They struggle to populate the “knee” of the curve where balanced trade-offs exist, and their search trajectories are often erratic. They may occasionally discover high-HV configurations but struggle to consistently find them. However, both single-proxy approaches still approach the unconstrained search performance. In de-ployment scenarios where either latency or accuracy is strictly prioritised over the other, single-proxy guidance remains a viable strategy for finding edge solutions. 
+
+Dual-Surrogate: The complete dual-surrogate mitigates this objective skew. By bounding the search space with theoret-ical memory constraints and informational fragility, the system establishes a constrained, viable search space. This prevents generational regression and enforces a smooth, monotonically improving search trajectory (Figure 3) that is robust to HIL measurement noise. The dual-surrogate configuration sustains productive exploration, averaging convergence at generation 
+
+34 .45 across all evaluated models to consistently yield the highest-quality, most balanced Pareto fronts. 
+
+Hardware Proportionality and Dispatch Overhead: An important behaviour emerged during the NVIDIA A100 80GB ablation. Because the NVIDIA A100 80GB is a highly parallel discrete GPU designed for massive workloads, the execution time of compact models (such as MobileNetV2 and ResNet-18) is heavily bounded by kernel dispatch overhead rather than arithmetic compute. This dispatch overhead introduces runtime noise that can obscure the actual computation time. Consequently, the absolute latency gains from mixed-precision quantisation are compressed on these smaller models com-pared to larger architectures like ResNet-50. This highlights a crucial deployment consideration: mixed-precision latency gains are most pronounced when the model’s computational intensity is proportional to the target hardware’s compute capacity – when this is not the case, other approaches may be superior. 
+
+V. Threats to Validity 
+
+A. Internal Validity 
+
+Toolchain and runtime mismatches: Our baselines rely on different frontend pipelines (e.g., PyTorch to IREE , or ONNX 
+
+to IREE ). This results in subtly different versions of the model in MLIR ; which may result in different performance profiles. This reflects the severely fragmented nature of modern ML deployment toolchains. CONQuER deliberately shifts quanti-sation directly into the compiler pipeline at the TOSA level to avoid these brittle conversions and to ensure optimisation is performed on the relevant deployment artefact. In cases where baselines fail to export or map optimally to IREE runtimes, this represents the practical limitations developers face. 
+
+Prototype limitations: conquer-opt is a prototype; any suboptimal lowering of specific quantised nodes might arti-ficially penalise those configurations during search. However, this establishes a strict lower bound on performance – future compiler optimisations may improve our reported gains. 
+
+Thermal management: Running intensive hardware-in-the-loop (HIL) evaluations on edge devices risks thermal throt-                                                                                                                                                     
+
+> TABLE IV
+> Ablation of surrogate components on convergence, Hypervolume (HV), and Pareto front size. Convergence Generation is defined as the generation where the Pareto front reaches within 5% of its final state. Results show mean ±standard deviation for 5 repetitions.
+> Configuration Convergence Gen. Hyper-Volume Front Size MobileNetV2
+> No Proxy 33 .0±32 .20.0196 ±0.0202 3.2±1.3
+> Accuracy-Only 45 .8±18 .80.0417 ±0.0022 1.8±0.4
+> Latency-Only 50 .6±10 .70.0428 ±0.0013 2.2±1.1
+> Dual ( CONQuER )32 .4±12 .80.0458 ±0.0015 3.0±0.7
+> ResNet-18
+> No Proxy 43 .4±27 .00.0042 ±0.0058 4.2±1.9
+> Accuracy-Only 51 .4±29 .70.0208 ±0.0024 3.6±0.9
+> Latency-Only 55 .8±8.30.0225 ±0.0012 4.4±1.1
+> Dual ( CONQuER )40 .2±10 .50.0234 ±0.015 6.0±1.0
+> ResNet-50
+> No Proxy 42 .6±29 .60.4528 ±0.0323 7.1±2.3
+> Accuracy-Only 36 .0±26 .10.4796 ±0.0048 7.4±1.6
+> Latency-Only 32 .8±20 .90.4799 ±0.0072 7.2±1.9
+> Dual ( CONQuER )27 .4±13 .50.4817 ±0.0093 7.8±1.3
+> EfficientNet
+> No Proxy 41 .8±18 .10.7485 ±0.0071 7.2±1.5
+> Accuracy-Only 38 .0±16 .20.7372 ±0.0209 6.0±1.6
+> Latency-Only 39 .8±15 .30.7520 ±0.0083 6.0±1.6
+> Dual ( CONQuER )37 .8±13 .70.7531 ±0.0113 7.8±1.6
+
+tling. We mitigated this by using fixed performance profiles on the Intel I5 1145g7 and Snapdragon 8 Elite. Further, in the case of NVIDIA A100 80GB, the models being run are far below the capacity of such a GPU, and as such, we never approached thermal limits in any of the runs. 
+
+B. External Validity 
+
+Model and task generalisability: Our evaluation focuses on CNNs for image classification, representing a standard edge deployment workload. We acknowledge that architectures with extreme outlier activations, such as Transformers, or tasks in different domains, possess different sensitivity profiles. Assessing the transferability of CONQuER to these workloads and its scalability to large models remains a direction for future work. 
+
+C. Construct Validity 
+
+Proxy reliability: Static proxies are susceptible to runtime anomalies and backend-specific compiler optimisations. We address this by coupling the search with an online logarithmic calibrator, dynamically aligning the surrogate models with observed hardware behaviour across successive generations to prevent the search from being misled by proxy inaccuracies. 
+
+Calibration set representativeness: We use a 256-image subset for calibration and entropy profiling. This aligns with standard post-training quantisation practices and is deliberately restricted to enforce strict data isolation and prevent quantisa-tion over-fitting. 0.010                
+
+> 0.015
+> 0.020
+> 0.025
+> 0.030
+> 0.035
+> 0.040
+> 0.045
+> Average Hypervolume (HV)
+> MobileNetV2
+> 0.000
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> Average Hypervolume (HV)
+> ResNet-18
+> 10 20 30 40 50 60 70
+> Generation
+> 0.40
+> 0.42
+> 0.44
+> 0.46
+> 0.48
+> Average Hypervolume (HV)
+> ResNet-50
+> 10 20 30 40 50 60 70
+> Generation
+> 0.71
+> 0.72
+> 0.73
+> 0.74
+> 0.75
+> Average Hypervolume (HV)
+> Effi cientNet
+> Search Con fi guration
+> Dual Proxy Hardware-Only Accuracy-Only No Proxy (Unguided)
+
+Fig. 3. Generational trajectory of the average hypervolumes (normalised) vs. Generation across ablation configurations. Single proxies and unguided searches exhibit higher instability, whereas the dual-surrogate approach achieves monotonic convergence. 
+
+D. Conclusion Validity 
+
+Measurement noise: Hardware execution, particularly on heavily parallel targets like the NVIDIA A100 80GB, is subject to dispatch overheads and measurement noise. We mitigated this during our final validation by using extended warm-up iterations, executing multiple timed runs under strict thermal controls, and averaging the results. 
+
+Search stochasticity: Due to the stochastic nature of evolu-tionary algorithms, all searches were repeated 5 times with varying random seeds. Results are reported as mean and variance to ensure statistical reliability. 
+
+VI. Related Work 
+
+Table V separates deployment settings, optimisation schemes, and the sources of guidance used during the search. This makes it easier to distinguish commodity-device sys-tems such as SeQTO from accelerator- or FPGA-orientated approaches such as HAQ and SHQ, and from model-centric mixed-precision methods such as HAWQ-V3, InfoQ, LCPAQ, GMPQ-TE, EvoQ, and HMQAT. CONQuER com-bines commodity-device deployment with compiler-integrated search and pre-HIL screening. 
+
+Compiler infrastructures for machine learning deploy-ment: Modern ML deployment pipelines remain fragmented across model conversion, quantisation, compiler lowering, and backend runtime support. MLIR addresses part of this fragmentation by providing a reusable multi-level compiler infrastructure for heterogeneous workloads and hardware tar-gets [7]. Frameworks such as TinyIREE show how MLIR -based lowering through dialects such as TOSA and Linalg 
+
+can target desktop, mobile, and embedded devices within a unified execution environment [8]. However, these pipelines generally treat quantisation as an external preprocessing step and expect quantised models to be imported from front-end tools. They therefore provide limited support for generating or searching mixed-precision candidates inside the compiler itself. CONQuER targets this gap by generating, lowering, and evaluating mixed-precision programs within a single pipeline. 
+
+Deployment-aware quantisation and model compression: 
+
+Several methods adapt quantisation to deployment constraints, but differ substantially in their target setting and source of hardware guidance. HAQ uses reinforcement learning driven by direct latency and energy feedback, but is aimed at spe-cialised accelerator settings rather than common deployment stacks [4]. SHQ estimates hardware resource usage in a single step before deployment, but focuses on FPGA-based full-pipeline accelerators [18]. Balaskas et al. combine pruning and mixed-precision quantisation under a hardware-aware en-ergy model for edge deployment [19]. AIQ optimises per-layer bit-widths to maximise arithmetic intensity, targeting memory-bound inference through an analytical performance objective rather than direct device profiling [20]. Closest to our deployment setting, SeQTO performs selective quantisation and on-device profiling of ONNX models across CPU, GPU, and mobile targets to identify Pareto-optimal candidates [6]. 
+
+CONQuER shares this commodity-device focus, but differs TABLE V                                                                             
+
+> Comparison with representative mixed-precision and deployment-aware optimisation approaches. Direct feedback denotes measurement on the target device or runtime. surrogate includes sensitivity metrics, hardware proxies, and learned surrogates used to structure search.
+> Method Deployment setting Optimisation scheme Direct feedback surrogate Compiler integrated
+> HAQ [4] Specialised accelerators Reinforcement learning + HIL ✓✗✗
+> SHQ [18] FPGA One-shot resource model + GA ✗✓✗
+> SeQTO [6] Commodity devices via ONNX Pareto search + profiling ✓✗✗
+> Balaskas et al. [19] Edge deployment Pruning + MPQ + energy model ✗✓✗
+> AIQ [20] Memory-bound inference AI-aware search ✗✓✗
+> HAWQ-V3 [5] Integer-only deployment Hessian-guided ILP ✗✓✗
+> InfoQ [15] Resource-bounded MPQ Global information flow + ILP ✗✓✗
+> LCPAQ [21] Hardware-constrained MPQ Hessian + ILP + proxy NAS ✗✓✗
+> GMPQ-TE [22] Generalisable MPQ Topological entropy + LP ✗✓✗
+> EvoQ [23] General MPQ Evolutionary search + sensitivity ✗✓✗
+> HMQAT [24] General MPQ Hessian-based Pareto optimisation ✗✓✗
+> AutoQRA [25] LLM adaptation Surrogate-guided search ✗✓✗
+> CONQuER Commodity devices in MLIR MOGA + hardware proxy + HIL ✓✓✓
+
+in where and how search is performed: it moves candidate generation into the compiler IR and applies low-cost hardware filtering before expensive HIL execution. 
+
+Constraint-based and sensitivity-guided mixed-precision quantisation: A second strand of work reduces MPQ search cost by replacing repeated full evaluations with analytical con-straints or layer-sensitivity signals. HAWQ-V3 uses Hessian information and integer linear programming to allocate bit-widths under integer-only deployment constraints [5]. EvoQ and HMQAT likewise use sensitivity-guided search, relying on evolutionary exploration or Pareto optimisation to navigate the MPQ space [23], [24]. InfoQ replaces local sensitivity heuristics with a global information-flow metric based on mutual information, again solving the final allocation through ILP under resource budgets [15]. LCPAQ combines Hessian-based sensitivity, ILP-based hardware constraints, and a low-cost proxy NAS module to reduce search effort [21] – specif-ically – relying on a learned Multi-Layer Perceptron proxy to simulate relative accuracy offline. GMPQ-TE uses topological entropy to derive a single-pass linear programme that yields generalisable quantisation policies across datasets [22]. These methods show the value of constraints and low-cost guidance, but they remain largely model-centric: they do not account for compiler lowering decisions, neighbouring-operator transi-tion costs, backend operator availability, or runtime execution through a deployment stack such as IREE .
+
+Proxy-guided optimisation and search efficiency: Mixed-precision search is combinatorial, so using cheap guidance signals to reduce expensive evaluations is a natural strat-egy. AutoQRA uses surrogate models to discard poor con-figurations before expensive downstream optimisation in the joint search over mixed precision and low-rank adaptation settings [25]. Fundamentally, using surrogate models to assist Multi-Objective Evolutionary Algorithms (MOEAs) is a well-established technique for mitigating such expensive optimisa-tion problems [26]–[28]. More broadly, Search-Based Software Engineering has long used approximate fitness signals to avoid unnecessary full evaluations, for example, in allocator optimi-sation [29], while training-free neural architecture search com-bines multiple low-cost signals to steer exploration efficiently [9]. While other frameworks utilise surrogate-guided search to optimise tensor programs [30], [31] or apply reinforcement learning to MLIR’s Linalg dialect [32], they generally do not natively support mixed-precision generation within the IR. CONQuER follows the same principle as these approaches, providing compiler-integrated MPQ: a lightweight hardware cost model filters weak candidates before full compilation and 
+
+IREE execution on the target device. 
+
+VII. Conclusion and Future Work 
+
+We presented CONQuER , a hardware-aware mixed-precision quantisation infrastructure that shifts the quantisa-tion process directly into the MLIR TOSA compiler pipeline. For software engineers and ML practitioners, this integration provides a unified deployment layer that resolves the severe fragmentation between frontend frameworks and backend com-pilers [33]–[35]. By generating and optimising configurations entirely within the intermediate representation, developers avoid brittle toolchain conversions and are guaranteed that their quantised profiles are structurally compatible with their deployment system. While our dual-surrogate, online-calibrated search intro-duces a higher upfront computational cost compared to some hardware-agnostic analytical methods, this investment is es-sential for resource-constrained environments. When runtime latency is a strict deployment constraint, the overhead of hardware-in-the-loop (HIL) feedback is quickly recovered across a large deployment. Future work will expand CONQuER across three primary vectors. First, we plan to refine the accuracy and latency surrogates to further minimise the HIL evaluation budget. Second, we aim to extend our sensitivity profiling and search mechanism to support highly dynamic architectures such as Transformers. Finally, we will explore deep co-optimisation at the compiler level, where downstream compilation passes (e.g., operator tiling, and vectorisation) are dynamically tuned in tandem with the automatically discovered quantisation configurations, providing even greater end-to-end deployment efficiency, and developer ease. 
+
+References 
+
+[1] A. Gholami, S. Kim, Z. Dong, Z. Yao, M. W. Mahoney, and K. Keutzer, “A survey of quantization methods for efficient neural network infer-ence,” in Low-power computer vision . Chapman and Hall/CRC, 2022, pp. 291–326. [2] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam, and D. Kalenichenko, “Quantization and training of neural networks for efficient integer-arithmetic-only inference,” in Proceedings of the IEEE conference on computer vision and pattern recognition , 2018, pp. 2704– 2713. [3] A. J. Nebro, J. Galeano-Brajones, F. Luna, and C. A. Coello Coello, “Is nsga-ii ready for large-scale multi-objective optimization?” Mathemati-cal and Computational Applications , vol. 27, no. 6, p. 103, 2022. [4] K. Wang, Z. Liu, Y. Lin, J. Lin, and S. Han, “HAQ: Hardware-Aware Automated Quantization With Mixed Precision,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,2019, pp. 8612–8620. [5] Z. Yao, Z. Dong, Z. Zheng, A. Gholami, J. Yu, E. Tan, L. Wang, Q. Huang, Y. Wang, M. Mahoney, and K. Keutzer, “HAWQ-V3: Dyadic Neural Network Quantization,” in Proceedings of the 38th International Conference on Machine Learning . PMLR, Jul. 2021, pp. 11 875–11 886. [6] N. Louloudakis and A. Rajan, “A Selective Quantization Tuner for ONNX Models,” in Proceedings of Proceedings of the 48th International Conference on Software Engineering . Association for Computing Machinery, Dec. 2025. [7] C. Lattner, M. Amini, U. Bondhugula, A. Cohen, A. Davis, J. Pienaar, R. Riddle, T. Shpeisman, N. Vasilache, and O. Zinenko, “MLIR: A Compiler Infrastructure for the End of Moore’s Law,” Mar. 2020. [8] H.-I. C. Liu, M. Brehler, M. Ravishankar, N. Vasilache, B. Vanik, and S. Laurenzo, “TinyIREE: An ML Execution Environment for Embedded Systems From Compilation to Deployment,” IEEE Micro , vol. 42, no. 5, pp. 9–16, Sep. 2022. [9] J. Lee and B. Ham, “AZ-NAS: Assembling Zero-Cost Proxies for Net-work Architecture Search,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024, pp. 5893–5903. [10] MLPlatform.org, “Tensor Operator Set Architecture (TOSA) Specifica-tion 1.0.1,” https://www.mlplatform.org/tosa/tosa spec 1 0 1.html, 2020, accessed: 2026-06-23. [11] S. Williams, A. Waterman, and D. Patterson, “Roofline: an insightful visual performance model for multicore architectures,” Communications of the ACM , vol. 52, no. 4, pp. 65–76, 2009. [12] V. C. Cabezas and M. P¨ uschel, “Extending the roofline model: Bot-tleneck analysis with microarchitectural constraints,” in 2014 IEEE International Symposium on Workload Characterization (IISWC) . IEEE, 2014, pp. 222–231. [13] K. Deb, A. Pratap, S. Agarwal, and T. Meyarivan, “A fast and elitist multiobjective genetic algorithm: Nsga-ii,” IEEE transactions on evolu-tionary computation , vol. 6, no. 2, pp. 182–197, 2002. [14] Qualcomm Technologies, Inc., “Qualcomm Snapdragon 8Elite Mobile Platform,” 2024, accessed: 2026-06-22. [Online]. Available: https://www.qualcomm.com/products/mobile/ snapdragon/smartphones/snapdragon-8-series-mobile-platforms/ snapdragon-8-elite-mobile-platform [15] M. E. Akbulut, H. H. Y. Shalby, F. Pittorino, and M. Roveri, “InfoQ: Mixed-Precision Quantization via Global Information Flow,” Proceed-ings of the AAAI Conference on Artificial Intelligence , vol. 40, no. 24, pp. 19 598–19 606, Mar. 2026. [16] Intel Corporation, Intel Architecture Instruction Set Extensions Programming Reference , 2026, accessed: 2026-06-22. [Online]. Avail-able: https://software.intel.com/content/www/us/en/develop/download/ intel-architecture-instruction-set-extensions-programming-reference. html [17] M. Nachin, D. Desai, S. S. Jia, C. Lai, M. Liu, J. Szwejbka, R. Alvarez, R. Ascani, D. Bort, M. Candales et al. , “ExecuTorch - a unified PyTorch solution to run AI models on-device,” arXiv preprint arXiv:2605.08195 ,2026. [Online]. Available: https://github.com/pytorch/executorch [18] J. Hu, Z. Zhang, Z. Li, Q. Meng, X. Shi, Q. Huang, H. Wang, and S. Chang, “Single-Step Hardware-Aware Neural Network Quantization With Mixed Precision,” IEEE Transactions on Computers , vol. 75, no. 5, pp. 1809–1819, May 2026. [19] K. Balaskas, A. Karatzas, C. Sad, K. Siozios, I. Anagnostopoulos, G. Zervakis, and J. Henkel, “Hardware-Aware DNN Compression via Diverse Pruning and Mixed-Precision Quantization,” IEEE Transactions on Emerging Topics in Computing , vol. 12, no. 4, pp. 1079–1092, Oct. 2024. [20] T. Singh, S. Rajan, and N. Jain, “Arithmetic-Intensity-Aware Quantiza-tion,” https://arxiv.org/abs/2512.14090v2, Dec. 2025. [21] J. Chen, Q. Yang, S. Tian, and S. Zhang, “Adaptive Quantization with Mixed-Precision Based on Low-Cost Proxy,” in ICASSP 2024 -2024 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , Apr. 2024, pp. 6720–6724. [22] N. Li, Y. Su, and L. Ma, “Efficient and Generalizable Mixed-Precision Quantization via Topological Entropy,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , Oct. 2025. [23] Y. Yuan, C. Chen, X. Hu, and S. Peng, “EvoQ: Mixed Precision Quantization of DNNs via Sensitivity Guided Evolutionary Search,” in 
+
+2020 International Joint Conference on Neural Networks (IJCNN) , Jul. 2020, pp. 1–8. [24] Z. Huang, X. Han, Z. Yu, Y. Zhao, M. Hou, and S. Hu, “Hessian-based mixed-precision quantization with transition aware training for neural networks,” Neural Networks , vol. 182, p. 106910, Feb. 2025. [25] C. Zhou, S. Zhang, Y. Zhou, Q. Qiao, J. Gao, C. Jin, K. Qin, and W. Zhang, “AutoQRA: Joint Optimization of Mixed-Precision Quan-tization and Low-rank Adapters for Efficient LLM Fine-Tuning,” Feb. 2026. [26] D. Lim, Y. Jin, Y.-S. Ong, and B. Sendhoff, “Generalizing surrogate-assisted evolutionary computation,” IEEE Transactions on Evolutionary Computation , vol. 14, no. 3, pp. 329–355, 2009. [27] T. Chugh, C. Sun, H. Wang, and Y. Jin, “Surrogate-assisted evolutionary optimization of large problems,” in High-Performance Simulation-Based Optimization . Springer, 2019, pp. 165–187. [28] J. Li, P. Wang, H. Dong, J. Shen, and C. Chen, “A classification surrogate-assisted multi-objective evolutionary algorithm for expensive optimization,” Knowledge-Based Systems , vol. 242, p. 108416, 2022. [29] A. Dakhama, W. B. Langdon, H. D. Menendez, and K. Even-Mendoza, “Greenmalloc: Allocator optimisation for industrial workloads,” in 
+
+Search-Based Software Engineering (SSBSE 2025), Challenge Track , ser. Lecture Notes in Computer Science, C. Hanna, M. Kim, and V. Riccio, Eds. Seoul, South Korea: Springer Nature, 2025, sSBSE 2025 Challenge Case: Green SBSE. [30] T. Chen, T. Moreau, Z. Jiang, L. Zheng, E. Yan, H. Shen, M. Cowan, L. Wang, Y. Hu, L. Ceze et al. , “ {TVM }: An automated {End-to-End }
+
+optimizing compiler for deep learning,” in 13th USENIX symposium on operating systems design and implementation (OSDI 18) , 2018, pp. 578–594. [31] T. Chen, L. Zheng, E. Yan, Z. Jiang, T. Moreau, L. Ceze, C. Guestrin, and A. Krishnamurthy, “Learning to optimize tensor programs,” Ad-vances in Neural Information Processing Systems , vol. 31, 2018. [32] M. Tirichine, N. Ameur, N. Bendib, I. N. Aouadj, B. Djad, R. Bouloudene, and R. Baghdadi, “A reinforcement learning environ-ment for automatic code optimization in the mlir compiler,” arXiv preprint arXiv:2409.11068 , 2024. [33] P. Jajal, W. Jiang, A. Tewari, E. Kocinare, J. Woo, A. Sarraf, Y.-H. Lu, G. K. Thiruvathukal, and J. C. Davis, “Interoperability in deep learning: A user survey and failure analysis of onnx model converters,” in Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis , 2024, pp. 1466–1478. [34] J. Wang, G. Xiao, S. Zhang, H. Lei, Y. Liu, and Y. Sui, “Compat-ibility issues in deep learning systems: Problems and opportunities,” in Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering ,2023, pp. 476–488. [35] N. Daoudi, I. Alfonso, and J. Cabot, “Neural network interoperability across platforms,” arXiv preprint arXiv:2511.02610 , 2025.

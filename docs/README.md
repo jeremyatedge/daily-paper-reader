@@ -6,88 +6,88 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-26
-- 运行时间：2026-07-26 20:21:18 UTC
+- 最新运行日期：2026-08-02
+- 运行时间：2026-08-02 20:03:23 UTC
 - 运行状态：成功
 - 本次总论文数：22
 - 精读区：11
 - 速读区：11
 
 ### 今日简报（AI）
-今日推荐22篇论文，精读11篇速读11篇，重点聚焦移动NPU编译器融合电源爆发与异构PIM热鲁棒CNN推理。  
-最值得精读的两篇高分论文（9.0/10）分别应对电池耗尽时的电源突发和PIM架构热管理问题。  
-建议优先阅读这两篇论文，以掌握移动端推理能效与热鲁棒性的最新解决方案。
-- 详情：[/202607/26/README](/202607/26/README)
+今日扫描22篇论文，精读11篇，低功耗稀疏卷积加速器获满分10分登顶。  
+最值得关注：边缘视觉稀疏卷积加速器（10分）与脑启发多核芯片SpiNNaker2（9分），指向边缘AI与神经形态计算前沿。  
+建议优先精读这两篇全文，速读列表中磁隧道结间歇计算与无人机能量采集网络也值得一瞥。
+- 详情：[/202608/02/README](/202608/02/README)
 
 ### 精读区论文标签
-1. [Mitigating Compiler Fusion-Induced Power Bursts in Mobile NPU Inference as the Battery Depletes](/202607/26/2607.16555v1-mitigating-compiler-fusion-induced-power-bursts-in-mobile-npu-inference-as-the-battery-depletes)  
+1. [A Low-Power Sparse Convolution Accelerator with Idle-First-Task-Assignment for Edge Vision](/202608/02/2607.26835v2-a-low-power-sparse-convolution-accelerator-with-idle-first-task-assignment-for-edge-vision)  
+   标签：评分：10.0/10、query:aiot
+   evidence：面向边缘视觉的低功耗稀疏卷积加速器
+2. [The SpiNNaker2 chip: a many-core platform for flexible and scalable brain-inspired computing](/202608/02/2607.24396v1-the-spinnaker2-chip-a-many-core-platform-for-flexible-and-scalable-brain-inspired-computing)  
    标签：评分：9.0/10、query:aiot
-   evidence：通过编译器优化缓解移动NPU推理中的功率突发
-2. [ThRIve: Thermally Robust CNN Inference via Low-Rank Adaptation in Heterogeneous PIM Architectures](/202607/26/2607.17091v1-thrive-thermally-robust-cnn-inference-via-low-rank-adaptation-in-heterogeneous-pim-architectures)  
+   evidence：SpiNNaker2是一款多核神经形态芯片，配备ARM M4F处理器和专用加速器，用于边缘端高能效类脑AI计算
+3. [From Data to Device: ELMOD An Efficient German-First 2.7B Language Model for Mobile Inference](/202608/02/2607.24585v1-from-data-to-device-elmod-an-efficient-german-first-27b-language-model-for-mobile-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：异构PIM上通过低秩自适应实现热鲁棒CNN推理
-3. [SEAM-V: A Hybrid-Decoupled RISC-V Vector Processor with Backend-Visible EP Context for Sustained Vector Throughput](/202607/26/2607.17899v1-seam-v-a-hybrid-decoupled-risc-v-vector-processor-with-backend-visible-ep-context-for-sustained-vector-throughput)  
+   evidence：面向资源受限硬件的高效端侧语言模型推理
+4. [Enabling Fully Integer-Only Inference for Lightweight Detection Transformers](/202608/02/2607.24981v1-enabling-fully-integer-only-inference-for-lightweight-detection-transformers)  
    标签：评分：9.0/10、query:aiot
-   evidence：低功耗硬件加速：用于深度学习的RISC-V向量处理器
-4. [SelectInfer: Selective Neuron Loading and Computation for On-Device LLMs](/202607/26/2607.18081v1-selectinfer-selective-neuron-loading-and-computation-for-on-device-llms)  
+   evidence：面向嵌入式设备的轻量检测Transformer全整数推理
+5. [Ultra-Low-Energy Open-Circuit Fault Diagnosis for Three-Phase Inverters](/202608/02/2607.25037v1-ultra-low-energy-open-circuit-fault-diagnosis-for-three-phase-inverters)  
    标签：评分：9.0/10、query:aiot
-   evidence：选择性神经元加载减少计算和内存，实现边缘设备上的能效LLM推理
-5. [Empowering On-Device Model Adaptation with an Edge AI Inference Accelerator](/202607/26/2607.18101v1-empowering-on-device-model-adaptation-with-an-edge-ai-inference-accelerator)  
+   evidence：面向嵌入式故障诊断的超低能耗神经形态SNN推理
+6. [Mitigating the Impact of Retention Loss on Inference Accuracy in 65 nm Single-Poly Floating-Gate Analog In-Memory Computing](/202608/02/2607.25058v1-mitigating-the-impact-of-retention-loss-on-inference-accuracy-in-65-nm-single-poly-floating-gate-analog-in-memory-computing)  
    标签：评分：9.0/10、query:aiot
-   evidence：使用边缘AI推理加速器Hailo-8L进行设备端模型自适应
-6. [Recti-Q: Feature-Space Rectification for Out-of-Distribution-Robust Quantized Perception in Edge Robotics](/202607/26/2607.18540v1-recti-q-feature-space-rectification-for-out-of-distribution-robust-quantized-perception-in-edge-robotics)  
+   evidence：65nm CMOS模拟存内计算用于高能效神经网络推理，并通过电路级和算法级手段缓解保持损失
+7. [At-the-Roofline Sparse Tensor Contractions on Vector Processors for Transformer Inference](/202608/02/2607.25504v1-at-the-roofline-sparse-tensor-contractions-on-vector-processors-for-transformer-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘机器人的量化优化
-7. [Thinking Fast, Thinking Slow: Adaptive Multimodal Transformer-based Sensor Fusion for Depth Estimation on Ultra-low-power MCUs](/202607/26/2607.18897v1-thinking-fast-thinking-slow-adaptive-multimodal-transformer-based-sensor-fusion-for-depth-estimation-on-ultra-low-power-mcus)  
+   evidence：面向向量处理器上 Transformer 推理的稀疏张量收缩硬件加速
+8. [CONQuER: Hardware-Aware Mixed-Precision Quantisation with Online-Calibrated Surrogates](/202608/02/2607.25884v1-conquer-hardware-aware-mixed-precision-quantisation-with-online-calibrated-surrogates)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向超低功耗MCU的自适应多模态Transformer深度估计，平衡能耗和精度。
-8. [A Flexible Sparsity-Aware FPGA Accelerator with Column-Wise Compression for Efficient CNN Inference](/202607/26/2607.19248v1-a-flexible-sparsity-aware-fpga-accelerator-with-column-wise-compression-for-efficient-cnn-inference)  
+   evidence：基于在线校准替代模型的硬件感知混合精度量化
+9. [MDTransformer: A Hardware-Software Co-Design of Mode-Division Photonic Transformer Accelerator with Inverse-Designed Coherent Crossbar](/202608/02/2607.26016v1-mdtransformer-a-hardware-software-co-design-of-mode-division-photonic-transformer-accelerator-with-inverse-designed-coherent-crossbar)  
    标签：评分：9.0/10、query:aiot
-   evidence：稀疏感知FPGA加速器用于高效CNN推理
-9. [BRIM: Workload-Balanced Dual-Sided Bit-Serial Sparse Inference Accelerator](/202607/26/2607.19431v1-brim-workload-balanced-dual-sided-bit-serial-sparse-inference-accelerator)  
+   evidence：光电子Transformer加速器的软硬件协同设计与能效优化
+10. [A Low-Power Sparse Convolution Accelerator with Idle-First-Task-Assignment for Edge Vision](/202608/02/2607.26835v1-a-low-power-sparse-convolution-accelerator-with-idle-first-task-assignment-for-edge-vision)  
    标签：评分：9.0/10、query:aiot
-   evidence：通过硬件-软件协同设计实现双侧位串行稀疏加速，提高DNN推理能效。
-10. [Self-organizing Architecture of Receptron Units: a Hardware-Aware Framework for Edge Intelligence](/202607/26/2607.20162v1-self-organizing-architecture-of-receptron-units-a-hardware-aware-framework-for-edge-intelligence)  
+   evidence：16nm工艺的低功耗稀疏卷积加速器用于受约束IoT节点的边缘视觉，采用位图压缩和空闲优先任务分配
+11. [LightRot: A Light-Weighted Rotation Scheme and Architecture for Accurate Low-Bit Large Language Model Inference](/202608/02/2607.27704v1-lightrot-a-light-weighted-rotation-scheme-and-architecture-for-accurate-low-bit-large-language-model-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向MCU的边缘智能神经形态框架
-11. [Beyond Independent Optimization: Compression, MoE Routing, and Quantization Interactions in Multimodal Edge Intelligence](/202607/26/2607.20981v1-beyond-independent-optimization-compression-moe-routing-and-quantization-interactions-in-multimodal-edge-intelligence)  
-   标签：评分：9.0/10、query:aiot
-   evidence：综述多模态边缘高效推理技术包括压缩、量化和硬件感知基准测试，直接匹配边缘AI优化
+   evidence：面向低比特大模型推理的专用硬件加速器，集成旋转方案降低量化能耗
 
 ### 速读区论文标签
-1. [Task-Oriented Communication with Hybrid-Precision Models](/202607/26/2607.16766v1-task-oriented-communication-with-hybrid-precision-models)  
+1. [Magnetic Tunnel Junctions for Timekeeping in Intermittent Computing Systems](/202608/02/2607.23000v1-magnetic-tunnel-junctions-for-timekeeping-in-intermittent-computing-systems)  
    标签：评分：8.0/10、query:aiot
-   evidence：混合精度模型实现节能边缘推理
-2. [Roomie: Interference-Aware Colocation for Efficient Model Serving](/202607/26/2607.16784v1-roomie-interference-aware-colocation-for-efficient-model-serving)  
+   evidence：无电池间歇嵌入式系统的低能耗计时，利用MTJ保持性丢失
+2. [Analysis of UAV-Enabled IoT Networks with Energy Harvesting and Wake-Up Radio](/202608/02/2607.23750v1-analysis-of-uav-enabled-iot-networks-with-energy-harvesting-and-wake-up-radio)  
    标签：评分：8.0/10、query:aiot
-   evidence：通过干扰感知的协同放置优化边缘设备上的模型服务
-3. [EdgeCoInfer: Hierarchical Collaborative Inference for On-Device Multimodal Large Models](/202607/26/2607.17143v1-edgecoinfer-hierarchical-collaborative-inference-for-on-device-multimodal-large-models)  
+   evidence：无人机IoT网络结合能量采集与唤醒无线电；面向嵌入式IoT设备的能量高效设计
+3. [A Motion-Aware Vector Quantization Framework with Centroid Reuse for Efficient VLA Inference](/202608/02/2607.24148v1-a-motion-aware-vector-quantization-framework-with-centroid-reuse-for-efficient-vla-inference)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向设备端多模态大模型的分层协同推理框架，细粒度分区与模块共享，硬件-软件协同设计
-4. [LMEdge: QoS-Aware LLM Inference Orchestration on Edge Clusters](/202607/26/2607.17175v1-lmedge-qos-aware-llm-inference-orchestration-on-edge-clusters)  
+   evidence：面向高效VLA推理的算法-硬件协同设计
+4. [PIMID: A Full-System Simulator with Intricacy and Diversity for Processing-in-Memory](/202608/02/2607.24196v1-pimid-a-full-system-simulator-with-intricacy-and-diversity-for-processing-in-memory)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向异构边缘设备上LLM推理的QoS感知编排，优化模型配置和部署。
-5. [TAPAS: Throughput-adaptive Perception for Autonomous Systems](/202607/26/2607.17317v1-tapas-throughput-adaptive-perception-for-autonomous-systems)  
-   标签：评分：8.0/10、query:aiot
-   evidence：边缘平台上的能量感知吞吐量自适应
-6. [DAN-Scheduler: Deterministic Three-Stage Co-Optimization of Scheduling, Memory Layout, and Pipeline Overlap for General-Purpose NPUs](/202607/26/2607.17422v1-dan-scheduler-deterministic-three-stage-co-optimization-of-scheduling-memory-layout-and-pipeline-overlap-for-general-purpose-npus)  
+   evidence：面向低功耗硬件设计探索的存内计算全系统模拟器
+5. [Movable-Antenna Assisted Energy Minimization in UAV-Enabled Mobile Edge Computing Systems](/202608/02/2607.23214v1-movable-antenna-assisted-energy-minimization-in-uav-enabled-mobile-edge-computing-systems)  
    标签：评分：7.0/10、query:aiot
-   evidence：NPU的调度、内存布局和流水线协同优化，支持低功耗加速
-7. [Hardware Mechanisms to Dynamically Throttle AI Performance](/202607/26/2607.18069v1-hardware-mechanisms-to-dynamically-throttle-ai-performance)  
+   evidence：通过联合优化实现无人机移动边缘计算系统的能耗最小化
+6. [Approximate reservoir computing with a semiconductor laser for reducing energy consumption](/202608/02/2607.23288v1-approximate-reservoir-computing-with-a-semiconductor-laser-for-reducing-energy-consumption)  
    标签：评分：7.0/10、query:aiot
-   evidence：引入微架构旋钮动态限制AI性能用于安全和能耗控制，与功耗感知计算相关
-8. [RRAM-DP: Device-Calibrated Differential Privacy for In-Memory Edge Learning](/202607/26/2607.18169v1-rram-dp-device-calibrated-differential-privacy-for-in-memory-edge-learning)  
+   evidence：通过量化降低光子储备池计算能耗
+7. [Optimization under Persistent State-Dependent Bias: Gradient-based Method and Complexity Analysis](/202608/02/2607.26032v1-optimization-under-persistent-state-dependent-bias-gradient-based-method-and-complexity-analysis)  
    标签：评分：7.0/10、query:aiot
-   evidence：针对AIoT边缘学习的隐私保护方法，采用RRAM硬件-算法协同设计
-9. [Fluid-SDF: Ultra-Lightweight and Editable Implicit Shape Representation via Differentiable Primitives](/202607/26/2607.18646v1-fluid-sdf-ultra-lightweight-and-editable-implicit-shape-representation-via-differentiable-primitives)  
+   evidence：针对硬件诱发状态相关偏差的SGD优化，直接支持低功耗非理想硬件
+8. [AgenticCANN: Automated Ascend C Operator Generation via Knowledge-Augmented Agentic Evolution](/202608/02/2607.26661v1-agenticcann-automated-ascend-c-operator-generation-via-knowledge-augmented-agentic-evolution)  
    标签：评分：7.0/10、query:aiot
-   evidence：面向边缘设备的超轻量隐式形状表示
-10. [VEHBench: A Stage-Local Diagnostic Benchmark for LLM-Assisted Vibration Energy Harvester Design](/202607/26/2607.18181v1-vehbench-a-stage-local-diagnostic-benchmark-for-llm-assisted-vibration-energy-harvester-design)  
+   evidence：面向NPU推理的Ascend C算子自动生成，属AI加速器软硬件协同设计
+9. [Application-Driven Architecture Exploration for Cross-Layer Heterogeneous Systems](/202608/02/2607.23042v1-application-driven-architecture-exploration-for-cross-layer-heterogeneous-systems)  
    标签：评分：6.0/10、query:aiot
-   evidence：无电池物联网能量收集器设计基准，功率感知
-11. [Information-Theoretically Secure Aggregation for Lightweight Federated Learning: Resilient to Dropouts and Adversaries](/202607/26/2607.20890v1-information-theoretically-secure-aggregation-for-lightweight-federated-learning-resilient-to-dropouts-and-adversaries)  
+   evidence：面向AI负载的应用驱动软硬件协同设计探索，考虑功耗约束；对嵌入式AI系统有方法迁移价值
+10. [Gleam: Adaptive Network-Efficient CUDA API Remoting for Cross-Device GPU Sharing over LANs](/202608/02/2607.23115v1-gleam-adaptive-network-efficient-cuda-api-remoting-for-cross-device-gpu-sharing-over-lans)  
    标签：评分：6.0/10、query:aiot
-   evidence：物联网设备上轻量级联邦学习的安全聚合
+   evidence：面向边缘AI推理的网络高效CUDA远程化
+11. [ML-based Predictive Models for Power Consumption in Virtualised O-RANs](/202608/02/2607.24256v1-ml-based-predictive-models-for-power-consumption-in-virtualised-o-rans)  
+   标签：评分：6.0/10、query:aiot
+   evidence：用机器学习预测功耗，支持能效系统设计
 
 
 <div class="dpr-home-promo-card">

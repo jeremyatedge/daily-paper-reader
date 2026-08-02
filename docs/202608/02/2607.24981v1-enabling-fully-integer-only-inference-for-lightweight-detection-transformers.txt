@@ -1,0 +1,629 @@
+Title: Enabling Fully Integer-Only Inference for Lightweight Detection Transformers
+
+URL Source: https://arxiv.org/pdf/2607.24981v1
+
+Published Time: Wed, 29 Jul 2026 00:09:56 GMT
+
+Number of Pages: 32
+
+Markdown Content:
+# Enabling Fully Integer-Only Inference for Lightweight Detection Transformers 
+
+Thanh Cong Le a, Michal Szczepanski a, Martyna Poreba a
+
+> aUniversité Paris-Saclay, CEA, List, Palaiseau, F-91120, France
+
+Abstract 
+
+Vision Transformer detectors now approach the accuracy of CNNs but remain difficult to deploy on NPUs and microcontrollers because key components, including deformable attention, feature fusion, and nonlinear activation func-tions, are not natively compatible with integer arithmetic. Existing quantized detectors either retain operators such as Softmax, GELU, and LayerNorm or focus on heavyweight backbones, leaving lightweight detection transformers without an end-to-end integer implementation. We address this gap with I-LW-DETR, the first fully integer-only lightweight DETR, in which every operation in the forward pass, including transformer nonlinearities, is exe-cuted in integer arithmetic. I-LW-DETR is built upon three key components: a scale-preserving split convolution that assigns independent activation scale to each branch of the multi-scale projector; SD-ShiftGELU, a sign-dependent GELU approximation that preserves element-wise behavior while avoiding the accuracy degradation; and a constrained Shiftmax that maintains stable Softmax normalization. Experimental results demonstrate that the proposed quantization pipeline consistently produces efficient fully integer-only models across different model scales. Across all model scales, the proposed pipeline incurs only a moderate accuracy degradation while reducing the model size by approximately 3.6× and the computational cost by more than one order of magnitude. Code will be available at github.com/ltc286648/I-LW-DETR 
+
+Keywords: ViT, Object Detection, DETR, Quantization, Integer.      
+
+> Email addresses: Thanh-Cong.LE@cea.fr (Thanh Cong Le),
+> michal.szczepanski@cea.fr (Michal Szczepanski), martyna.poreba@cea.fr (Martyna Poreba) arXiv:2607.24981v1 [cs.CV] 27 Jul 2026
+
+1. Introduction 
+
+Convolutional object detectors, particularly the YOLO family [1, 2, 3, 4], remain the dominant choice for real-time vision because of their ex-cellent speed-accuracy trade-off. In parallel, transformer-based detectors have emerged as an alternative paradigm by formulating object detection as an end-to-end set prediction problem. Build upon Vision Transformers (ViTs) [5], the DETR family [6] formulates detection as direct set predic-tion, eliminating hand-crafted components such as anchor generation and non-maximum suppression. Subsequent research further improved deploy-ment efficiency, with lightweight variants such as LW-DETR [7] substan-tially narrowing the throughput and parameter gap with convolutional detec-tors. Despite these advances, key transformer operators including attention, multi-scale feature projection and nonlinear activation functions, still rely on floating-point arithmetic, limiting efficient deployment on integer-only edge accelerators. Consequently, deploying accurate transformer detectors on resource-constrained edge hardware remains a major challenge. Although quantization is the standard approach for efficient inference, an important distinction is often overlooked. Most existing transformer quanti-zation methods primarily target linear layers while leaving operations such as Softmax, GELU, and LayerNorm in floating-point [8, 9, 10]. In contrast, truly integer-only inference requires every operation, including the trans-former non-linearities, to be implemented in integer arithmetic. Prior work has demonstrated this for transformer encoders in image classification, where I-BERT [11] and I-ViT [12] replace floating-point exponentials and divisions with shift-based integer approximations. More recently, I-Segmenter [13] extended this paradigm to semantic segmentation, becoming the first fully integer-only ViT for dense prediction. Achieving fully integer-only inference for modern detection transformers is considerably more challenging because many architectures rely on deformable attention, multi-scale feature projec-tors with heterogeneous activation ranges, and non-linearities whose integer approximations degrade sharply under outlier activations. Existing DETR quantization methods either rely on partial integer execution [14, 15, 16] or achieve fully integer-only inference only on heavyweight detector architec-tures [17]. Fully integer-only inference for lightweight deformable DETRs therefore remains largely unexplored. We address this gap with I-LW-DETR. Rather than applying a generic quantization pipeline to an existing detector, we jointly redesign the ar-2chitecture and its integer approximations so that the entire network exe-cutes in integer arithmetic. Certain operations are inherently incompatible with integer-only hardware and therefore require architectural redesign rather than numerical approximation alone. The remaining challenges arise from numerical precision. Straightforward integer quantization reduces projector activation resolution and degrades the accuracy of transformer non-linearities under outlier activations. Together, these architectural and numerical im-provements enable I-LW-DETR to preserve detection accuracy under fully integer-only inference while substantially reducing model size and computa-tional cost compared with existing integer DETR detectors. Our contributions are threefold: 
+
+• We present I-LW-DETR, a fully integer-only lightweight detection trans-former that extends integer-only inference to deformable-attention-based architectures. 
+
+• We introduce three integer approximation blocks that resolve the main architectural and numerical obstacles to integer-only transformer de-tection while preserving detection accuracy. 
+
+• We validate the proposed framework under both PTQ and QAT, demon-strating state-of-the-art performance while substantially reducing model size and computational cost. This paper is organized as follows. Section 2 reviews related work on object detection and the quantization of DETR-based object detectors. We then introduce, in Section 3, I-LW-DETR and its integer-only quantization pipeline. Experimental settings and results, and ablation studies are pre-sented in Sections 4, 5, and 6, respectively. Section 7 discusses the hardware mappability of the proposed operators to integer edge accelerators. Finally, Section 8 concludes the paper. 
+
+2. Related Work 
+
+2.1. DETR-Based Object Detection 
+
+DETR [6] reformulates object detection as direct set prediction, pairing a transformer encoder-decoder together with bipartite Hungarian matching. This end-to-end formulation eliminates hand-crafted components such as an-chor boxes and non-maximum suppression while simplifying the detection 3pipeline. However, these advantages come at the cost of slow convergence and a substantial computational footprint. Subsequent work targeted these limitations. Deformable DETR [18] replaced dense global attention with deformable attention, in which each query attends only to a few sampled locations around a reference point, accelerating convergence and reducing cost. DINO [19] improved query initialization and denoising training, and RT-DETR [20, 21] introduced a hybrid encoder and uncertainty-aware query selection for real-time inference. More recent work such as D-FINE [22] fur-ther improves the accuracy–efficiency trade-off by reformulating bounding-box regression as fine-grained distribution refinement. LW-DETR [7] pursues a lightweight design built on a plain ViT encoder that jointly performs fea-ture extraction and interaction, combining global, window, and deformable attention to balance accuracy and efficiency. Building on this design, RF-DETR [23] integrates neural architecture search to identify more efficient model configurations. 
+
+2.2. Integer Quantization of Vision Transformers 
+
+Compared with convolutional networks, transformers are considerably more difficult to quantize because LayerNorm, Softmax, and GELU ex-hibit highly non-uniform activation distributions that are poorly suited to low-precision integer arithmetic. Most post-training quantization (PTQ) methods address these challenges through operator-specific approximations. PSAQ-ViT [24] enables data-free quantization by synthesizing calibration samples through a patch-similarity metric. FQ-ViT [25] introduces a power-of-two factor for the inter-channel variation of LayerNorm inputs and a log-int-softmax that quantizes attention with bit-shift arithmetic. RepQ-ViT [26] reparameterizes quantization scales to make the LayerNorm and Soft-max distributions more amenable to low-bit inference. Another line of re-search addresses activation outliers directly. For instance, SPIQ [27] assigns a separate quantization scale to each input channel when different features exhibit different activation ranges. More recently, ORQ-ViT [28] introduced an outlier-resilient strategy based on outlier decomposition, reducing the ad-verse effect of extreme activation values while retaining the efficiency of PTQ. A second research direction focuses on end-to-end integer-only inference. I-BERT [11] approximates transformer non-linearities entirely in integer arith-metic for NLP, and I-ViT [12] extends this to ViTs with the bit-shift-based ShiftExp, Shiftmax, and ShiftGELU operators over a dyadic integer pipeline. More recently, I-Segmenter [13] realizes the first fully integer-only ViT for 4semantic segmentation, introducing a λ-ShiftGELU activation for the long-tailed distributions that destabilize quantized dense prediction. However, none of these methods tackles the additional architectural and numerical challenges posed by lightweight DETR-based object detection. 
+
+2.3. Quantization of DETR Models 
+
+A smaller body of work focuses specifically on DETR detectors. Q-DETR [14] proposes the first quantization-aware training framework for DETR, identifying query information distortion as the main source of accuracy loss and correcting it through a distribution-rectification knowledge-distillation scheme. AQ-DETR [15] introduces auxiliary queries with a layer-by-layer distillation strategy to preserve the representational capacity of quantized queries, enabling stable low-bit (down to 4-bit) detection. QRT-DETR [16] develops a post-training quantization pipeline for the real-time RT-DETR, combining an EMA-MSE quantizer with reconstruction-aware optimization to mitigate the severe accuracy degradation observed at low bit widths. How-ever, these methods reduce the precision of weights and activations while leav-ing transformer non-linearities in floating-point, preventing fully integer-only inference. EIQ-DETR [17] achieves fully integer-only DETR inference by ex-tending integer approximation to all non-linear layers, including Sigmoid, Softmax, LayerNorm, and GELU, but relies on a comparatively large Swin-T backbone, several times the size and computational cost of the lightweight regime. 
+
+3. Methodology 
+
+I-LW-DETR is a fully integer-only realization of LW-DETR [7]. Rather than directly quantizing the original architecture, we redesign selected com-ponents to eliminate floating-point operations while preserving the lightweight architecture. The proposed framework combines quantization-ready archi-tectural adaptations with dedicated integer formulations of transformer non-linearities, resulting in a fully integer-only inference pipeline. Figure 1 summarizes the proposed framework. Blue blocks denote inte-ger operators adopted from I-ViT [12]. The green blocks correspond to the architectural adaptations required for integrer-only execution, while yellow blocks highlight the new quantization optimizations introduced in this work. 5Patch Embedding 
+
+> (Quant Conv2d)
+
+Quant Layer Norm 
+
+Reshape 
+
+> Quant Self A �en �on
+
++
+
+Quant Layer Norm 
+
+Feed Forward +
+
+Reshape ,,,
+
+Quant C2f 
+
+Quant Layer Norm 
+
+Quant Self A �en �on 
+
+Quant Layer Norm +
+
+Quant Deformable 
+
+Cross A �en �on 
+
+Quant Layer Norm +
+
+Quant Feed Forward 
+
+Quant Layer Norm +
+
+> Quant MLP
+> Quant MLP
+
+Fla �en 
+
+> Dense boxes proposals
+> Class head + Box head
+> (Quant MLP)
+> Select top -k by score
+> Posi �onal Query
+> Projector (Quant MLP)
+> Window? Window? Yes Yes No No
+
+2. Projector (Op �onal) 2-stage proposal Posi �onal Object Queries Learned Object Queries 3. Decoder – Layers Top-k Reference boxes Encoder block Decoder block Classi fi ca �on Bounding boxes 
+
+++
+
+> Quant Linear
+> Quant Linear
+> SD -Shi �GELU
+
+Posi �onal Ref points 
+
++
+
+Learned Ref points 
+
+Box re fi ne 
+
+I-ViT component Our proposed component Quan �za �on–Ready modi fi ca �on 1. Encoder (ViT)– Layers Figure 1: Overview of the proposed quantized I-LW-DETR pipeline. 
+
+3.1. Quantization-Ready Adaptation of LW-DETR 
+
+We first construct QR-LW-DETR, a quantization-ready floating-point variant of LW-DETR. It keeps the main architecture unchanged, but re-places two components that are not naturally compatible with integer-only inference: bilinear interpolation in deformable attention, which relies on frac-tional interpolation weights, and the sinusoidal encoding of reference boxes used for positional query generation, which requires trigonometric functions. QR-LW-DETR then serves as the floating-point baseline from which the final integer-only I-LW-DETR models are quantized. 63.1.1. Integer-Compatible Deformable Attention Sampling 
+
+The decoder of LW-DETR employs deformable attention for cross-attention between object queries and image features. Instead of attending to all spatial tokens, each query attends only to a small set of sampled feature locations around a reference point. These sampling locations are predicted by the model and are generally continuous rather than aligned with the discrete feature-map grid. Consequently, the corresponding feature values are esti-mated by bilinear interpolation from the four neighboring grid points. The interpolation weights depend on the relative position of the sampling point. Although bilinear interpolation provides sub-pixel sampling accuracy, it re-lies on fractional interpolation weights and multiple floating-point multiply-accumulate operations, making efficient integer-only implementation diffi-cult. To simplify this component, bilinear interpolation is replaced by nearest-neighbor sampling. Instead of computing a weighted combination of neigh-boring pixels, the sampled feature is taken directly from the nearest grid point. This removes the interpolation coefficients and the associated floating-point computations while leaving the overall deformable attention mecha-nism. 
+
+3.1.2. Learnable Positional Query Generation 
+
+LW-DETR adopts a two-stage detection pipeline in which the encoder first selects the top-K reference boxes. These reference boxes are then con-verted into positional queries through sinusoidal positional encoding before being processed by the decoder. While effective in floating-point inference, sinusoidal positional encoding relies on trigonometric functions that are inef-ficient for integer-only hardware and typically require dedicated approxima-tions or lookup tables. Inspired by learnable positional representations, we replace the sine/cosine reference-box encoding with a learnable projection module. Instead of com-puting trigonometric functions from the reference box coordinates, the mod-ule learns to transform these coordinates into positional object-query features using linear layers. These layers can be quantized using the same integer matrix-multiplication pipeline as the other linear layers. 73.2. Integer Quantization of Linear Operations 3.2.1. Standard Linear Operators 
+
+The linear operators of I-LW-DETR (projections, convolutions, and the attention matrix multiplications) follow the standard integer-only formula-tion of I-ViT [12]. Under symmetric quantization an activation and weight tensor are represented as : 
+
+X ≈ SxIx, W ≈ SwIw,
+
+where Ix and Iw denote the integer tensors and Sx and Sw their corresponding scaling factors. A linear layer : 
+
+Y = XW + b
+
+is therefore approximated as 
+
+Y ≈ SxSw (IxIw) + b, (1) where the multiply-accumulate operation is performed entirely in the in-teger domain and the scaling factors are applied after accumulation. Weights use symmetric per-channel quantization, whereas activations use symmetric per-tensor quantization, providing a good trade-off between numerical preci-sion and implementation simplicity. 
+
+3.2.2. Scale-Preserving Split Convolution 
+
+A limitation of this quantization scheme appears in the projector of LW-DETR. The projector receives multiple feature maps from different stages of the ViT encoder, which typically exhibit markedly different activation ranges. Under the I-ViT quantization framework, however, all concatenated feature maps share a single activation scale. As a result, the scale is determined by the largest activation values, reducing the effective quantization resolution of feature maps with smaller dynamic ranges, as illustrated in Figure 2(a). To address this issue, we reformulate the projector convolution into multi-ple independent convolution branches, allowing each encoder output to retain its own activation scale while remaining compatible with the I-ViT quanti-zation framework, as illustrated in Figure 2(b). Because the branches use different activation scales, their partial integer outputs cannot be accumu-lated directly. Before accumulation, each branch is therefore rescaled to a common output scale. We choose this scale as the maximum of the cali-brated per-branch scales. Since the scale ratios are fixed after calibration, 8ViT Encoder ( Layers) Concatena �on (channel dim) 
+
+> Quant Conv Shared scale
+> ,,,
+> Output feature
+
+(a) Original projector convolution with a shared activation scale. ViT Encoder ( Layers) 
+
+> ,,,
+> Quant Conv Quant Conv Quant Conv
+
++
+
+> Output feature
+
+(b) Proposed scale-preserving split convolution. 
+
+Figure 2: Projector implementation before and after the proposed reformulation. 
+
+the rescaling reduces to a constant affine transformation that is implemented as an integer dyadic multiply-and-shift during inference, fully consistent with the I-ViT pipeline. Consequently, the accumulation remains entirely in the integer domain. 
+
+3.3. Integer Approximation of Nonlinear Operations 
+
+Integer implementations of transformer non-linearities have previously been introduced in I-ViT. We adopt its LayerNorm formulation, in which the variance is normalized through an integer square root computed by Newton’s method. To improve the numerical stability of the decoder, whose activa-tions span a wider dynamic range than the encoder, we increase the number of Newton iterations from 10 to 20. The remaining nonlinear operators re-quire additional adaptations for I-LW-DETR. In the following subsections, we introduce modified integer formulations of Softmax, GELU, and SiLU that improve robustness to the wider activation distributions encountered during object detection. 93.3.1. Sign-Dependent ShiftGELU 
+
+GELU is used in the feed-forward blocks of the ViT encoder. Following I-ViT [12], it is approximated by 
+
+GELU( x) ≈ x σ (1 .702 x), (2) where the factor 1.702 is implemented using additions and bit shifts. Let 
+
+x ≈ SxIin denote the quantized input. The corresponding integer sigmoid argument is 
+
+Ip = Iin + ( Iin ≫ 1) + ( Iin ≫ 3) + ( Iin ≫ 4) , (3) The exponential term in the sigmoid approximation is evaluated using the ShiftExp operator introduced in I-ViT. For a quantized input x ≈ SI , we write this operation as 
+
+Sexp Iexp = ShiftExp( S, I ) ≈ exp( SI ), (4) where Iexp is the integer output and Sexp is its associated scaling factor. ShiftExp makes the exponential compatible with integer-only inference by approximating it with integer additions, floor operations, and bit shifts. To make the input to ShiftExp is non-positive, the ShiftGELU imple-mentation from I-ViT applies a vector-wise maximum subtraction before the exponential approximation: 
+
+I∆ = Ip − max( Ip). (5) However, this operation introduces a dependency between elements of the same vector. If one element has a large positive value, it becomes the maximum and shifts all other elements toward more negative values. This behavior is problematic because ShiftExp is sensitive to large neg-ative inputs. As shown in Figure 3, ShiftExp follows the floating-point ex-ponential on negative inputs, but its relative approximation error increases as the input becomes more negative. Therefore, the vector-wise maximum subtraction can push many activations into a high-error region of ShiftExp, degrading the GELU approximation. To address this limitation, we propose Sign-Dependent ShiftGELU (SD-ShiftGELU). Instead of relying on a vector-wise maximum subtraction, the sigmoid function is reformulated as 10 (a) ShiftExp vs exp( x). (b) Relative error of ShiftExp. 
+
+Figure 3: Numerical behavior of the ShiftExp approximation on negative inputs. 
+
+σ(z) = 
+
+
+
+11 + exp( −z), z ≥ 0,
+
+exp( z)1 + exp( z), z < 0.
+
+(6) ShiftExp 
+
+>>  
+
+> Max ReLU
+
+# -+÷ x
+
+Figure 4: Overview of the ShiftGELU variants. The green block corresponds to the original I-ViT formulation, while the yellow block corresponds to the proposed sign-dependent formulation used in our method. 
+
+The two expressions are mathematically equivalent while ensuring that the exponential input remains non-positive in both cases. Each activation is processed independently according to its sign, eliminat-ing the need for a global maximum operation (Figure 4). The corresponding integer input to ShiftExp becomes 
+
+I∆ = Ip − ReLU( Ip), (7) 11 which guarantees I∆ ≤ 0 for every element independently. Unlike the original ShiftGELU, the proposed formulation preserves the element-wise behavior of GELU while avoiding unnecessary shifts toward the high-error region of ShiftExp. 
+
+3.3.2. Constrained Shiftmax 
+
+I-ViT Shiftmax performs integer Softmax normalization using a fixed pre-cision parameter M . In I-LW-DETR, however, the accumulated exponential sum can vary significantly across attention layers and may exceed the ef-fective precision supported by 32-bit integer arithmetic. As a result, the normalization factor becomes too coarse and may even collapse to zero. To address this limitation, we introduce an adaptive Constrained Shift-max that calibrates a denominator shift sd for each Shiftmax block. Let Iexp i denote the integer exponential value produced by ShiftExp for the i-th attention score. The original I-ViT Shiftmax computes the integer Softmax output as 
+
+Iout i =
+
+$
+
+2M − 1
+
+Pdj=1 Iexp j
+
+%
+
+Iexp i
+
+!
+
+≫ (M − (kout − 1)) , (8) where kout is the output bit-width and M is the integer-division precision. Since values above 31 exceed the native precision of 32-bit integer arithmetic, we fix M = Mhw = 31 .Formally, the accumulated exponential sum is defined as 
+
+Ssum =
+
+> d
+
+X
+
+> j=1
+
+Iexp j . (9) For large values of Ssum , the normalization factor cannot be represented ac-curately within the fixed hardware precision and may collapse to zero. The shifted normalization is expressed as 
+
+Iout i =
+
+$
+
+2M − 1
+
+P 
+
+> j
+
+(Iexp j ≫ sd)
+
+%
+
+·  Iexp i ≫ sd
+
+!
+
+≫ (M − (kout − 1)) . (10) The denominator shift adaptively reduces the dynamic range of the accu-mulated exponential sum, allowing the normalization to remain representable within the fixed hardware precision. 12 The choice of sd controls the trade-off between division precision and in-formation preservation. If sd is too small, the normalization factor remains poorly represented and may even collapse to zero. Conversely, an exces-sively large shift discards small exponential values Iexp i and weak attention contributions. Since the exponential-sum distribution varies across Shiftmax blocks, a fixed denominator shift is suboptimal. To select sd automatically, we observe the exponential-sum statistics of each Shiftmax block during the calibration process. The required precision is estimated as 
+
+Mreq = ⌈log 2 (Ssum )⌉ , Mtarget = Mreq + mp, (11) where mp is an additional precision margin for the integer division. The denominator shift is then computed as 
+
+sd = max ( Mtarget − Mhw , 0) . (12) In this work, mp = 4 is used as a fixed safety margin to improve normalization precision, and the same value is applied to all Shiftmax blocks and model sizes. A naive implementation of the shifted denominator would compute 
+
+Snaive  
+
+> R
+
+= X
+
+> i
+
+ Iexp i ≫ sd
+
+ , (13) which discards the remainder of each exponential term. To reduce this loss, each exponential value is decomposed into quotient and remainder: 
+
+Iexp i = Qi2sd + ri, Qi =
+
+Iexp i
+
+2sd
+
+
+
+. (14) The reduced denominator is then computed as 
+
+SR = X
+
+> i
+
+Qi +
+
+P  
+
+> i
+
+ri
+
+2sd
+
+
+
+=
+
+Ssum 
+
+2sd
+
+
+
+. (15) This quotient-remainder accumulation recovers the exact shifted sum, instead of summing individually rounded terms. Finally, the shifted denominator is constrained to the 32-bit range and used to compute the normalization factor: 
+
+SR = clamp  SR, 1, 231 − 1 , F =
+
+231 − 1
+
+SR
+
+
+
+. (16) 13 The integer Softmax output is obtained as 
+
+Iout i = Iexp i F  ≫ (31 − kout + 1 + sd) (17) 
+
+4. Experimental Setup 
+
+4.1. Datasets and Evaluation Metrics 
+
+COCO [29] is the primary benchmark used in this work. It contains 80 object categories, and all models are evaluated following the standard COCO evaluation protocol. The primary metric is mean Average Precision (mAP), averaged over ten IoU thresholds from 0.50 to 0.95 with a step size of 0.05. We additionally report AP S , AP M , and AP L to assess detection performance on small, medium, and large objects, respectively. As a more challenging evaluation, we consider VisDrone [30], an aerial object detection benchmark characterized by numerous small, densely packed, and partially occluded objects. We use the official training and test-dev splits, and follow the standard COCO evaluation protocol using the same metrics. Unless otherwise stated, all input images are resized to 640 × 640 .
+
+4.2. Computational Cost Metrics 
+
+In addition to detection accuracy, we report model size and bit-operations (BOPs). Model size in MB quantifies the memory required to store the model parameters, while BOPs provide a hardware-independent estimate of arithmetic complexity by accounting for both the number of operations and the numerical precision. Following the formulation of Bayesian Bits [31], BOPs are computed as 
+
+BOPs = X
+
+> l
+
+Ops l × ba,l × bw,l , (18) where Ops l is the operation count of layer l, and ba,l and bw,l are the corre-sponding activation and weight bit-widths. All BOPs are reported in TBOPs. For FP32 models, both bit-widths are set to 32. 
+
+4.3. Model Variants 
+
+Table 1 summarizes the three QR-LW-DETR variants (Section 3.1); they share the same general architecture but differ in encoder width, depth, query count, and computational cost. 14 Table 1: QR-LW-DETR model variants used in the experiments.                                         
+
+> Model ViT Encoder Projector DETR Decoder Layers Dim Global Attn. Window Attn. Output Layers Blocks Dim Scales Layers Queries Tiny 6192 331, 3, 5 1256 1/16 3100 Small 10 192 462, 4, 5, 9 1256 1/16 3300 Medium 10 384 462, 4, 5, 9 1256 1/16 3300
+
+4.4. Training and Quantization Protocol 
+
+All quantized models use an 8/8/16 quantization configuration, corre-sponding to 8-bit weights, 8-bit activations, and 16-bit intermediate preci-sion for selected non-linear operations. To evaluate the proposed integer-only formulation, we consider both post-training quantization (PTQ) and quantization-aware training (QAT). All quantized models use symmetric quantization for weights and activations, where floating-point values are rep-resented by signed integers and scaling factors without an explicit zero-point. For COCO, we use the original pretrained LW-DETR checkpoints as the floating-point baselines. For VisDrone, the corresponding COCO-pretrained checkpoint is adapted by replacing the classification head and fine-tuning the model on VisDrone before quantization. The new head is first trained for 5 epochs with the remaining parameters frozen. The full model is then fine-tuned for 200 epochs using a delayed cosine learning-rate schedule, where the learning rate is kept at 10 −4 until epoch 40 and then gradually decayed to 10 −6. After obtaining the floating-point baseline for each dataset, the quantization-ready architectural modifications are applied to obtain QR-LW-DETR. For PTQ, the pretrained FP32 weights remain fixed, and the original modules are replaced with their quantized counterparts. The calibration stage also initializes the parameters required by the proposed integer ap-proximations, including the denominator shift sd of each Shiftmax module. Activation quantization ranges are calibrated using 500 batches (batch size 1) with moving-average statistics and percentile-based range estimation. Unless otherwise specified, the component-wise ablation experiments are conducted under the PTQ setting by quantizing one operator type at a time. For QAT, training starts from the calibrated PTQ model, with fake-quantization modules enabled during the forward pass. The backward pass is performed in floating-point, while gradients through rounding and flooring operations are approximated using the straight-through estimator. The cal-ibrated model is fine-tuned for 15 epochs using a learning rate of 5 × 10 −7.15 The activation observers remain frozen during QAT because the quantization ranges have already been determined during PTQ calibration. All experi-ments are implemented in PyTorch and conducted on four NVIDIA A100 GPUs, each with 80 GB of memory. 
+
+5. Results 
+
+5.1. Evaluation of the Proposed Quantization Pipeline 
+
+Table 2 evaluates the proposed quantization pipeline across the Tiny, Small, and Medium variants. Replacing the original floating-point operators with their quantization-ready counterparts introduces only a limited accu-racy degradation, ranging from 0.6 to 1.7 mAP, while leaving both model size and BOPs essentially unchanged. This indicates that the architectural modifications required for integer-only inference preserve most of the original detector performance before quantization. 
+
+Table 2: I-LW-DETR across the pipeline on COCO: floating-point baseline, quantization-ready version, and final integer models under PTQ and QAT.                                                                                                          
+
+> Model Setting Prec. Int-only Size(MB) BOPs(T) mAP AP SAP MAP L
+> LW-DETR FP32 ✗45.98 11.52 42.6 22.7 47.4 60.0 QR-LW-DETR FP32 ✗46.49 11.54 42.0 22.1 46.5 58.8 PTQ 8/8/16 ✓12.85 0.89 36.0 17.7 40.5 51.5 Tiny QAT 8/8/16 ✓12.85 0.89 37.9 19 42.1 54.5 LW-DETR FP32 ✗55.54 17.06 48.0 26.8 52.5 65.6 QR-LW-DETR FP32 ✗56.05 17.10 46.4 25.3 50.8 64.0 PTQ 8/8/16 ✓17.21 1.32 41.6 21.7 46.5 57.4 Small QAT 8/8/16 ✓17.21 1.32 43.7 23.6 47.8 60.1 LW-DETR FP32 ✗107.73 43.84 52.5 32.7 57.6 70.6 QR-LW-DETR FP32 ✗108.23 43.88 50.8 30.2 55.5 68.8 PTQ 8/8/16 ✓30.44 3.04 44 24.9 48.4 60.6 Medium QAT 8/8/16 ✓30.44 3.04 47.1 26.5 51.5 64.6
+
+Applying PTQ drastically reduces the deployment cost, decreasing the model size by approximately 3.6× and the BOPs by more than one order of magnitude for all three model variants. This substantial reduction is ac-companied by a corresponding loss in detection accuracy, highlighting the challenge of fully integer-only inference without retraining. QAT effectively compensates for this degradation without increasing the deployment cost, consistently recovering between 1.9 and 3.1 mAP across the three model 16 variants. These results demonstrate that fine-tuning under simulated quanti-zation substantially improves the robustness of the integer-only models while preserving the efficiency gains achieved by PTQ. A consistent trend across all experiments is that quantization robustness improves with model capacity. While all three variants benefit from QAT, the Medium model retains the largest fraction of its floating-point performance. Its accuracy improves from 44 mAP after PTQ to 47.1 mAP after QAT, compared with a floating-point baseline of 50.8 mAP. These results indicate that larger models are more resilient to integer quantization, consistently preserving a larger fraction of their floating-point accuracy after QAT. Overall, these results demonstrate that the proposed quantization pipeline effectively transforms LW-DETR into fully integer-only models while maintaining a favorable trade-off between accuracy and deployment efficiency across different model scales. Figure 5 provides qualitative examples illustrating the effect of PTQ and QAT on the detection outputs. 
+
+Table 3: Transfer to aerial imagery: I-LW-DETR on VisDrone.                                                                                                          
+
+> Model Setting Prec. Int-only Size(MB) BOPs(T) mAP AP SAP MAP L
+> LW-DETR FP32 ✗44.89 11.48 15.7 6.9 24.6 40.5 QR-LW-DETR FP32 ✗45.39 11.49 15.0 6.6 23.5 42.2 PTQ 8/8/16 ✓12.57 0.92 7.8 2.3 13.4 27.3 Tiny QAT 8/8/16 ✓12.57 0.92 10.9 4.1 17.6 31.9 LW-DETR FP32 ✗54.44 17.0 18.2 8.1 28.6 48.1 QR-LW-DETR FP32 ✗54.95 17.04 17.2 7.7 27.2 47.3 PTQ 8/8/16 ✓16.93 1.36 13.3 5.5 21.5 40.8 Small QAT 8/8/16 ✓16.93 1.36 15.6 6.6 25.0 43.3 LW-DETR FP32 ✗106.63 43.78 19.3 8.9 30 49.3 QR-LW-DETR FP32 ✗107.14 43.82 19 8.8 29.6 49.5 PTQ 8/8/16 ✓30.16 3.07 11.4 4.2 19.6 37.1 Medium QAT 8/8/16 ✓30.16 3.07 15 6.1 24.2 44.4
+
+Table 3 evaluates the transferability of the proposed quantization pipeline on VisDrone. Replacing the floating-point operators with their quantization-ready counterparts results in only a minor accuracy degradation before quan-tization, indicating that the architectural modifications remain effective be-yond the COCO benchmark. Applying PTQ preserves the same reduction in model size and computational cost as on COCO but results in a substantially larger accuracy degradation, reflecting the higher sensitivity of aerial small-object detection to integer quantization. This degradation is particularly 17 Figure 5: Qualitative detection results on the COCO dataset using Small backbone. From left to right: ground truth, QR-LW-DETR, PTQ I-LW-DETR, and QAT I-LW-DETR. 
+
+pronounced for small objects, where AP S exhibits the largest drop from the QR baseline to PTQ across all model variants. QAT consistently recovers a significant portion of the lost accuracy without increasing the deployment cost, although the recovery remains more limited for small objects than for medium and large ones. Figure 6 provides qualitative examples illustrating that, in these dense scenes, small and closely spaced objects remain more fre-quently missed or confused. One possible contributing factor is the replace-ment of bilinear interpolation with nearest-neighbor sampling in deformable attention, which may reduce the localization precision required for very small objects. Overall, these results demonstrate that the proposed integer-only pipeline generalizes well to aerial imagery, while highlighting that aggressive quantization remains considerably more challenging for small-object detec-tion than for natural-image benchmarks such as COCO. 
+
+5.2. Comparison with Existing Quantized DETR Models 
+
+Table 4 compares I-LW-DETR with existing quantized DETR meth-ods on COCO. Since these methods use different detector architectures and backbones, the comparison should be interpreted as contextual rather than strictly one-to-one. Among them, EIQ-DETR is the closest reference because 18 Figure 6: Qualitative detection results on the VisDrone dataset after fine-tuning, using Small backbone. From left to right: ground truth, QR-LW-DETR, PTQ I-LW-DETR, and QAT I-LW-DETR. 
+
+it is the only previous fully integer-only DETR method reported in the table. 
+
+Table 4: Comparison with existing quantized DETR methods on COCO.                                                 
+
+> Model Setting Precision Int-only Size(MB) BOPs(T) mAP
+> Q-DETR QAT 4/4/8 ✗19.9 –39.4 AQ-DETR QAT 4/4/4 ✗24.9 –44.1 QRT-DETR PTQ 8/8/8 ✗20.25 –46.3 EIQ-DETR QAT 8/8/8 ✓43.49 5.90 44.1 I-LW-DETR-Tiny QAT 8/8/16 ✓12.85 0.89 37.9 I-LW-DETR-Small QAT 8/8/16 ✓17.21 1.32 43.7 I-LW-DETR-Medium QAT 8/8/16 ✓30.44 3.04 47.1
+
+Compared with EIQ-DETR, I-LW-DETR-Medium achieves higher ac-curacy, reaching 47.1 mAP compared with 44.1 mAP, while also reduc-ing both model size and estimated computational cost. Specifically, I-LW-DETR-Medium uses 30.44 MB and 3.04 TBOPs, compared with 43.49 MB and 5.90 TBOPs for EIQ-DETR. This corresponds to approximately 1.4×
+
+smaller model size and 1.9× lower estimated computational cost. Although Q-DETR, AQ-DETR, and QRT-DETR report competitive results, they re-tain floating-point operations in critical components and therefore do not provide fully integer-only inference. In contrast, I-LW-DETR performs infer-19 ence entirely with integer arithmetic while maintaining a favorable accuracy– efficiency trade-off. 
+
+6. Ablation studies 
+
+6.1. Component-wise quantization 
+
+To assess whether existing integer operators generalize to DETR-based object detection, we individually replace each floating-point operation by its I-ViT integer counterpart while keeping the remainder of the network in floating-point precision. Table 5 shows that several integer operators orig-inally proposed for ViT image classification do not generalize well to LW-DETR. 
+
+Table 5: Component-wise PTQ ablation study based on the I-ViT quantization method. Each row quantizes one operation while keeping the rest of the model in floating-point precision. The symbol ⋆ indicates sensitive components. 
+
+Component Operation Quantized module Tiny Small Medium 
+
+QR-LW-DETR FP32 – – 42.0 46.4 50.8 ViT encoder Softmax ⋆ Shiftmax ⋆ 6.3 42.3 44.0 GELU ⋆ ShiftGELU ⋆ 0.0 8.2 2.1 Linear QuantLinear 41.8 46.0 50.6 Conv2d QuantConv2d 41.9 46.4 50.8 MatMul QuantMatMul 41.9 46.2 50.7 LayerNorm I-LayerNorm 42.0 46.4 50.8 Projector Conv2d ⋆ QuantConv2d ⋆ 41.5 41.7 37.6 SiLU ShiftSiLU 41.3 45.1 49.5 LayerNorm I-LayerNorm 41.3 45.5 49.0 Transformer decoder Linear QuantLinear 41.2 45.2 48.6 MatMul QuantMatMul 41.7 46.4 50.6 Softmax Shiftmax 41.7 46.3 50.4 LayerNorm I-LayerNorm 41.3 46.0 49.4 Exponential ShiftExp 41.8 46.3 50.6 Detection head Linear QuantLinear 41.1 46.2 50.3 Exponential ShiftExp 39.0 44.6 48.5 
+
+Most linear transformations, matrix multiplications, and normalization layers remain highly robust, exhibiting less than 1 mAP degradation com-20 pared with the FP32 baseline across all three model variants. In contrast, the I-ViT ShiftGELU causes severe accuracy degradation, reducing the detec-tion performance to 0.0, 8.2, and 2.1 mAP for the Tiny, Small, and Medium models, respectively. Similarly, the Shiftmax reduces the Tiny model from 42.0 to 6.3 mAP, while quantizing the projector Conv2d lowers the Medium model from 50.8 to 37.6 mAP. These observations indicate that the original I-ViT quantization scheme, developed for ViT image classification, cannot be directly transferred to DETR-based object detection without architec-tural adaptations, thereby motivating the proposed projector convolution, SD-ShiftGELU, and Constrained Shiftmax presented in the following sub-sections. 
+
+6.2. Cumulative contribution analysis 
+
+While the previous experiment isolates the effect of each individual oper-ation, Table 6 evaluates the incremental contribution of the proposed com-ponents under a fully integer-only setting. Starting from a fully quantized LW-DETR using the original I-ViT quantization scheme, the proposed com-ponents are introduced sequentially, with each row accumulating the modi-fications introduced in the previous rows.                   
+
+> Table 6: Incremental PTQ ablation. Starting from the naive I-ViT quantization scheme, the proposed components are introduced sequentially. Each row accumulates the modifi-cations from the previous rows while all remaining operations remain quantized.
+> Configuration Tiny Small Medium
+> QR-LW-DETR FP32 upper bound 42.0 46.4 50.8 Naive I-ViT, all quantized 0.0 1.3 3.6 + SD-ShiftGELU 3.9 31.2 24.3 + Constrained Shiftmax 36.0 36.7 32.2 + Split Conv2d 36.0 41.6 44.0
+
+The first row highlights the limitation of directly applying the I-ViT quan-tization scheme to QR-LW-DETR. Under PTQ, the detection accuracy drops dramatically from 42.0, 46.4, and 50.8 mAP to only 0.0, 1.3, and 3.6 mAP for the Tiny, Small, and Medium models, respectively. Replacing the original ShiftGELU with the proposed SD-ShiftGELU substantially restores the per-formance of the Small and Medium models, increasing their accuracy from 1.3 to 31.2 mAP and from 3.6 to 24.3 mAP, respectively. In contrast, only a lim-ited improvement is observed for the Tiny model (0.0 to 3.9 mAP), indicating 21 that additional quantization bottlenecks remain dominant in this configura-tion. Introducing the proposed Constrained Shiftmax provides another sub-stantial performance gain, particularly for the Tiny model, highlighting the importance of accurate integer Softmax normalization. Finally, the proposed split convolution delivers further improvements, especially for the Small and Medium models, yielding the final PTQ performance of 36.0, 41.6, and 44 mAP for the Tiny, Small, and Medium variants, respectively, corresponding to the complete I-LW-DETR PTQ model reported in Section 5. 
+
+6.3. Split Convolution 
+
+Table 7: Effect of scale-aware split convolution in the projector.           
+
+> Model Concat →Conv2d Split Conv2d
+> Tiny 41.5 41.5 Small 41.7 45.9
+> Medium 37.6 49.1
+
+(a) Activation distributions before feature concatenation 
+
+(b) Activation distributions after feature concatenation 
+
+Figure 7: Activation distributions before and after feature concatenation. 
+
+22 Table 7 isolates the proposed split convolution in the projector. The benefit is negligible for the Tiny model but becomes increasingly significant for the larger variants, with the Medium model improving from 37.6 to 49.1 mAP. This trend suggests that projector quantization becomes increasingly sensitive to scale mismatch as the feature dimensionality grows. Figure 7 visualizes the cause. After feature concatenation, all channels are quantized using a single activation scale determined by the largest-range feature group. Consequently, feature groups with smaller dynamic ranges lose quantization resolution. The proposed split convolution avoids this issue by preserving an independent activation scale for each feature group. 
+
+6.4. GELU Integer Approximation Methods 
+
+As shown in Table 5, GELU is one of the most quantization-sensitive operations in QR-LW-DETR. Table 8 therefore compares the proposed SD-ShiftGELU with three existing integer GELU approximations from I-ViT, I-Segmenter, and EIQ-DETR. SD-ShiftGELU consistently achieves the highest detection accuracy across all model sizes. While the original I-ViT approximation causes catastrophic performance degradation, SD-ShiftGELU consistently outperforms the more recent I-Segmenter and EIQ-DETR approximations, suggesting that the pro-posed sign-dependent formulation more faithfully reproduces the floating-point GELU under integer arithmetic.                 
+
+> Table 8: Detection performance when only GELU is quantized.
+> Model size GELU approximation I-ViT I-Segmenter EIQ-DETR SD-ShiftGELU
+> Tiny 0.0 37.0 41.0 41.3
+> Small 8.2 42.0 45.0 45.6
+> Medium 2.1 44.5 49.3 50.1
+
+6.5. Constrained Shiftmax 
+
+Table 9 isolates the proposed Constrained Shiftmax by quantizing only the Softmax operation. The original I-ViT Shiftmax causes severe perfor-mance degradation, particularly for the Tiny model, where the detection accuracy drops to 5.5 mAP. This behavior occurs because the accumulated exponential sum may exceed the fixed integer precision M in some atten-tion blocks, causing the normalization factor to collapse toward zero. The 23 Table 9: Effect of the proposed Constrained Shiftmax on detection performance when only Softmax is quantized.          
+
+> Method Tiny Small Medium
+> I-ViT Shiftmax 5.5 42.2 44.4 Contrained Shiftmax 41.8 45.9 50.3
+
+proposed Constrained Shiftmax restores high detection accuracy across all model sizes by calibrating the denominator shift sd for each attention block. These results demonstrate that adapting the normalization range is essential for accurate integer Softmax in LW-DETR. 
+
+7. Discussion: Hardware Compatibility 
+
+A fully integer-only computational graph is necessary for deployment on integer edge accelerators, but it is not sufficient. The operators composing the graph must also correspond to primitives commonly exposed by the target hardware. To assess this compatibility, we compare the operators required by I-LW-DETR with the published integer operator set of the Arm Ethos-U85 1 and the corresponding Vela compiler documentation 2, used here as a representative modern integer edge accelerator. This analysis evaluates operator compatibility only; it does not constitute a deployment study, and no compilation or on-device measurements are reported. As summarized in Table 10, the I-LW-DETR that account for essentially all of the arithmetic operators map directly to standard integer primitives available on modern NPUs, including convolutions, fully connected layers, and matrix multiplication. Transformer non-linearities remain the main com-patibility challenge, as dedicated GELU and Softmax primitives are generally unavailable on integer accelerators. Consequently, their implementation re-lies only on standard integer arithmetic, while hardware-specific primitives, when available (e.g., LOGISTIC or SOFTMAX on the Ethos-U85), may serve as optional implementation alternatives. Some operations, including ShiftExp, I-LayerNorm, and deformable sam-pling, involve data-dependent computations or indexing. Although their mapping to hardware resources may depend on the compiler implementa-
+
+> 1https://developer.arm.com/documentation/102684/0000 .
+> 2https://gitlab.arm.com/artificial-intelligence/ethos-u/ethos-u-vela .
+
+24 Table 10: Representative correspondence between I-LW-DETR operators and integer primitives supported by the Arm Ethos-U85. The table illustrates operator compatibility only and does not imply compiler placement or hardware deployment.                   
+
+> I-LW-DETR operator Representative Ethos-U85 primitive(s)
+> Patch embedding / projections CONV_2D ,FULLY_CONNECTED ,ADD
+> Attention MATMUL
+> Scale-preserving split convolution CONV_2D ×N,ADD
+> Positional projection FULLY_CONNECTED
+> SD-ShiftGELU Integer arithmetic / LOGISTIC (optional) Calibrated Shiftmax Integer arithmetic / SOFTMAX (optional) I-LayerNorm MEAN , integer arithmetic Deformable sampling GATHER
+
+tion, they remain entirely expressible using integer arithmetic and standard integer operations. 
+
+8. Conclusions 
+
+We introduced I-LW-DETR, a fully integer-only realization of LW-DETR for efficient object detection. By jointly redesigning the architecture and its numerical operators, we showed that competitive detection accuracy can be maintained under both PTQ and QAT despite eliminating all floating-point computations. The proposed SD-ShiftGELU and calibrated Shiftmax ad-dress the main numerical limitations of previous integer transformer approx-imations. The ablation studies confirm that these components effectively eliminate the principal quantization bottlenecks while preserving detection performance. The experimental results demonstrate that I-LW-DETR achieves a fa-vorable accuracy-efficiency trade-off among fully integer-only DETR models. After QAT, the proposed pipeline incurs only a 4.3–5.4 mAP degradation with respect to floating-point LW-DETR across all model scales, while re-ducing the model size by approximately 3.6× and the computational cost by 12 .9–14 .4×. Experiments on VisDrone further demonstrate that the pro-posed methodology generalizes to the challenging task of small-object de-tection. Future work will investigate deployment on representative edge AI accelerators and evaluate runtime performance on real hardware. 25 Appendix A. Pseudo-code of the proposed methods Algorithm 1: SD-ShiftGELU 
+
+// This algorithm implements integer-only SD-ShiftGELU. It first computes the integer exponential approximation using ShiftExp, then applies a sign-dependent stabilization before integer division to compute the GELU output. 
+
+Input: 
+
+Ix: Integer input 
+
+Sx: Input scaling factor 
+
+kout : Output bit-precision 
+
+kinter : Intermediate bit-precision 
+
+Function ShiftExp( I, S, k inter ):
+
+Ie ← I + ( I ≫ 1) − (I ≫ 4) ▷ I · log 2 eI0 ← ⌊ 1/S ⌉
+
+Ie ← clamp_min (Ie, k inter · (−I0)) ▷ Lower-bound clipping 
+
+q ← ⌊ Ie/(−I0)⌋ ▷ Integer part 
+
+r ← − (Ie − q · (−I0)) ▷ Decimal part 
+
+Ib ← (( −r) ≫ 1) + I0
+
+Iexp ← Ib ≪ (kinter − q) ▷ Integer exponential approximation 
+
+Sexp ← S/ (2 kinter )
+
+return (Iexp , S exp ) ▷ S exp · Iexp ≈ eS·I
+
+Function SD-ShiftGELU( Ix, S x, k out , k inter ):
+
+Ip ← Ix + ( Ix ≫ 1) + ( Ix ≫ 3) + ( Ix ≫ 4) ▷ 1.702 Ix
+
+Ishift ← ReLU (Ip) ▷ Sign-dependent shift 
+
+I∆ ← Ip − Ishift ▷ I ∆ ≤ 0(Iexp , S exp ) ← ShiftExp (I∆, S x, k inter )(I′
+
+> exp
+
+, S ′
+
+> exp
+
+) ← ShiftExp (−Ishift , S x, k inter )(Idiv , S div ) ← IntDiv (Iexp , I exp + I′
+
+> exp
+
+, k out ) ▷ Sigmoid approximation 
+
+(Iout , S out ) ← (Ix · Idiv , S x · Sdiv )
+
+return (Iout , S out ) ▷ I out · Sout ≈ GELU (Ix · Sx)
+
+26 Algorithm 2: Constrained Shiftmax 
+
+// This algorithm implements constrained integer-only Shiftmax. It uses ShiftExp to approximate the exponential values, calibrates a denominator shift to keep the normalization within 32-bit integer precision, and uses quotient-remainder accumulation to preserve the exact shifted exponential sum. 
+
+Input: 
+
+Ix: Integer attention-score vector 
+
+Sx: Attention-score scaling factor 
+
+kout : Output bit-precision 
+
+kinter : Intermediate bit-precision 
+
+mp: Precision margin 
+
+Mhw : Hardware-supported division precision, fixed to 31 
+
+Function CalibrateShift( Ssum , m p, M hw ):
+
+Mreq ← ⌈ log 2(Ssum )⌉ ▷ Required denominator precision 
+
+Mtarget ← Mreq + mp ▷ Add precision margin 
+
+sd ← max( Mtarget − Mhw , 0) 
+
+return sd
+
+Function ConstrainedShiftmax( Ix, S x, k out , k inter , m p, M hw ):
+
+Imax ← max( Ix)
+
+I∆i ← Ixi − Imax ▷ Ensure I∆i ≤ 0(Iexp i , S exp ) ← ShiftExp (I∆i , S x, k inter )
+
+Ssum ← P 
+
+> i
+
+Iexp i ▷ Accumulated exponential sum 
+
+sd ← CalibrateShift (Ssum , m p, M hw )
+
+Qi ← Iexp i ≫ sd ▷ Quotient of each exponential value 
+
+ri ← Iexp i − (Qi ≪ sd) ▷ Remainder of each exponential value 
+
+SR ← P 
+
+> i
+
+Qi + ( P 
+
+> i
+
+ri ≫ sd) ▷ Exact shifted denominator 
+
+SR ← clamp (SR, 1, 231 − 1) 
+
+F ←
+
+ 231 − 1
+
+SR
+
+
+
+▷ 32-bit normalization factor 
+
+Iout i ← (Iexp i · F ) ≫ (31 − kout + 1 + sd) ▷ Convert to kout -bit output 
+
+Sout ← 2−(kout −1) ▷ Fixed-point Softmax scale 
+
+return (Iout , S out ) ▷ S out Iout i ≈ Softmax( SxIx)i
+
+27 References 
+
+[1] J. Redmon, S. Divvala, R. Girshick, A. Farhadi, You only look once: Unified, real-time object detection, in: Proceedings of the IEEE Con-ference on Computer Vision and Pattern Recognition, IEEE, 2016, pp. 779–788. doi:10.1109/CVPR.2016.91 .[2] A. Wang, H. Chen, L. Liu, K. Chen, Z. Lin, J. Han, G. Ding, Yolov10: Real-time end-to-end object detection, in: A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, C. Zhang (Eds.), Advances in Neural Information Processing Systems, Vol. 37, Curran Associates, Inc., 2024, pp. 107984–108011. doi:10.52202/079017-3429 .[3] Y. Tian, Q. Ye, D. DOERMANN, Yolov12: Attention-centric real-time object detectors, in: D. Belgrave, C. Zhang, H. Lin, R. Pascanu, P. Ko-niusz, M. Ghassemi, N. Chen (Eds.), Advances in Neural Information Processing Systems, Vol. 38, Curran Associates, Inc., 2025, pp. 78433– 78457. URL https://proceedings.neurips.cc/paper_files/paper/2025/ file/7103444259031cc58051f8c9a4868533-Paper-Conference.pdf 
+
+[4] Y. Zhao, Q. Zhao, C. Tu, Yolo-fb: Lightweight small-object detection via enhanced features and sparse attention, Jour-nal of Systems Architecture 176 (2026) 103777. doi:https: //doi.org/10.1016/j.sysarc.2026.103777 .URL https://www.sciencedirect.com/science/article/pii/ S1383762126000950 
+
+[5] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly, J. Uszkoreit, N. Houlsby, An image is worth 16x16 words: Transformers for image recognition at scale, in: International Conference on Learning Representations, 2021. URL https://www.bibsonomy.org/bibtex/ 2242f2231f90af37d7169530db3da4375/andolab 
+
+[6] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, S. Zagoruyko, End-to-end object detection with transformers, in: Computer Vision – ECCV 2020, Vol. 12346 of Lecture Notes in Computer Science, Springer, 2020, pp. 213–229. doi:10.1007/978-3-030-58452-8_13 .28 [7] Q. Chen, X. Su, X. Zhang, J. Wang, J. Chen, Y. Shen, C. Han, Z. Chen, W. Xu, F. Li, S. Zhang, K. Yao, E. Ding, G. Zhang, J. Wang, Lw-detr: A transformer replacement to yolo for real-time detection (2024). 
+
+arXiv:2406.03459 .URL https://arxiv.org/abs/2406.03459 
+
+[8] Z. Yuan, C. Xue, Y. Chen, Q. Wu, G. Sun, Ptq4vit: Post-training quantization for vision transformers with twin uniform quantization, in: Computer Vision – ECCV 2022, Vol. 13672 of Lecture Notes in Computer Science, Springer, 2022, pp. 191–207. doi:10.1007/ 978-3-031-19775-8_12 .[9] O. Zafrir, G. Boudoukh, P. Izsak, M. Wasserblat, Q8bert: Quantized 8bit bert, in: Proceedings of the 2019 Fifth Workshop on Energy Ef-ficient Machine Learning and Cognitive Computing – NeurIPS Edition (EMC2-NIPS), IEEE, 2019, pp. 36–39. doi:10.1109/EMC2-NIPS53020. 2019.00016 .[10] G. Kim, J. Lee, H. Kim, Iptq-vit: Post-training quantization of non-linear functions for integer-only vision transformers, in: Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), 2026, pp. 7366–7375. doi:10.1109/WACV61042.2026.00711 .[11] S. Kim, A. Gholami, Z. Yao, M. W. Mahoney, K. Keutzer, I-bert: Integer-only bert quantization, in: M. Meila, T. Zhang (Eds.), Proceed-ings of the 38th International Conference on Machine Learning, Vol. 139 of Proceedings of Machine Learning Research, PMLR, 2021, pp. 5506– 5518. URL https://proceedings.mlr.press/v139/kim21d.html 
+
+[12] Z. Li, Q. Gu, I-ViT: Integer-only quantization for efficient vision transformer inference, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2023, pp. 17065–17075. URL https://openaccess.thecvf.com/content/ICCV2023/papers/ Li_I-ViT_Integer-only_Quantization_for_Efficient_Vision_ Transformer_Inference_ICCV_2023_paper.pdf 
+
+[13] J. Sassoon, M. Szczepanski, M. Poreba, I-Segmenter: Integer-only vi-sion transformer for efficient semantic segmentation, Journal of Systems Architecture 178 (2026) 103888. doi:10.1016/j.sysarc.2026.103888 .29 [14] S. Xu, Y. Li, M. Lin, P. Gao, G. Guo, J. Lü, B. Zhang, Q-detr: An efficient low-bit quantized detection transformer, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2023, pp. 3842–3851. URL https://openaccess.thecvf.com/content/CVPR2023/ html/Xu_Q-DETR_An_Efficient_Low-Bit_Quantized_Detection_ Transformer_CVPR_2023_paper.html 
+
+[15] R. Wang, H. Sun, L. Yang, S. Lin, C. Liu, Y. Gao, Y. Hu, B. Zhang, AQ-DETR: Low-bit quantized detection transformer with auxiliary queries, in: Proceedings of the AAAI Conference on Artificial Intelligence, Vol. 38, 2024, pp. 15598–15606. doi:10.1609/aaai.v38i14.29487 .[16] Y. Huo, T. Wu, Y. Shen, X. Li, Z. Tao, D. Yang, QRT-DETR: Post-training quantization for real-time detection transformer, Neurocomput-ing 661 (2026) 131957. doi:10.1016/j.neucom.2025.131957 .[17] P. Liu, C. Li, N. Zhang, J. Yang, L. Wang, Efficient integer quantization for compressed DETR models, Entropy 27 (4) (2025) 422. doi:10.3390/ e27040422 .[18] X. Zhu, W. Su, L. Lu, B. Li, X. Wang, J. Dai, Deformable detr: De-formable transformers for end-to-end object detection, in: International Conference on Learning Representations (ICLR), 2021. URL https://openreview.net/forum?id=gZ9hCDWe6ke 
+
+[19] H. Zhang, F. Li, S. Liu, L. Zhang, H. Su, J. Zhu, L. M. Ni, H.-Y. Shum, DINO: DETR with improved denoising anchor boxes for end-to-end ob-ject detection, in: International Conference on Learning Representa-tions, 2023. URL https://openreview.net/forum?id=3mRwyG5one 
+
+[20] Y. Zhao, W. Lv, S. Xu, J. Wei, G. Wang, Q. Dang, Y. Liu, J. Chen, DETRs beat YOLOs on real-time object detection, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recogni-tion, 2024, pp. 16965–16974. doi:10.1109/CVPR52733.2024.01605 .URL https://openaccess.thecvf.com/content/CVPR2024/html/ Zhao_DETRs_Beat_YOLOs_on_Real-time_Object_Detection_CVPR_ 2024_paper.html 
+
+30 [21] W. Lv, Y. Zhao, Q. Chang, K. Huang, G. Wang, Y. Liu, RT-DETRv2: Improved baseline with bag-of-freebies for real-time detection trans-former (2024). arXiv:2407.17140 , doi:10.48550/arXiv.2407.17140 .URL https://arxiv.org/abs/2407.17140 
+
+[22] Y. Peng, H. Li, P. Wu, Y. Zhang, X. Sun, F. Wu, D-FINE: Redefine regression task of DETRs as fine-grained distribution refinement, in: The Thirteenth International Conference on Learning Representations, 2025, pp. 1–18. URL https://openreview.net/forum?id=MFZjrTFE7h 
+
+[23] I. Robinson, P. Robicheaux, M. Popov, D. Ramanan, N. Peri, RF-DETR: Neural architecture search for real-time detection transformers, in: International Conference on Learning Representations, 2026, pp. 1– 14. [24] Z. Li, M. Chen, J. Xiao, Q. Gu, Psaq-vit v2: Toward accurate and gen-eral data-free quantization for vision transformers, IEEE Transactions on Neural Networks and Learning Systems 35 (12) (2024) 17227–17238. 
+
+doi:10.1109/TNNLS.2023.3301007 .[25] Y. Lin, T. Zhang, P. Sun, Z. Li, S. Zhou, Fq-vit: Post-training quan-tization for fully quantized vision transformer, in: L. D. Raedt (Ed.), Proceedings of the Thirty-First International Joint Conference on Ar-tificial Intelligence, IJCAI-22, International Joint Conferences on Ar-tificial Intelligence Organization, 2022, pp. 1173–1179, main Track. 
+
+doi:10.24963/ijcai.2022/164 .[26] Z. Li, J. Xiao, L. Yang, Q. Gu, Repq-vit: Scale reparameterization for post-training quantization of vision transformers, in: 2023 IEEE/CVF International Conference on Computer Vision (ICCV), 2023, pp. 17181– 17190. doi:10.1109/ICCV51070.2023.01580 .[27] E. Yvinec, A. Dapogny, M. Cord, K. Bailly, SPIQ: Data-free per-channel static input quantization, in: Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision, 2023, pp. 3869–3878. URL https://openaccess.thecvf.com/content/WACV2023/ html/Yvinec_SPIQ_Data-Free_Per-Channel_Static_Input_ Quantization_WACV_2023_paper.html 
+
+31 [28] X. He, Y. Lu, H. Liu, C. Gong, W. He, Orq-vit: Outlier resilient post training quantization for vision transformers via outlier de-composition, Journal of Systems Architecture 168 (2025) 103530. 
+
+doi:https://doi.org/10.1016/j.sysarc.2025.103530 .URL https://www.sciencedirect.com/science/article/pii/ S1383762125002024 
+
+[29] T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dollár, C. L. Zitnick, Microsoft COCO: Common objects in con-text, in: Computer Vision – ECCV 2014, Vol. 8693 of Lecture Notes in Computer Science, Springer, 2014, pp. 740–755. doi:10.1007/ 978-3-319-10602-1_48 .[30] P. Zhu, L. Wen, D. Du, X. Bian, H. Fan, Q. Hu, H. Ling, Detec-tion and tracking meet drones challenge, IEEE Transactions on Pat-tern Analysis and Machine Intelligence 44 (11) (2022) 7380–7399. doi: 10.1109/TPAMI.2021.3119563 .[31] M. van Baalen, C. Louizos, M. Nagel, R. A. Amjad, Y. Wang, T. Blankevoort, M. Welling, Bayesian bits: Unifying quantization and pruning, in: H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, H. Lin (Eds.), Advances in Neural Information Processing Systems, Vol. 33, Curran Associates, Inc., 2020, pp. 5741–5752. URL https://proceedings.neurips.cc/paper_files/paper/2020/ file/3f13cf4ddf6fc50c0d39a1d5aeb57dd8-Paper.pdf 
+
+32
