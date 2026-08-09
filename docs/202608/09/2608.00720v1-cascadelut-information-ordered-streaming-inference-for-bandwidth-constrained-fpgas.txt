@@ -1,0 +1,172 @@
+Title: CascadeLUT: Information-Ordered Streaming Inference for Bandwidth-Constrained FPGAs
+
+URL Source: https://arxiv.org/pdf/2608.00720v1
+
+Published Time: Tue, 04 Aug 2026 00:45:14 GMT
+
+Number of Pages: 6
+
+Markdown Content:
+# CascadeLUT: Information-Ordered Streaming Inference for Bandwidth-Constrained FPGAs 
+
+Oliver Cassidy, Marta Andronic and George A. Constantinides Department of Electrical and Electronic Engineering, Imperial College London, UK Email: {olly.cassidy23, marta.andronic18, g.constantinides }@imperial.ac.uk 
+
+Abstract —Mapping neural networks to FPGAs enables low-latency, energy-efficient inference, particularly for lookup table (LUT)-based models that eliminate multipliers and map directly to reconfigurable fabric. While prior work achieves high compute efficiency, it typically assumes full-sample availability, causing pipeline stalls in bandwidth-limited streaming scenarios. Here, the bottleneck shifts from computation to data movement, as large input transfers limit throughput and energy efficiency. We present CascadeLUT, an information-structured inference framework organized around bandwidth constraints. Instead of buffering the full input, features are partitioned into ordered subsets and predictions are progressively refined as subsets arrive. The cascade statically controls which layers consume incoming features, enabling deterministic streaming inference without runtime branching. By co-designing feature scheduling with hardware dataflow, CascadeLUT reduces data movement while maintaining accuracy. Across datasets, it achieves 4.0– 12.5 × lower latency, 3.0–5.0 × higher throughput and up to 13.8 × lower energy/sample than prior LUT baselines, using 1.2– 4.4 × the LUTs of the smallest DWN baseline per task. We also demonstrate on-device input quantization integrated with LUT-based inference and present end-to-end FPGA results on real-world workloads, with 5 × reductions in quantization overhead. 
+
+Index Terms —FPGA, LUT-based neural networks, bandwidth-constrained inference, streaming inference, feature scheduling 
+
+I. I NTRODUCTION 
+
+Field-programmable gate arrays (FPGAs) are a compelling platform for neural network (NN) inference in latency- and energy-critical settings. By exploiting fine-grained parallelism and mapping arithmetic directly into reconfigurable logic, FPGA designs achieve high throughput at low power [1]. This advantage is amplified for LUT-based NNs, where inference is expressed as low-precision operations and implemented directly using LUT resources, eliminating multipliers and sim-plifying datapaths. In this regime, computation becomes inex-pensive relative to data movement [2], shifting the bottleneck. As a result, these systems are often not compute-bound but input-rate-limited. When inputs arrive over a bandwidth-constrained link—for example, from off-chip memory, sensors or interconnect—the cost of transferring features can exceed that of evaluation. Conventional FPGA inference pipelines assume full-sample availability, buffering the entire input before execution. Under bandwidth constraints, this leads to idle compute cycles and increased end-to-end latency. We present CascadeLUT, a bandwidth-aware inference ar-chitecture that co-designs feature ordering, network topology and FPGA dataflow for streaming deployments. Instead of buffering the full input, features are partitioned into ordered subsets and streamed under a fixed bandwidth constraint. The network is organized as a statically scheduled cascade: selected layers consume newly arriving features, while others propagate intermediate activations. Computation begins as soon as the first features arrive, overlapping data movement with infer-ence, so latency scales with load stages rather than input size. Unlike early exit or other adaptive approaches, CascadeLUT introduces no runtime branching; the feature schedule, cascade topology and pipeline are fixed at synthesis time, enabling deterministic latency aligned with input bandwidth. Across multiple datasets and configurations, CascadeLUT achieves 4.0–12.5 × latency reductions and 3.0–5.0 × higher throughput than prior ultra-low-latency FPGA inference ar-chitectures while maintaining comparable accuracy. Energy per sample is reduced by up to 13.8 × on bandwidth-limited workloads due to shorter inference. This uses 1.2–4.4 × the LUTs of the smallest DWN baseline per task. Further, we show that preprocessing integrated as LUTs in the fabric adds modest area overhead, kept small by feature truncation. These results show that co-designing feature transport, representation and computation around streaming constraints improves FPGA inference efficiency in both end-to-end latency and energy. In summary, the key contributions of this paper are:  
+
+> •
+
+An open-source toolflow 1 that implements a novel stati-cally scheduled cascade architecture, organizing compu-tation around a learned feature schedule and enabling inference directly on streaming data as it arrives on-chip.  
+
+> •
+
+A feature scheduling method that derives a transmission order prioritizing salient features under a fixed bandwidth.  
+
+> •
+
+We demonstrate that learned preprocessing can be im-plemented in FPGA fabric with modest area overhead, and report hardware results for an end-to-end inference pipeline that could directly consume sensor data by inte-grating on-device input quantization with NN execution.  
+
+> •
+
+An FPGA implementation on a Zynq Z-7045, evalu-ated on MNIST, FashionMNIST, KWS and ToyADMOS, achieving 4.0–12.5 × lower latency and 3.0–5.0 × higher throughput than prior low-latency inference architectures. II. B ACKGROUND 
+
+FPGA-oriented machine learning frameworks such as FINN [1] and hls4ml [3], [4] demonstrate that extreme quan-tization enables highly efficient neural network inference on 
+
+> 1https://github.com/ollycassidy13/CascadeLUT arXiv:2608.00720v1 [cs.AR] 1 Aug 2026
+
+reconfigurable hardware. By restricting computation to low-precision operations, these systems map naturally onto FPGA logic resources and achieve high throughput and low latency. Subsequent work has further shown that neural network in-ference can be implemented directly in lookup-table fabric, enabling ultra-low-latency deployments in real-time environ-ments such as high-energy physics experiments at CERN. Several architectures adopt this LUT-based approach. Log-icNets [5] map individual neurons directly to LUTs, using logical LUTs (L-LUTs) which implement higher-level func-tions by combining multiple physical LUTs. PolyLUT [6], [7] absorbs polynomial functions, while NeuraLUT [8] absorbs small subnetworks into larger L-LUTs to increase representa-tional capacity. NeuraLUT-Assemble [9], used as the backbone in this work, constructs neurons as trees of smaller L-LUTs, using learned sparse connectivity to increase effective fan-in while controlling LUT growth. After training, each subnetwork is enumerated into Boolean logic and mapped to a pipelined FPGA implementation. Related work on weightless neural networks (DWN) [10] builds upon ULEEN [11] to realize inference through collections of learned LUT structures. Dif-fLogicNet [12] instead introduces differentiable logic gate networks, enabling gradient-based training of discrete logic models. Post-training optimization techniques [13], [14], [15] demonstrate that LUT-based networks can be further com-pressed to improve area efficiency while preserving accuracy. Across these architectures, the inference pipeline typically assumes that the complete input vector is available before computation begins. In bandwidth-constrained deployments where off-chip I/O or interconnect limits the rate at which features can be delivered to the compute fabric, this introduces unnecessary idle cycles and increases end-to-end latency. III. C ASCADE LUT A RCHITECTURE 
+
+To illustrate the proposed neural network topology, consider the three-stage CascadeLUT architecture in Figure 1. Input features are streamed to the FPGA through a bandwidth-limited interface that transfers Bio bits per cycle, causing features to arrive in fixed-size subsets. The cascade is built on a NeuraLUT-Assemble [9] backbone. In the first stage, the most salient subset S1 arrives and is consumed by the first cascade layer, producing hidden activations that propagate through subsequent layers. Weight magnitudes determine feature salience from an initial fully connected training phase (Section IV-B). In subsequent cycles, subsets S2 and S3 arrive sequentially and are concatenated with intermediate activations to progressively refine the repre-sentation, with a final layer producing the output. Each pipeline stage consumes a feature subset, so computa-tion begins as data arrives and overlaps with feature transfer. This removes full-input buffering, so latency scales with load stages rather than input size. The execution follows a fully static schedule, enabling deterministic feed-forward dataflow without runtime control. All operations map to combinational LUT logic between registers, allowing efficient pipelining and high clock frequency on FPGA fabric. We assume the feature order is imposed before the bandwidth-limited link, e.g., by storing samples in that order or packetizing sensor-derived features in the learned order. CascadeLUT does not buffer full samples on FPGA for reordering or perform any runtime permutation; the order is fixed across samples and not selected adaptively at runtime. IV. M ETHODOLOGY 
+
+In bandwidth-limited ultra-low-latency systems, the dom-inant inference cost can shift from arithmetic to feature transport latency. In such systems, the order in which features arrive is critical: conventional pipelines buffer the full sample and then process it uniformly, leaving computation idle while salient features may already be available. We address this by structuring both the transmission schedule and the inference computation around feature salience derived from a fully-connected model, rather than input order. All decisions are made at design time; there is no runtime branching or adaptive control, ensuring deterministic, hardware-friendly execution. 
+
+A. Aligning Compute Allocation with Information Arrival 
+
+Standard FPGA inference pipelines delay computation until input transfer is complete, giving latency proportional to transfer time. We instead structure inference as a cascade: computation proceeds as soon as a feature subset arrives. Let Bio be the physical input width and Bs the quantized-bit budget assigned to one feature stage. A stage therefore occupies ⌈Bs/B io ⌉ input cycles and contains at most ⌊Bs/β ⌋
+
+features. Partial feature prefixes are used to produce interme-diate predictions, which are incrementally refined as additional subsets arrive, eliminating the need for full-sample buffering. The cascade is statically parameterized by a per-layer gating vector g = (g0, . . . , g L−1), where gℓ ∈ {0, 1} indicates whether hidden layer ℓ consumes newly arriving features in addition to the previous hidden state. Let hℓ denote the quantized hidden output of layer ℓ, and let cℓ denote the feature subset presented at stage ℓ when gℓ = 1 . Let qin (·) denote the learned input quantizer applied independently to each feature subset. Here, ∥ denotes vector concatenation along the feature dimension. The resulting layer input is 
+
+zℓ =
+
+
+
+qin (cℓ), ℓ = 0 , g 0 = 1 ,hℓ−1, gℓ = 0 ,
+
+[hℓ−1 ∥ qin (cℓ)] , gℓ = 1 , ℓ > 0,
+
+(1) and the hidden update is hℓ = fℓ(zℓ), where fℓ is implemented as a sparse LUT network layer. Consequently, the dataflow and pipeline structure are fully determined a priori , enabling deterministic, fixed-latency streaming inference. The gating vector is a compile-time schedule. Entries with 
+
+gℓ = 1 are feature stages, which place layer ℓ at a feature-injection boundary: its subset is loaded over ⌈Bs/B io ⌉ cycles, concatenated with hℓ−1 for ℓ > 0 and registered, as shown in subsets two and three in Figure 1. Layers with gℓ = 0 
+
+consume only hidden activations and are not separated by registers in our implementation, increasing representational capacity through further nonlinear transformations without additional feature-transfer cost. The resulting dataflow is fixed at synthesis time, with no data-dependent stalls or branches. 
+
+B. Input Feature Saliency and Ordering 
+
+To fully exploit the proposed topology, features must be transmitted sequentially in order of salience so that the most salient inputs are available earliest in the stream and can influence the network for the longest duration. To achieve this, we first train a fully connected model in which each cascade stage observes the complete input vector. The trained dense weights are then used to derive neuron-level top-k input masks by selecting the largest-magnitude weights for each neuron, consistent with the masking procedure in [9]. Feature salience is computed per feature stage by counting how often each input feature appears in the top-k masks across all layers and neurons for stage s in the full-input surrogate: 
+
+I(s) 
+
+> i
+
+= X
+
+> ℓ,n
+
+1[i ∈ TopK (s)
+
+> ℓ,n
+
+]. (2) Here, 1[·] is the indicator function, and TopK ℓ, n (s) is the set of input indices selected by the top-k mask of neuron n in layer ℓ for stage s. Features are then ordered by descending salience and greedily assigned, without overlap, to subsets of 
+
+⌊Bs/β ⌋ features each. The resulting permutation is fixed after training and reused for all samples statically at runtime. This ordering schedules the most discriminative features in earlier load cycles, enabling accurate prediction from partial inputs and refinement as additional features arrive. 
+
+C. Per-Feature Learned Quantization 
+
+Under a fixed link budget of Bio bits per cycle, reducing end-to-end latency requires transmitting features in a form that preserves their discriminative utility while minimizing bitwidth. We therefore learn a low-bit quantization scheme that maps each feature xi to a discrete value prior to transmission. Each feature is quantized by learned thresholds ti,j and scale 
+
+si. The comparisons form an internal thermometer vector, but only its population count is exposed: 
+
+zi,j = si(xi − ti,j ), qi(xi) = X
+
+> j
+
+1[zi,j > 0] . (3) This count is encoded as a compact β-bit unsigned binary value consumed by CascadeLUT. Thus, on-device preprocess-ing produces the same binary code through L-LUT quantizers. Thresholds are parameterized as a base value plus pos-itive increments to ensure strict ordering during training. Because the hard quantizer is non-differentiable, training uses a straight-through estimator with a clipped linear surrogate and a learnable temperature parameter. At inference, the encoder maps to a bank of comparators implemented as one L-LUT per feature. This forms an L-LUT quantization layer placed at the input of each feature stage, matching the network representation and preserving the LUT-based computation model. The quantization operates within the same load cycle as feature arrival, so it does not introduce additional pipeline stages, latency or buffering. 
+
+D. Training and Toolflow 
+
+The CascadeLUT pipeline consists of three training phases followed by hardware mapping. 
+
+1) Feature Ordering: A fully connected model is trained where each cascade stage observes the full input vector. Fea-ture salience scores are then derived following Section IV-B to front-load discriminative information under the bandwidth constraint. This provides an inexpensive proxy for feature salience, avoiding costly gradient-based attribution methods. 
+
+2) Sparse Cascade Training: Using the derived feature schedule, the cascade network is retrained with the bandwidth-constrained input structure. Sparse connectivity masks are ex-tracted from the fully connected weights using the magnitude-based fan-in selection as in prior LUT-based architectures [9]. 
+
+3) Final Training: The resulting sparse cascade network is retrained under the final connectivity constraints using SGD with decoupled weight decay [16] and warm restarts [17]. 
+
+4) RTL Generation: Each neuron is mapped to a lookup-table node by enumerating its learned Boolean function. Pipeline registers are inserted between feature stages to meet timing at the target clock frequency. V. R ESULTS 
+
+A. Experimental Setup 
+
+Table I lists all evaluated configurations and should be read with Fig. 1: gℓ = 1 entries instantiate the orange feature-injection blocks Ss, while gℓ = 0 layers use only hidden activations. Bs gives each block’s bit budget, II the initiation interval and Nu/N in the consumed/available original features after truncation. Layer sizes wℓ give the number of L-LUTs, while F and β define fan-in and quantization. The NeuraLUT-Assemble subnetwork dimensions are (L, N, S ) [9]. Evaluation uses MNIST [18], FashionMNIST [19], Google Speech Commands keyword spotting (KWS) [20] and Toy-ADMOS anomaly detection [21]. KWS is an 11-class audio keyword-spotting task based on Google Speech Commands features, while ToyADMOS/car is a binary acoustic anomaly-detection task for machine monitoring. During training, inputs remain floating-point to optimize the learned input encoders. For hardware deployment we consider two regimes. In the first, inputs are preprocessed offline and quantized features 
+
+Fig. 1: CascadeLUT Topology. Feature subsets Ss stream into fixed pipeline boundaries, avoiding full-sample buffering. TABLE I: CascadeLUT model architectures and training parameters used across our evaluation.                                                                                                                                             
+
+> Dataset wℓgℓFβ(L, N, S )BsII Nu/N in
+> MNIST [2160 ,360 ,2160 ,360 ,60 ,10] [1 ,0,1,0,0,0] [6 ,6,8,6,6,6] [1 ,1,1,1,1,6] (2 ,75 ,2) 112 2224 /784
+> FashionMNIST [2160 ,360 ,2400 ,1000 ,2160 ,360 ,60 ,10] [1 ,0,1,1,1,0,0,0] [8 ,6,8,8,8,6,6,6] [1 ,1,1,1,1,1,1,6] (2 ,64 ,2) 112 4448 /784
+> KWS [1600 ,400 ,600 ,704 ,176 ,44 ,11] [1 ,0,1,1,0,0,0] [4 ,4,4,4,4,4,4] [2 ,2,2,2,2,2,6] (2 ,92 ,2) 224 6336 /640
+> ToyADMOS/car [500 ,512 ,128 ,32 ,8,2] [1 ,1,0,0,0,0] [4 ,4,4,4,4,4] [2 ,2,2,2,2,4] (2 ,75 ,2) 224 4224 /533
+
+are streamed directly to the FPGA. In the second, raw int8 
+
+features are streamed and all preprocessing is performed on-chip using learned threshold L-LUTs, reflecting deployments where sensor data is transmitted directly to the device. All experiments are conducted on a Xilinx Zynq Z-7045 FPGA, as used in previous works. Designs are synthesized, placed and routed at 200 MHz, with inputs streamed via physical I/O pins under a fixed Bio = 112 bits/cycle constraint. Table I reports Bs, the quantized-bit budget per cascade feature stage; each stage therefore takes ⌈Bs/B io ⌉ input cycles, so Bs = 224 denotes two 112-bit cycles rather than a wider link. Reported latency reflects full end-to-end inference, including feature transfer, enabling fair comparison under identical I/O constraints. LUT utilization corresponds to post-implementation usage. Throughput is derived from cycle count and energy per sample from dynamic power over throughput. Test accuracy is evaluated on the official splits for MNIST/FashionMNIST and the benchmark splits from ULEEN for KWS/ToyADMOS [11]. 
+
+B. Bandwidth Optimization Results 
+
+In this configuration, input samples are quantized offline and streamed to the FPGA as preprocessed feature vectors over the 112-bit I/O interface. Table II summarizes implementation results alongside prior FPGA inference architectures. CascadeLUT achieves the lowest inference latency on ev-ery task, with speedups of 4.0–12.5 × over the fastest prior work. Latency is determined by feature bitwidth β and the number of feature stages, which control how quickly salient features are delivered under fixed bandwidth. For MNIST and FashionMNIST, binarized inputs allow 112 features per 
+
+Fig. 2: MNIST feature loading order by cycle. Colored features are loaded by the model; gray features are truncated. cycle, concentrating salient information early in the stream and enabling very low latency, with FashionMNIST requiring two additional loads of background pixels to maintain accuracy. On MNIST, CascadeLUT improves over NeuraLUT-Assemble by eliminating non-load pipeline stages, so latency is determined by feature-transfer cycles. Predictions are formed after only two feature loads, reducing end-to-end latency by 4 ×.KWS and ToyADMOS use 2-bit representations, halving features per cycle and requiring more loads to reach com-parable coverage, which increases latency. However, the ad-vantage over DWN remains because the cascade produces useful predictions from the first arriving subsets rather than waiting for the full input. This introduces a trade-off: lower-precision features increase features per cycle and accelerate early coverage, while higher-precision features reduce features per cycle and delay sufficient coverage for inference. Energy per sample scales with latency, as dynamic power is consumed only while the pipeline is active and thus depends on the number of active cycles per sample. CascadeLUT reduces this by minimizing load stages, achieving up to 13 .8×
+
+energy improvement over DWN across tasks. CascadeLUT achieves competitive accuracy across all tasks despite operating on partial input subsets at each stage, achieving the highest reported accuracy on FashionMNIST and KWS. This confirms that the learned feature ordering preserves sufficient information for accurate classification even when large portions of the input are delayed or truncated. The cascade topology incurs an area cost relative to the most compact baselines. Each feature stage requires increased LUT fan-in due to the concatenation of new inputs with propagated activations, and interleaving hidden layers between stages adds depth relative to standard architectures. Consequently, CascadeLUT uses 1.2–4.4 × the LUTs that the smallest DWN configurations use on each task, with the gap widest on KWS where reduced sparsity limits pruning opportunities. However, it remains substantially smaller than ULEEN, which requires 4–12 × more LUTs across the tasks. CascadeLUT occupies an intermediate area–latency design point, trading increased area for significantly reduced latency under bandwidth constraints. 
+
+C. MNIST Feature Ordering 
+
+CascadeLUT reduces latency by prioritizing the transmis-sion of salient features. Inputs are ordered so that the most class-discriminative features are transferred first, while less relevant features are delayed or omitted entirely. As a result, accurate predictions can be formed without requiring the full input vector to be transferred to the device. Figure 2 visualizes the learned pixel loading order for MNIST following Section IV-B. Central pixels, which contain TABLE II: Implementation results for CascadeLUT and prior FPGA inference architectures on a Zynq Z-7045. Preprocessed inputs are streamed via I/O pins (112 bits/cycle). Clock frequency is fixed at 200 MHz to match published Zynq Z-7045 baselines. † Data augmentation used. *Model could not be synthesized; the hardware values are approximate.                                                                                                                               
+
+> Dataset Model Test Acc. (%) Latency (ns) Throughput (Samples/s) Energy (nJ/Sample) LUTs (k)
+> MNIST FINN 98.40 2440 1.56M 5445 83.0 ULEEN †98.46 940 4.05M 823 123.1 DiffLogicNet (xs) 96.87 90 33.3M 17.2 9.6 DWN ( n=6 ; lg) 98.31 125 25.0M 19.0 4.6
+> DWN ( n=6 ; lg; +aug) †98.77 135 22.2M 21.6 4.6
+> NeuraLUT-Assemble 97.91 40 28.6M 9.4 5.1 NeuraLUT-Assemble †98.59 40 28.6M 9.5 5.1
+> CascadeLUT 98.01 10 100.0M 4.3 10.3
+> CascadeLUT †98.59 10 100.0M 4.5 10.3 FashionMNIST FINN 84.36 2440 1.56M 5445 83.0 ULEEN 87.86 940 4.05M 823 123.1 DiffLogicNet 87.44 270 9.52M 119.8 11.4 DWN ( n=6 )89.01 250 10.0M 90.9 7.6 CascadeLUT 89.14 20 50.0M 6.6 12.2 KWS FINN 70.60 7780 0.67M 5716 42.8 ULEEN 70.34 390 10.0M 642 141.1 DiffLogicNet* 64.18 265 10.0M —20.3 DWN ( n=6 )71.52 235 10.5M 42.3 4.8 CascadeLUT 71.55 30 33.3M 10.0 20.9 ToyADMOS/car FINN 86.10 3520 1.57M 547 14.1 ULEEN 86.33 340 11.1M 143 29.4 DiffLogicNet 86.66 165 16.7M 23.2 3.9
+> DWN ( n=6 ; lg) 89.03 165 16.7M 45.4 6.2
+> CascadeLUT 88.07 20 50.0M 5.6 7.3
+
+TABLE III: Implementation results for CascadeLUT and prior work on a Zynq Z-7045 with on-device preprocessing. Inputs are streamed via I/O pins (112 bits/cycle) as int8 at 200 MHz clock frequency. ∆LUTs denotes preprocessing overhead.                                          
+
+> Dataset Model Test Acc. (%) Latency (ns) Throughput (Samples/s) Energy (nJ/Sample) LUTs (k) ∆LUTs (k)
+> MNIST NeuraLUT-Assemble 97.91 260 3.92M 36.7 7.6 2.5
+> CascadeLUT 98.01 80 12.5M 20.1 10.8 0.5
+> FashionMNIST CascadeLUT 89.14 160 6.25M 36.2 13.7 1.5 KWS CascadeLUT 71.53 120 8.33M 31.9 24.1 3.2 ToyADMOS/car CascadeLUT 88.06 80 12.5M 19.3 8.1 0.8
+
+the most discriminative structure, are transmitted first, while peripheral pixels are scheduled later and many background pixels are never loaded. As a result, most discriminative information is captured within the first two cycles—just 224 of 784 pixels—sufficient for accurate prediction and yielding an end-to-end latency of 10 ns at a 200 MHz clock frequency. 
+
+D. Input Preprocessing Results 
+
+On-chip quantization uses threshold comparators, mapping each feature to a single L-LUT that jointly implements batch normalization and learned thresholding. Batch normalization reduces to an affine transform, and is followed by comparison so both operations can be folded into LUT logic. Relative to the offline configuration, latency increases by 8×
+
+for MNIST and FashionMNIST (previously binary) and 4× for KWS and ToyADMOS (previously 2-bit), since the compute pipeline remains unchanged and transfer cost scales with input bitwidth. Energy per sample increases because higher-precision inputs require more cycles, extending inference dura-tion rather than increasing switching in the quantization stage. Applying the same per-feature L-LUT quantization to NeuraLUT-Assemble yields similar latency increases. Conse-quently, CascadeLUT retains its latency advantage by elimi-nating non-load pipeline stages and reducing load stages. Area overhead, reported as ∆LUTs, corresponds to the additional LUT resources required to implement on-device input preprocessing. This overhead remains modest and scales with both the number of feature stages and the quantization bitwidth β, which increase the number and cost of per-feature quantizers. Across all tasks, overhead is reduced by feature truncation, as quantizers are only instantiated for features used by the cascade. Compared to NeuraLUT-Assemble on MNIST, CascadeLUT reduces on-device quantization resources by 5×.VI. C ONCLUSION AND FUTURE WORK 
+
+We presented CascadeLUT, a framework for bandwidth-constrained NN inference. By structuring network topology around the streaming data path, CascadeLUT achieves 4.0– 12.5 × lower latency, 3.0–5.0 × higher throughput and up to 13.8 × lower energy per sample than the fastest prior baseline per task while maintaining comparable accuracy. These gains use additional LUTs for lower latency: CascadeLUT uses 1.2– 4.4 × the LUTs of the smallest DWN baseline because feature injection increases fan-in and inter-stage logic. Future work will explore extending the cascade framework to additional architectures and deployment scenarios, including design-time feature ordering adapted to task-specific input distributions and integration with hardware-aware training techniques. REFERENCES [1] Y. Umuroglu et al. , “FINN: A Framework for Fast, Scalable Binarized Neural Network Inference,” in Proceedings of the 2017 ACM/SIGDA In-ternational Symposium on Field-Programmable Gate Arrays , ser. FPGA ’17. Monterey, CA, USA: Association for Computing Machinery, Feb. 2017, p. 65–74, doi: 10.1145/3020078.3021744. [2] V. Sze, Y.-H. Chen, T.-J. Yang, and J. S. Emer, “Efficient processing of deep neural networks: A tutorial and survey,” Proceedings of the IEEE ,vol. 105, no. 12, pp. 2295–2329, 2017. [3] J. Duarte et al. , “Fast inference of deep neural networks in FPGAs for particle physics,” JINST , vol. 13, no. 07, p. P07027, 2018. [4] J. Ngadiuba et al. , “Compressing deep neural networks on FPGAs to binary and ternary precision with HLS4ML,” Mach. Learn. Sci. Tech. ,vol. 2, p. 015001, 2021. [5] Y. Umuroglu, Y. Akhauri, N. J. Fraser, and M. Blott, “LogicNets: Co-Designed Neural Networks and Circuits for Extreme-Throughput Appli-cations,” in 2020 30th International Conference on Field-Programmable Logic and Applications (FPL) . Gothenburg, Sweden: IEEE Computer Society, Sep. 2020, pp. 291–297, doi: 10.1109/FPL50879.2020.00055. [6] M. Andronic and G. A. Constantinides, “PolyLUT: Learning Piecewise Polynomials for Ultra-Low Latency FPGA LUT-based Inference,” in 
+
+2023 International Conference on Field Programmable Technology (ICFPT) . Yokohama, Japan: IEEE, Dec. 2023, pp. 60–68, doi: 10.1109/ICFPT59805.2023.00012. [7] M. Andronic, J. Li, and G. A. Constantinides, “PolyLUT: Ultra-low latency polynomial inference with hardware-aware structured pruning,” 
+
+IEEE Transactions on Computers , vol. 74, no. 9, pp. 3181–3194, 2025. [8] M. Andronic and G. A. Constantinides, “NeuraLUT: Hiding Neural Network Density in Boolean Synthesizable Functions,” in 2024 34th In-ternational Conference on Field-Programmable Logic and Applications (FPL) . IEEE, 2024, pp. 140–148, doi: 10.1109/FPL64840.2024.00028. [9] ——, “NeuraLUT-Assemble: Hardware-Aware Assembling of Sub-Neural Networks for Efficient LUT Inference,” in 2025 IEEE 33rd Annual International Symposium on Field-Programmable Custom Computing Machines (FCCM) . IEEE, 2025, pp. 208–216, doi: 10.1109/FCCM62733.2025.00077. [10] A. T. L. Bacellar, Z. Susskind, M. B. Jr., E. John, L. K. John, P. M. V. Lima, and F. M. G. Franc ¸a, “Differentiable weightless neural networks,” in Proceedings of the 41st International Conference on Machine Learn-ing , ser. Proceedings of Machine Learning Research, vol. 235. PMLR, 2024, pp. 2277–2295. [11] Z. Susskind, A. Arora, I. D. S. Miranda, A. T. L. Bacellar, L. A. Q. Villon, R. F. Katopodis, L. S. de Ara´ ujo, D. L. C. Dutra, P. M. V. Lima, F. M. G. Franc ¸a, M. Breternitz Jr., and L. K. John, “ULEEN: A novel architecture for ultra-low-energy edge neural networks,” ACM Trans. Archit. Code Optim. , vol. 20, no. 4, Dec. 2023. [Online]. Available: https://doi.org/10.1145/3629522 [12] F. Petersen, C. Borgelt, H. Kuehne, and O. Deussen, “Deep differentiable logic gate networks,” in Advances in Neural Information Processing Systems , vol. 35, 2022, pp. 2006–2018. [13] O. Cassidy, M. Andronic, S. Coward, and G. A. Constantinides, “ReducedLUT: Table Decomposition with “Don’t Care” Conditions,” in Proceedings of the 2025 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , ser. FPGA ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 36–42. [Online]. Available: https://doi.org/10.1145/3706628.3708823 [14] A. Khataei and K. Bazargan, “CompressedLUT: An open source tool for lossless compression of lookup tables for function evaluation and beyond,” in Proceedings of the 2024 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , ser. FPGA ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 2–11. [Online]. Available: https://doi.org/10.1145/3626202.3637575 [15] Y. Miyasaka, A. Mishchenko, J. Wawrzynek, and N. J. Fraser, “Syn-thesis of LUT networks for random-looking dense functions with don’t cares—towards efficient FPGA implementation of DNN,” in 2024 IEEE 32nd Annual International Symposium on Field-Programmable Custom Computing Machines , ser. FCCM, May 2024, pp. 126–132. [16] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,” in 
+
+International Conference on Learning Representations , 2019. [Online]. Available: https://openreview.net/forum?id=Bkg6RiCqY7 [17] ——, “SGDR: Stochastic Gradient Descent with Warm Restarts,” in 
+
+5th International Conference on Learning Representations , Toulon, France, Apr. 2017. [Online]. Available: https://openreview.net/forum? id=Skq89Scxx [18] Y. LeCun, C. Cortes, and C. J. Burges, “The MNIST database of hand-written digits,” [Online]. Available: http://yann.lecun.com/exdb/mnist/, 1998, accessed: 2026-01-20. [19] H. Xiao, K. Rasul, and R. Vollgraf, “Fashion-MNIST: A novel image dataset for benchmarking machine learning algorithms,” 2017. [20] P. Warden, “Speech commands: A dataset for limited-vocabulary speech recognition,” 2018. [21] Y. Koizumi, S. Saito, H. Uematsu, N. Harada, and K. Imoto, “ToyAD-MOS: A dataset of miniature-machine operating sounds for anomalous sound detection,” in 2019 IEEE Workshop on Applications of Signal Processing to Audio and Acoustics , ser. WASPAA, 2019, pp. 313–317.

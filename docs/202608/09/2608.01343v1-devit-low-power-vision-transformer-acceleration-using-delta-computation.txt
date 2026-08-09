@@ -1,0 +1,513 @@
+Title: DeVIT: Low-Power Vision Transformer Acceleration Using Delta Computation
+
+URL Source: https://arxiv.org/pdf/2608.01343v1
+
+Published Time: Tue, 04 Aug 2026 01:27:21 GMT
+
+Number of Pages: 8
+
+Markdown Content:
+# DeVIT: Low-Power Vision Transformer Acceleration Using Delta Computation 
+
+Reyhaneh Hosseinzadeh, Parham Zilouchian Moghaddam, Mehdi Modarressi 
+
+School of Electrical and Computer Engineering, University College of Engineering, University of Tehran, Tehran, Iran 
+
+Email: {hossseinzadeh.ray, p.zilouchian, modarressi }@ut.ac.ir 
+
+Abstract —The emergence of transformer-based deep learning models has brought unprecedented performance across various domains, particularly in natural language processing and com-puter vision. However, deploying these models, especially on resource-constrained devices, poses significant challenges due to their high computational complexity and large memory size and bandwidth requirements. This complexity has led researchers to use low-bit model weights to reduce memory usage and improve efficiency. In addition to reducing processing and memory de-mands, quantization introduces another useful property: value locality , where the extremely large number of parameters are restricted to a limited range of values. To fully take advantage of this locality, this paper presents DeVIT, an acceleration method for vision transformers that leverages differential computation to enable multiplier-less matrix multiplication. By storing weight matrices in a differential format and calculating each inner partial product of matrix multiplication by reusing results from previous computations, the proposed approach simplifies matrix multiplication, an essential operation in transformer layers, into basic shift-and-add processes. DeVIT reduces the computational load of Vision Transformers beyond what is achievable with quantization alone and enhances the practicality of deploying transformer models for image processing tasks across a wider range of devices. In the evaluated configu-rations, DeVIT reduces normalized computation load to 0.53 of an unoptimized baseline. Its single-GEMM energy is 159 .57 nJ, approximately 5.5% below the lowest-energy ShiftAddLLM con-figuration included in our comparison. 
+
+Index Terms —Vision Transformer, hardware accelerator, com-putation reuse, differential computation, shift-and-add, low-power computing, quantization, multiplier-less inference. 
+
+I. I NTRODUCTION 
+
+Vision Transformers (ViTs) have recently shown superior performance in image processing by leveraging self-attention to model long-range dependencies effectively. However, these advancements come with substantial computational and mem-ory requirements. Unlike Convolutional Neural Networks (CNNs), ViTs exhibit quadratic complexity in sequence length for self-attention, resulting in a significant increase in com-putational load, primarily due to multiply-accumulate (MAC) operations [1]–[5]. For example, the ViT-B/16 model contains 86 million pa-rameters and requires 17.6 billion MAC operations for pro-cessing each 224 ×224 image, in contrast to (the already high) 4.1 billion MAC operations for ResNet-50. Larger models, such as ViT-L/16—with 307 million parameters and requiring 61 billion MACs, push the boundaries of computational load even further. This huge computation load renders real-time and energy-efficient deployment of ViTs almost impractical without software and hardware optimization/customization methods. Quantization has long been the primary mechanism to reduce the complexity of neural networks [6]. Recent research shows that ViTs are highly amenable to quantization and can operate effectively with low-bit parameters [7]–[9]. In low-bit quantization (such as 8-bit), each weight is mapped to one of 256 discrete values. Given the scale of ViT weight matrices, it is highly likely that nearly all of these quantized values appear within the matrix. This characteristic, locality of values , is a secondary benefit of quantization and presents opportunities for simplifying multiplication. For instance, consider a row from the input embedding matrix: each element in this row is multiplied by all elements in the respective row of the three projection weight matrices (for queries, keys, and values) to produce partial sums for the corresponding output cells. Since the row of weights is likely to encompass most of the unique values within the quantization range, the same input element will eventually be multiplied by all possible quantized weight values. To leverage this distinctive property to reduce the com-putational complexity of ViTs, this paper introduces DeVIT, a De lta-coded Vi sion Transformer. DeVIT sorts the weights within each row of the weight matrix in ascending order and stores them in a differential format (delta format). This format represents the differences between consecutive weights in the sorted row, replacing traditional multiplication with differential computation and enabling the systematic reuse of partial results for enhanced hardware efficiency. Computations begin by multiplying the input element by the smallest weight in the row, which is now located at the head of the sorted row. For the subsequent weights, results are generated by reusing the previous product and applying only the difference between the current and prior weights. Thanks to the value locality introduced by low-bit quantization, these differences are typically minor (mostly ranging between 0 and 2, as will be demonstrated later) and can be efficiently approximated using the nearest power of two. This allows for the substitution of multiplication of the difference and the input element with a simple shift operation. Further, low-bit quantization ends up having many identical values in each row, represented by zero delta: This opportunity can be exploited by skipping the computation of zero delta values and reusing the result for all subsequent weights as long as the delta remains zero. This differential approach markedly reduces the number of arXiv:2608.01343v1 [cs.CV] 2 Aug 2026 expensive multiplications, significantly improving the hard-ware efficiency of ViTs. In this paper, we first describe how the weight matrices and associated computations are reorganized to enable delta computations. We then present the DeVIT architecture, which efficiently implements the proposed delta-based method. In particular, we show how the architecture reorders the weight matrices and retrieves the correct weight positions after the weights have been reordered for differential computation. The concept of computation reuse by exploiting value locality in weights [10]–[15] and input data [16]–[19] has been explored in prior work for earlier neural architectures, such as feedforward, convolutional, and recurrent neural net-works. In our previous work ∆NN [10], we showed that applying differential computing can considerably reduce the power usage of convolutional neural networks. Transformers require a different organization: their weights form large dense projection and feed-forward matrices rather than small spatial filters; their activations vary by token rather than being reused as fixed spatial neighborhoods; and their attention path in-terleaves dense projections with softmax-weighted reductions. DeVIT therefore introduces a transformer-specific dataflow, partitioning strategy, and index-management scheme. The experimental results show a normalized computation load of 0.53 relative to the unoptimized baseline and ameasured single-GEMM energy of 159 .57 nJ. Detailed accu-racy, computation-load, and energy results are presented in Section VII. II. P RELIMINARY AND MOTIVATION 
+
+Vision Transformers in vision. ViTs adapt the transformer approach from NLP to images by treating an image as a sequence of patches. This tokenization allows for long-range interactions to become fundamental, resulting in models that are architecturally simple, scalable, and effective in recogni-tion tasks. 
+
+Why ViTs are an important accelerator target. Un-like a CNN, a ViT can model interactions between distant image regions in every encoder layer. This flexibility has enabled a common family of transformer backbones to support classification, detection, and dense prediction [1]–[3], [20]. The benefit comes with substantial dense-projection and feed-forward computation, making those operations a practical target for hardware acceleration. At a high level, a standard ViT is primarily encoder-centric. The encoder is composed of stacked layers that implement Multi-Head Self-Attention (MHSA) and an FFN, which pro-gressively refine the representations of input tokens. Although traditional ViTs do not include a decoder, many downstream tasks, such as segmentation and image generation, include decoder heads that leverage encoder features to generate structured output. In this work, we focus on the encoder, as it plays a dominant role in both computational and memory requirements. 
+
+Layer anatomy. Each encoder layer comprises three parts: (i) Linear Projections that form queries, keys, and values FFN QKV Proj. Out Proj. Attention Matmuls 224×224 384×384 0.0 1.5 3.0 4.5 6.0     
+
+> MACs per layer (×10⁹)
+> 1.45 B 4.60 B
+> (a) Per-layer
+> 224×224 384×384 015 30 45 60
+> MACs per model (×10⁹)
+> 17.45 B 55.14 B
+> (b) Whole-model
+> Input resolution
+> Fig. 1. MAC breakdown of ViT-B/16 at two input resolutions: (a) per encoder layer and (b) whole model. Dense linear layers (FFN and projections) dom-inate; attention matmuls are comparatively minor. Softmax and LayerNorm are excluded ( <1% of per-layer FLOPs).
+
+(QKV) and an output projection ; (ii) MHSA , where dot prod-ucts between Q and K are softmax-normalized and applied to V; and (iii) an FFN implemented as an expansion MLP followed by a contraction back to the hidden size. Three hyperparameters shape a layer: hidden size, FFN size, and number of heads. ViTs often surpass CNNs in accuracy, but with larger parameter counts and higher per-layer compute. 
+
+Where ViTs spend compute, and why it matters. Fig. 1 separates the encoder’s work into QKV projections, the output projection, attention matrix multiplies, and the FFN. It shows that GEMM-based dense linear layers, which are QKV projec-tions and the FFN, dominate the computation. This observation is consistent with recent ViT acceleration work targeting short-token regimes, where these parts are reported to be the dominant bottleneck [21]. Even as sequence length increases and attention cost grows, GEMMs remain the primary bot-tleneck. Our delta-based method reduces GEMM complexity within these layers, enabling effective acceleration for GEMM-dominated ViTs while preserving the original model structure. 
+
+Scope and assumptions. Unless otherwise specified, we analyze encoder-only Vision Transformers (ViTs) defined by a hidden size of d, H attention heads, and a feed-forward network (FFN) expansion given by dff = 4 d. The sequence length N is calculated based on non-overlapping 16 × 16 
+
+patches plus a class token; for example, N = 197 for 224 2
+
+input images and N = 577 for 384 2 input images. We adopt the convention Y = XW , where X ∈ RN ×d is the input matrix, W ∈ Rd×dout is the weight matrix, and each output element Y [i, j ] = P 
+
+> k
+
+X[i, k ] W [k, j ].III. R ELATED WORK 
+
+Algorithmic approaches to efficient ViTs seek a balance between computational cost and accuracy. These approaches can be divided into four main categories: 1) Memory-aware methods : These techniques focus on minimizing data movement within the attention and feed-forward layers, for example via tensor decomposi-tion or low-rank factorization of the projection matrices. 2) Computation-aware methods : This category aims to lower the arithmetic cost by applying techniques such as quantization or promoting sparsity. Notable examples are Q-ViT [9], PTQ4ViT [7], and I-ViT [8], which together cover quantization-aware training, post-training quantization, and integer-only inference of ViTs. 3) Architecture-aware methods : These methods restruc-ture the model to enhance efficiency. This can involve the introduction of hierarchical attention or the merging of patches, as demonstrated by the Swin Transformer [3] and RePaViT [22]. 4) Token-level methods : Orthogonal to GEMM-side op-timizations, dynamic token pruning and merging—such as DynamicViT [23] and Token Merging (ToMe) [24]— reduce sequence length conditionally on input content, complementing rather than competing with weight-side techniques like ours. On the other hand, system-aware methods extend beyond purely algorithmic optimizations. They combine algorithmic modifications—related to data, parameters, or dataflow—with corresponding hardware support. This approach facilitates the efficient execution of the modified model. System-aware accelerators for ViTs can be categorized into three broad groups: 1) The first group focuses on minimizing computational workloads by sparsifying the attention matrix, often through precomputation or predictive algorithms that identify key attention patterns. A representative example is ViTCoD [25], which utilizes a learned mask to dif-ferentiate between dense and sparse workloads across specialized hardware. HeatViT [26] similarly leverages adaptive token pruning combined with 8-bit quantization on embedded FPGAs. However, it is important to note that, in ViTs, the primary computational cost does not arise solely from the attention mechanism. 2) The second category addresses the overhead associ-ated with linear transformations. Methods in this group include weight sparsification, such as structured M:N sparsity, which prunes weight matrices during training in an architecture-aware manner [27], [28]. Addition-ally, some approaches utilize lookup tables (LUTs) to minimize redundant computations. Examples of this include ShiftAddViT for Vision Transformers, ShiftAd-dLLM for large language models, LUT Tensor Core, and the earlier ShiftAddNet design that originated this family [29]–[32]. While these methods utilize low-bit weights through partial-product reuse, they introduce additional overhead from LUT access, require extra storage for repetitive activations, and still depend on dynamic activations, necessitating online computation. 3) The third category seeks to simultaneously reduce com-putations in both linear projections and attention mech-anisms. For instance, AccelTran [33] leverages weight sparsity identified during pretraining or fine-tuning and applies dynamic activation sparsity through a learned threshold on the attention matrix. However, its reduc-tions primarily target attention, which is not the primary cost in ViTs. Similarly, FACT [34] optimizes both atten-tion and the generation of Query, Key, and Value (QKV) components and reduces the costs associated with Feed-Forward Networks (FFN) through token quantization. SwiftTron [35] pushes this further with an integer-only Transformer ASIC handling non-linear operations directly in fixed-point arithmetic. Nonetheless, these methods operate on activations and, as a result, incur considerable online precomputation overhead. Previous works on CNNs, such as ∆NN, C-CORN, and SkippyNN [10], [11], [15], have aimed to improve efficiency through computational reuse, sorting weights and applying a differential MAC (DMAC) unit to share products across a row. Power-of-two and shift-based weight representations [36] provide a complementary line of work that turns multiplica-tions into shifts at the cost of a small quantization error. Our approach for transformers similarly capitalizes on computation reuse to eliminate redundant operations across the network but adapts the dataflow and storage scheme to the dense-GEMM structure characteristic of ViTs. IV. D IFFERENTIAL COMPUTING FOR VITS
+
+Differential computation opportunity. Our architecture enhances the efficiency of matrix multiplication in scenarios where one matrix—the weight matrix—is fixed and can be processed offline during the design phase. With low-bit quan-tization, all potential quantized values will likely manifest across the matrix and even within individual rows, so there are many weights with repetitive and close values. However, during matrix multiplication, the output cells are computed sequentially, and each weight is multiplied by a different input element. Because of this, reusing the result of a multiplication with weight value v for another weight with value v+1 is generally not feasible. Reuse becomes possible only when two weights are mul-tiplied by the same input value, allowing the multiplication result to be shared and reused. Under the convention Y = XW 
+
+(introduced in Section II), the k-th element of an input row 
+
+X[i, k ] is multiplied by every entry of the k-th row of W —that is, W [k, :] —and the resulting partial products are scattered across the i-th row of the output, one per output column j.In other words, the input element X[i, k ] contributes to every output element Y [i, :] through the weights in row k of W . This common input operand is exactly what makes computation reuse possible: techniques such as delta coding and result reuse can be applied across the sequence of weights associated with each input element, reducing redundant computation. By adopting an input-stationary execution order, where in-put elements are fetched sequentially and reused across all required computations, many multiplications share the same input operand. This creates a scenario where one operand remains constant across multiple multiplications and will eventually be multiplied by every quantized value, albeit in varying sequences. Consequently, the weights in each row of 
+
+W are arranged in ascending order to promote reusing the multiplication result of each weight for subsequent weights. 1 2 3
+
+W_K 
+
+W_Q 
+
+W_V 
+
+1
+
+Input 
+
+N
+
+M
+
+2
+
+3
+
+> sorted and differentiated
+> 1
+> 2
+> 3
+
+M
+
+> M
+
+M
+
+M
+
+M
+
+M
+
+M
+
+K VQ
+
+Q K V
+
+KQ V
+
+> softmax
+
+Q K^T 
+
+N
+
+N
+
+H
+
+> softmax
+
+Q K^T 
+
+N
+
+N
+
+H
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+N
+
+M/H  H
+
+N
+
+M/H 
+
+H
+
+M/H 
+
+N H
+
+M/H 
+
+N
+
+K^T 
+
+K
+
+Q
+
+1 2 3
+
+M
+
+N
+
+1 2 3
+
+M
+
+N
+
+W_o 
+
+M
+
+N
+
+M
+
+N
+
+M
+
+V
+
+> transpose
+> Atten
+
+1 2 3
+
+W_K 
+
+W_Q 
+
+W_V 
+
+1
+
+Input 
+
+N
+
+M
+
+2
+
+3
+
+> sorted and differentiated
+> 1
+> 2
+> 3
+
+M
+
+> M
+
+M
+
+M
+
+M
+
+M
+
+M
+
+K VQ
+
+Q K V
+
+KQ V
+
+> softmax
+
+Q K^T 
+
+N
+
+N
+
+H
+
+> softmax
+
+Q K^T 
+
+N
+
+N
+
+H
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+M/H 
+
+N
+
+H
+
+N
+
+M/H  H
+
+N
+
+M/H 
+
+H
+
+M/H 
+
+N H
+
+M/H 
+
+N
+
+K^T 
+
+K
+
+Q
+
+1 2 3
+
+M
+
+N
+
+1 2 3
+
+M
+
+N
+
+W_o 
+
+M
+
+N
+
+M
+
+N
+
+M
+
+V 
+
+> transpose
+> Atten Fig. 2. The general architecture of multi-head self-attention and input-stationary data flow of linear generation with delta format.
+
+The dataflow of DeVIT. The overall data flow and com-putation reuse strategy are illustrated in Fig. 2.Given a sorted row of W , we compute the product of the input a with the next weight W2 as follows: 
+
+a × W2 = a × W1 + a × ∆W, (1) where W1 is the preceding weight in the sorted order and 
+
+∆W = W2 − W1.Given the large size of each matrix row, many quantized values repeat or lie close together. For example, an 8-bit, hidden-size-768 row contains 768 elements drawn from only 256 
+
+possible values. Sorting such a row therefore produces many zero or small deltas. The measured distributions in Figs. 3 and 4 confirm that zero and one dominate in the unpartitioned case. Zero deltas reuse the preceding product, while power-of-two deltas replace multiplication with a shift and an addition. Rather than storing absolute weight values, DeVIT employs delta values. In this system, during the delta operation—which replaces multiplication—the weight is interpreted as a delta value, the input is shifted accordingly, and the result is added to the output of the preceding multiplication. Storing delta values changes the order of weights within each row. To restore the original output position, each delta value is associated with its corresponding index j, indicating the original column of the weight in the row. This index determines the output cell (i, j ) into which the partial sum is accumulated. The total storage per weight is therefore the sum of the delta-code width and the within-partition index width; for a 64-element partition, this amounts to 10 bits per weight. Section VI describes the encoding in detail. For a quantitative evaluation, we present the Delta Distribution 
+
+of the weights Wq , Wk, Wv , and Wo for the ViT-B/16 model in Section VII. These weights have been quantized to 8 bits, sorted, and differentiated to facilitate a thorough analysis of their distribution. The ViT-B/16 model has a hidden size of 768 , an MLP size of 
+
+3072 , and 12 attention heads. The “16” denotes the side length of each input patch. The individual projection matrices Wq ,
+
+Wk, Wv , and Wo have dimensions M ×M ; an implementation that concatenates the first three represents Wqkv as M × 3M .Each row is sorted before the differences between consecutive weights are encoded. The distributions are averaged first across rows and then across all 12 encoder layers. Partitioning trades some of this concentration for a smaller output buffer. As the partition size decreases from the un-partitioned case to 64 and then 16 elements, the distributions spread toward larger deltas, but zero and small deltas remain common (Figs. 3 and 4). V. D EVIT A RCHITECTURE 
+
+Figure 5 shows the unpartitioned DeVIT processing ele-ment. A weight buffer stores the encoded differences ∆W
+
+and their destination indices. Each nonzero magnitude is approximated by a supported power of two, allowing the processing element to use shifts and additions while an output buffer accumulates the partial sums. For an activation aik ,the processing element traverses row k of ∆W . The current product is retained in the reg register and updated by each subsequent shift–add operation. The associated destination index routes each partial product to the correct output element. For an N ×M input, an M ×M weight matrix, and K weight entries processed in parallel, the cycles required per input row are  MK
+
+
+
+× M. 
+
+The unpartitioned DeVIT approach involves a high number of on-the-fly partial products, leading to increased power consumption. To overcome the challenges related to buffer size and power usage in neural network computations, astrategic weight matrix management approach is utilized. The buffer used for storing partial products can be significant, contributing to higher power consumption, and its size is directly linked to the number of columns in the weight matrix. To address these issues, the weight matrices are partitioned into appropriate sizes before applying the delta method and input-stationary approach to each resulting block of weights. This partitioning strategy offers several advantages: it reduces the required buffer size as each partitioned block is smaller 0 1 2 3 4 5 6 7 8 >8                                                           
+
+> Δ Unpartitioned
+> 020 40 60 80 100
+> (a)
+> 012345678>8
+> Δ 64 Partitioned (b)
+> 012345678>8
+> Δ 16 Partitioned (c) Frequency (%)
+> Layer Type
+> Wq Wk Wv Wo Fig. 3. Delta distribution of the QKV and output projection weights ( Wq,Wk,Wv,Wo) of ViT-B/16, averaged over all 12 encoder layers: (a) unpartitioned, (b) 64-element partitions, and (c) 16-element partitions. 012345678>8
+> Δ Unpartitioned
+> 020 40 60 80 100
+> (a)
+> 012345678>8
+> Δ 64 Partitioned (b)
+> 012345678>8
+> Δ 16 Partitioned (c) Frequency(%)
+> Layer Type
+> Wfc 2Wfc 1
+> Fig. 4. Delta distribution of the FFN weights ( Wfc1 ,Wfc2 ) of ViT-B/16, averaged over all 12 encoder layers: (a) unpartitioned, (b) 64-element partitions, and (c) 16-element partitions.
+
+than the original matrix; potentially decreases power consump-tion due to the reduced buffer size; allows for more efficient application of the delta method and input-stationary approach to these smaller blocks; and enables more flexible processing, potentially facilitating parallel computation of different blocks. By implementing this partitioning technique along with delta encoding and input-stationary dataflow, the overall ef-ficiency of neural network computations can be further im-proved, achieving a balance between performance and resource utilization. We analyzed the ViT-B/16 weights in blocks and measured the delta distribution across all 12 layers. Frequencies were averaged across rows within each block, across blocks, and finally across layers. Figure 3 shows the expected trend: 64-element partitions retain a strong concentration at small deltas, whereas 16-element partitions spread more probability toward larger magnitudes and therefore offer less computation reuse. In the diagram presented in Fig. 6, we initially partition the weights, followed by sorting and encoding them in the delta format. We apply the Delta method and input stationary to generate partial products, which are then stored in an output buffer. Subsequently, the elements of each column are restored to their correct positions and accumulated. Through the partitioning process, we achieve both input-stationary and output-stationary mechanisms, as the first input must be read for the subsequent partitions. For a given input matrix, weight matrix, batch size of K,and partition size S, the number of cycles can be calculated using the following formula: 
+
+ MK
+
+
+
+× S. 
+
+VI. I NDEX ENCODING 
+
+Each delta uses a 4-bit code comprising one sign bit and a 3-bit magnitude field. The magnitude field reserves one code for zero and represents the supported power-of-two magnitudes i-th 
+
+> i-th
+> reg
+> Input
+> i_th
+> W (i) -exp
+> Input
+> output Fig. 5. The unpartitioned DeVIT core: delta-encoded weights and their index addresses drive a shift–add processing element that accumulates partial sums into the output buffer.
+
+{1, 2, 4, 8}; unused code points are reserved. Deltas beyond the supported range (the “ > 8” category in Figs. 3 and 4) are saturated at the largest representable magnitude. This approximation introduces the accuracy trade-off measured in Table II. For a hidden dimension of 768 , an unpartitioned destination index requires ⌈log 2 768 ⌉ = 10 bits, giving 14 bits per encoded weight ( 4 delta bits plus 10 index bits). Partitioning allows the block identifier to be managed by the controller rather than repeated with every encoded weight. The per-weight index then identifies only the position within a block: 6 bits for a 64-element block, 5 for a 32-element block, and 4 for a 16-element block. Including the 4-bit delta code gives total widths of 10 , 9, and 8 bits per weight, respectively. Relative to the 8-bit quantized baseline, the 64-element scheme costs 2 extra bits per weight (a 25% storage overhead) in exchange for eliminating multipliers in the linear layers. The 16-element scheme has the same per-weight width as the 8-bit baseline. When one encoded weight is supplied per cycle, these widths correspond to 10 , 9, and 8 bits/cycle of encoded-weight bandwidth for 64-, 32-, and 16-element partitions. Activation, output, and block-control traffic are accounted for separately and do not alter the per-weight encoding widths above. As a direction for future work, an input redundancy mech-anism could be incorporated to further reduce computation i-th  
+
+> i-th
+> reg
+> Input
+> i_th
+> W (i,j) -exp
+> Input
+> output
+> Fig. 6. Partitioned DeVIT architecture for producing and routing partial products from delta-encoded weights.
+
+by skipping operations for repetitive video frames or regions within a frame. However, detecting similar frames or pix-els requires input comparisons, which introduce additional overhead. To mitigate this cost, future work could explore integrating the architecture with front-end image-enhancement and super-resolution modules [37], [38] to extract redundancy information in advance, enabling input reuse and allowing redundant computations to be skipped more efficiently. VII. E XPERIMENTAL RESULTS 
+
+A. Experimental Setup 
+
+We evaluate DeVIT on the four architectures summarized in Table I: ViT-B/16, DeiT, and Swin for image classification, and DETR-ResNet-50 for object detection. We use pretrained implementations from the Hugging Face and PyTorch model libraries. Initially, we quantized the weights of these pretrained models to 8 bits. Next, we implemented DeVIT by sorting the weights, calculating the differences between consecutive weights, and approximating these differences as powers of two. Following offline modifications to the weights, we un-dertook RTL design for DeVIT with an emphasis on linear transformations and synthesized the design using the Synopsys Design Compiler within a 15 nm technology process. Partitioning reduces the partial-product buffer capacity rel-ative to the unpartitioned design. We report the resulting TABLE I PROPERTIES OF THE EVALUATED TRANSFORMER BENCHMARKS .                         
+
+> Model Embed. Heads Tokens FFN Params. Layers
+> ViT [1] 768 12 577 3072 86 12 DeiT [20] 768 12 578 3072 86 12 Swin [3] 1024 32 49 3072 88 24 DETR [2] 256 8850 2048 41 6
+
+TABLE II ACCURACY OF PARTITIONED DEVIT CONFIGURATIONS .                                         
+
+> Model Metric FP32 ∆-64 ∆-32 INT8 ViT-B-16 [1] Top-1 83.71 83.48 82.82 81.60 Top-5 96.81 96.76 96.74 96.33
+> DeiT [20] Top-1 80.35 79.94 79.79 80.04 Top-5 93.91 93.70 93.37 93.93
+> Swin [3] Top-1 82.92 80.04 79.81 83.15 Top-5 95.82 95.49 95.28 95.95
+> DETR-Res50 [2] mAP 43.16 41.02 40.63 42.87
+
+accuracy, normalized computation load, and single-GEMM energy separately below. 
+
+B. Results 
+
+Figures 3 and 4 show that smaller partitions reduce the concentration of zero and one deltas, trading computation reuse for smaller buffers and indices. Table II reports accuracy for the 64- and 32-element configurations; the 16-element distributions are included to show the continuation of the partition-size trend. Relative to FP32, most reported score changes are below one percentage point. The largest changes are 3.11 percentage points for Swin Top-1 and 2.53 mAP points for DETR in the 32-element configuration, so we do not characterize every case as a sub-2% change. The same partitioned, input-stationary method applies to both attention projections and the FFN. Figure 4 reports the corresponding distributions for the two FFN matrices. 
+
+C. Comparison with FACT 
+
+To assess computational efficiency, we compare our method with the approach in FACT [34], which employs three skipping strategies: bypassing computations in the attention matrix, the first fully connected layer (FC1), and the second fully connected layer (FC2). Figure 7 compares the corresponding normalized computa-tion loads. DeVIT requires 0.53 of the baseline computation, below FACT’s FC1-skip ( 0.61 ) and attention-skip ( 0.70 ) op-erating points but above its most aggressive FC2-skip point (0.47 ). Relative to the attention-skip point, the reduction is approximately 24% . DeVIT obtains this reduction without a per-input prediction or out-of-order scheduling step. 
+
+D. Energy Results 
+
+Figure 8 reports the evaluated single-GEMM energy. De-VIT totals 159 .57 nJ: 57 .33 nJ for computation, 70 .78 nJ for buffer writes, and 31 .46 nJ for buffer reads. The lowest-energy ShiftAddLLM configuration totals 168 .84 nJ, making FACT FC2 DeVIT FACT FC1 FACT attn. Base 
+
+Method 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+> Computation load (normalized)  Baseline = 1.00
+
+Fig. 7. Normalized ViT computation load for DeVIT and the three FACT skipping strategies, relative to an unoptimized baseline ( 1.00 ). Computation Write buffer Read buffer 
+
+Method 
+
+0100 200 300 400 500 600 700 800 
+
+> Energy (nJ)
+
+160 169 251 333 414 742                        
+
+> DeVIT S-Add* 1-bit S-Add 2-bit S-Add 3-bit S-Add 4-bit S-Add 8-bit Computation 57.33 77.41 103.22 129.02 154.83 258.05 Write buffer 70.78 44.24 53.08 61.93 70.78 106.17 Read buffer 31.46 47.19 94.37 141.56 188.74 377.49
+
+Fig. 8. Single-GEMM energy breakdown for DeVIT and ShiftAddLLM (S-Add) configurations [30]. Totals are printed above the bars; component values are listed in the embedded table. 
+
+DeVIT approximately 5.5% lower. These are per-configuration measurements, not a model-level speedup. VIII. C ONCLUSION 
+
+DeVIT replaces weight multiplications in dense transformer layers with reuse and shift–add operations over delta-encoded weights. Partition size controls the trade-off among reuse, in-dex width, buffer capacity, and accuracy. DeVIT reaches 0.53 
+
+normalized computation load and 159 .57 nJ single-GEMM energy, 5.5% below the lowest-energy ShiftAddLLM config-uration shown. The worst measured accuracy changes— 3.11 
+
+percentage points for Swin Top-1 and 2.53 mAP points for DETR—define the current approximation scheme’s practical limit. REFERENCES [1] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly et al. ,“An image is worth 16x16 words: Transformers for image recognition at scale,” arXiv preprint arXiv:2010.11929 , 2020. [2] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and S. Zagoruyko, “End-to-end object detection with transformers,” in 
+
+European Conference on Computer Vision (ECCV) . Springer, 2020, pp. 213–229. [3] Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin, and B. Guo, “Swin transformer: Hierarchical vision transformer using shifted windows,” in 2021 IEEE/CVF International Conference on Computer Vision (ICCV) , 2021, pp. 9992–10 002. [4] C. Xue, B. Zhong, Q. Liang, Y. Zheng, N. Li, Y. Xue, and S. Song, “Similarity-guided layer-adaptive vision transformer for UAV tracking,” in Proceedings of the Computer Vision and Pattern Recognition Confer-ence , 2025, pp. 6730–6740. [5] Y. Pan, Y. Li, T. Yao, C.-W. Ngo, and T. Mei, “Stream-ViT: learning streamlined convolutions in vision transformer,” IEEE Transactions on Multimedia , vol. 27, pp. 3755–3765, 2025. [6] M. Daneshtalab and M. Modarressi, Eds., Hardware Architectures for Deep Learning . Institution of Engineering and Technology, 2020. [7] Z. Yuan, C. Xue, Y. Chen, Q. Wu, and G. Sun, “PTQ4ViT: Post-training quantization for vision transformers with twin uniform quantization,” in 
+
+European Conference on Computer Vision (ECCV) . Springer, 2022, pp. 191–207. [8] Z. Li and Q. Gu, “I-ViT: Integer-only quantization for efficient vision transformer inference,” in Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2023, pp. 17 065–17 075. [9] Z. Li, T. Yang, P. Wang, and J. Cheng, “Q-ViT: Fully differentiable quantization for vision transformer,” arXiv preprint arXiv:2201.07703 ,2022. [10] H. Mahdiani, A. Khadem, A. Ghanbari, M. Modarressi, F. Fattahi-Bayat, and M. Daneshtalab, “ ∆NN: Power-efficient neural network acceleration using differential weights,” IEEE Micro , vol. 40, no. 1, pp. 67–74, 2019. [11] A. Ghanbari and M. Modarressi, “Energy-efficient acceleration of con-volutional neural networks using computation reuse,” Journal of Systems Architecture , vol. 126, p. 102490, 2022. [12] A. Yasoubi, R. Hojabr, and M. Modarressi, “Power-efficient accelerator design for neural networks using computation reuse,” IEEE Computer Architecture Letters , vol. 16, no. 1, pp. 72–75, 2016. [13] K. Hegde, J. Yu, R. Agrawal, M. Yan, M. Pellauer, and C. Fletcher, “UCNN: Exploiting computational reuse in deep neural networks via weight repetition,” in 2018 ACM/IEEE 45th Annual International Sym-posium on Computer Architecture (ISCA) . IEEE, 2018, pp. 674–687. [14] M. Khodarahmi, M. Modarressi, A. Elahi, and F. Pakdaman, “ReMove: Leveraging motion estimation for computation reuse in CNN-based video processing,” in 2024 5th CPSSI International Symposium on Cyber-Physical Systems (Applications and Theory) (CPSAT) . IEEE, 2024, pp. 1–7. [15] R. Hojabr, K. Givaki, S. M. R. Tayaranian, P. Esfahanian, A. Khonsari, D. Rahmati, and M. H. Najafi, “SkippyNN: An embedded stochastic-computing accelerator for convolutional neural networks,” in Proceed-ings of the 56th Annual Design Automation Conference (DAC) , 2019, pp. 1–6. [16] M. Riera, J.-M. Arnau, and A. Gonz´ alez, “Computation reuse in DNNs by exploiting input similarity,” in 2018 ACM/IEEE 45th Annual Inter-national Symposium on Computer Architecture (ISCA) . IEEE, 2018, pp. 57–68. [17] L. Medina and J. Flich, “SIRENA: Sparsity-repetition aware nibble-based hardware accelerator for convolutional neural networks,” Journal of Systems Architecture , p. 103529, 2025. [18] C. Gao, D. Neil, E. Ceolini, S.-C. Liu, and T. Delbruck, “DeltaRNN: A power-efficient recurrent neural network accelerator,” in Proceedings of the 2018 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays , 2018, pp. 21–30. [19] M. Modarressi, A. Yasoubi, and M. Modarressi, “Low-power online ECG analysis using neural networks,” in 2016 Euromicro Conference on Digital System Design (DSD) . IEEE, 2016, pp. 547–552. [20] H. Touvron, M. Cord, M. Douze, F. Massa, A. Sablayrolles, and H. J´ egou, “Training data-efficient image transformers & distillation through attention,” in International Conference on Machine Learning (ICML) . PMLR, 2021, pp. 10 347–10 357. [21] C.-L. Hsiung and T.-S. Chang, “Low power vision transformer accelera-tor with hardware-aware pruning and optimized dataflow,” arXiv preprint arXiv:2510.14393 , 2025. [22] X. Xu, Y. Li, Y. Chen, J. Liu, and S. Wang, “RePaViT: Scalable vision transformer acceleration via structural reparameterization on feedforward network layers,” arXiv preprint arXiv:2505.21847 , 2025. [23] Y. Rao, W. Zhao, B. Liu, J. Lu, J. Zhou, and C.-J. Hsieh, “DynamicViT: Efficient vision transformers with dynamic token sparsification,” in 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2021. [24] D. Bolya, C.-Y. Fu, X. Dai, P. Zhang, C. Feichtenhofer, and J. Hoffman, “Token merging: Your ViT but faster,” in International Conference on Learning Representations (ICLR) , 2023. [25] H. You, Z. Sun, H. Shi, Z. Yu, Y. Zhao, Y. Zhang, C. Li, B. Li, and Y. Lin, “ViTCoD: Vision transformer acceleration via dedicated algo-rithm and accelerator co-design,” in 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2023, pp. 273– 286. [26] P. Dong, M. Sun, A. Lu, Y. Xie, K. Liu, Z. Kong, X. Meng, Z. Li, X. Lin, Z. Fang, and Y. Wang, “HeatViT: Hardware-efficient adaptive token pruning for vision transformers,” in 2023 IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2023, pp. 442– 455. [27] A. R. Bambhaniya, A. Yazdanbakhsh, S. Subramanian, S.-C. Kao, S. Agrawal, U. Evci, and T. Krishna, “Progressive gradient flow for robust N:M sparsity training in transformers,” arXiv preprint arXiv:2402.04744 , 2024. [28] C. Fang, A. Zhou, and Z. Wang, “An algorithm-hardware co-optimized framework for accelerating N:M sparse transformers,” IEEE Transac-tions on Very Large Scale Integration (VLSI) Systems , vol. 30, no. 11, pp. 1573–1586, 2022. [29] H. You, H. Shi, Y. Guo, and Y. Lin, “ShiftAddViT: Mixture of multi-plication primitives towards efficient vision transformer,” Advances in Neural Information Processing Systems , vol. 36, 2024. [30] H. You, Y. Guo, Y. Fu, W. Zhou, H. Shi, X. Zhang, S. Kundu, A. Yazdan-bakhsh, and Y. C. Lin, “ShiftAddLLM: Accelerating pretrained LLMs via post-training multiplication-less reparameterization,” arXiv preprint arXiv:2406.05981 , 2024. [31] Z. Mo, L. Wang, J. Wei, Z. Zeng, S. Cao, L. Ma, N. Jing, T. Cao, J. Xue, F. Yang et al. , “LUT tensor core: A software-hardware co-design for LUT-based low-bit LLM inference,” in Proceedings of the 52nd Annual International Symposium on Computer Architecture (ISCA) , 2025, pp. 514–528. [32] H. You, X. Chen, Y. Zhang, C. Li, S. Li, Z. Liu, Z. Wang, and Y. Lin, “ShiftAddNet: A hardware-inspired deep network,” in Advances in Neural Information Processing Systems (NeurIPS) , vol. 33, 2020, pp. 2771–2783. [33] S. Tuli and N. K. Jha, “AccelTran: A sparsity-aware accelerator for dynamic inference with transformers,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 42, no. 11, pp. 4038–4051, 2023. [34] Y. Qin, Y. Wang, D. Deng, Z. Zhao, X. Yang, L. Liu, S. Wei, Y. Hu, and S. Yin, “FACT: FFN-attention co-optimized transformer architecture with eager correlation prediction,” in Proceedings of the 50th Annual International Symposium on Computer Architecture (ISCA ’23) . New York, NY, USA: Association for Computing Machinery, 2023. [35] A. Marchisio, D. Dura, M. Capra, M. Martina, G. Masera, and M. Shafique, “SwiftTron: An efficient hardware accelerator for quantized transformers,” arXiv preprint arXiv:2304.03986 , 2023. [36] Y. Li, X. Dong, and W. Wang, “Additive powers-of-two quantization: An efficient non-uniform discretization for neural networks,” in Inter-national Conference on Learning Representations (ICLR) , 2020. [37] P. Zilouchian Moghaddam, M. Modarressi, and M. A. Sadeghi, “A novel deep learning-based approach for video quality enhancement,” 
+
+Engineering Applications of Artificial Intelligence , vol. 144, p. 110118, 2025. [38] C. Ledig, L. Theis, F. Husz´ ar, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang et al. , “Photo-realistic single image super-resolution using a generative adversarial network,” in 
+
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , 2017, pp. 4681–4690.

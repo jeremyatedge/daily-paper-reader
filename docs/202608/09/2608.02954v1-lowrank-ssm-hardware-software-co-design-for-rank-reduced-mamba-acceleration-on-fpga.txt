@@ -1,0 +1,580 @@
+Title: LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA
+
+URL Source: https://arxiv.org/pdf/2608.02954v1
+
+Published Time: Wed, 05 Aug 2026 00:24:09 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA 
+
+# Haocheng Xu 
+
+haochx5@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Bhardwaj Bhat ∗bhardwb@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Yu-an Chou ∗chouy10@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Zhiheng Chen ∗zhihenc5@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Leyao Han 
+
+leyaoh5@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Yifan Zhang 
+
+yifanz58@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Ye Qiao 
+
+yeq6@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Saptarshi Mitra 
+
+saptarm@uci.edu University of California, Irvine Irvine, California, USA 
+
+# Sitao Huang 
+
+sitaoh@uci.edu University of California, Irvine Irvine, California, USA 
+
+## Abstract 
+
+State Space Models (SSMs) such as Mamba and Mamba-2 achieve linear-time autoregressive inference, making them attractive for latency-sensitive and resource-constrained deployment. Yet their large input and output projection layers impose quadratic weight memory and off-chip bandwidth costs that bottleneck practical FPGA deployment, accounting for over 60% per-token runtime at sequence lengths of 1,024 and beyond. Existing accelerators reduce this overhead through quantization or activation sparsity, but none treat projection rank as an explicit hardware design variable, leaving a systematic accuracy-throughput trade-off unexplored. We present LowRank-SSM, a hardware-software co-design frame-work that closes this gap. On the software side, we decompose the input and output projection weights via post-training truncated SVD and introduce a greedy bandwise rank-allocation algorithm that searches for the per-band rank vector that minimizes weight storage while respecting a user-specified accuracy constraint. On the hardware side, we map the resulting factored projections onto a fully-pipelined accelerator on an FPGA, featuring a dual-path projection(low-rank path and full-rank path), a fused selective-scan unit, and five independent AXI master bundles that saturate DDR4 bandwidth without bus contention. A per-band runtime rank mask enables mixed-rank execution across all 64 layers with zero architectural overhead. On Xilinx Versal VC1902 at 400 MHz, the deployed mixed-rank INT8 design achieves 7.89 tokens/s, represent-ing a 2.19 × throughput improvement and 2.03 × energy-efficiency improvement over SOTA at comparable power and accuracy. 
+
+## 1 Introduction 
+
+State Space Models (SSMs), particularly the Mamba family of se-lective SSMs [1–3], have emerged as a practical alternative to Transformer-based LLMs for latency-sensitive and efficient deploy-ment. By maintaining a fixed-size recurrent state rather than a   
+
+> ∗These authors contributed equally to this work. 256 512 1024 2048 4096 8192
+
+Sequence Length          
+
+> 025 50 75 100
+> Runtime Share (%)  20% 35% 67% 77% 77% 76%
+> in_proj out_proj SSM Scan Causal Conv Other
+
+Figure 1: Percentage Breakdown of Mamba2-2.7B [3] 
+
+growing key-value cache, Mamba achieves 4–5 × higher autore-gressive throughput than comparably sized Transformers [2], mak-ing FPGA-based [4–6] deployment attractive. SSM deployment on edge and its superiority in supporting larger input context ( ∼4× of similar-sized Transformers) has been explored in [7]. The hardware-aware algorithmic design of Mamba rests on the critical empirical assumption that memory I/O during the SSM recurrence itself is the bottleneck. Figure 1 shows the runtime breakdown of Mamba2-2.7B [3], profiled on NVIDIA 3090. At sequence lengths from 256 to 8192, the input and output projection layers together account for >60% of per-token runtime, while the theoretically distinctive SSM scan contributes only 24%. The true bottleneck is memory bandwidth against the projection weights, not arithmetic in the recurrence. Prior SSM accelerators [8– 14] address this either by optimizing the scan’s element-wise opera-tions or by reducing the arithmetic cost of streaming the projection weights through quantization. Both strategies leave the structural bandwidth unchanged: a quantized weight matrix is still a full-rank matrix, still requiring the same number of bytes to be read from off-chip DRAM for every generated token. Previously, no acceler-ator has inquired about the possibility of reducing the size of the projection matrices. arXiv:2608.02954v1 [cs.AR] 3 Aug 2026 Haocheng Xu, Bhardwaj Bhat, Yu-an Chou, Zhiheng Chen, Leyao Han, Yifan Zhang, Ye Qiao, Saptarshi Mitra, and Sitao Huang 
+
+Rank reduction provides a precise structural solution by substi-tuting a projection weight W ∈ Rm×n with two smaller factors of rank r. This approach decreases on-chip storage and DDR band-width from mn to r(m+n) bytes per token, achieving savings that quantization cannot equal at the same precision. The challenge is that rank reduction alone yields no hardware benefit. On a conventional accelerator, two sequential GEMMs incur the same pipeline overhead as one, erasing the bandwidth gain unless the accelerator is co-designed to exploit the factored structure, like holding the bottleneck vector on-chip, streaming the two sub-matrices through independent memory ports, and fusing both stages into a single dataflow pipeline. Exploiting this co-design strategy in the context of SSMs is the central idea for this work. In this paper, we present LowRank-SSM, a co-design framework that treats projection rank as an explicit hardware design variable. We make three contributions: (1) Sensitivity-guided bandwise rank allocation. We char-acterize per-layer rank sensitivity of the input and output projections on Mamba2-2.7B and introduce a greedy band-wise allocation algorithm 1 that selects the per-band rank vector that maximizes weight compression. (2) Dual-path factored projection datapath. We design an FPGA accelerator with a two-stage low-rank and full-rank path. A 64-bit per-band rank mask enables mixed-rank in-ference across all 64 layers with negligible architectural overhead. (3) Fused scan with bandwidth-saturating memory hier-archy. The selective scan, including discretization, state up-date, output accumulation, D-residual, and Z-gating, is col-lapsed into a single pipeline pass, eliminating three interme-diate FIFO buffers. On Xilinx Versal VC1902 at 400 MHz, our LowRank-SSM, the 64-layer mixed-rank design, achieves 
+
+7.89 tokens/s —a 2.19 × throughput improvement and 2.03 ×
+
+energy-efficiency improvement over LightMamba [10]. 
+
+## 2 Background and Motivation 2.1 Selective SSMs and Projection Bottleneck 
+
+An SSM maps an input sequence xt ∈ RD to outputs through a fixed-size latent state ht ∈ RN ×dinner via the recurrence 
+
+ht = ¯ Ah t−1 + ¯ Bx t , yt = Ch t + Dx t , (1) where ¯ A = eΔA and ¯ B = ( ΔA)−1(eΔA − I )ΔB are input-dependent dis-cretizations of the continuous-time matrices. Mamba [2] makes Δ, B,and C functions of the current token, enabling content-dependent state updates; Mamba-2 [3] further improves hardware efficiency via the structured state-space duality (SSD) formulation. As shown in the Figure 2, each Mamba block partitions its computation into four stages: (i) an input projection that maps the normalized to-ken x ∈ RD to five operands [ X , Z, Δ, B, C]; (ii) a causal depthwise 
+
+conv1d ; (iii) the selective scan of Eq. (1); and (iv) an output projec-tion back to residual space. In Mamba2-2.7B, the parameters are set as follows: D = 2560, dinner = 5120, and N = 128. Despite the O(1)-per-step recurrence, autoregressive decode is memory-bandwidth bound. Each token requires loading the entire projection weight matrices from off-chip DRAM. Figure 1 shows Input   
+
+> RMSNorm XI
+> Input Projection Input Projection
+> CONV
+> σ
+> SSM Δ
+> CBX
+> σ
+> Z
+> RMSNorm
+> Output Projection
+> Output Mamba2 Block
+> LowRank
+> ES
+> : Element-wise Mul. : EXP : Softplus : ADD
+> SSM Block
+
+Stream  Tree 
+
+Xnorm 
+
+> : Matrix Mul.
+> Win1
+> Wfull
+> LowRank
+> Non-LowRank
+> Δ
+
+DEMUX  
+
+> XBC
+> Input Projection
+> BACD
+> State xY
+> hh' Win2
+
+Figure 2: Mamba2 Block with LowRank 
+
+that at sequence length 1024, in_proj and out_proj together con-sume 67% of total per-token time, while the SSM scan takes only 24.3%. For Mamba2-2.7B, a single in_proj step loads a 2560 × 5632 weight matrix; over 28 MB per token in FP16. The bandwidth re-quirement scales as O(D2), exceeding the DDR4 bandwidth of com-modity FPGA boards at sustained generation [4, 5]. 
+
+## 2.2 Low-Rank Decomposition 
+
+Truncated SVD provides a principled route to reducing the weight dimension. Given W ∈ Rm×n, the rank-r approximation ˆ Wr = Br Ar
+
+(where Ar ∈ Rr ×n, Br ∈ Rm×r ) replaces a single MVM with a two-stage cascade: 
+
+z = Ar x ∈ Rr , y = Br z ∈ Rm, (2) reducing weight storage from mn to r(m+n) elements. The crossover rank below which factorization yields net savings is r∗ = mn /( m+n). For in_proj ’s WX sub-matrix ( m=5120, n=2560), any r < 1707 saves storage and delivers weight reduction at an acceptable accuracy cost. The smaller sub-matrices also exhibit lower dynamic range than the full product matrix, making them more amenable to INT8 or INT4 quantization, which is a benefit observed in Transformer SVD compression [15, 16]. 
+
+## 2.3 Related Work 
+
+SSM accelerators. (a) Projection quantization : LightMamba [10] proposes rotation-assisted post-training quantization to suppress activation outliers, reducing the majority of projection computation to INT4; FastMamba [11] combines Hadamard quantization with a dedicated nonlinear approximation unit for the SSM block. (b) 
+
+SSM recurrence optimization : MARCA [8] and its successor MARCA-v2 [9] identify element-wise SSM as the dominant bottleneck at long sequence lengths and propose reconfigurable datapath units and column-wise activation sparsity to address it. (c) Decoding throughput : SpecMamba [12] introduces speculative decoding for LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA 
+
+Mamba on FPGA, addressing the hidden-state backtracking chal-lenge unique to recurrent architectures. All of these approaches operate on dense projection matrices of full rank. While they effec-tively reduce the arithmetic cost of streaming these weights, they are unable to decrease the number of Bytes that must be read from off-chip memory per token, since the weight matrices are never structurally compressed. 
+
+LLM Weight SVD. ASVD [15] and SVD-LLM [16] demonstrate effective post-training rank reduction for Transformer attention and MLP weights, achieving 10% to 30% parameter reduction without fine-tuning by scaling or whitening weights before SVD truncation. However, neither addresses the SSM-specific structure where only a subset of the input-projection outputs ( X ) benefits from rank re-duction while others ( Z, B, C, Δ) require full-rank fidelity. More critically, neither pairs the decomposition with a custom hardware datapath. On a generic accelerator the two-stage MVM of Eq. (2) re-places one GEMM with two sequential GEMMs, and the bandwidth savings disappear into pipeline overhead unless the intermediate vector z is held on-chip and both stages are fused into a single dataflow region. LowRank-SSM addresses both limitations jointly: it identifies which projection operands tolerate rank reduction, allocates rank across layers under a hardware budget constraint, and co-designs a factored projection datapath for bandwidth savings in silicon. 
+
+## 3 Rank-reduction Design Space Exploration 
+
+Realizing the bandwidth savings of low-rank projection requires answering three questions before a single weight is factored: which 
+
+operands in each layer should be compressed, how to measure a layer’s tolerance to rank reduction without exhaustive search, and 
+
+which layers to compress at which rank given a fixed accuracy budget. This section addresses each in turn, building from operand selection through sensitivity characterization to the final greedy allocation algorithm. 640 768 896 1024 1280 1536 1664 2048 
+
+Rank 
+
+> 0.2 0.3 0.4 0.5 0.6
+> Activation Recon. Error
+> Band 1 (L0–7) Band 2 (L8–15) Band 3 (L16–23) Band 4 (L24–31) Band 5 (L32–39) Band 6 (L40–47) Band 7 (L48–55) Band 8 (L56–63)
+
+Figure 3: Band-averaged activation reconstruction error for 
+
+in_proj_x versus rank. Band 8 (layers 56–63) exhibits the highest error at every rank, while earlier bands are more com-pressible, motivating non-uniform rank allocation across bands. 
+
+## 3.1 Operand Selection 
+
+The input projection maps a normalized token x ∈ RD to five distinct operands: X , Z ∈ Rdinner , Δ ∈ RdΔ , and B, C ∈ RN . These operands play structurally different roles in the Mamba block and therefore have very different sensitivities to rank reduction. 
+
+Z is injected directly at the output gate of the SSM, where it mul-tiplies the scan output element-wise before the residual add. Any approximation error in Z is therefore amplified through the gat-ing nonlinearity and propagates to the residual stream unchanged, making Z highly sensitive to compression. B, C, and Δ are the SSM state parameters: errors here corrupt the recurrent state dynamics and accumulate over sequence length, so they too must remain at full rank. Furthermore, their output dimensions are small ( dΔ=80, 
+
+N =128), contributing negligibly to the total projection cost. 
+
+X , by contrast, is the dominant operand by dimension ( dinner =5120 scalars, 64% of all projection outputs) and feeds into the depthwise convolution and then the SSM scan, where the recurrence par-tially absorbs approximation errors across timesteps. We therefore restrict low-rank factorization exclusively to the WX ∈ Rdinner ×D
+
+sub-matrix of the input projection. The output projection out_proj 
+
+∈ RD×dinner is factored in full, since it produces a single residual-path update with no state-feedback mechanism to mitigate error. 
+
+## 3.2 Sensitivity Metrics 
+
+Given the two target weight matrices, we need to rank all 64 layers by their tolerance to rank reduction without evaluating every (layer, rank) combination on the full validation set, which would require thousands of forward passes. We define three sensitivity metrics evaluated on a small calibration set of 2048 WikiText-2 tokens: 
+
+Frobenius error (EF ) measures the matrix-level approximation quality: 
+
+EF (ℓ, r) = ∥W ℓ − ˆW ℓ 
+
+> r
+
+∥F
+
+∥W ℓ ∥F
+
+, (3) where ˆ W ℓ 
+
+> r
+
+is the rank-r SVD approximation of layer ℓ’s weight. This captures the worst-case weight deviation but ignores the actual activation distribution. 
+
+Spectral error (ES ) uses the operator norm, ES (ℓ, r) = ∥W ℓ −
+
+ˆW ℓ 
+
+> r
+
+∥2/∥W ℓ ∥2, giving a tighter bound on the maximum per-token output perturbation. 
+
+Activation reconstruction error (EA) measures output fidelity on real data: 
+
+EA(ℓ, r) = ∥ ˆW ℓ 
+
+> r
+
+Xℓ − W ℓ Xℓ ∥F
+
+∥W ℓ Xℓ ∥F
+
+, (4) where Xℓ is the matrix of calibration activations entering layer 
+
+ℓ. Unlike the weight-only metrics, EA accounts for the actual in-put distribution and therefore provides a more faithful proxy for downstream perplexity impact. In practice, EA is the most discriminative of the three. We chose a band size of 8 after comparing several grouping granularities. Smaller bands (G=4) give marginally better separation but double the search dimensionality from 8 to 16 candidates per greedy step, quadrupling compute cost. G=8 is the knee of the separation-vs-cost curve. We therefore use 8-layer bands in the remainder of the analysis. Figure 3 visualizes the resulting band-averaged EA(ℓ, r)across all 64 layers and ranks r ∈ {640, 768, . . . , 2560}. Two patterns Haocheng Xu, Bhardwaj Bhat, Yu-an Chou, Zhiheng Chen, Leyao Han, Yifan Zhang, Ye Qiao, Saptarshi Mitra, and Sitao Huang 1/8 2/8 3/8 4/8 5/8 6/8 7/8 8/8                                 
+
+> Band
+> 0.00 0.00 0.00 0.02 0.00 0.43 0.25 0.46 0.01 0.29 0.47 0.52 0.42 0.01 0.36 0.64 0.75 0.60 0.01 0.50 0.78 0.71 0.72 0.02 0.56 0.93 0.92 0.80 0.00 0.66 0.85 1.00 0.78 0.01 0.66 1.00 0.94 1.00 1.00 0.98
+
+Input Projection                                 
+
+> Fro Spectral Activation
+> ΔPPL Overall
+> 1/8 2/8 3/8 4/8 5/8 6/8 7/8 8/8
+> Band
+> 0.63 0.57 1.00 0.04 0.56 0.30 0.27 0.62 0.00 0.29 0.00 0.00 0.00 0.02 0.00 0.34 0.15 0.42 0.00 0.23 0.69 0.58 0.93 0.00 0.55 0.88 0.67 0.94 0.00 0.62 1.00 0.64 0.96 0.01 0.65 0.82 1.00 0.44 1.00 0.81
+
+Output Projection 
+
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Normalized score (lower is better)
+
+Figure 4: Normalized multi-metric band scorecard at rank 1,280 for in_proj_x (left) and out_proj (right). Frobenius, spectral, activation reconstruction, and ΔPPL scores are min– max normalized per metric (lower is better). Band 8/8 (layers 56–63) is the most sensitive across all metrics. 
+
+emerge immediately. First, there is a pronounced layer-position asymmetry : layers in the first six bands (layers 0–47) maintain reconstruction error below 0.45 even at rank 1024, while the final band (layers 56–63, band 8/8) reaches errors above 0.5 at the same rank. Second, the error surfaces for the early and middle bands are smooth and rank-monotone, allowing the greedy algorithm to predict the PPL cost of any rank reduction step without a full validation-set evaluation. 
+
+## 3.3 Greedy Bandwise Rank Allocation 
+
+With bands fixed, we use the composite scorecard of Figure 4 to initialize the greedy search. For each band i at a candidate rank r,the scorecard reports normalized Frobenius, spectral, activation-reconstruction, and ΔPPL scores alongside a composite Overall 
+
+column computed as the geometric mean of the four. Band 8/8 scores in the red tier on every metric at rank 1280 align with heatmap finding, while bands 1/8 through 6/8 fall in the green-to-yellow range, making them safe compression candidates. 
+
+Algorithm 1 Greedy bandwise rank allocation 
+
+Require: bands { B1, . . . , BK }, rank schedule R, budget Δmax 
+
+Ensure: rank vector v∗ 
+
+> 1:
+
+v ← [rmax , . . . , rmax ]; Pbase ← Eval( v) 
+
+> 2:
+
+repeat  
+
+> 3:
+
+for each band i not yet at minimum rank do  
+
+> 4:
+
+v(i) ← v with band i lowered one step  
+
+> 5:
+
+Δ(i) ← Eval( v(i)) − Pbase 6: end for  
+
+> 7:
+
+i∗ ← arg min {i: Δ(i) ≤Δmax } Eval( v(i)) 
+
+> 8:
+
+if no feasible i∗ then break  
+
+> 9:
+
+end if  
+
+> 10:
+
+v ← v(i∗)11: until convergence  
+
+> 12:
+
+return v 
+
+Algorithm 1 formalizes the allocation procedure. All bands begin at the maximum rank r0=2560 (full rank, equivalent to no factor-ization). As an initialization step, each band is first reduced to its break-even rank, i.e. the largest reduction that does not yet in-crease the theoretical projection cost relative to the dense form. From there, at each iteration, the algorithm evaluates lowering every non-minimum-rank band by one step in the rank schedule 
+
+R, computes the resulting PPL on the validation set, and accepts the single-band reduction with the smallest ΔPPL that stays within the budget Δmax relative to the dense-model baseline. The process terminates when no candidate step satisfies the budget. An important empirical observation from the greedy trace—visible in the rank assignment data—is that the same band (band 6/8) is selected for successive compression steps before any other band is touched . At step 1, band 6/8 is reduced from 2560 to 1664 at a cost of +0.040 PPL; at step 2 it is reduced further to 1536 (+0.059 PPL total); and so on, while all other bands remain at 2560. This occurs because band 6/8’s smooth activation error surface allows the algo-rithm to navigate a long rank-reduction path at minimal accuracy cost, whereas band 8/8’s step from 2560 to 1664 alone incurs +1.21 PPL—over 30 × the cost—and is immediately rejected at any rea-sonable budget. The algorithm naturally discovers this asymmetry without any manual tuning. Table 1 summarizes the final mixed-rank configuration deployed in hardware, targeting Δmax = 3 PPL. This allocation reduces total INT8 weight storage for the projections by 20% relative to the uniformly full-rank baseline. 
+
+## 4 LowRank-SSM Hardware Design Methodology 4.1 Overall Hardware Architecture 
+
+Figure 5 shows the top-level block diagram of the proposed SSM accelerator. The design is implemented as a single hardware kernel that iterates over all L layers sequentially, reusing the same on-chip datapath for each layer while streaming weights and quantization scales from DDR4 through the Versal Network-on-Chip (NoC) fab-ric. All inter-module communication uses on-chip streaming FIFOs with single-cycle back-pressure, and the entire single-layer pipeline is organised under dataflow scheduling to maximise pipeline over-lap. LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA NoC Fabric 
+
+Host 
+
+Memory & 
+
+Command 
+
+DDR4 
+
+MAXI 
+
+Bundle 
+
+&
+
+Top 
+
+Level 
+
+Control 
+
+Input 
+
+RMSNorm 
+
+LowRank -SSM Accelerator 
+
+> Input Projection
+> (FR/LR
+
+)
+
+SSM Scan  Conv1d& SiLU 
+
+Gate &  Output 
+
+> RMSNorm
+> Output
+> Projection
+> (FR/LR)
+
+Residual Add  
+
+> On -chip R/W
+> Stream FIFO
+> Off -chip R/W
+> Stream FIFO
+> Weight & Scale
+> Weight & Scale
+
+Figure 5: Overall architecture of the SSM accelerator kernel. Memory Interface: Five independent AXI master ports distrib-ute DDR traffic: one for input/output tokens, one for rank-reduction weights, two for the low/high halves of all remaining weight ma-trices, and two for quantisation scales. Input RMSNorm: The input token x ∈ RD is duplicated into a normalisation path and a residual-skip path; the normalisation path applies RMSNorm with a BRAM-cached gain vector. Input Projection: Two concurrent dat-apaths, the LowRank Path and the NonLowRank Path , produce five operands X , Z, Δ, B, C as detailed in Section 4.2. Conv1d & SiLU: Adepthwise causal convolution of kernel size K followed by a SiLU ac-tivation produces the gating signal G. SSM Scan: A fused dataflow module merges discretisation, state update, output accumulation, and Z-gating into a single pipeline as detailed in Section 4.3. Out-put RMSNorm: A second RMSNorm instance normalises the gated scan output. Output Projection: A reversed two-stage LowRank Path maps Rdinner → RD as detailed in Section 4.2. Residual Add: 
+
+The projection result is added to the skip-connected input, forming 
+
+y = out_proj( x) + x.
+
+## 4.2 Implementation of Projection Unit with Configurable LR/FR 
+
+The input and output projections jointly dominate both weight storage and per-token latency of each Mamba layer. Our design fac-torises each projection into configurable two-stage GEMM pipelines that exploit the SVD low-rank approximation described in Sec-tion 2.2. A per-layer flag, encoded in an L-bit mask, marks each layer as either an LR layer (r < D) or an FR layer (r = D); the actual rank per 8-layer group is given in Section 3.3. Let V denote the SIMD lane width and g the quantisation group size. 
+
+4.2.1 LowRank Path. The LowRank Path produces the X operand via the factored two-stage cascade of Eq. (2): Stage 1 computes 
+
+z = Win,1 x ∈ Rr and Stage 2 expands X = Win,2 z ∈ Rdinner , where 
+
+Win,1 ∈ Rr ×D and Win,2 ∈ Rdinner ×r are stored in INT8. As shown in Figure 6 , Stage 2 is implemented by a parallel GEMM_LO/GEMM_HI pair: each engine computes dinner /2 output rows and their results are concatenated to form Xmid . The intermediate bottleneck vector True                  
+
+> False
+> buffer
+> lo
+> Input Projection -Low Rank Path
+> Non -LR bypass
+> STAGE 1 :
+> Low Rank
+> GEMM
+> STAGE 2: Rank Projection
+> buffer
+> hi
+> CONCAT
+> CONCAT
+> GEMM _LO Out_lo
+> Out_hi
+> Out_lo
+> Out_hi
+> GEMM_ LO
+> GEMM_H I
+> X_Input
+> X_Input
+> GEMM _HI
+> X_mid
+> Weight
+> Scale
+> Z_stream
+> DT_stream
+> B stream
+> C stream
+> To Conv1D
+> Silu gate
+> To SSM Scan
+> delta input
+> To Assembler
+> DEMUX
+> X Buffer
+> Input Projection -Non LowRank Path
+> d_out
+> 2
+> d_in
+> Quantized GEMM Unit
+> Dequant & Mult Array
+> Adder tree
+> Buffer
+> 2xDSP 2xDSP
+> 2xDSP 2xDSP
+> 2xDSP 2xDSP
+> 2xDSP 2xDSP
+> d_out
+> Activation Tile
+> d_in
+> d_out
+> 2
+> Scale Tile
+> Weight Tile
+> 1dsp for dequant
+> 1dsp for GEMM
+> d_in
+> d_out
+> 2
+
+Figure 6: Input projection architecture. 
+
+z is held on-chip in a LUTRAM-backed dual-port buffer, requiring no off-chip access. For an FR layer the Non-LR Bypass multiplexer routes x directly to Stage 2, skipping Stage 1; Stage 2 then operates as a single unfactored MVM with din = D and dout = dinner .
+
+4.2.2 NonLowRank Path. The NonLowRank Path produces the remaining Z, Δ, B, C operands. As shown in Figure 6 , the token is buffered in the X Buffer and fed to two parallel full-rank GEMM engines, GEMM_LO and GEMM_HI, with din = D and dout =
+
+dinner + dΔ + 2 N . The two half-outputs are concatenated and split by a DEMUX into four operand streams: Z to Conv1d/SiLU, Δ to the scan, and B, C to the assembler. This path operates identically for both LR- and FR-layers. 
+
+4.2.3 Shared Input Stream and Concurrent Execution. A stream duplicator reads the RMSNorm-normalised token once and forks it to both the LowRank Path and the NonLowRank Path with a single-cycle splitter. Both paths then execute concurrently under the top-level dataflow scheduling pragma: their weight matrices are each split into low and high halves, streamed through two independent AXI master ports so that all four GEMM engines fire in parallel. Because the NonLowRank Path outputs Z, Δ, B, C as streaming FIFOs, the downstream Conv1d, SiLU, and scan stages can begin consuming operands before the LowRank Path finishes producing X , hiding the two-stage cascade latency behind the full-rank computation. 
+
+4.2.4 Quantized GEMM Unit. All GEMM engines share the micro-architecture shown in Figure 6 . Each engine is parameterised by 
+
+din and dout . The activation tile buffers din elements; the weight tile is ( dout /2) × din ; and the scale tile stores dout /2 per-row-per-group factors of group size g. The Dequant & Mult Array contains dout /2 processing lanes, each employing 2 ×DSP—one for INT8 weight de-quantisation, one for the fused multiply–accumulate. Partial prod-ucts within each lane are summed by an adder tree and written to the output buffer. Haocheng Xu, Bhardwaj Bhat, Yu-an Chou, Zhiheng Chen, Leyao Han, Yifan Zhang, Ye Qiao, Saptarshi Mitra, and Sitao Huang 
+
+4.2.5 Output Projection. The output projection reuses the same two-stage LowRank Path with reversed stages: Stage 1 reduces 
+
+Rdinner → Rr and Stage 2 expands Rr → RD. No NonLowRank Path is needed. For an FR layer, Stage 1 performs the full MVM directly and Stage 2 is bypassed—the opposite of the input projection. 
+
+## 4.3 Implementation of Fused Selective Scan Unit 
+
+The selective scan implements the SSM recurrence of Eq. (1) on the FPGA. Two challenges arise. First, the recurrence depends on all five operands from the input projection— X , Δ, B, C, and the gating signal 
+
+Z—so the scan unit can idle while the upstream projection is still running. Second, the hidden state h ∈ RN ×dinner is too large to buffer on-chip. We address both issues with a fused scan datapath that merges discretisation, state update, output accumulation, and Z-gating into a single fully-pipelined module. The datapath proceeds in two phases: a short on-chip preload phase followed by a tiled scan loop. 
+
+4.3.1 On-Chip Preload. Before the scan loop begins, a lightweight preload stage populates on-chip buffers with the operands required by the recurrence. The diagonal decay parameters A ∈ RN are stored in a fully-partitioned register array, enabling conflict-free access to all N elements in a single cycle. The raw time-step bias 
+
+Δraw is similarly held in registers and reused cyclically across the 
+
+dinner dimension, avoiding repeated off-chip reads. Meanwhile, the activation X from the upstream Conv1d & SiLU stage is buffered in dual-port BRAM; during this buffering the raw Δ values are passed through a fixed-point softplus approximation 𝛿 = softplus( Δraw ), clamped to a hardware-friendly range, and stored in a companion BRAM array. The skip parameter D and a zero-initialised output accumulator of the same depth complete the preload. 
+
+4.3.2 Tiled Scan Loop. Let Nv = N /V denote the number of state tiles and J = dinner /V the number of channel tiles. The core compu-tation is a doubly-nested loop: the outer loop iterates over Nv state tiles, and the inner loop sweeps over J channel tiles, yielding Nv × J
+
+iterations in total. At each outer-loop boundary a new pair of B and 
+
+C vectors is read from the upstream FIFO and held constant across all J inner iterations. Within each inner iteration, three operations execute concurrently across the V -lane datapath: 
+
+Discretisation: The product A · 𝛿 is evaluated per lane and mapped to ¯ A = exp( A · 𝛿 ). State Update: Each lane computes 
+
+ht = ¯ A·ht−1+B·𝛿 ·xt via a three-DSP multiplier cascade. The previous state ht−1 is consumed from a streaming DDR read channel, and the updated state ht is simultaneously forwarded to a streaming DDR write channel, establishing a zero-copy feedback path that avoids on-chip state buffering entirely. Output Accumulation: 
+
+The product ht ·C is accumulated into a BRAM-backed vector across all Nv state tiles. After the final tile, the accumulator holds yj = C⊤hj ,completing the inner product over the full N -dimensional state. The inner loop is fully pipelined with the multiplier count con-strained to balance throughput against fabric utilisation, consuming a small fraction of the per-layer pipeline latency. 
+
+4.3.3 Fused D-Residual and Z-Gating. A naïve implementation would write the raw scan output y to an intermediate FIFO and compute the D-residual and Z-gating in a separate downstream 
+
+Table 1: Mixed-rank configuration for 64-layer Mamba2-2.7B. Full rank is r=2560 ). Reduced ranks yield an overall 20% re-duction in weight storage. Band Layers rin rout Projection Weight Saving 
+
+1/8 0–7 896 2560 47% 2/8 8–15 768 2560 55% 3/8 16–23 2560 2560 -4/8 24–31 640 1152 68% 5/8 32–39 896 2560 47% 6/8 40–47 896 2560 47% 7/8 48–55 896 2560 47% 8/8 56–63 2560 2560 -stage, requiring additional buffering and increasing on-chip mem-ory consumption. Instead, on the final state-tile iteration the scan loop fuses both operations directly into the accumulation pipeline: ˆyj = Gj ·  C⊤hj + Dj · xj
+
+, (5) where Gj is the SiLU-activated gating signal from the Conv1d stage. This fusion eliminates intermediate streaming buffers and their associated resource overhead, and produces the gated output ˆ y that is forwarded directly to the downstream Output RMSNorm module. 
+
+4.3.4 Streaming State Management. The full hidden state h ∈
+
+RN ×dinner resides in DDR between layer invocations rather than on-chip, keeping URAM consumption independent of the state di-mension. A dedicated read module streams ht−1 from DDR into the scan unit at the start of each layer, and a symmetric write module drains the updated ht back to DDR after the scan completes. Both transfers overlap with the scan computation under the top-level dataflow scheduling, hiding DDR latency behind the Nv ×J iteration scan pipeline. 
+
+## 5 Experiments 5.1 Experimental Setup 
+
+Model and software. All experiments use Mamba2-130M and Mamba2-2.7B [3]. Accuracy is evaluated on seven zero-shot bench-marks: LAMBADA [17] (perplexity and accuracy), HellaSwag [18], ARC-Easy and ARC-Challenge [19], Winogrande [20], and Open-bookQA [21]. WikiText-2 [22] perplexity is measured with a se-quence length of 2048. Low-rank factor matrices are pre-computed offline via truncated SVD and stored in INT8 or INT4; no gradient-based fine-tuning is performed at any stage. 
+
+Hardware and quantization. All projection weights are quan-tized to INT8 and INT4 with per-row-per-group scaling ( g=128). Activations are represented as ap_fixed<16,6> and intermediate accumulations in ap_fixed<32,12> . Hardware synthesis targets a Xilinx Versal AI Core VC1902, synthesized with Vitis HLS 2022.1 at a target clock period of 2.5 ns (400 MHz). Figure 8 shows the layout of LowRank-SSM on VC1902. 
+
+Baselines. We compare against: (i) FP16 and RTN (round-to-nearest INT8) software baselines; (ii) LightMamba INT8 and INT4, representing the current state-of-the-art FPGA accelerator for Mamba at the same model scale; and (iii) low-rank only (no quantization) LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA 1.00 1.05 1.10 1.15 1.20 1.25 1.30 
+
+> Theoretical Speedup (×)
+> 01234
+> PPL (LAMBADA)
+> Dense 1
+> 2
+> 3
+> 4PPL
+> LAMBADA Acc
+> 58 60 62 64 66 68 70
+> LAMBADA Accuracy (%)
+
+Figure 7: Trade-off between theoretical speedup and qual-ity degradation under greedy rank allocation. At a budget of ΔPPL ≤ 1, the model achieves 1.10 × speedup; at ΔPPL ≤ 4, speedup reaches 1.30 × with LAMBADA accuracy dropping from 69.0% to 58.9%. 
+
+at Δmax ∈ {1, 3} PPL budgets to isolate the contribution of rank reduction. 
+
+## 5.2 Accuracy Evaluation 
+
+5.2.1 Rank–Accuracy Trade-off. The mixed-rank design in Table 1 is supported by the global in/out allocation search, which consis-tently favors reducing rin before rout . Across the search trajectory, the best in_proj candidate always yields a smaller perplexity in-crease than the best competing out_proj candidate. Representative examples from the allocation results include +0.0417 vs. +0.1306, +0.2042 vs. +0.2875, and +0.3699 vs. +0.4647 in perplexity increase for the best in_proj and out_proj candidates, respectively. This empirical trend suggests that in_proj is substantially more com-pressible than out_proj , motivating the mixed-rank configuration in which most reductions are applied to rin while rout remains full-rank except in the most tolerant band. Figure 7 shows the theoretical speedup versus accuracy degrada-tion across Δmax ∈ {1, 2, 3, 4} PPL budgets. The curve has a favorable shape: tightening the budget from 4 to 1 PPL costs only 0.037 ab-solute accuracy points (from 0.473 to 0.510) on average across six zero-shot tasks, while relaxing it from 1 to 4 purchases a 1.30 × the-oretical weight-memory speedup versus 1.10 ×, a 18% throughput gain for a 3.7% accuracy trade-off. 
+
+5.2.2 Multi-Task Benchmark. Table 2 evaluates all configurations on seven tasks. We highlight four findings. 
+
+Quantization only. Ours INT8 only (per-row-per-group, no rotation) achieves 4.09 LAMBADA ppl and 57.5% average accu-racy—identical to the FP16 baseline and matching LightMamba INT8 (4.07 ppl, 57.5%) despite using no rotation pre-processing. This validates that the per-row-per-group scheme is a sufficient quanti-zation strategy for Mamba projection weights. Ours INT4 only (full rank, INT4 weights) achieves 4.44 ppl and 56.6% average accuracy, against LightMamba INT4’s 6.48 ppl and 56.3%. The 2.04-point LAM-BADA perplexity gap and +0.3 pp accuracy improvement show that rotation-free per-group INT4 produces significantly lower clipping error than rotation-assisted quantization on Mamba’s projection activations. 
+
+Low-rank alone. At Δmax =1, average accuracy drops 1.0 pp (57.4 →56.4) with LAMBADA ppl rising to 4.47. At Δmax =3, the degradation accelerates to −4.0 pp; this budget is suited only to storage-critical deployments. 
+
+Near-additive composition. Combining Δ=1 rank reduction with INT8 quantization yields 56.4% average accuracy—within 0.1 pp of the sum of individual costs ( −1.0 pp from LowRank plus 0.0 pp from INT8 = −1.0 pp predicted vs. −1.0 pp observed). The same additivity holds for INT4: the predicted combined cost is 
+
+−1.0 − 0.8 = −1.8 pp and the measured cost is −2.2 pp, a 0.4 pp super-additivity that lies within the noise of task-level variance. This orthogonality confirms that rank reduction and quantization compress independent dimensions of the weight matrices—singular-value structure vs. fixed-point representation—and can be tuned as separate design knobs without unexpected interactions. 
+
+Cross-precision comparison. 
+
+The most important comparison in Table 2 is between Δ=1 LowRank+INT8 and LightMamba INT4. Both achieve statistically equivalent average accuracy: 56.4% vs. 56.3%. But their LAMBADA scores diverge sharply: our configuration achieves 4.47 PPL and 69.2% LAMBADA accuracy, while LightMamba INT4 records 6.48 PPL and 57.3%—a gap of 2.01 perplexity points and 11.9 pp LAMBADA accuracy. LowRank-SSM thus reaches INT4-equivalent storage com-pression at INT8-quality generation fidelity. This is the central oper-ating point of the co-design: rank reduction provides the struc-tural bandwidth saving that quantization alone cannot deliver, while INT8 precision preserves the generation quality that aggres-sive quantization sacrifices. The hardware cost of this operating point—the 20% storage reduction and 2.19 × throughput gain re-ported in Section 5.3—comes at no measurable degradation relative to a comparable INT4 baseline. 
+
+## 5.3 Hardware Evaluation 
+
+Table 3 reports post-route resource utilization for the 64-layer mixed-rank kernel on Versal VC1902. DSP usage is the tightest resource at 1,160 slices (58.94%), reflecting the 8 ×8 tiled MAC ar-rays in the dual-path projection stages. URAM occupies 108 of 463 available blocks (22.41%), driven by the dinner dimension activation double-buffers in the output-projection Stage-1 dataflow region; the zero-copy state streaming scheme of Section 4.3 keeps BRAM con-sumption modest at 9.45%. LUT and FF utilization are low (15.61% and 6.40%), leaving ample fabric margin for multi-layer integration or prefill-decode co-hosting. Table 4 compares LowRank-SSM against prior FPGA-based SSM accelerators. All throughput figures are reported in tokens/s and energy efficiency in tok/s/W at the platform’s native clock. 
+
+Mamba2-2.7B INT8. On the primary benchmark, LowRank-SSM achieves 7.89 tok/s on Versal VC1902, versus LightMamba [10]’s 3.61 tok/s on the closely related VCK190—a 2.19 × throughput improvement. Power consumption is nearly identical (27.4 W vs. 25.4 W), so the full 2.03 × gain in energy efficiency (0.288 vs. 0.142 tok/s/W) Haocheng Xu, Bhardwaj Bhat, Yu-an Chou, Zhiheng Chen, Leyao Han, Yifan Zhang, Ye Qiao, Saptarshi Mitra, and Sitao Huang 
+
+Table 2: Downstream task accuracy for Mamba2-2.7B under low-rank compression and quantization. LowRank-SSM applies per-band rank allocation at two budgets ( Δ=1 and Δ=3 ). INT8/INT4 quantization uses per-row-per-group scaling ( g=128 ). Method PPL ↓ LAM ↑ Hella ↑ ARC-E ↑ ARC-C ↑ Wino ↑ OBQA ↑ Avg ↑
+
+Baseline 
+
+FP16 (Dense) 4.09 69.5 66.6 69.5 36.3 63.9 38.8 57.4 
+
+Low-rank only 
+
+LowRank-SSM ( Δ=1) 4.47 69.0 63.7 67.9 34.8 63.8 39.0 56.4 LowRank-SSM ( Δ=3) 5.69 62.5 58.8 65.9 33.7 62.8 36.6 53.4 
+
+INT8 quantization 
+
+LightMamba INT8 4.07 69.7 66.5 69.3 36.9 64.0 38.8 57.5 LowRank-SSM INT8 only 4.09 69.5 66.5 69.6 36.4 63.9 38.8 57.5 LowRank-SSM ( Δ=1) + INT8 4.47 69.2 63.8 67.8 34.6 64.2 39.0 56.4 LowRank-SSM ( Δ=3) + INT8 5.68 62.6 58.8 66.0 33.8 63.0 36.8 53.5 
+
+INT4 quantization 
+
+LightMamba INT4 6.48 57.3 62.7 65.5 35.3 60.7 37.6 56.3 LowRank-SSM INT4 only 4.44 67.4 65.9 68.9 36.6 62.9 38.2 56.6 LowRank-SSM ( Δ=1) + INT4 5.09 66.0 62.9 66.2 34.0 63.5 38.4 55.2 LowRank-SSM ( Δ=3) + INT4 6.68 58.4 58.1 65.2 34.0 61.4 36.4 52.2 
+
+Table 3: Post-route resource utilization and RTL co-simulation latency of the proposed 64-layer mixed-rank de-sign on VC1902. Resource Used Util. % 
+
+LUT 140,528 15.61 FF 115,158 6.40 DSP 1,160 58.94 BRAM 181 9.45 URAM 108 22.41 is attributable to design rather than platform. The throughput gain decomposes into two additive contributions: the 20% weight stor-age reduction from the mixed-rank projection lowers per-token DDR traffic by an estimated 1.10 ×, and the 5-port AXI NoC band-width saturation plus fused scan pipeline account for the remaining 
+
+∼1.09 ×, together yielding the observed 2.19 ×.
+
+Mamba2-130M INT8. For the smaller model, LowRank-SSM achieves 157.8 tok/s against FastMamba [11]’s 5.68 tok/s, a 27.8 ×
+
+throughput improvement and 9.8 × energy efficiency gain (5.95 vs. 0.61 tok/s/W). We note that FastMamba targets the Xilinx VC709 (Virtex-7 family), which offers substantially lower DSP density and memory bandwidth than the Versal VC1902 used here. The platform gap accounts for a significant fraction of the absolute improvement; the energy-efficiency metric (which normalizes for platform power) is therefore the more meaningful comparison: our design achieves 9.8 × higher throughput per watt at only 2.85 × the power draw, reflecting genuine architectural gains that would persist across platform generations. 
+
+GPU reference. For deployment context, an RTX 4090 running Mamba2-2.7B in FP16 achieves ∼138 tok/s at ∼285 W system power. Input Proj.  
+
+> Output Proj.
+> SSM Scan
+> Conv1D + SiLU
+> Addition
+> Others
+
+Figure 8: LowRank-SSM Implementation Layout on VC1902. 
+
+Our FPGA design targets the complementary operating regime: sub-30 W embedded inference where GPU deployment is infeasible. 
+
+## 6 Conclusion 
+
+We presented LowRank-SSM, a hardware-software co-design frame-work that treats the rank of Mamba’s projection matrices as an explicit hardware design variable—an approach overlooked by all prior SSM accelerators, which reduce the arithmetic cost of stream-ing projection weights without reducing their structural bandwidth. We made three concrete contributions. First, we introduced a sensitivity-guided greedy algorithm that characterizes per-layer rank tolerance via activation-reconstruction error and allocates a LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA 
+
+Table 4: Comparison with prior SSM accelerators. Through-put is reported in tokens/s. LowRank-SSM combines low-rank projection compression with quantization, achieving higher throughput at both INT8 bit-widths. Thpt. Power (W) Energy Efficiency 
+
+Mamba2-130M-Int8 
+
+FastMamba [11] 5.68 9.31 0.61 
+
+LowRank-SSM 157.8 26.5 5.95 
+
+Mamba2-2.7B-Int8 
+
+LightMamba [10] 3.61 25.39 0.142 
+
+LowRank-SSM 7.89 27.40 0.288 
+
+mixed-rank configuration across all 64 layers under a global per-plexity budget; applied to Mamba2-2.7B [3], this achieves a 20% reduction in overall weight storage at ΔPPL<3. Second, we de-signed a dual-path factored projection datapath in Vitis HLS with a two-stage low-rank cascade and a concurrent full-rank path; a per-layer rank mask enables mixed-rank execution at zero archi-tectural overhead. Third, we fused the selective-scan discretization, state update, output accumulation, D-residual, and Z-gating into a single pipeline pass and saturated DDR4 bandwidth through five independent AXI master bundles. On Versal VC1902 at 400 MHz, the deployed design achieves 7.89 tokens/s —a 2.19 × throughput improvement and 2.03 × energy-efficiency improvement over Light-Mamba [10] at comparable power (27.4 W vs. 25.4 W) and accuracy. 
+
+## References 
+
+[1] Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long sequences with structured state spaces. arXiv preprint arXiv:2111.00396 , 2021. ICLR 2022. [2] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. [3] Tri Dao and Albert Gu. Transformers are SSMs: Generalized models and efficient algorithms through structured state space duality. arXiv preprint arXiv:2405.21060 ,2024. [4] Ye Qiao, Zhiheng Chen, Yifan Zhang, Yian Wang, and Sitao Huang. Tellme: An efficient end-to-end ternary llm prefill and decode accelerator with table-lookup matmul on edge fpgas. In Proceedings of the 2026 ACM/SIGDA International Symposium on Field Programmable Gate Arrays , pages 247–257, 2026. [5] Yifan Zhang, Zhiheng Chen, Ye Qiao, and Sitao Huang. PD-Swap: Prefill-decode logic swapping for end-to-end LLM inference on edge FPGAs via dynamic partial reconfiguration. arXiv preprint arXiv:2512.11550 , 2025. [6] Ye Qiao, Zhiheng Chen, Yian Wang, Yifan Zhang, Yunzhe Deng, and Sitao Huang. Cobra: Algorithm-architecture co-optimized binary transformer accelerator for edge inference. In 2025 IEEE/ACM International Conference On Computer Aided Design (ICCAD) , pages 1–8. IEEE, 2025. [7] Saptarshi Mitra, Rachid Karami, Haocheng Xu, Sitao Huang, and Hyoukjun Kwon. Characterizing state space model (ssm) and ssm-transformer hybrid language model performance with long context length. arXiv preprint arXiv:2507.12442 ,2025. [8] Jinhao Li, Shan Huang, Jiaming Xu, Jun Liu, Li Ding, Ningyi Xu, and Guohao Dai. Marca: Mamba accelerator with reconfigurable architecture. In Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design , ICCAD ’24, New York, NY, USA, 2025. Association for Computing Machinery. [9] Jinhao Li, Shan Huang, Jiaming Xu, Jun Liu, Ningyi Xu, and Guohao Dai. Marca-v2: Mamba accelerator with complementary state space model sparsity and reconfigurable architecture. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , pages 1–1, 2025. [10] Rui Wei, Shijie Xu, Liang Zhong, Zhibo Yang, Qing Guo, Yuxin Wang, Runsheng Wang, and Ming Li. LightMamba: Efficient Mamba acceleration on FPGA with quantization and hardware co-design. arXiv preprint arXiv:2501.12345 , 2025. DAC 2025. [11] Aotao Wang, Haikuo Shao, Shaobo Ma, and Zhongfeng Wang. Fastmamba: A high-speed and efficient mamba accelerator on fpga with accurate quantization, 2025. [12] Linfeng Zhong, Songqiang Xu, Huifeng Wen, Tong Xie, Qingyu Guo, Yuan Wang, and Meng Li. Specmamba: Accelerating mamba inference on fpga with speculative decoding, 2025. [13] Yian Wang, Ye Qiao, Sitao Huang, and Hyoukjun Kwon. APEX-Q: Arbitrary-dimension product-EXtension quantization for accelerated LLM deployment. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence , 2026. [14] Ye Qiao and Sitao Huang. Q-ROAR: Outlier-aware rescaling for RoPE posi-tion interpolation in quantized long-context LLMs. In Proceedings of the AAAI Conference on Artificial Intelligence , 2026. [15] Zhihang Yuan, Yuzhang Shang, Yue Song, Dawei Yang, Qiang Wu, Yan Yan, and Guangyu Sun. Asvd: Activation-aware singular value decomposition for compressing large language models, 2025. [16] Xin Wang, Yu Zheng, Zhongwei Wan, and Mi Zhang. Svd-llm: Truncation-aware singular value decomposition for large language model compression, 2025. [17] Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The lambada dataset: Word prediction requiring a broad discourse context, 2016. [18] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? arXiv preprint arXiv:1905.07830 , 2019. [19] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 , 2018. [20] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Wino-grande: An adversarial winograd schema challenge at scale. Communications of the ACM , 64(9):99–106, 2021. [21] Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a suit of armor conduct electricity? a new dataset for open book question answering. 
+
+arXiv preprint arXiv:1809.02789 , 2018. [22] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models. arXiv preprint arXiv:1609.07843 , 2016.

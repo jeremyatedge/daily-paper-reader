@@ -1,0 +1,671 @@
+Title: GraphIR: Architecture-Level Search States for LLM-Guided Neural Architecture Evolution
+
+URL Source: https://arxiv.org/pdf/2608.01633v1
+
+Published Time: Tue, 04 Aug 2026 02:09:48 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# GraphIR: Architecture-Level Search States for LLM-Guided Neural Architecture Evolution 
+
+## Zhen Liu ∗1, Wanqi Zhou ∗1, Shuanghao Bai 1,Yuhan Liu 2, Jinjun Wang 1, Jingwen Fu 3,4 †
+
+1National Key Laboratory of Human-Machine Hybrid Augmented Intelligence, and Institute of Artificial Intelligence and Robotics, Xi’an Jiaotong University 
+
+2MiLM Plus, Xiaomi Inc. 
+
+3Zhongguancun Academy 
+
+4Zhongguancun Institute of Artificial Intelligence fujingwen@bza.edu.cn 
+
+Abstract 
+
+Large language models (LLMs) enable neural architecture search (NAS) directly over executable neural network pro-grams. However, code-level flexibility does not provide the architecture state needed for effective mutation: LLMs must infer tensor dependencies, editable components, and com-patibility constraints from implementation details. To ad-dress this representation mismatch, we propose GraphIR, an architecture-aware intermediate representation that supple-ments executable programs with a mutation-aligned candi-date state. GraphIR organizes each candidate through three complementary views: a computation skeleton describing tensor flow, a mutation surface exposing editable mod-ules and operations, and a validity envelope capturing in-terface contracts, propagated shapes, and downstream de-pendencies. To evaluate our method, we construct NAS-Dependency , a 120-question benchmark covering six com-plementary dependency-reasoning dimensions. The diagnos-tic shows that GraphIR is particularly effective at identifying exact producer occurrences, tracing dependency propagation, and diagnosing interface and failure risks. Across six down-stream benchmarks including CLRS, GraphIR achieves the best overall search performance while maintaining compa-rable model size and favorable end-to-end NAS efficiency when integrated into OpenEvolve. These results show that a mutation-oriented architecture state provides an effective in-terface between executable neural programs and LLM-guided architecture evolution. 
+
+## Introduction 
+
+Neural architecture design is fundamentally a problem of representation. A candidate architecture is not merely an ex-ecutable program, but a structured computation whose mod-ules, connections, tensor transformations, and output heads jointly determine its inductive bias, computational cost, and task performance. Neural architecture search (NAS) auto-mates this design process by exploring candidate architec-tures under a task-specific evaluation budget (Elsken, Met-zen, and Hutter 2019; White et al. 2023). Classical NAS methods make the candidate representation explicit through 
+
+> ∗
+
+These authors contributed equally. 
+
+> †
+
+Corresponding author. Code-only Candidate Program GraphIR State Representation Mismatch               
+
+> 1class Net (nn.Module): 2def __init__(self, in_dim, hid): 3super().__init__() 4self.fc1 == nn.Linear (in_dim, hid) 5self.fc2 == nn.Linear (hid, 1) 67def forward(self, x): 8h = self.fc1 (x) 9y = self.fc2 (h) 10 return y
+> Architecture
+> Data flow
+> I/O contracts
+> Implicit State
+> Extract
+> Static analysis Execution tracing
+> Render
+> Code
+> LLM Searching
+> GraphIR State compact & mutation-aware
+> Skeleton Mutation Validity
+>  ") +$)%$ ) #  $'") +&'%'#$%)(!()  *$' &$+%"+ +%'%#&) $
+> 
+> ))'
+> (a) (b)
+
+Figure 1: Overview and evaluation of GraphIR. (a) GraphIR extracts a compact, mutation-aligned architecture state from executable neural network code, exposing its computation skeleton, mutation surface, and validity envelope for LLM-guided search. (b) Cross-task efficiency–performance com-parison on 20News, CartPole-v1, Yeast, and Breast Cancer Wisconsin Diagnostic. Performance is normalized by the best result on each benchmark, while end-to-end NAS time is normalized by the fastest method and aggregated using the geometric mean. Points closer to the upper-left corner are preferred. Detailed experiment results are provided in the supplementary material. cell graphs, operation sets, hierarchical encodings, or ar-chitecture grammars, and optimize over this representation using reinforcement learning (Zoph and Le 2017), evolution-ary search (Real et al. 2019), or differentiable optimization (Liu, Simonyan, and Yang 2019). Such representations pro-vide typed edit choices, validity constraints, and clear mu-arXiv:2608.01633v1 [cs.LG] 3 Aug 2026 tation semantics, but restrict search to a manually defined architecture space. Recent LLM-guided NAS methods pursue a more open-ended alternative by allowing large language models to pro-pose architecture edits in code, natural language, or graph form (Chen, Dohan, and So 2023; Zhou et al. 2025; Liu, Liu, and Fu 2026). In code-based NAS, the candidate is an executable neural network program, allowing the LLM to modify modules, branches, tensor operations, normalization layers, residual paths, gating mechanisms, pooling opera-tions, and prediction heads through ordinary source-level edits. This flexibility substantially expands the search space beyond a fixed NAS grammar. However, it also introduces a representation mismatch: executable code provides an open-ended mutation substrate, but leaves the architecture state required for mutation largely implicit, as illustrated in Fig-ure 1(a). This obscures mutation targets and dependencies. The central difficulty is that source code is optimized for execution, rather than architecture mutation. It interleaves architecture-level decisions with implementation details such as variable names, helper functions, tensor reshaping, mod-ule construction, and evaluator interfaces. Consequently, the LLM must infer which components are meaningful mutation targets, how tensor dimensions are coupled, which down-stream modules depend on an edited representation, and which input-output contracts must remain unchanged. This burden can produce syntactically valid but architecturally inconsistent candidates, for example through incompatible tensor shapes or modified evaluator-facing outputs. It can also produce executable but ineffective mutations that change implementation details without introducing a meaningful ar-chitectural variation. This paper asks: What candidate state should an LLM observe when mutating an executable neural architecture? 
+
+We argue that a mutation-aligned state needs three com-plementary views. The computation skeleton traces tensor flow from inputs to outputs. The mutation surface identifies editable modules, hyperparameters, and tensor operations. The validity envelope records input-output contracts, tensor shapes, dimension couplings, and downstream dependencies. Together, they define what may change, what must remain valid, and how local edits affect the architecture. We therefore propose GraphIR, an architecture-aware in-termediate representation for LLM-guided code-based NAS. GraphIR preserves the source program as the executable and editable search object, while supplementing it with an ex-plicit architecture-level candidate state. Given a neural net-work program, GraphIR combines static analysis and exe-cution tracing to extract architecture-relevant modules, ten-sor operations, structural facts, input-output contracts, run-time dataflow, and propagated shapes. The resulting state is rendered as compact textual context and appended to the mutation prompt. As shown in Figure 1(a), the source code remains the primary editing anchor, while GraphIR provides complementary structural guidance for architecture mutation. This separation preserves open-ended code editing while making architecture reasoning explicit. GraphIR differs from both generic program graphs and deep-learning compiler intermediate representations. Ab-stract syntax trees, control-flow graphs, data-flow graphs, program-dependence graphs, and code property graphs are designed primarily for program-analysis questions, such as variable definitions, control dependencies, and function calls. Deep-learning IRs are typically designed for model trac-ing, transformation, interchange, lowering, or execution op-timization. In contrast, GraphIR targets mutation-specific questions: which components constitute the architecture, which operations are editable, which interfaces must remain valid, and which downstream components are affected by a local edit. It is therefore not a general-purpose code graph, but a mutation-aligned architecture state for LLM-guided search. To isolate this representation mechanism, we intro-duce NAS-Dependency , a 120-question benchmark covering six dimensions of architecture-level dependency reasoning. Compared with code-only prompts and alternative structured representations, GraphIR achieves the highest macro average and the best or tied-best result on four dimensions, with its main advantages appearing in producer localization, depen-dency propagation, and interface-failure diagnosis. We further evaluate GraphIR on six downstream architecture-search benchmarks spanning five domains: CLRS for algorithmic reasoning, MNIST1D-Shuffle for 1D sequence classification (Greydanus and Kobak 2024), 20 Newsgroups for text classification (Mitchell 1997), CartPole-v1 for reinforcement-learning control (Towers et al. 2024), and Yeast (Nakai 1991) and Breast Cancer Wisconsin Di-agnostic (Wolberg et al. 1993) for scientific tabular clas-sification. On the 30-task CLRS suite, GraphIR achieves the highest average accuracy of 89 .21% while maintain-ing comparable model size. Controlled MNIST1D-Shuffle experiments further show that GraphIR outperforms alter-native structured representations in both in-distribution and out-of-distribution accuracy. On the remaining four bench-marks, it achieves the best task performance in every case and the lowest aggregated relative end-to-end NAS time, as summarized in Figure 1(b). Together, these results demon-strate that mutation-aligned architecture states improve both the reasoning mechanism and downstream effectiveness of LLM-guided architecture evolution. Our contributions are as follows: 
+
+• We identify a representation mismatch in LLM-guided code-based NAS: executable code supports open-ended mutation but does not explicitly expose the architecture state required for effective editing. 
+
+• We propose GraphIR, a compact architecture-aware rep-resentation that supplements executable neural programs with a computation skeleton, mutation surface, and valid-ity envelope. 
+
+• We introduce NAS-Dependency for architecture-level rea-soning and evaluate GraphIR across six downstream benchmarks. The results show consistent improvements in dependency reasoning, search performance, and end-to-end NAS efficiency. Related Work 
+
+Neural architecture search and candidate representa-tions. NAS is commonly organized around three compo-nents: the search space, the search strategy, and the per-formance estimation strategy (Elsken, Metzen, and Hutter 2019; White et al. 2023). Classical NAS methods instanti-ate these components through reinforcement learning, evolu-tionary search, differentiable relaxation, Bayesian optimiza-tion, and predictor-guided search (Zoph and Le 2017; Real et al. 2019; Liu, Simonyan, and Yang 2019; Kandasamy et al. 2018; White, Neiswanger, and Savani 2021). A common fea-ture of these methods (Fu, Zhu, and Li 2019; Fu et al. 2023, 2024, 2026) is that the candidate representation is explicitly specified in advance, for example as operation choices on a cell graph, discrete architectural hyperparameters, depth-width configurations, or continuous architecture parameters. Such representations make search states, validity rules, and mutation operators well defined. However, this structure is obtained by constraining candidates to a manually designed search space. Our work studies the complementary setting where the candidate is an executable neural network pro-gram, and asks what architecture-level state should be ex-posed to an LLM when the search space is no longer closed by a predefined grammar. 
+
+Program-based and LLM-guided architecture evolution. 
+
+Recent work (Liu et al. 2026b,c) has explored the use of large language models for neural architecture design and evolu-tion. EvoPrompting uses language models as adaptive muta-tion and crossover operators for code-level NAS (Chen, Do-han, and So 2023), while LLMatic combines LLM-generated code variations with quality-diversity optimization (Nasir et al. 2024). Other works use LLMs to infer transferable design principles (Zhou et al. 2025), coordinate multiple architecture-design agents with graph-based architecture rep-resentations (Yang et al. 2025b; Liu et al. 2026a), encode architectures as unified numerical strings for cross-domain search (Hu et al. 2025), or condition code edits on structured functional factors (Liu, Liu, and Fu 2026). These studies demonstrate that LLMs can inject useful architectural priors into NAS, but they also reveal a central representation issue: the effectiveness of LLM-guided search depends strongly on what candidate state is presented to the model. In contrast to methods that rely primarily on raw source code, natural-language principles, graph-only architectures, or numerical encodings, GraphIR focuses on code-based NAS and sup-plements the editable program with an architecture-aware intermediate representation for mutation reasoning. 
+
+Graph-based architecture representations and struc-tured code contexts. Graph-based representations have been used in NAS to encode candidate architectures for per-formance prediction or search acceleration. Representative methods such as NGE, GATES, and NASGEM represent neural architectures as graphs and learn architecture embed-dings or graph similarities for predictor- or estimator-based NAS (Li, Gong, and Zhu 2020; Ning et al. 2020; Cheng et al. 2021). In contrast, our goal is not to encode a pre-defined architecture graph into an embedding, but to ex-tract mutation-relevant structure from executable neural net-work code. Structured code representations have also been used to support LLM-based code understanding and gener-ation, including data-flow-aware code models, code context graphs, graphical code retrieval, and repository-level code graphs (Guo et al. 2021; Liu et al. 2024; Du et al. 2024; Ouyang et al. 2025). However, these representations target general program reasoning rather than neural architecture mutation. GraphIR differs by constructing a tensor-aware architecture state that exposes modules, tensor operations, executable tensor dataflow, shapes, mutation sites, and com-patibility constraints, enabling safe LLM-guided architecture modification beyond fixed NAS encodings. 
+
+## Problem Formulation 
+
+We consider LLM-guided neural architecture evolution over executable neural network programs. At iteration t, the algo-rithm maintains an archive 
+
+At = {(Pi, s i)}Nt
+
+> i=1
+
+, (1) where Pi denotes a previously evaluated program and si
+
+is its score. A parent program P par  
+
+> t
+
+is selected from the programs in At, and an LLM mutation operator proposes a child program: 
+
+Pt+1 ∼ πLLM (· | P (P par  
+
+> t
+
+, H t)) , (2) where Ht denotes evaluation feedback and P(·) is the muta-tion prompt. The child program is then validated, evaluated, and inserted into the archive according to the update rule. Unlike conventional NAS, where mutation usually oper-ates on a predefined architecture encoding and then instan-tiates executable code, LLM-guided code evolution directly mutates the source program. Although P par  
+
+> t
+
+implicitly con-tains the architecture, its NAS-relevant structure is not explic-itly exposed to the LLM. We therefore introduce an extractor 
+
+zt = ϕ(P par  
+
+> t
+
+), (3) where zt is the architecture-level state rendered by GraphIR. It summarizes information such as modules, execution flow, mutable components, and interface constraints. The mutation process is then augmented as 
+
+Pt+1 ∼ πLLM (· | P (P par  
+
+> t
+
+, z t, H t)) . (4) Here, zt supplements the source code with explicit architecture-level information for valid and useful mutation. 
+
+## Method 
+
+Overview 
+
+LLM-guided code-based NAS searches directly over ex-ecutable neural network programs. This program space permits open-ended architectural modifications, but the architecture state of a candidate remains implicit in implementation-level code. Before proposing a mutation, the LLM must therefore infer the model interface, architecture components, tensor transformations, and dataflow dependen-cies from source syntax. We introduce GraphIR to expose this information as an ex-plicit architecture-level candidate state. Given a parent pro-gram P par  
+
+> t
+
+, GraphIR constructs 
+
+Gt = GraphIR ( P par  
+
+> t
+
+) , (5) where Gt contains candidate-specific architecture evidence obtained from complementary source-level and execution-grounded analyses. The source program remains the exe-cutable implementation to be modified, while Gt provides architecture-level context for mutation. The child program is generated according to 
+
+Pt+1 ∼ πLLM (· | P (P par  
+
+> t
+
+, G t, H t)) , (6) where Ht denotes the available evaluation history and P de-notes the mutation-prompt construction procedure. GraphIR is reconstructed for every generated candidate before that candidate participates in subsequent search iterations. 
+
+GraphIR State Construction 
+
+Given a candidate program P , GraphIR constructs an LLM-visible architecture state 
+
+G(P ) = ( I, O, M, T , F, E) , (7) where I and O denote the input and output interface contracts, M contains architecture modules, T contains architecture-relevant tensor operations, F contains deter-ministic structure facts, and E contains selected producer-consumer dependencies. These fields provide three complementary views of the candidate. The computation skeleton , represented by 
+
+(M, T , E), describes the main tensor transformations and their ordering. The mutation surface , represented by 
+
+(M, T , F), exposes architecture components and structural properties that may serve as grounded mutation targets. The 
+
+validity envelope , represented by (I, O, E), records the ex-ternal interface and internal dependencies that should remain compatible after mutation. The contracts I and O are constructed in two stages. GraphIR first classifies the candidate using deterministic source patterns and initializes a profile-specific default con-tract. Programs containing a registered graph-processor fac-tory, or the characteristic combination of node features, edge features, and an adjacency matrix, receive a graph-structured contract; other candidates receive the generic PyTorch con-tract. GraphIR then instantiates the candidate and synthe-sizes lightweight example inputs. For a standard model-construction interface, the input width of the first linear mod-ule is used to construct an example tensor; a predefined fea-ture width is used when this dimension cannot be inferred. PyTorch FX symbolic tracing (Reed et al. 2022) recovers the computation graph, and shape propagation annotates its nodes. Whenever observed input or output shapes are avail-able, they independently replace the corresponding default contracts. The module set M and operation set T are obtained from the editable program region using Python abstract syntax tree analysis. Constructor calls in assignment statements are matched against a fixed neural-module vocabulary, includ-ing linear, convolutional, normalization, recurrent, attention, regularization, and pooling modules. Function calls, ten-sor methods, and selected expressions are matched against a fixed operation vocabulary covering activations, shape transformations, concatenation, stacking, reductions, mask-ing, matrix multiplication, and tensor contraction. Binary Algorithm 1: GraphIR State Construction 
+
+Require: Candidate program P
+
+Ensure: GraphIR state G(P ) and rendered context C(P ) 
+
+> 1:
+
+Select the marked evolution region, or use the complete program  
+
+> 2:
+
+Initialize profile-specific contracts I and O 
+
+> 3:
+
+Extract M, T , static facts Fs, and static dependencies 
+
+D 
+
+> 4:
+
+Instantiate the candidate and synthesize example inputs  
+
+> 5:
+
+Recover FX dependencies Efx and observed contracts through symbolic tracing and shape propagation  
+
+> 6:
+
+Refine I and O with observed contracts  
+
+> 7:
+
+Generate execution-grounded facts Fe 
+
+> 8:
+
+Set E ← E fx if available; otherwise set E ← D  
+
+> 9:
+
+Set F ← Dedup( Fs ∪ F e) 
+
+> 10:
+
+Assemble and render G(P ) = ( I, O, M, T , F, E) 
+
+> 11:
+
+return G(P ) and C(P )
+
+addition, loops, and conditional statements are additionally recorded as architecture-relevant operations. The structure facts F are generated through fixed trigger-to-label rules rather than LLM summarization. Source-level rules map recognized modules, operations, and lexical pat-terns to structural annotations. For example, convolutional modules yield a convolution/local-mixing fact, recurrent modules yield a state-update fact, and explicit addition yields an additive-merge fact. Execution-grounded rules sim-ilarly inspect the traced FX graph to identify observed lin-ear, convolutional, recurrent, shape-transform, and additive-merge operations. The resulting source-level and execution-grounded facts are merged and deduplicated. The dependency set E prioritizes producer-consumer edges recovered from the traced FX graph. If executable trac-ing is unavailable, GraphIR uses conservative assignment-level dependencies obtained from static analysis, where sym-bols referenced on the right-hand side of an assignment are connected to its target. Module-constructor dependen-cies and non-tensor attribute initialization are excluded to reduce spurious edges. Algorithm 1 summarizes the construction procedure. The resulting state is serialized using a fixed field order: in-put contract, output contract, architecture modules, architec-ture operations, structure facts, and architecture graph edges. Executable FX edges are preferred during rendering; static dependencies are shown only when executable edges are un-available. Lookup and indexing nodes that do not convey useful architectural structure are filtered, and the number of rendered entities is bounded to keep the mutation context compact. Node-level shape metadata and profile labels are used internally but are not emitted as separate fields in the compact LLM-visible state. 
+
+GraphIR-Guided Architecture Mutation 
+
+At iteration t, the mutation prompt is constructed from the parent program P par  
+
+> t
+
+, its GraphIR state Gt, and the available evaluation history Ht. The source program provides the exact implementation to be edited, GraphIR exposes its architec-Method Typed Edge Fan-out Partition Producer Next-hop Interface/Failure Macro Avg. Code Only 0.5128 0.7052 0.5769 0.3077 0.1667 0.1667 0.4060 CodeRAG-style 0.5385 0.6867 0.6376 0.2308 0.2556 0.1667 0.4193 CPG-style 0.5128 0.7697 0.6107 0.4615 0.3056 0.1667 0.4712 GraphCode-style 0.5128 0.7316 0.5769 0.4615 0.2500 0.1667 0.4499 GraphIR 0.5385 0.7138 0.6218 0.5385 0.3611 0.2500 0.5040 
+
+Table 1: Results on NAS-Dependency, constructed from OpenEvolve evolution traces in the MNIST1D-Shuffle CNN setting. Typed Edge reports relation accuracy; Fan-out and Next-hop report set F1; Partition reports macro-F1; Producer and Interface/-Failure report exact match. Macro Avg. is the unweighted mean over the six normalized task metrics. Method Model Size ↓ DFS Acc. ↑ Avg. Acc. ↑ Avg. Acc. w/o DFS ↑ Wins ↑
+
+EvoPrompting † (Chen, Dohan, and So 2023) 478.2K 68.14 80.88 81.32 2/30 Triplet-GMPNN † (Ibarz et al. 2022) 467.3K 47.79 75.98 76.95 1/30 OpenEvolve (Sharma 2025) 498.6K 32.54 62.69 63.73 1/30 Spark (Liu, Liu, and Fu 2026) 470.2K 83.74 83.91 83.92 5/30 OpenEvolve+GraphIR (ours) 467.4K 94.68 89.21 89.03 22/30 
+
+Table 2: CLRS downstream architecture-evolution results. EvoPrompting † and Triplet-GMPNN †, we report the per-task CLRS results from their original papers. All other methods are evaluated on CLRS-DFS under Spark’s experimental setting and evaluated zero-shot on all 30 tasks. Model Size denotes the average number of parameters. Avg. Acc. w/o DFS measures transfer to the remaining 29 tasks. Detailed results on each task can be seen in the supplementary material. ture components, interface contracts, and producer-consumer relations, and the evaluation history provides feedback from previously evaluated candidates. In the primary configuration, the source program is pre-sented before the GraphIR context so that the executable implementation remains the editing anchor. GraphIR is sub-sequently provided as supplementary architecture-level ev-idence. The reverse ordering is evaluated separately as an ablation. Mutation remains open-ended and is performed directly in program space. GraphIR does not impose a predefined architecture grammar or a fixed set of mutation operators. The LLM may modify module types, hidden dimensions, branches, tensor transformations, aggregation mechanisms, residual paths, recurrent structures, or output heads. GraphIR instead makes the current architecture state explicit, allowing the LLM to identify meaningful mutation targets and reason about the interfaces and downstream consumers affected by a proposed edit. After the child program is generated, the underlying evo-lution framework validates and evaluates it and updates the candidate archive. GraphIR is then reconstructed from the child program, so newly introduced modules, operations, contracts, structure facts, and dataflow dependencies become available in subsequent mutation iterations. 
+
+## Experiments 
+
+We organize our experiments around three research ques-tions that examine the reasoning mechanism, downstream effectiveness, and design choices of GraphIR: 
+
+• RQ1: What architecture-level information can LLMs effectively utilize from GraphIR? We evaluate whether GraphIR helps an LLM recover the typed dependencies, producer occurrences, propagation paths, and interface risks required for architecture mutation. 
+
+• RQ2: Does GraphIR improve LLM-guided neural ar-chitecture evolution? We compare GraphIR with exist-ing LLM-guided search methods and alternative struc-tured representations across diverse architecture search tasks, considering search performance, model size, and end-to-end NAS time. 
+
+• RQ3: Which components and usage choices of GraphIR are responsible for the improvement? We examine robustness across random seeds and architecture families, and ablate the source–state ordering, node facts, and edge relations used in the rendered architecture state. RQ1 isolates whether the representation exposes useful architecture information, RQ2 tests whether this reasoning advantage translates into better search outcomes, and RQ3 identifies the design choices underlying the observed im-provements. 
+
+Experimental Setup 
+
+All architecture-evolution experiments are implemented within the OpenEvolve framework (Sharma 2025), with Qwen3-Plus used to generate candidate programs. Unless otherwise specified, compared configurations share the same search and evaluation procedures and differ only in the mu-tation context supplied to the LLM. Since the three research questions use different tasks and metrics, their specific set-tings are introduced in the corresponding subsections. Backbone Seeds n Acc. ↑ Model Size ↓ Invalid ↓ GPU-hours ↓                                                
+
+> CNN 42–51 10 71.55 ±2.14 28.74K ±17.84K 19.80 1.639 ±0.089 MLP 42–47 670.42 ±0.79 23.70K ±5.08K 4.50 1.048 ±0.049 GRU 42–47 666.18 ±3.32 7.35K ±13.99K 9.50 1.557 ±0.076 Linear 42–47 656.38 ±1.66 1.40K ±0.43K 4.83 0.829 ±0.089
+
+Table 3: Robustness across backbone-specific search spaces and random seeds on MNIST1D-Shuffle. Results report mean ±
+
+standard deviation over independent architecture-evolution runs. Qwen3-Plus (Yang et al. 2025a) is used as the evaluation LLM.                         
+
+> Prompt Order Acc. ↑Size ↓Invalid ↓Shape Err. ↓GPU-hours ↓
+> Code →GraphIR 74.20 26.49K 21 61.605
+> GraphIR →Code 66.30 35.55K 18 17 2.326
+
+Table 4: Effect of source–state ordering in MNIST1D-Shuffle CNN setting. Results report the best observed run for each ordering. NAS time denotes the end-to-end wall-clock time of the complete search pipeline on a system equipped with a single NVIDIA RTX 3090 GPU. 
+
+Evaluation metrics. We report test accuracy ( Acc. ) on the standard test set and out-of-distribution accuracy ( OOD Acc. )on the corresponding distribution-shifted test set. Model Size 
+
+denotes the total number of parameters in the evaluated can-didate architecture, reported in thousands. Invalid counts generated candidates that cannot complete execution or eval-uation, while Shape Err. counts candidates that fail because of incompatible tensor shapes. Stage-2 Eval. denotes the number of candidates admitted to full evaluation after pre-liminary validation. GPU-hours reports the end-to-end wall-clock time of the complete search pipeline, including candi-date generation, program analysis, validation, and candidate evaluation, on a system equipped with a single NVIDIA RTX 3090 GPU. Unless otherwise specified, multi-run results are reported as mean and standard deviation. 
+
+RQ1: Architecture-Level Reasoning 
+
+To examine whether existing structured code contexts ex-pose the architecture dependencies required for NAS edit-ing, we construct NAS-Dependency , a benchmark generated from evolved CNN programs in the MNIST1D-Shuffle NAS setting. It contains 120 questions covering six complemen-tary dimensions: typed-edge recognition tests relation typ-ing, value fan-out recovery tests downstream coverage, de-pendency partitioning tests structural grouping, producer-occurrence identification tests exact producer localization, dependency next-hop prediction tests local dependency prop-agation, and interface or failure diagnosis tests compatibility-risk identification. We compare the code-only OpenEvolve context with three generic code representations adapted to NAS, namely CodeRAG-style (Du et al. 2024), CPG-style (Yamaguchi et al. 2014), and GraphCode-style (Liu et al. 2024) , as well as GraphIR. We use the suffix “-style” because these baselines adapt the representation principles of the original methods to NAS candidate programs rather than reproducing their complete systems. The compared settings differ only in the additional context provided to the LLM. As shown in Table 1, GraphIR achieves the highest macro average and the best or tied-best result on four of the six dimensions. Its advantages concentrate on producer-occurrence identification, dependency next-hop prediction, and interface or failure diagnosis, which respectively require locating the exact producer, tracing downstream dependency propagation, and identifying potentially incompatible inter-faces. These results suggest that GraphIR provides more than a generic code graph: it exposes an occurrence-aware and interface-aware architecture state tailored to mutation. CPG-style remains stronger on fan-out recovery, while CodeRAG-style performs best on dependency partitioning, indicating that generic structured contexts remain competitive for local structural reasoning. Detailed task definitions and represen-tative cases are provided in the supplementary material. 
+
+RQ2: Architecture Evolution Performance 
+
+Results on CLRS. We evaluate whether the architecture-level reasoning improvements observed on NAS-Dependency translate into improved architecture evolution performance on CLRS (Velickovic et al. 2022), a benchmark comprising 30 algorithmic reasoning tasks. We compare against SPARK (Liu, Liu, and Fu 2026), EvoPrompt-ing (Chen, Dohan, and So 2023), OpenEvolve (Sharma 2025), and Triplet-GMPNN (Ibarz et al. 2022). As shown in Table 2, OpenEvolve+GraphIR achieves the best DFS accuracy and the highest average accuracy across all 30 CLRS tasks, while maintaining a model size comparable to the original Triplet-GMPNN. Excluding the DFS search task, it reaches an average accuracy of 89 .03% and obtains the best result on 22 of the 30 tasks, demonstrating that the architectures discovered with GraphIR transfer effectively beyond the task used for evolution. 
+
+Comparison with alternative structured representations. 
+
+To isolate the effect of the architecture representation, we retain the same OpenEvolve pipeline, mutation prompt, LLM, search budget, and evaluation protocol, and replace only the GraphIR state with CodeGRAG-style, CPG-style, or GraphCode-style representations. As shown in Table 6, GraphIR achieves the highest average in-distribution and OOD accuracies, reaching 71 .55% and 68 .68% , respectively. Variant Node Facts Edge Relations Max Test Acc. ↑ Model Size ↓ Invalid ↓ Shape Mismatch ↓ Runtime (GPU-h) ↓                                                   
+
+> GraphIR ✓✓73 .53 ±0.83 30 .86 ±8.06 K19 .67 ±7.09 7.33 ±5.13 1.629 ±0.098
+> GraphIR w/o edge relations ✓×71 .53 ±0.40 23 .61 ±16 .41 K14 .67 ±7.77 14 .33 ±8.33 2.034 ±0.287
+> GraphIR w/o node facts ×✓67 .13 ±3.20 22 .18 ±13 .37 K16 .67 ±6.51 16 .67 ±6.51 2.216 ±0.223
+
+Table 5: Ablation of the information retained in the GraphIR state in the MNIST1D-Shuffle CNN setting. Results are reported as mean ± standard deviation over three random seeds.                                                                                        
+
+> Method Runs Acc. ↑OOD Acc. ↑Params ↓Invalid ↓Shape Err. ↓GPU-hours (h) ↓
+> Initial –54.70 –5.21K –––OpenEvolve 159.10 –5.36K ––1.270 CodeGRAG-style 366 .40 ±3.57 64 .87 ±2.75 15 .27 ±9.70 K20 .33 7.67 1.621 ±0.153
+> CPG-style 370 .10 ±3.47 67 .95 ±3.12 21 .52 ±3.84 K22 .67 11 .33 2.124 ±0.184
+> GraphCode-style 368 .03 ±1.91 66 .20 ±1.02 18 .34 ±8.93 K15 .67 4.67 2.411 ±0.252
+> GraphIR 10 71 .55 ±2.14 68 .68 ±2.53 28 .74 ±17 .84 K19 .80 6.80 1.639 ±0.089
+
+Table 6: Comparison with alternative structured representations in the MNIST1D-Shuffle CNN setting. All methods use the same OpenEvolve pipeline, Qwen3-Plus mutation model, prompt template, evaluation protocol, and budget of 100 evolution iterations; only the structured representation supplied to the LLM is replaced. Results for the structured representations report mean and standard deviation over three seeds for CodeGRAG-style, CPG-style, and GraphCode-style, and ten seeds for GraphIR. NAS time denotes the end-to-end wall-clock time of the complete search pipeline on a system equipped with a single NVIDIA RTX 3090 GPU. Bold indicates the best result among the structured representations. It also requires substantially less end-to-end NAS time than CPG-style and GraphCode-style. These results indicate that the gains of GraphIR do not arise merely from providing an additional graph, but from exposing a mutation-aligned architecture state tailored to neural architecture evolution. 
+
+RQ3: Robustness and Ablation Studies 
+
+We first examine the robustness of GraphIR across random seeds and network backbones. We then study two design choices: the ordering of the source program and architecture state, and the information retained in the state. 
+
+Robustness across search spaces and random seeds. We evaluate the robustness of GraphIR to both search stochastic-ity and architectural heterogeneity through independent evo-lution runs across multiple random seeds and four backbone-specific search spaces on MNIST1D-Shuffle: CNN, MLP, GRU, and linear models. As shown in Table 3, GraphIR maintains relatively consistent performance across repeated runs for CNN, MLP, GRU, and linear architectures. 
+
+Source–state ordering. We compare a code-first prompt, where the source program precedes GraphIR, with the reverse state-first ordering. The code-first configuration achieves a substantially higher best test accuracy ( 74 .20% 
+
+vs. 66 .30% ), while producing fewer shape mismatches ( 6 vs. 
+
+17 ) and requiring less end-to-end NAS GPU time ( 1.605 vs. 
+
+2.326 hours). Although the state-first ordering yields slightly fewer invalid candidates, its lower accuracy and higher shape mismatch rate indicate that presenting the architecture state before the executable program may weaken the code context needed for reliable editing. These results support using the source program as the primary editing anchor, with GraphIR serving as supplementary architecture-level guidance. 
+
+Ablation on architecture-state content. We separately ablate two components of the GraphIR state. Node facts de-scribe architecture entities and their local attributes, includ-ing module or tensor-operation types and available shape or interface information. Edge relations encode the producer-consumer and dependency links among these entities. As shown in Table 5, removing either component degrades search performance and increases shape mismatches. The larger drop after removing node facts suggests that explicit architecture semantics are particularly important for identify-ing meaningful mutation targets, while edge relations support dependency-aware and structurally compatible edits. Retain-ing both components yields the highest accuracy and the lowest runtime. 
+
+## Conclusion 
+
+We introduced GraphIR, a mutation-aligned architecture rep-resentation for LLM-guided code-based NAS. Instead of re-lying on source code alone, GraphIR makes the candidate architecture explicit through its computation skeleton, mu-tation surface, and validity envelope, while preserving the program as the editable search object. Experiments on NAS-Dependency and six downstream architecture-search bench-marks show that GraphIR improves architecture reasoning, search quality, and end-to-end efficiency across diverse set-tings. In particular, it helps LLMs localize producers, trace dependency propagation, and identify interface risks that are difficult to recover from implementation details alone. These findings suggest that the representation of candidate architec-tures is a central design choice in LLM-guided NAS, and that mutation-aligned states provide a practical interface between executable neural programs and architecture evolution. References 
+
+Chen, A.; Dohan, D.; and So, D. R. 2023. EvoPrompt-ing: Language Models for Code-Level Neural Architecture Search. In NeurIPS .Cheng, H.; Zhang, T.; Zhang, Y.; Li, S.; Liang, F.; Yan, F.; Li, M.; Chandra, V.; Li, H.; and Chen, Y. 2021. NASGEM: Neural Architecture Search via Graph Embedding Method. In AAAI , 7090–7098. AAAI Press. Du, K.; Rui, R.; Chai, H.; Fu, L.; Xia, W.; Wang, Y.; Tang, R.; Yu, Y.; and Zhang, W. 2024. CodeGRAG: Extracting Composed Syntax Graphs for Retrieval Augmented Cross-Lingual Code Generation. CoRR , abs/2405.02355. Elsken, T.; Metzen, J. H.; and Hutter, F. 2019. Neural Archi-tecture Search: A Survey. J. Mach. Learn. Res. , 20: 55:1– 55:21. Fu, J.; Liu, Z.; Liu, Y.; Zhang, H.; and Zheng, N. 2026. Overcoming the Weakest-Link Effect in LLM-Driven Pro-gram Optimization via Heterogeneous Edit Recombination. arXiv:2607.28947. Fu, J.; Wang, B.; Zhang, H.; Zhang, Z.; Chen, W.; and Zheng, N. 2023. When and Why Momentum Accelerates SGD: An Empirical Study. arXiv:2306.09000. Fu, J.; Zhang, X.; Wang, Y.; Zeng, W.; and Zheng, N. 2024. Understanding Mobile GUI: From Pixel-Words to Screen-Sentences. Neurocomputing , 601: 128200. Fu, J.; Zhu, X.; and Li, Y. 2019. Recognition of Sur-face Defects on Steel Sheet Using Transfer Learning. arXiv:1909.03258. Greydanus, S.; and Kobak, D. 2024. Scaling down deep learning with MNIST-1D. In Proceedings of the 41st Inter-national Conference on Machine Learning .Guo, D.; Ren, S.; Lu, S.; Feng, Z.; Tang, D.; Liu, S.; Zhou, L.; Duan, N.; Svyatkovskiy, A.; Fu, S.; Tufano, M.; Deng, S. K.; Clement, C. B.; Drain, D.; Sundaresan, N.; Yin, J.; Jiang, D.; and Zhou, M. 2021. GraphCodeBERT: Pre-training Code Representations with Data Flow. In ICLR . OpenReview.net. Hu, Y.; Liu, J.; Wang, K.; Zheng, J.; Shi, W.; Zhang, M.; Dou, Q.; Liu, R.; Zhou, A.; and Li, H. 2025. LM-Searcher: Cross-domain Neural Architecture Search with LLMs via Unified Numerical Encoding. In Christodoulopoulos, C.; Chakraborty, T.; Rose, C.; and Peng, V., eds., Proceedings of the 2025 Conference on Empirical Methods in Natural Lan-guage Processing , 9408–9421. Suzhou, China: Association for Computational Linguistics. ISBN 979-8-89176-332-6. Ibarz, B.; Kurin, V.; Papamakarios, G.; Nikiforou, K.; Ben-nani, M.; Csordás, R.; Dudzik, A. J.; Bosnjak, M.; Vitvit-skyi, A.; Rubanova, Y.; Deac, A.; Bevilacqua, B.; Ganin, Y.; Blundell, C.; and Velickovic, P. 2022. A Generalist Neural Algorithmic Learner. In Rieck, B.; and Pascanu, R., eds., 
+
+Learning on Graphs Conference, LoG 2022, 9-12 Decem-ber 2022, Virtual Event , Proceedings of Machine Learning Research, 2. PMLR. Kandasamy, K.; Neiswanger, W.; Schneider, J.; Póczos, B.; and Xing, E. P. 2018. Neural Architecture Search with Bayesian Optimisation and Optimal Transport. In NeurIPS ,2020–2029. Li, W.; Gong, S.; and Zhu, X. 2020. Neural Graph Embed-ding for Neural Architecture Search. In AAAI , 4707–4714. AAAI Press. Liu, H.; Simonyan, K.; and Yang, Y. 2019. DARTS: Dif-ferentiable Architecture Search. In ICLR (Poster) . OpenRe-view.net. Liu, W.; Yu, A.; Zan, D.; Shen, B.; Zhang, W.; Zhao, H.; Jin, Z.; and Wang, Q. 2024. GraphCoder: Enhancing Repository-Level Code Completion via Coarse-to-fine Retrieval Based on Code Context Graph. In ASE , 570–581. ACM. Liu, Y.; Fu, P.; Li, H.; Qi, Y.; Jiang, C.; Fu, J.; Liu, Z.; Qin, B.; Luo, Z.; Luan, J.; and Xin, J. 2026a. ELVA: Exploring Ranking-Driven Universal Multimodal Retrieval. Accepted by ECCV 2026, arXiv:2606.20280. Liu, Z.; Liu, Y.; and Fu, J. 2026. Structured Progressive Knowledge Activation for LLM-Driven Neural Architecture Search. arXiv preprint arXiv:2605.04057 .Liu, Z.; Liu, Y.; Wang, J.; Liu, J.; Song, W.; and Fu, J. 2026b. The Essence of Balance for Self-Improving Agents in Vision-and-Language Navigation. arXiv:2604.19064. Liu, Z.; Liu, Y.; Wang, J.; Liu, J.; Song, W.; and Fu, J. 2026c. Instruction-as-State: Environment-Guided and State-Conditioned Semantic Understanding for Embodied Naviga-tion. arXiv:2604.18223. Mitchell, T. 1997. Twenty Newsgroups. UCI Machine Learn-ing Repository. DOI: https://doi.org/10.24432/C5C323. Nakai, K. 1991. Yeast. UCI Machine Learning Repository. DOI: https://doi.org/10.24432/C5KG68. Nasir, M. U.; Earle, S.; Togelius, J.; James, S.; and Cleghorn, C. W. 2024. LLMatic: Neural Architecture Search Via Large Language Models And Quality Diversity Optimization. In 
+
+GECCO . ACM. Ning, X.; Zheng, Y.; Zhao, T.; Wang, Y.; and Yang, H. 2020. A Generic Graph-Based Neural Architecture Encod-ing Scheme for Predictor-Based NAS. In ECCV (13) , vol-ume 12358 of Lecture Notes in Computer Science , 189–204. Springer. Ouyang, S.; Yu, W.; Ma, K.; Xiao, Z.; Zhang, Z.; Jia, M.; Han, J.; Zhang, H.; and Yu, D. 2025. RepoGraph: Enhancing AI Software Engineering with Repository-level Code Graph. In ICLR . OpenReview.net. Real, E.; Aggarwal, A.; Huang, Y.; and Le, Q. V. 2019. Reg-ularized Evolution for Image Classifier Architecture Search. In AAAI , 4780–4789. AAAI Press. Reed, J. K.; DeVito, Z.; He, H.; Ussery, A.; and Ansel, J. 2022. torch.fx: Practical Program Capture and Transforma-tion for Deep Learning in Python. In MLSys . mlsys.org. Sharma, A. 2025. OpenEvolve: an open-source evolutionary coding agent. Towers, M.; Kwiatkowski, A.; Terry, J. K.; Balis, J. U.; Cola, G. D.; Deleu, T.; Goulão, M.; Kallinteris, A.; Krimmel, M.; KG, A.; Perez-Vicente, R.; Pierré, A.; Schulhoff, S.; Tai, J. J.; Tan, H.; and Younis, O. G. 2024. Gymnasium: A Standard Interface for Reinforcement Learning Environments. CoRR ,abs/2407.17032. Velickovic, P.; Badia, A. P.; Budden, D.; Pascanu, R.; Ban-ino, A.; Dashevskiy, M.; Hadsell, R.; and Blundell, C. 2022. The CLRS Algorithmic Reasoning Benchmark. In ICML ,Proceedings of Machine Learning Research, 22084–22102. PMLR. White, C.; Neiswanger, W.; and Savani, Y. 2021. BANANAS: Bayesian Optimization with Neural Architectures for Neural Architecture Search. In AAAI , 10293–10301. AAAI Press. White, C.; Safari, M.; Sukthanker, R.; Ru, B.; Elsken, T.; Zela, A.; Dey, D.; and Hutter, F. 2023. Neural architec-ture search: Insights from 1000 papers. arXiv preprint arXiv:2301.08727 .Wolberg, W. H.; Mangasarian, O. L.; Street, N.; and Street, W. N. 1993. Breast Cancer Wisconsin (Diagnostic). UCI Ma-chine Learning Repository. DOI: https://doi.org/10.24432/ C5DW2B. Yamaguchi, F.; Golde, N.; Arp, D.; and Rieck, K. 2014. Modeling and Discovering Vulnerabilities with Code Prop-erty Graphs. In IEEE Symposium on Security and Privacy ,590–604. IEEE Computer Society. Yang, A.; Li, A.; Yang, B.; Zhang, B.; Hui, B.; Zheng, B.; Yu, B.; Gao, C.; Huang, C.; Lv, C.; et al. 2025a. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Yang, Z.; Zeng, W.; Jin, S.; Qian, C.; Luo, P.; and Liu, W. 2025b. NADER: Neural Architecture Design via Multi-Agent Collaboration. In CVPR , 4452–4461. Computer Vi-sion Foundation / IEEE. Zhou, X.; Wu, X.; Feng, L.; Lu, Z.; and Tan, K. C. 2025. Design Principle Transfer in Neural Architecture Search via Large Language Models. In AAAI , 23000–23008. AAAI Press. Zoph, B.; and Le, Q. V. 2017. Neural Architecture Search with Reinforcement Learning. In ICLR . OpenReview.net. 
+
+## Supplementary Material 
+
+This supplement provides the complete construction and evaluation details for NAS-Dependency, representative benchmark instances, downstream experimental settings, and full numerical results. Sections A–C describe the benchmark and its evaluation protocol, while Sections D–F report the downstream and per-task results. 
+
+## A NAS-Dependency Benchmark 
+
+Purpose and Separation from GraphIR 
+
+NAS-Dependency evaluates whether an LLM can recover the architecture-level dependencies required for neural ar-chitecture mutation. The benchmark is generated from real parent–child records collected during code-based NAS. Two components must be clearly distinguished. Source-OracleV2 is the deterministic source analyzer used only to construct and verify the benchmark. It extracts normalized structural facts from the child program. GraphIR is the repre-sentation evaluated by the paper. It is provided to the LLM as an optional additional representation and does not participate in question construction or Gold-answer generation. 
+
+Source Records 
+
+Each source record corresponds to one parent-to-child archi-tecture transition and stores: 
+
+• the parent program; 
+
+• the child program; 
+
+• the parent-to-child source diff; 
+
+• search and evaluation metadata, including the experiment, variant, prompt order, random seed, iteration, source-record identifier, and execution status. The child program is the primary source for structural questions. The parent program and source diff are retained for provenance but are not provided to the evaluated LLM. Runtime metadata supplies independently observed shape and failure evidence for interface and failure questions. 
+
+Construction Pipeline 
+
+The construction process is organized into four deterministic stages, summarized in Table 7.      
+
+> Stage Operation
+> 1Read a parent–child NAS record, the child code, and independent evaluation evidence. 2Parse the child with SourceOracleV2 and construct canonical nodes and typed semantic edges. 3Extract unambiguous facts, generate candidate sets and validated distractors, and instantiate fixed tem-plates. 4Compute and independently verify Gold answers, then split by source record into Dev-44 and Held-out-76.
+
+Table 7: Deterministic construction pipeline for NAS-Dependency. The final dataset contains six task families and 120 QA instances. Question text, candidate sets, and Gold answers are gener-ated from the same verified fact. No LLM is used to generate questions or standard answers. 
+
+Canonical Source Graph 
+
+SourceOracleV2 first parses the child program with the Python abstract syntax tree. For parsable programs, it locates the model’s forward scope and constructs a normalized graph G = ( V, E ).
+
+Canonical nodes. The graph contains: 
+
+• tensor versions, such as h3#2 ;
+
+• operation occurrences, such as call.view@2 ;
+
+• module occurrences, such as self.conv3@1 ;
+
+• metadata operations, such as shape_index@3 ;
+
+• unary operations, such as usub@5 ;
+
+• control-flow merge nodes, such as phi:y@1 ; and 
+
+• a unified output node. Tensor-version counters distinguish repeated assignments to the same Python variable. Operation-occurrence counters distinguish repeated source-level occurrences of the same operation. Occurrence indices refer to source order, not dy-namic execution count. Typed edges. The graph uses the following semantic rela-tions: For example, the statement y = h.view(h.shape[0], -1) yields a direct 
+
+READ_VALUE edge from the current version of h to the outer view occurrence, a READ_METADATA edge from 
+
+h to the shape-index occurrence, and a PRODUCES edge from the outer view occurrence to the new tensor version of y.If AST parsing fails, SourceOracleV2 does not construct dependency-graph questions. It retains only independently verifiable failure facts, such as syntax_error , which may be used for Interface/Failure questions. 
+
+Fact Extraction 
+
+The normalized graph is converted into task-specific facts: 
+
+• DirectEdge( u, v );
+
+• ValueConsumers( x);
+
+• MetadataConsumers( x);
+
+• Producer( x);
+
+• ShortestPathNextHop( u, output) ;
+
+• observed module input and output shapes; and 
+
+• deterministic failure evidence. A fact is retained only when its nodes map back to source code, its relation is unambiguous, its candidate set is valid, and its Gold answer is unique or set-valued under a de-terministic definition. Distractors are sampled from struc-turally plausible but oracle-verified incorrect nodes, includ-ing wrong operation occurrences, metadata-only consumers, transitive descendants, nested operand calls, and nearby nodes on other branches. 
+
+Question and Gold Generation 
+
+Each task family uses a fixed template. The selected fact fills the query target and correct candidate, while validated distractors fill the remaining candidate set. The Gold JSON is computed directly from the fact. A task-specific response contract then specifies the required JSON schema, allowed identifiers, and output restrictions. After construction, a validator rereads the SourceOracleV2 graph and recomputes the Gold answer. All 120 retained QA instances pass this oracle-consistency check. This guaran-tees agreement between the Gold answer and the normalized oracle graph. It does not imply that SourceOracleV2 is a complete interpreter for arbitrary dynamic Python. 
+
+Dataset Split and Statistics 
+
+The split is performed by source record rather than by indi-vidual question. All questions generated from the same child program remain in the same split.         
+
+> Split Source records QA instances
+> Development 644 Held-out 14 76 Total 20 120
+
+Table 9: NAS-Dependency split statistics. All reported benchmark results use the held-out split. The benchmark contains six task families with 20 ques-tions per family:         
+
+> Task family Number of questions
+> Typed Edge 20 Value Fan-out 20 Partition 20 Producer Occurrence 20 Dependency Next-hop 20 Interface/Failure 20 Total 120
+
+Table 10: Task distribution in NAS-Dependency. 
+
+Task Definitions and Metrics 
+
+Each task also reports strict exact match, which equals one only when the entire QA instance is answered correctly. Edge type Meaning 
+
+READ_VALUE The target operation directly reads the numerical value of the source tensor. 
+
+READ_METADATA The target operation reads only metadata such as shape, device, or dtype. 
+
+PRODUCES The source operation directly produces the target tensor version. 
+
+RETURNS The source value is returned by forward .
+
+ALIAS_OF Two nodes refer to the same underlying value. 
+
+PHI_INPUT A branch value enters a control-flow merge node. 
+
+CONTROLS A condition or loop controls a statement or operation. 
+
+Table 8: Semantic edge types used by SourceOracleV2. 
+
+Task Required reasoning Primary metric 
+
+Typed Edge Classify the direct semantic relation for every candidate node pair. Relation accuracy Value Fan-out Select all candidate operations that directly consume aqueried tensor value. Set F1 Partition Partition candidates into value consumers, metadata con-sumers, and non-consumers. Partition macro-F1 Producer Occurrence Identify the exact outermost operation occurrence that di-rectly produces a tensor version. Exact match Dependency Next-hop Select all candidate nodes that can immediately follow the start node on a shortest valid path to output .Set F1 Interface/Failure Infer an observed output shape, affected interface, or deter-ministic failure category. Exact match 
+
+Table 11: The six NAS-Dependency task families. 
+
+## B Representative Benchmark Examples 
+
+This section gives one representative instance for each task family. To improve readability, each block contains only the task query, candidate set, and deterministic Gold JSON; the complete 120-instance benchmark is distributed separately as structured data. 
+
+Typed Edge.                                   
+
+> Classify the direct edge type for each candidate pair below. Use ‘NONE‘ when no direct edge exists. Candidate pairs: [{"candidate_id": "R1", "source": "h2#5", "target": "add@3"}, {"candidate_id": "R2", "source": "h2#5", "target": "self.temporal_attn_out@1"}, {"candidate_id": "R3", "source": "add@3", "target": "h2#6"} ]. Return one classification for every candidate_id.
+
+Gold answer.           
+
+> {"relations": [{"candidate_id": "R1", "edge_type": "READ_VALUE"}, {"candidate_id": "R2", "edge_type": "NONE"}, {"candidate_id": "R3", "edge_type": "PRODUCES"} ]}
+
+Value Fan-out.                   
+
+> Select every canonical operation occurrence from the candidate list that directly consumes the tensor value of ‘h3_scaled #1‘. Exclude metadata-only edges and transitive downstream consumers. Candidates: ["self.residual_pool@1", "self.residual_proj@1", "call.mean@1", "call.permute@1", "mul@4", "call.view@1", "mul@3", "call.view@2", "shape_index@2", "call.view@3" ].
+
+Gold answer.  
+
+> {"selected_operations": ["call.mean@1", "call.permute@1", "call.view@2", "mul@4", "self.residual_proj@1" ]
+
+}
+
+Partition. 
+
+For ‘h2#1‘, partition every listed canonical operation into exactly one class: direct value consumer, direct metadata consumer, or not a direct consumer. Candidates: ["call.view@2", "self.attention_pool@1", "self.attention_pool_max@1", "shape_index@2", "usub@2", "shape_index@5", "shape_index@4", "shape_index@3", "shape_index@6", "mul@1" ]. 
+
+Gold answer. 
+
+{"value_consumers": ["mul@1", "self.attention_pool@1", "self.attention_pool_max@1" ], "metadata_consumers": ["shape_index@2", "shape_index@3", "shape_index@4", "shape_index@5", "shape_index@6" ], "non_consumers": ["call.view@2", "usub@2" ]}
+
+Producer Occurrence. 
+
+Which listed outermost operation node has a direct ‘PRODUCES‘ edge to ‘attn_scores_flat#1‘? Choose the operation whose result is bound to the tensor; do not choose nested calls used only as operands. Candidates: ["torch.matmul@1", "usub@5", "mul@3", "call.transpose@1", "usub@4", "mul@5" ]. 
+
+Gold answer. 
+
+{"producer": "mul@5" }
+
+Dependency Next-hop. 
+
+Consider all shortest directed dependency paths from ‘ h3#2‘ to ‘output‘ using the allowed semantic edge kinds. Select the canonical graph node or nodes that can appear immediately after the start node on such a shortest path. Return only identifiers from this candidate list: ["call.sum@1", "flat_h3#1", "call.view@2", "gap_h3#1", "self.temporal_attention@1", "mul@1", "call.mean@1" ]. 
+
+Gold answer. 
+
+{"next_nodes": ["call.mean@1" ]}
+
+Interface/Failure. 
+
+Observed-shape example. 
+
+The observed input shape to ‘self.conv2@1‘ is ["B", 25, 19]. What is its observed output shape under the same execution? 
+
+Gold answer. 
+
+{"output_shape": ["B", 25, 10 ]}
+
+Failure-diagnosis variant. 
+
+The child architecture is independently known to be invalid. What is the earliest deterministic failure category observed for this program? 
+
+Gold answer. 
+
+{"failure_type": "elementwise_shape_mismatch" }
+
+## C Evaluation Protocol 
+
+Compared Input Representations 
+
+For every held-out QA, all methods receive the same sys-tem message, child code, question, response contract, LLM, Method Input supplied to the LLM 
+
+Code Only Child Code + Question + Response Contract CodeRAG-style Child Code + retrieved source snippets + Question + Response Contract CPG-style Child Code + statement nodes and ordering relations + Question + Response Contract GraphCode-style Child Code + statement-level def-use relations + Question + Response Contract GraphIR Child Code + compact architecture-aware state + Question + Response Contract 
+
+Table 12: Controlled input conditions for NAS-Dependency. generation parameters, parser, and deterministic scorer. The only controlled difference is the additional representation: The evaluated LLM never receives the parent program, source diff, Gold answer, or complete SourceOracleV2 graph. 
+
+Unified Prompt 
+
+The exact prompt template used in every condition is shown below.                                                                                 
+
+> [SYSTEM MESSAGE] You are evaluating dependency reasoning over an executable neural network child program. Use only the supplied Child Code, optional Additional Representation, Question, and Response Contract. The Question contains the complete query and candidate set. Identifiers such as ‘{variable_name}#{version}‘ and ‘{operation_label}@{occurrence}‘ refer to specific variable versions and source-level operation occurrences in the Child Code. Carefully distinguish: -direct dependencies from transitive dependencies; -tensor-value reads from metadata-only reads; -outermost operations from nested operand-only operations; and -one operation occurrence from other occurrences with the same label. Follow the Response Contract exactly. Return only one valid JSON object. [USER MESSAGE] [Child Code] {child_code} [Additional Representation: {method_name}] {additional_representation} [Question] {question} [Response Contract] {response_contract}
+
+The Additional Representation block is omitted for Code Only. 
+
+Model and Generation Settings 
+
+All conditions use Qwen3-Plus through the qwen-plus 
+
+API alias with temperature 0.0, maximum output length 1536 tokens, timeout 120 seconds, and at most two retries for API failures. Each (QA, method) pair produces one final prediction. The complete evaluation contains 120 × 5 = 600 
+
+predictions, while paper results are reported on the 76 held-out questions. 
+
+Deterministic Scoring 
+
+Predictions are parsed as JSON and validated against the task-specific response contract. Scoring does not use an LLM judge. The paper reports per-task scores, task macro average, source macro average, micro primary score, and strict exact match. 
+
+Held-out Results 
+
+## D Downstream Benchmark Details 
+
+Benchmarks and Search Initialization 
+
+The downstream evaluation covers six architecture-search benchmarks: CLRS for algorithmic reasoning, MNIST1D-Shuffle for one-dimensional sequence classifica-tion, 20 Newsgroups for text classification, CartPole-v1 for reinforcement-learning control, and Yeast and Breast Cancer Wisconsin Diagnostic for scientific tabular classification. MNIST1D-Shuffle includes controlled searches over lin-ear, MLP, CNN, and GRU architecture families. CLRS starts from the benchmark-defined initial architecture. The remain-ing benchmarks use random-start evolution. 
+
+Evaluation Metrics 
+
+Accuracy denotes the task-specific test metric. For MNIST1D-Shuffle, OOD accuracy is measured on the cor-responding distribution-shifted test set. Model Size denotes the total number of parameters in the evaluated candidate architecture. Invalid counts generated candidates that can-not complete execution or evaluation. Shape Error counts candidates whose failure is attributed to incompatible tensor shapes. Stage-2 Evaluation denotes candidates admitted to full evaluation after preliminary validation. NAS GPU hours 
+
+is the end-to-end wall-clock time of the complete search pipeline, including candidate generation, program analysis, validation, and candidate evaluation, on a system equipped with one NVIDIA RTX 3090 GPU. Method Edge Fan-out Partition Producer Next-hop Interface Macro 
+
+Code Only .5128 .7052 .5769 .3077 .1667 .1667 .4060 CodeRAG-style .5385 .6867 .6376 .2308 .2556 .1667 .4193 CPG-style .5128 .7697 .6107 .4615 .3056 .1667 .4712 GraphCode-style .5128 .7316 .5769 .4615 .2500 .1667 .4499 GraphIR .5385 .7138 .6218 .5385 .3611 .2500 .5040 
+
+Table 13: Held-out results on NAS-Dependency. Edge reports relation accuracy; Fan-out and Next-hop report set F1; Partition reports macro-F1; Producer and Interface report exact match. Macro is the unweighted mean of the six normalized task metrics. 
+
+(a) Test accuracy (%) Method Linear MLP CNN GRU Average 
+
+Initial 31.40 65.60 54.70 50.50 50.55 EOH 57.60 65.50 59.40 67.80 62.58 FunSearch 61.10 65.60 60.10 55.30 60.53 EvoPrompting 69.80 69.90 58.70 60.60 64.75 OpenEvolve 60.60 68.00 59.10 58.90 61.65 GraphIR 59.30 71.90 74.20 70.80 69.05 (b) End-to-end NAS time (GPU-hours) Method Linear MLP CNN GRU Average 
+
+EOH 5.450 1.660 2.170 39.860 12.285 FunSearch 0.630 1.610 2.810 13.600 4.663 EvoPrompting 0.720 0.740 1.110 0.440 0.753 
+
+OpenEvolve 1.640 0.590 1.270 0.600 1.025 GraphIR 0.754 1.012 1.605 1.550 1.230 
+
+(c) Model size (K parameters) Method Linear MLP CNN GRU Average 
+
+Initial 0.410 15.210 5.210 5.134 6.491 EOH 17.682 15.210 11.050 11.002 13.736 FunSearch 0.410 15.210 8.202 5.134 7.239 EvoPrompting 23.562 31.306 6.610 14.538 19.004 OpenEvolve 7.460 18.826 5.360 42.250 18.474 GraphIR 2.061 25.510 26.485 35.890 22.487 
+
+Table 14: Complete MNIST1D-Shuffle results over linear, MLP, CNN, and GRU search spaces. All searches use 100 evolution iterations. Boldface indicates the best value under the criterion used in each panel. 
+
+## E MNIST1D-Shuffle Results 
+
+All search methods use 100 evolution iterations. The average column is the arithmetic mean over linear, MLP, CNN, and GRU architecture families. 
+
+## F Cross-Task Results 
+
+Table 15 reports the raw score and runtime values used for aggregation. 
+
+Aggregation. For method m on benchmark t, task perfor-mance is normalized by the best observed result: 
+
+esm,t = sm,t 
+
+max m′ sm′,t 
+
+. (8) The vertical coordinate is the arithmetic mean: 
+
+Pm = 100 
+
+|T | 
+
+X
+
+> t∈T
+
+esm,t . (9) End-to-end NAS GPU hours is normalized by the fastest method on each task: 
+
+eτm,t = τm,t 
+
+min m′ τm′,t 
+
+. (10) Because these quantities are multiplicative ratios, the hori-zontal coordinate is their geometric mean: 
+
+Cm = exp 1
+
+|T | 
+
+X
+
+> t∈T
+
+log eτm,t 
+
+!
+
+. (11) Higher Pm and lower Cm are preferred.             
+
+> Method Mean Relative Performance Relative NAS GPU hours
+> EOH 88.036 10.697 FunSearch 85.822 10.836 OpenEvolve 92.323 2.634 EvoPrompting 98.196 3.623 GraphIR 100.000 1.379
+
+Table 16: Aggregated coordinates used in the cross-task efficiency–performance plot. 
+
+## G Full CLRS Results 
+
+All methods except EvoPrompting are evolved on CLRS-DFS under the same experimental protocol and evaluated zero-shot on all 30 tasks. EvoPrompting uses its reported per-task results. The aggregate results are reported in Table 17; Tables 18– 20 provide per-task accuracy, and Tables 21–23 provide per-task parameter counts. 20News CartPole-v1 Yeast Breast Cancer Method Score Time Score Time Score Time Score Time 
+
+EOH 58.05 1.15 314.20 3.54 58.25 0.69 96.46 0.56 FunSearch 57.47 1.23 276.28 3.94 58.92 0.67 95.13 0.51 EvoPrompting 58.01 0.28 488.65 0.47 61.62 1.21 96.90 0.13 OpenEvolve 57.10 0.29 377.55 0.73 61.78 0.21 96.90 0.13 GraphIR 59.57 0.11 500.00 0.04 62.79 0.52 97.35 0.19 
+
+Table 15: Raw task performance and end-to-end NAS time (GPU-hours) used to construct the cross-task efficiency–performance plot. 
+
+Method Model Size DFS Acc. Avg. Acc. Avg. w/o DFS Wins 
+
+EvoPrompting 478.2K 68.14 80.88 81.32 2/30 Triplet-GMPNN 467.3K 47.79 75.98 76.95 1/30 OpenEvolve 498.6K 32.54 62.69 63.73 1/30 Spark 470.2K 83.74 83.91 83.92 5/30 OpenEvolve+GraphIR 467.4K 94.68 89.21 89.03 22/30 
+
+Table 17: Aggregate CLRS results. Ties are counted as wins for every tied method, so the win counts may sum to more than 30. 
+
+Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+articulation_points 88.32 61.32 93.46 97.90 99.40 
+
+activity_selector 95.18 95.43 95.05 98.03 98.90 
+
+bellman_ford 97.39 95.31 97.50 96.04 99.27 
+
+bfs 99.73 100.00 99.99 70.56 100.00 
+
+binary_search 77.58 39.31 77.98 87.60 94.19 
+
+bridges 93.99 79.68 97.57 98.15 100.00 
+
+bubble_sort 67.68 85.45 88.87 98.12 97.07 dag_shortest_paths 98.19 96.97 98.01 97.80 100.00 
+
+dfs 47.79 32.54 68.14 83.74 94.68 
+
+dijkstra 96.05 95.85 97.30 99.22 99.51 
+
+Table 18: Per-task accuracy (%) on the 30 CLRS tasks. 
+
+Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+find_maximum_subarray_kadane 76.36 77.05 75.35 85.64 82.52 floyd_warshall 48.52 11.24 61.43 32.91 35.75 graham_scan 93.62 83.29 93.76 96.36 97.60 
+
+heapsort 31.04 16.31 69.90 75.63 94.82 
+
+insertion_sort 78.14 25.78 89.47 97.51 98.39 
+
+jarvis_march 91.01 36.42 90.36 94.88 94.50 kmp_matcher 19.51 10.09 16.29 14.94 52.00 
+
+lcs_length 80.51 87.53 85.75 87.60 88.44 
+
+matrix_chain_order 91.68 80.84 90.77 87.29 89.88 minimum 97.78 98.10 98.40 99.07 99.51 
+
+Table 19: Per-task accuracy (%) on the 30 CLRS tasks (continued, Part 2 of 3). Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+mst_kruskal 89.80 76.57 91.47 86.23 91.96 
+
+mst_prim 86.39 83.98 88.74 88.67 94.97 
+
+naive_string_matcher 78.67 8.93 79.77 77.27 100.00 
+
+optimal_bst 73.77 71.73 78.66 96.14 84.84 quickselect 0.47 3.71 0.79 10.69 15.87 
+
+quicksort 64.64 16.26 85.23 97.80 96.58 segments_intersect 97.64 96.85 98.15 97.07 98.09 strongly_connected_components 43.43 45.21 41.86 77.34 88.18 
+
+task_scheduling 87.25 82.68 88.23 87.44 89.49 
+
+topological_sort 87.27 86.31 88.12 99.72 100.00 Average 75.98 62.69 80.88 83.91 89.21 
+
+Table 20: Per-task accuracy (%) on the 30 CLRS tasks (continued, Part 3 of 3). 
+
+Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+articulation_points 531913 563259 497969 534880 532008 activity_selector 262204 293550 262204 265171 262299 bellman_ford 524604 555950 568660 527571 524699 bfs 523963 555309 522931 526930 524058 binary_search 262204 293550 262204 265171 262299 bridges 532556 563902 576612 535523 532651 bubble_sort 524477 555823 568533 527444 524572 dag_shortest_paths 793287 824633 793287 796254 793382 dfs 661190 692536 660158 664157 661285 dijkstra 525886 557232 524854 528853 525981 
+
+Table 21: Per-task model size, measured by total parameter count, on the 30 CLRS tasks. 
+
+Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+find_maximum_subarray_kadane 264514 295860 261290 267481 264609 floyd_warshall 625089 656435 669145 628056 625184 graham_scan 398409 429755 397377 401376 398504 heapsort 659654 691000 703710 662621 659749 insertion_sort 524477 555823 523445 527444 524572 jarvis_march 264898 296244 308954 267865 264993 kmp_matcher 398021 729367 396989 400988 398116 lcs_length 270419 301765 270419 273386 270514 matrix_chain_order 624448 655794 624448 627415 624543 minimum 261307 292653 260275 264274 261402 
+
+Table 22: Per-task model size, measured by total parameter count, on the 30 CLRS tasks (continued, Part 2 of 3). Task Initial OpenEvolve EvoPrompting Spark GraphIR 
+
+mst_kruskal 399691 431017 443747 402658 399786 mst_prim 525886 557232 569942 528853 525981 naive_string_matcher 262588 293934 259364 265555 262683 optimal_bst 625987 357333 624955 628954 626082 quickselect 395714 427060 377130 398681 395809 quicksort 525759 557105 524727 528726 525854 segments_intersect 263359 294705 262327 266326 263454 strongly_connected_components 663243 694589 707299 666210 663338 task_scheduling 262333 293679 262333 265300 262428 topological_sort 660164 691510 660164 663131 660259 
+
+Average 467274.80 498620.13 478181.73 470241.80 467369.80 
+
+Table 23: Per-task model size, measured by total parameter count, on the 30 CLRS tasks (continued, Part 3 of 3).
