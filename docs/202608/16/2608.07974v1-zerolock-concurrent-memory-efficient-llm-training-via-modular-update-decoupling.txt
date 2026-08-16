@@ -1,0 +1,837 @@
+Title: ZeroLock: Concurrent Memory-Efficient LLM Training via Modular Update Decoupling
+
+URL Source: https://arxiv.org/pdf/2608.07974v1
+
+Published Time: Tue, 11 Aug 2026 00:30:01 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# ZeroLock: Concurrent Memory-Efficient LLM Training via Modular Update Decoupling 
+
+Wentao Dai ∗, Xuanran Li ∗, Yuxiang Zhang, Ming Tang, Chao Huang 
+
+Abstract —Large language model (LLM) fine-tuning at the edge adapts the model to scenario-specific data while preserving privacy. Although existing studies proposed pipeline parallelism to address the limited memory and computing resources of edge devices, they commonly rely on backpropagation (BP) training, which has a fundamental limitation of update locking and could experience severe throughput and memory bottlenecks. In this work, we propose a BP-free algorithm, called ZeroLock, that decouples the model updates into independent chunk updates by local objective construction. It breaks the update locking of BP and hence can improve throughput at the algorithm level and lower memory usage by reducing activation storage. To the best of our knowledge, we provide the first theoretical framework for such local objective construction-based approaches under general model chunk division by mapping local objectives to the global objective. We prove that ZeroLock has a convergence rate of ˜O(1 /√T ), which differs from BP only by polylogarithmic factors. We design a system for ZeroLock and build real-world prototypes, incorporating techniques such as early forwarding and failure recovery for efficient and robust implementation. Experiments on the prototype show that compared to BP-based baselines, ZeroLock reduces the memory by 26.5% and improves throughput by 4.9%. 
+
+Index Terms —Edge intelligence, collaborative edge training system, pipeline parallelism, backpropogation-free training. 
+
+I. I NTRODUCTION 
+
+Edge intelligence deploys large language models (LLMs) at the network edge, achieving privacy-preserving and providing real-time inference services. In practice, it is important to fine-tune LLMs at the edge for two reasons. First, data distributions are usually scenario- and individual-specific, making it impor-tant to adapt the models to maintain inference accuracy. Second, data privacy concern and possibly frequent model adaptation requirements make it difficult to upload the data to the cloud for fine-tuning. There are many such examples requiring both model adaptation and privacy preserving. For example, test-time training [1] adapts LLMs to maintain user-specific memory for personalized service provision. Electroencephalogram signal-based tasks [2] (e.g., emotion recognition, sleep staging) require model adaptation for individuals, as those signals demonstrate strong individual-dependent patterns. 
+
+Wentao Dai, Yuxiang Zhang, and Ming Tang are with the Department of Computer Science and Engineering, Southern University of Science and Technology, China. Xuanran Li is with the Department of Math-ematics, Southern University of Science and Technology, China. Chao Huang is with the School of Computing, Montclair State University, New Jersey, USA. Email: {12311217,12312110,12410823}@mail.sustech.edu.cn, tangm3@sustech.edu.cn, huangch@montclair.edu. (Corresponding Author: Ming Tang) * Equal Contribution F1 F1 F1 F2 F2 F2 F3 F3 F3 B1 B1 B1 B2 B2 B2 B3 B3 B3 S2 S1 S0 Iteration 1 Iteration 2 Time Iteration 1 Iteration 2 F2 F2 F2 F3 F3 F3 B2 B2 B2 B3 B3 B3 F1 F2 F3 B1 B2 B3 F1 B1 F3 B2 B3 F2 F1 B1 F2 B3 B2 F3 F1 B1 F1 B1 F1 B1 F2 B2 B2 F2 F2 B2 F3 B3 F3 B3 B3 F3 B1 F1 F1 F1 B1 B1 S2 S1 S0 Time 
+
+(a) F1 F1 F1 F2 F2 F2 F3 F3 F3 B1 B1 B1 B2 B2 B2 B3 B3 B3 S2 S1 S0 Iteration 1 Iteration 2 Time Iteration 1 Iteration 2 F2 F2 F2 F3 F3 F3 B2 B2 B2 B3 B3 B3 F1 F2 F3 B1 B2 B3 F1 B1 F3 B2 B3 F2 F1 B1 F2 B3 B2 F3 F1 B1 F1 B1 F1 B1 F2 B2 B2 F2 F2 B2 F3 B3 F3 B3 B3 F3 B1 F1 F1 F1 B1 B1 S2 S1 S0 Time 
+
+(b) S2 S1 S0 Time Iteration 1 S2 S1 S0 Time Iteration 1                         
+
+> A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3 S2 S1 S0 Time Iteration 1 S2 S1 S0 Time Iteration 1
+> A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3 A1 A2 A3
+
+(c) (d) 
+
+Fig. 1. Throughput with (a) BP baseline and (b) ZeroLock; memory with (c) BP baseline and (d) ZeroLock. In this figure, we use the typical 1F1B framework as the BP baseline, because many existing studies (e.g., [5]) are built upon it. S0, S1, and S2 are stages, each corresponding to the updates of a model chunk and assigned to a device for execution. F n, B n, and A n denote the forward pass, backward pass, and activations of the n-th microbathch, repetitively. The stripes in (c) and (d) indicate the duration that the corresponding activations are kept in memory. For example, at time slot 3 of S0, A1-A3 are kept in memory in (c), while only A2 is kept in memory in (d). 
+
+However, devices at the network edge usually have limited computation and memory resources, so it is difficult for a device or a GPU to fine-tune the entire LLM. To address this, existing studies have proposed pipeline parallelism approaches [3]–[5]. The main idea is to partition the model vertically into chunks of consecutive layers. The update of each model chunk corresponds to a stage and is assigned to a different device, and these devices collaborate to update the chunks in a pipeline fashion. GPipe [3] is a typical approach and processes micro-batches sequentially. 1F1B [4] interleaves forward pass and backward update to improve pipeline utilization. Building upon 1F1B, PipeDream [4], [6] enables asynchronous pipeline train-ing via weight stashing. Recent studies [7]–[10] reduce bubbles in pipeline through placement search, virtual or bidirectional stages, and finer backward decomposition. Other studies [11]– [15] focused on pipeline planning considering preemptions, stragglers, device heterogeneity, or communication efficiency. Confidant [5] implements 1F1B on smartphones. Most of these pipeline parallelism works (e.g., [3]–[16]) rely on backpropagation (BP) training and focus system-level scheduling optimization. BP training has a fundamental arXiv:2608.07974v1 [cs.LG] 8 Aug 2026 limitation of update locking [17]–[19]. That is, the model update contains a forward pass followed by a backward pass, so the update of upstream layers needs to wait for the forward and backward computation of downstream layers. As a result, the approaches based on BP could have crucial limitations:  
+
+> •
+
+Throughput Bottleneck: As shown in Fig. 1 (a), due to update locking, bubbles arise because an upstream stage (e.g., S0) needs to wait for the backward pass of all downstream stages (e.g., S1, S2) to accomplish its own backward pass. Although existing works (e.g., [4], [6]) have proposed approaches to eliminate the bubbles, the updates of stages remain coupled due to the BP training, and hence the fundamental issue has not been resolved.  
+
+> •
+
+Memory Bottleneck: As shown in Fig. 1 (c), due to update locking, an upstream stage (e.g., S0) needs to keep its activations until all its downstream stages and itself (e.g., S0, S1, S2) accomplish their backward passes. This leads to significant memory waste for upstream stages. The pervasive use of BP training and the resulting throughput and memory bottlenecks motivate the main question: 
+
+Main Question. How can we design a system that fundamen-tally overcome the throughput and memory bottlenecks at the algorithm level by breaking the update locking in BP? 
+
+BP-free training was proposed to break the update locking in BP. There are two categories. (I) Backward Gradient Estimation. For example, direct feedback alignment [20], [21] bypasses the chain rule by propagating target errors directly to all layers. Zero-order optimization [22], [23] computes perturbation-based loss differences during the forward pass to estimate gradients. However, this category usually leads to either significant model accuracy degradation for complex tasks or significant com-puting overhead. (II) Objective Reconstruction. For example, NoProp [24] reframes neural modules as independent denoising units that map noisy target embeddings back to clean targets. Predictive coding [25] alternates between minimizing chunk-wise prediction errors and updating weights using the local errors. Local objective construction (e.g., depth-progressive monotonic learning [18]) equips each layer with an independent local objective, allowing purely local gradient computation. Within category (II), local objective construction decouples the modular updates across stages and has comparable model accuracy to BP approaches, so it is a promising candidate to address the Main Question. Specifically, since each chunk is updated independently using its local loss, its update does not need to wait for the forward and backward passes of its downstream chunks, so bubbles due to waiting can be removed; meanwhile, each chunk needs to keep its activations only until its own updates, reducing memory usage. In this work, based on local objective construction-based BP-free approaches, we aim to propose a pipeline parallelism LLM training system to fundamentally overcome the throughput and memory bottlenecks. However, this design is not straightfor-ward and needs to address the following questions: Q1 How to fine-tune LLM with local objective construction? Q2 Does the modular decoupling of local objective construc-tion theoretically harm the model convergence? Q3 How to design and construct real-world prototype systems (for both multi-GPU server and Android phone scenarios) to achieve efficient and robust implementation? Answering Q1 requires concrete design to incorporate LLM-specific characteristics (e.g., token sequence, low-rank adapta-tion for efficient fine-tuning) into local objective construction framework. Answering Q2 is very challenging. This is because the modular update decoupling breaks global objective into local objectives of model chunks, while recent studies lack frameworks to quantifying how optimizing the local objectives improves the global objective. Answering Q3 is non-trivial due to the real-world engineering requirements of light-weight, high-throughput, and robust implementation. Existing works tried to address one or two of Q1–Q3. PPLL [26] places gradient-isolated vision blocks on different GPUs and transfers their features for block-wise updates. FluidPipe [27] focuses on LLM and adds an auxiliary task head to the first part of a two-stage model, avoiding the local updates on the first part from waiting for the second part’s gradient. SCPL [28] decouples BP via per-segment supervised contrastive losses for synchronized multi-GPU model parallelism. However, these works [26]–[28] considered hidden state alignment for Q1, failing to characterize task-specific information in local objective construction, and they did not address Q2. For Q3, although they propose high-level pipeline logic, their designs remain at a conceptual level, lacking critical implementation details such as continuous cross-batch pipelining, stage I/O queues, and explicit RPC primitives. Meanwhile, they did not provide deployable prototype for real-world execution. Although recent work LoPT [29] addressed Q2, its analysis limits to two chunks and fails to provide a general analytical framework for connecting local objective to global objective. We address those challenges and answer Q1–Q3. Our main contributions are summarized as follows:  
+
+> •
+
+ZeroLock Algorithm: To answer Q1, we propose a local objective construction-based BP-free algorithm, called ZeroLock, for LLM fine-tuning, which incorporates low-rank adaptation (LoRA) [30] and LLM-compatible readout head and loss function. It breaks the update coupling across model chunks, and hence reduces the pipeline bubbles and activation storage at the algorithm level.  
+
+> •
+
+Theoretical Analysis: To answer Q2, we establish theoret-ical equivalences to represent the local optimum of model chunks in a form of global objective. Then, the local updates of model chunks can be equivalently represented as global updates, with which the global convergence can be derived. To the best of our knowledge, this is the first analytical framework for the local objective construction algorithms under general model chunk division, which provides a systematic approach for analyzing global convergence given decoupled local updates. We prove that ZeroLock has a convergence rate of ˜O(1 /√T ), which differs from BP by only polylogarithmic factors. • Real-World System Design: To answer Q3, based on ZeroLock, we design systems and build prototypes for both multi-GPU server and Android phone scenarios. This system can achieve concurrent throughput (see Fig. 1 (b)) and lower memory usage by reducing activation storage (see Fig. 1 (d)). Techniques such as early forwarding and failure recovery are proposed to ensure light-weight, high-throughput, and robust implementation. To the best of our knowledge, we build the first prototype on Android system for local objective construction-based BP-free algorithm.  
+
+> •
+
+Evaluation on Real-World Prototype: Experiments on multi-GPU server show that when compared with BP-based baselines, ZeroLock system reduces the memory usage by 26.5% and improves the throughput by 4.9%. The fine-tuning of TinyLlama on Android phones experiences a peak PSS of less than 4000 MiB, a battery temperature of around 37 ◦C, and a wall-clock time of 1644.1 seconds, indicating that the implementation is practically feasible. Our code is available at https://anonymous.4open.science/ r/unlock_trainer-105B. The rest of this paper is organized as follows. Sections II and III present ZeroLock algorithm and its system design, respectively. Experiments are in Section IV. Section V concludes this work. II. Z ERO LOCK ALGORITHM AND ANALYSIS 
+
+A. ZeroLock Algorithm 
+
+Consider an LLM with an embedding operation E(x) and a set of transformer layers L. We introduce LoRA [30] to reduce the trainable parameters in fine-tuning. Let wl ∈ Rd1×d2 denote the base weights of the l-th transformer layer, which is frozen during fine-tuning. Let Al ∈ Rd3×d2 and Bl ∈ Rd1×d3 denote the trainable low-rank decomposition matrices in LoRA. Then, the parameter updates of transformer layer l ∈ L is represented by ∆wl = BlAl, so the weights after fine-tuning are wl + ∆ wl.To achieve modular update decoupling in LLM fine-tuning, we partition the entire model into model chunks and introduce local objectives to these chunks for independent updates. 1
+
+Chunk Partitioning: Consider an LLM split into an embed-ding operation E(·) and K chunks, where chunk k contains one or multiple consecutive transformer layers, denoted by set Lk.Let Wk = ( wl | l ∈ L k) and ∆Wk = (∆ wl | l ∈ L k) denote the frozen base weights and the trainable LoRA parameters in chunk k, respectively, leading to a mapping fk(·; Wk + ∆ Wk)
+
+from the chunk input to output. Let x be the LLM input. Define 
+
+h0 ∈ RS×d and hk ∈ RS×d as the token embedding and the output of chunk k, respectively, with S as the sequence length: 
+
+h0 = E(x), hk = fk(hk−1; Wk +∆ Wk), k = 1 , · · · , K. (1) 
+
+Readout Head: To enable local updates, we introduce a frozen local readout head after chunk k = 1 , · · · , K :
+
+zk = Norm( hk)W ⊤
+
+> lm
+
+, pk,i = softmax( zk,i ). (2) 
+
+> 1The main idea is inspired by the local objective construction approach in [18]. Different from [18] on classification tasks, ZeroLock handles LLM fine-tuning by incorporating LoRA and LLM-compatible head and loss design.
+
+In (2), Wlm is the head weight that maps the normalized hidden representation Norm( hk) to vocabulary logits zk ∈ RS×V ,with V being the vocabulary size. Vector zk,i is the i-th row of 
+
+zk ∈ RS×V . With softmax( ·), pk,i ∈ R1×V is the predictive distribution of next token over the vocabulary space. 
+
+Local Objective: With the output of the readout head, the local loss of each chunk k consists of a task-dependent term 
+
+LTask (·) and a consistency term Lk→k−1Consis (·):
+
+Lk(pk) = αL Task (pk) + (1 − α)Lk→k−1Consis (pk), (3) where α ∈ (0 , 1] is a weight, and pk = ( pk,i , i ∈ Ω) with Ω
+
+as the token sequence removing prompt or padding positions. (i) Task-dependent term LTask is a local version of the global objective. It aligns the output of the readout head of each chunk 
+
+k to the global ground-truth target: 
+
+LTask (pk) = − 1
+
+|Ω|
+
+X
+
+> i∈Ω
+
+Dψ
+
+ pk,i , py
+
+ , (4) where py ∈ R 1×V is the one-hot target. Let P denote the space of p. Dψ (·) is the Bregman divergence induced by a strictly convex and differentiable potential function ψ : P → R, i.e., 
+
+Dψ (u, v) = ψ(u) − ψ(v) − ⟨∇ ψ(v), u − v⟩. KL divergence is a specific example of Bregman divergence by selecting negative entropy as the potential function. Importantly, since minimizing KL divergence is equivalent to minimizing cross-entropy, (4) can be replaced with cross-entropy loss in practice. (ii) Consistency term aligns the outputs of chunk k to those of chunk k − 1, ensuring coherent outputs across chunks. 
+
+Lk→k−1Consis (pk) = 1
+
+|Ω|
+
+X
+
+> i∈Ω
+
+Dψ
+
+ pk,i , sg( pk−1,i ) , (5) where sg( ·) is stop-gradient operator with sg( p) = p and 
+
+∇sg( p) = 0. Similarly, KL divergence can be used in practice. 
+
+Fine-Tuning Process: This process contains T iterations. In each iteration, the low rank matrices Al and Bl of layer 
+
+l ∈ L k are fine-tuned using stochastic gradient descents: 
+
+Al ← Al − η ∂f k
+
+∂A l
+
+, B l ← Bl − η ∂f k
+
+∂B l
+
+, (6) where η is the learning rate. 
+
+Remark 1. According to (6) , layers within the same chunk are updated using BP, while the updates of layers from different chunks are decoupled and can be executed in parallel. This removes the parallelism bubbles at the algorithm level (see Fig. 1 (b)) and avoids the need for keeping the activations during the downstream’s updates (see Fig. 1 (d)). B. Theoretical Analysis: Chunk-Wise Performance 
+
+With chunk-wise performance analysis, we aim to provide insights into how the global objective value changes across model chunks. We focus on one token in the sequence and omit the token subscript. Recall that p is the readout head output of a chunk and is a distribution over vocabulary space. Let L : P → R denote the global objective given p ∈ P , i.e., 
+
+L(p) ≜ LTask (p), which is the loss function characterizing how much p deviates from global ground-truth target. Let p∗
+
+> k
+
+denote the optimal pk of chunk k that minimizes the local loss 
+
+Lk(·), i.e., p∗ 
+
+> k
+
+≜ arg min p∈P Lk(p):
+
+Lemma 1 (Local Optimum) . The local optimum p∗ 
+
+> k
+
+can be equivalently represented by 
+
+p∗ 
+
+> k
+
+= arg min 
+
+> p∈P
+
+
+
+⟨∇ L(pk−1), p−pk−1⟩+ 1
+
+α Dψ (p, pk−1)
+
+
+
+. (7) 
+
+Proof. Recall the definition of the Bregman divergence, 
+
+Dψ (u, v) = ψ(u) − ψ(v) − ⟨∇ ψ(v), u − v⟩. (8) Substituting (u = p, v = pk−1) and (u = p, v = py ) into (8) respectively and rearranging the former, we have ψ(p) = 
+
+ψ(pk−1)+ ⟨∇ ψ(pk−1),p − pk−1⟩+Dψ (p, pk−1), Dψ (p, py ) = 
+
+ψ(p) − ψ(py ) − ⟨∇ ψ(py ), p − py ⟩. Thus, 
+
+Dψ (p, py )= ψ(pk−1) − ψ(py ) − ⟨∇ ψ(py ), pk−1 − py ⟩− ⟨∇ ψ(py ), p − py ⟩ + ⟨∇ ψ(py ), pk−1 − py ⟩
+
++ ⟨∇ ψ(pk−1), p − pk−1⟩ + Dψ (p, pk−1)
+
+> (a)
+
+= Dψ (pk−1, py ) + ⟨∇ L(pk−1), p − pk−1⟩
+
++ Dψ (p, pk−1), (9) where (a) holds as the definition of Dψ (pk−1, py ) and L(pi−1).Substituting (9) into the local loss function Lk(p) leads to Lk(p) = αD ψ (pk−1, py ) + α⟨∇ L(pk−1), p − pk−1⟩ +
+
+Dψ (p, pk−1). Given pk−1, term αD ψ (pk−1, py ) is a constant, so it can be omitted in optimization. Proof completes. Lemma 1 represents the local optimum p⋆ in a form of the global objective L(·), connecting local and global objectives. Meanwhile, it demonstrates a balance between moving toward the steepest descent direction of global objective L(p) and penalizing deviations from the previous distribution pk−1.As in many existing convergence analysis on BP or BP-free (e.g., [29], [31]), we assume the smoothness of global objective. 
+
+Assumption 1 (Global Objective Smoothness) . The global objective L(·) is β-smooth relative to ψ in Bregman geometry: 
+
+L(u) ≤ L(v)+ ⟨∇ L(v), u−v⟩+βD ψ (u, v), u, v ∈ P . (10) Then, we derive the chunk-wise performance of ZeroLock. 
+
+Proposition 1 (Chunk-Wise Performance) . Suppose pk−1, p⋆k,and pk lie in a compact set of the relative interior of the simplex, and ψ(·) is locally strongly convex. Define δk ≜ Dψ (pk, p∗
+
+> k
+
+).Under Assumption 1 and α < 1 
+
+> β
+
+,
+
+L(pK ) ≤ L(p0)−
+
+> K
+
+X
+
+> k=1
+
+ 1
+
+α −β
+
+
+
+Dψ (pk, pk−1)+ 1
+
+α
+
+> K
+
+X
+
+> k=1
+
+δk. (11) 
+
+Proof. Substituting u = pk and v = pk−1 in Assumption 1, 
+
+L(pk) ≤ ⟨∇ L(pk−1), pk − p∗
+
+> k
+
+⟩
+
+| {z }
+
+> (i)
+
++ ⟨∇ L(pk−1), p∗ 
+
+> k
+
+− pk−1⟩
+
+| {z }
+
+> (ii )
+
++ L(pk−1) + βD ψ (pk, pk−1). (12) Since p⋆k lies in the relative interior of the probability sim-plex, the KKT condition of (7) gives ∇L(pk−1)+ 1
+
+> α
+
+ ∇ψ(p⋆k)−∇ψ(pk−1) + λk1 = 0 . Accordingly, term (i) satisfies 
+
+α⟨∇ L(pk−1), pk − p⋆k⟩
+
+> (a)
+
+= ⟨∇ ψ(pk−1) − ∇ ψ(p⋆k), pk − p⋆k⟩
+
+> (b)
+
+=δk + Dψ (p⋆k, pk−1) − Dψ (pk, pk−1). (13) Here, (a) holds due to the KKT condition and 1⊤(pk − p⋆k) = 0, where the latter holds since pk − p⋆k lies in the simplex tangent space. (b) holds based on Bregman three-point identity. According to the definition of p∗
+
+> k
+
+, term (ii) satisfies ⟨gk, p∗ 
+
+> k
+
+−
+
+pk−1⟩ + 1 
+
+> α
+
+Dψ (p∗
+
+> k
+
+, pk−1) ≤ 0. Substituting (i) and (ii) into (12) and summing over k = 1 , . . . , K complete the proof. Proposition 1 shows that the global loss L(pK ) of the final chunk tends to decrease as the number of chunks increases, with a bounded error PKk=1 δk/α resulting from the fine-tuning suboptimality of model chunks due to finite parameters. 2
+
+C. Theoretical Analysis: Algorithm Convergence 
+
+We provide the first analytical framework for local objective construction-based BP-free approach under general chunk division. As mentioned earlier, the major challenge comes from characterizing global convergence based on the local updates of each model chunk. To overcome this, we equivalently map local updates to global updates (Lemma 3); based on this, we prove that the convergence rate of ZeroLock is ˜O(1 /√T ) (Theorem 1), differing from O(1 /√T ) of BP by a polylogarithmic factor. 3
+
+For iteration t, let ωt = ( ωtk, k = 0 , 1, · · · , K ) denote the parameters of chunks to be updated. We introduce this notation to generalize the analysis for various scenarios (e.g., LLM, CNN). Following the notation in Section II-A, ωt 
+
+> 0
+
+is the fixed parameters of operator E(·), and ωtk ≜ ∆W tk + Wk for chunk 
+
+k. Let pt
+
+> 0
+
+, pt
+
+> 1
+
+, . . . , ptK denote the readout head output of the associated model chunks. For analytical simplicity, we set the Bregman divergence in (4) and (5) as KL divergence. Then, the local loss is equivalent to 
+
+Ltk(p; α) = αD KL (p ∥ py ) + (1 − α)DKL (p ∥ ptk−1). (14) 
+
+Mapping from Local to Global Updates: First, we show the equivalence on local objective as follows. 
+
+Lemma 2 (Objective Equivalence) . Minimizing Ltk(p; α) is equivalent to minimizing DKL 
+
+ p ∥ p∗,t k (α), where 
+
+p∗,t k (l; α) = py (l)α  ptk−1(l)1−α
+
+Pml′=1 py (l′)α  ptk−1(l′)1−α , (15) 
+
+with l denoting the l-th element of the associated vector and 
+
+m denoting the length of the vector.                      
+
+> 2Although a relevant analysis on chunk-wise performance is presented in [18], our Proposition 1 generalizes that in [18] (i) from KL divergence to general Bregman divergence and (ii) by explicitly deriving the specific form of the error δk(rather than simply assuming an error).
+> 3f(T) = ˜O(g(T)) means f(T) = O(g(T) log cT)for some constant c.The extra log Tis a slow-varying factor that becomes negligible for large T.
+
+Proof. Local loss Ltk(p; α) can be equivalently represented as 
+
+Ltk(p; α) = 
+
+> m
+
+X
+
+> l=1
+
+p(l) log p(l)
+
+py (l)α (ptk(l)) 1−α . (16) Define Ztk(α) = Pml=1 py (l)α  ptk−1(l)1−α. Then, 
+
+Ltk(p; α) = DKL (p ∥ p∗,t k (α)) − log Ztk(α). (17) Note that for any chunk k, vectors py and ptk−1 are given, so 
+
+Ztk(α) is a constant. Hence, this lemma is proved. Note that p∗,t k (α) ≜ (p∗,t k (l; α), l = 1 , · · · , m ) is essentially the optimal solution that minimizes Ltk(p; α), with proof omit-ted here. Thus, minimizing DKL 
+
+ p ∥ p∗,t k (α) is equivalent to minimizing the difference between p and the optimal solution. Then, we can represent global updates in ZeroLock as a form of local updates. We define ptk = ˆfk(ptk−1; ωtk) as the mapping from the readout head output ptk−1 of chunk k to ptk,given parameter ωtk of chunk k. Although this mapping cannot be directly obtained using the readout head operation (as it is not a one-to-one correspondence), it can be approximated given the statistics of ptk across chunks. Also, this mapping is introduced for theoretical analysis, and it does not need to be obtained in practice. Define the Jacobian matrix Jtθk ,k ≜
+
+∂ ˆfk(ptk−1; ωtk)/∂ ωtk. The stop-gradient operation induces the following Jacobian matrix for all parameters: 
+
+Jt = blkdiag( Jt
+
+> ω1,1
+
+, Jt
+
+> ω2,2
+
+, · · · , Jt  
+
+> ωK,K
+
+), (18) where blkdiag( ·) denotes block-diagonal matrix with all elements outside the diagonal blocks being zero. Define 
+
+etk(α) = log ptk − log p∗,t k (α), which is the gap between the recent ptk and the optimal p∗,t k (α) in logarithmic form. Based on Lemma 2 and ptk = ˆfk(ptk−1; ωtk), minimizing 
+
+Ltk(p; α) for all chunks over dataset D is equivalent to finding the parameter ω = ( ωk, k = 0 , 1, . . . , K ) that minimizes 
+
+Rt(ω; α) = E(x,y )∼D 
+
+" KX
+
+> k=1
+
+DKL 
+
+ ˆfk(ptk−1; ωk)∥p∗,t k (α)
+
+#
+
+. (19) 
+
+Lemma 3 (Global Update Equivalence) . Based on Lemma 2, the update rule of ZeroLock can be represented as follows: 4
+
+ωt+1 ← ωt − ηt∇ω Rt(ωt; α), (20) 
+
+where ∇ω Rt(ω; α) = ( Jt)⊤et, et ≜ (etk, k = 0 , 1, · · · , K ).Proof. According to (17) in Lemma 2, given output ptk,
+
+∇ptk Ltk(ptk; α) = log ptk − log p∗,t k (α) + 1. (21) We apply the chain rule. Let ℓtk(ωtk) ≜ Ltk(ptk), and we omit 
+
+α for presentation simplicity. For the u-th coordinate of ωk,
+
+∂ℓ tk(ωtk)
+
+∂ωtk,u 
+
+=
+
+> m
+
+X
+
+> l=1
+
+∂L tk(ptk)
+
+∂ptk(l)
+
+∂ptk(l)
+
+∂ωtk,u 
+
+> (a)
+
+=
+
+> m
+
+X
+
+> l=1
+
+etk(l) ∂ptk(l)
+
+∂ωk,u 
+
+. (22)                  
+
+> 4The algorithm in [18] differs from ZeroLock by maintaining an encoder and having its output c(x)as the input for each chunk. To generalize it, we can append a column of Jt
+> ωc,k for k= 1 ,· · · , K before the columns in Jt,where Jt
+> ωc,k is the Jacobian matrix of ftk(·)with respect to the parameters
+> ωcof the encoder. Under this modification, Lemma 3 still holds.
+
+Equality (a) holds because Pml=1  
+
+> ∂ptk(l)
+> ∂ωtu
+
+= ∂∂ωtu
+
+Pml=1 ptk(l) = 0, since Pml=1 ptk(l) = 1 , and (21). Finally, stacking all coor-dinates and the gradients of all chunks yields this lemma. 
+
+Convergence: Define ∥a∥2 
+
+> D
+
+≜ Ex∼D X [PIi=1 ∥ai(x)∥22],
+
+⟨a, b⟩D ≜ Ex∼D X [PIi=1 ⟨ai(x), b i(x)⟩]. Here, I is the size of 
+
+a and b, x is the input of the model, and DX is the distribution of x in dataset D. Let p(ω) = ( pk(ω) ≜ ˆfk(pk−1; ωk), k =0, · · · , K ) denote the readout head output given ω. We rewrite 
+
+Rt(ω; α) = R(ω; α, ˜pt) where pt = p(ωt) for presentation simplicity. The following Assumptions 2–4 are commonly considered in existing analysis (e.g., [29], [31]). Assumption 5 is reasonable given the bounded gradient in Assumption 2 and the probability simplex space of ˜pt. Assumption 6 is reasonable under simple random sampling and given the bounded gradient. 
+
+Assumption 2 (Bounded Gradient) . The gradient is upper bounded, i.e., E[∥∇ ω Rt(ω; α)∥2] ≤ M (α).
+
+Assumption 3 (Lipschitz Continuity) . Readout output p(ω) is Lipschitz continuous with respect to ω, i.e., ∥p(ω)−p(ω′)∥D ≤
+
+ρ∥ω − ω′∥, for all ω and ω′ in parameter space. 
+
+Assumption 4 (Smoothness) . For any ω in parameter space, 
+
+Rt(ω; α) is βR(α)-smooth, i.e., Rt(ω′; α) ≤ Rt(ω; α) + 
+
+⟨∇R t(ω; α), ω′ − ω⟩ + βR(α)2 ∥ω′ − ω∥2.
+
+Assumption 5 (Stability) . The first-order objective variation is quadratically controlled along the distribution update, i.e.,  ∇˜pt R(ωt; α, ˜pt), ˜pt+1 − ˜pt
+
+> D
+
+ 
+
+> +
+
+≤ Cfo (α)∥˜pt+1 − ˜pt∥2 
+
+> D
+
+.
+
+Assumption 6 (Sampling) . The mini-batch sampling is un-biased and has a bounded variance, i.e., ||∇ ω ˆRt(ω; α) −∇ω Rt(ω; α)|| 2 ≤ σ2(α)/B , where ∇ω ˆRt(ω; α) is the gradi-ent under sampled mini-batch and B is the mini-batch size. 
+
+Define drift δref  
+
+> t
+
+(α) ≜ Rt+1 (ωt+1 ; α) − R t(ωt+1 ; α)
+
+> +
+
+.This drift exists as distribution ptk−1 from chunk k −1 changes, and characterizes the change of Rt(·) across iterations. 
+
+Lemma 4 (Bounded Drift) . The cumulative drift of Rt(·) is upper bounded, i.e., DT (α) ≜ PT −1 
+
+> t=0
+
+E[δref  
+
+> t
+
+(α)] ≤ (Cfo (α) + 
+
+βR(α)/2) ρ2M (α) PT −1 
+
+> t=0
+
+η2 
+
+> t
+
+.Proof. According to the definition of δref  
+
+> t
+
+(α), by substituting 
+
+ω′ = ωt+1 and ω = ωt in Assumption 4, δref  
+
+> t
+
+(α) ≤ (Cfo (α)+  
+
+> βR(α)2
+
+)∥˜pt+1 − ˜pt∥2
+
+> D
+
+. Based on Lipschitz continuity of ˜pt ≜
+
+˜p(ωt) in Assumption 3, ∥˜pt+1 − ˜pt∥2 
+
+> D
+
+≤ ρ2∥ωt+1 − ωt∥2.Let Cref ≜ (Cfo (α) + βR(α)/2) ρ2. Based on Lemma 3 and Assumption 2, E[δref  
+
+> t
+
+] ≤ Cref (α)E[∥ωt+1 − ωt∥2] = 
+
+Cref (α)η2 
+
+> t
+
+E[∥∇ ω Rt(ω; α)∥2] ≤ Cref (α)M (α)η2 
+
+> t
+
+. Summing over t = 0 , . . . , T − 1 completes the proof. 
+
+Theorem 1 (Convergence) . Let ηt = η0/√t + γ ≤ 1/β R(α),where γ > 0. Based on Lemma 4 and Assumptions 4–6, 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ ω Rt(ω; α)∥2 ≤ 2( R0 − R opt + DT (α)) 
+
+T η 0/√T + γ
+
++ βR(α)σ(α)2 PT −1 
+
+> t=0
+
+η2 
+
+> t
+
+/B T η 0/√T + γ = ˜O
+
+ 1
+
+√T
+
+
+
+, (23) Stage Worker     
+
+> Control plane Data plane
+> Membership
+> Registration Heartbeat
+> Scheduler
+> Update window Micro-batch schedular
+> Failure Recovery
+> Commited state Replay request
+> Executor 0 (Stage 0)
+> Stage Worker
+> Buffer Check-point Input Hidden state
+> input
+> Hidden state Readout head Local backward update
+> Coordinator ...
+> Buffer Check-point Forward
+> Membership Execution monitor Failure recovery
+> Stage Worker
+> Buffer Check-point Membership Execution monitor Failure recovery
+> Executor 1 (Stage 1) Fig. 2. System overview with one coordinator and multiple executors, each corresponding to a stage (i.e., the update of a model chunk).
+
+where R0 and Ropt are the initial and optimal R(·).Proof. For presentation simplicity, we omit notation α in Rt(·).By Assumption 4 and considering update with sampled mini-batch, i.e., ωt+1 ← ωt − ηt∇ ˆRt(ωt), we have 
+
+Rt(ωt+1 ) ≤ R t(ωt) − ηt⟨∇R t(ωt), ∇ ˆRt(ω)⟩
+
++ βR(α)η2
+
+> t
+
+2 ∥∇ ˆRt(ωt)∥2. (24) Taking conditional expectation and using Assumption 6 and 
+
+ηt ≤ 1/β R(α), we have 
+
+E[Rt(ωt+1 )] ≤ E[Rt(ωt)] − ηt
+
+2 ∥∇R t(ωt)∥2+ βR(α)η2 
+
+> t
+
+σ(α)2
+
+2B .
+
+(25) Based on the definition of δref  
+
+> t
+
+(α), Rt(ωt+1 ) ≥ R t+1 (ωt+1 )−
+
+δref  
+
+> t
+
+(α). By substituting Rt(ωt+1 ) into (25) and rearranging, 
+
+ηt
+
+2 E∥∇R t(ωt)∥2 ≤ E[Rt(ωt)] − E[Rt+1 (ωt+1 )] + βR(α)η2 
+
+> t
+
+σ(α)2
+
+2B + E[δref  
+
+> t
+
+(α)] . (26) Summing from t = 0 to T − 1 and based on Lemma 4 and the definition of Ropt , the proof is complete. Theorem 1 shows that ZeroLock algorithm has a convergence rate of ˜O(1 /√T ), which differs from the convergence rate 
+
+O(1 /√T ) of conventional BP by only polylogarithmic factor. Meanwhile, the study in this section provides the first analytical framework for the local objective construction-based approach under general model chunk division. III. S YSTEM DESIGN 
+
+We propose a pipeline training system for ZeroLock. It is applicable to both multi-GPU server and multi-device scenarios. We first present the overview and detail the system design. Then, we discuss the specific design for parallelism at mobile devices. 
+
+A. System Overview 
+
+As shown in Fig. 2, this system contains one coordinator and multiple executors (i.e., GPUs or devices), and is separated into control plane and data plane. The coordinator falls in the control plane and has three components: membership for tracking active executors; scheduler for managing the scheduling of micro-batch updates across stages; failure recovery for tracking the state of committed requests and assigning replay requests when failure detected. In the scheduler , update window defines a contiguous sequence of micro-batches that executors are allowed to and must handle before advancing its process and serving as the unit of checkpoint; micro-batch scheduler indicates the sequence of micro-batches in the update window and will assist with the micro-batch replay after failure detected. Each executor contains both control plane and data plane. The control plane contains three components: membership for reporting its registration and hearbeat; execution monitor for monitoring its execution status; failure recovery for execution replay. The data plane at an executor is responsible for handing a stage, i.e., the update of a model chunk. It retrieves either the model input or the hidden state of the upstream stage from its buffer, performs forward pass to determine its hidden state, transfers the hidden state to the buffer of the downstream stage, and performs a backward update based on its local objective. We propose the following techniques to achieve lightweight, high-throughput, and robust implementation. (I) Early For-warding. The forwarding of the hidden state is designed to perform ahead of the local updates, avoiding unnecessary inter-stage waiting. (II) Independent Execution and Checkpoint. 
+
+Each executor maintains only its own trainable parameters, optimizer state, and checkpoint, enabling recovery at the stage granularity, and independently constructs its local signal and perform local updates. (III) State-Only Inter-Stage Exchange. 
+
+Executors exchange only the hidden state (but not the gradients or optimizer states) from other stages. (IV) Buffer-Assisted State Exchange. Each executor maintains a bounded hidden state buffer, storing the hidden states of its upstream stage for iterations, enabling replay after failure. Overall, (I)-(III) contribute to lightweight and high-throughput; (II) and (IV) contribute to failure recovery capability. 
+
+B. System Design Details 
+
+We first present the execution interfaces. Then, we introduce inter-stage runtime, in-stage execution, and failure recovery. 
+
+1) Stage-Execution-Related Interface: The following defines the unified interfaces related to stage execution at the executors. 
+
+Input Interface. For stage 0 executor, it inputs either token IDs or pre-computed initial hidden representation (constructed via a local input embedding layer). For each of the subsequent stages, it inputs the hidden states of the upstream stage from the hidden state buffer, filled by its upstream executor. Meanwhile, all stages input the attention mask, position IDs, and labels associated with a specific micro-batch to facilitate local training. 
+
+Forward-and-Output Interface. The executor performs forward pass using its chunk to produce its hidden state, which is then detached from the computation graph and written to the outbound buffer for sending to the downstream stage. 
+
+Local Update Interface. The executor utilizes the input hidden states and labels to construct a local loss and performs a backward pass and optimizer step to update its trainable parameters. This interface supports two ways to construct loss: (a) Static Model Head. It reuses the pre-trained model’s final normalization layer and frozen model head as the readout head, and the token-level cross entropy and task-specific labels are used to construct local loss, as in Section II-A. This design does not induce new trainable parameters, while it assumes the intermediate hidden states can be interpretable by the final head, which may not hold for complex generative tasks. (b) Readout Adapter. To bridge the gap between the interme-diate hidden states and the frozen model head’s readout space, executor can insert a stage-wise readout adapter (i.e., a small residual MLP initialized approximate the identity mapping). During training, this adapter aligns the intermediate hidden space to be more amenable to the frozen model head. Besides (a) and (b), this interface also accommodates other lightweight head, e.g., bottleneck projection head or restricted vocabulary head, to reduce computation and memory overhead. 
+
+2) Inter-Stage Runtime and In-Stage Execution: The inter-stage runtime (acting as a scheduling engine) organizes multiple micro-batches into an update window at the coordinator. These micro-batches enter the stage pipeline sequentially. For each micro-batch, the stage worker performs in-stage execution :S1 Input: Retrieve hidden states of the upstream stage from the hidden state buffer; load the attention mask, position IDs, and labels related to the micro-batch. S2 Forward-and-Output: Perform forward pass to produce its hidden state; output it to the outbound buffer. S3 Local Training: Backpropagate the local loss and accumu-late gradients for the current update window. The optimizer step is applied after the final micro-batch in that window. Note that downstream execution can start immediately after S2 without waiting for the upstream’s local backward in S3, leading to a higher degree of parallelism. Across stages, inter-stage runtime is responsible for manag-ing the hidden state flow. The management is in the form of an entry , which contains the hidden state tensor of a micro-batch and the related metadata for sending, receiving, and status. The runtime tracks each entry’s transition from the outbound buffer of upstream stage to the hidden state buffer of downstream stage, allowing the coordinator to accurately control the buffer occupancy of each stage without tracking each tensor. Meanwhile, we introduce an in-flight depth to restrict the number of entries between each pair of stages, preventing upstream stages from overwhelming downstream stages. Furthermore, on GPU, preposted receive is allowed, such that downstream stage can submit receive _entry request in advance. Each entry binds to a readiness event. Compute stream waits only for this specific event, avoiding unrelated communication operations from blocking the compute stream. 
+
+3) Failure Recovery: The failure recovery capability comes from two facts: each stage checkpoints its state independently; the hidden state buffer introduces resilience to failure. Conse-quently, after a failure, only the failed stages need to roll back, which retrieves hidden state from the buffer and replaying the requests. The brief failure recovery mechanism is as follows:  
+
+> •
+
+Proactive Checkpointing: Each executor periodically cap-tures local checkpoints, including trainable parameters, optimizer states, and progress metadata.  
+
+> •
+
+Reactive Recovery: Upon detecting a failure, the runtime restores the failed stage from its latest checkpoint and replays necessary update windows to catch up to the pipeline frontier. Successful stages retain their execution. 
+
+C. Mobile Execution Backend 
+
+For deployment at mobile devices, we use the ExecuTorch framework, Meta’s official PyTorch-native edge runtime. It performs ahead-of-time (AOT) compilation to produce astatic computational representation, serialized as a .pte 
+
+program, which enables deterministic execution on resource-constrained end devices without a Python interpreter. However, ExecuTorch bundles forward and backward computations into a single Python ExecuTorch (PTE) method, where the forward hidden state is exposed only after the local backward gradient computation. This prohibit the early-forwarding opportunity. To address this, we insert a lightweight pipeline marker operator within the PTE method—specifically after the detached hidden state output but before the parameter-gradient subgraph. This operator performs no tensor computation; instead, it signals the runtime to capture the hidden outputs and suspend the PTE method while preserving its execution state (stack, tensors, optimizer buffers). We extend the ExecuTorch training runtime with a two-phase Android interface. The first phase executes up to the marker and returns the hidden state, which is immediately transferred to the downstream device. The second phase resumes the same method to complete the local backward pass, after which an on-device AdamW optimizer updates the stage’s LoRA parameters. In this case, the transfer to the downstream device overlaps with the local backward computation, making the resulting stage program support local training and early-forwarding without incurring cross-stage gradient Remote Procedure Call (RPC) overhead. IV. E XPERIMENTS 
+
+We build prototype systems using both multi-GPU/CPU server and Android devices respectively. The evaluation on multi-GPU/CPU server shows (E1) the method comparison on memory and throughput and (E2) failure recovery. The evalua-tion on Android devices shows (E3) on-device performance. 
+
+A. Experimental Settings 
+
+Model and data. We use TinyLlama as the pre-trained model. Its Transformer layers are partitioned into three consecutive chunks, each assigned to one NVIDIA L40 GPU or one Andriod phone. We apply LoRA with rank 4 and scaling factor 16 . On default, experiments are conducted on a fixed 10,000-example subset of AG News; all sequences are padded or truncated to 128 tokens. Let b denote the number of physical batches processed by one microbatch call; m denotes the number of such microbatch calls before an optimizer update; thus, batch 
+
+B = bm . We repeat the experiment with three random seeds. 0 400 800 1200 
+
+Optimizer updates      
+
+> 50 75
+> Accuracy (%)
+> BP (Single GPU) GPipe 1F1B PipeDream ZeroLock ( α= 1 )ZeroLock ( α= 0.5 )0400 800 1200
+
+Optimizer updates 
+
+> 10 0
+> NLL
+
+Fig. 3. (a) Accuracy and (b) negative-likelihood loss. Total peak Model + state Activation Fwd/loss/bwd Input/recv. Weight cache Other                                                                         
+
+> GPipe S2 GPipe S1 GPipe S0 1F1B S2 1F1B S1 1F1B S0 PipeDream S2 PipeDream S1 PipeDream S0 ZeroLock S2 ZeroLock S1 ZeroLock S0
+> 4179.1 799.4 2625.3 643.3 17.1 0.0 94.0 3034.5 590.1 2247.1 91.8 21.0 0.0 84.5 3128.5 715.1 2135.1 171.8 21.0 0.0 85.5 1935.6 799.4 656.3 452.9 5.1 0.0 22.0 1839.7 590.1 1112.5 82.2 13.0 0.0 41.8 2546.0 715.1 1595.8 147.3 21.0 0.0 66.8 1935.6 800.2 656.3 452.1 4.3 0.8 22.0 1840.9 590.1 1112.5 81.5 12.5 1.4 42.9 2541.4 715.8 1595.8 146.6 16.8 1.4 65.1 1868.3 799.4 628.3 414.4 4.3 0.0 22.0 1699.8 715.1 547.3 414.1 4.3 0.0 19.0 1825.8 840.1 547.3 414.1 4.3 0.0 20.0
+
+Fig. 4. Peak GPU memory usage and the memory usage of each component under the peak ( b = 8 and m = 4 ). 
+
+Methods. We compare ZeroLock with three approaches. (i) GPipe [3] completes all forward passes in a logical batch before the backward pass. (ii) 1F1B [4] interleaves forward and backward within a logical batch and flushes the pipeline before the shared optimizer update. (iii) PipeDream [4] maintains 1F1B execution across update windows via weight stashing (i.e., storing multiple copies), ensuring forward and backward passes use consistent parameter versions. 5
+
+B. E1: Memory and Throughput 
+
+Despite the modular update decoupling, ZeroLock has a comparable accuracy and negative log-likelyhood (NLL) to baseline approaches (see Fig. 3). Build upon this, we show its memory reduction and throughput improvement as follows. 
+
+1) Memory: As shown in Fig. 4, when compared with GPipe, 1F1B, and PipeDream, ZeroLock reduces the mean per-stage peak memory by 47.8%, 14.7%, and 14.6%, respectively, and by 55.3%, 26.6%, and 26.5% for the maximum stage usage, respectively. Most of the reduction comes from the elimination of activations, where the reduction are 75.4%, 40.8%, and 48.8% on per-stage average, respectively. This reduction results from the modular update decoupling of ZeroLock; in comparison, the other approaches implement 
+
+> 5
+
+Although existing works [26]–[29] considered modular decoupling in pipeline parallelism, [28] is not for LLM fine-tuning; [26], [27] do not provide open-sourced code; the open-sourced code of [29] does not implement system-level pipeline parallelism (e.g., it places all chunks of a certain batch in one GPU), so comparing it with those deployed in multiple GPUs may not be fair. 1/32 2/16 4/8 8/4  
+
+> Batch geometry b/m
+> 024
+> Max per-stage memory
+
+B = 32     
+
+> ZeroLock GPipe 1F1B PipeDream 1/32 2/16 4/8 8/4
+> Batch geometry b/m
+> 0100 200
+> Throughput (req/s)
+
+B = 32 
+
+(a) (b) 4/32 8/16 16/8 32/4  
+
+> Batch geometry b/m
+> 0510 15
+> Max per-stage memory
+
+B = 128 4/32 8/16 16/8 32/4  
+
+> Batch geometry b/m
+> 0100 200
+> Throughput (req/s)
+
+B = 128 
+
+(c) (d) 
+
+Fig. 5. (a) and (c), maximum stage memory usage under B = 32 and 
+
+B = 128 , respectively; (b) and (d), throughput under B = 32 and B = 128 ,respectively. When b/m = 8 /4, when compared with PipeDream, ZeroLock reduces the memory by 26.5% and improves throughput by 4.9%. 2 3 4
+
+Pipeline stages / GPUs   
+
+> 150 200 250
+> Throughput (req/s) Local Wi-Fi Mobile Constr.
+
+Sender-side link profile 
+
+> 10 1
+> 10 2
+> Throughput (req/s, log)
+> ZeroLock GPipe 1F1B PipeDream
+
+(a) (b) 
+
+Fig. 6. Throughput under diverse scenarios: (a) number of stages, each executed by a GPU; (b) diverse sender-side links. 
+
+end-to-end backpropagation, which need to retain activations for backward gradient computation. Meanwhile, given m = 4 ,GPipe, 1F1B, PipeDream, and ZeroLock experience out-of-memory when b = 10 , 20 , 20 , 28 , respectively, showing that the system with ZeroLock can afford a larger batch size. Figs. 5 (a) and (c) show that ZeroLock is more beneficial when the physical batch to microbatch ratio (i.e., b/m ) is larger. Specifically, more physical batches (in a microbatch call) indicates larger forward graphs retained by baseline approaches, leading to more obvious benefits for modular decoupling. 
+
+2) Throughput: Figs. 5 (b) and (d) and Fig. 6 show the throughput comparison. The default setting contains three stages, with b = 8 and m = 4 . First, in Fig. 5 (b), under the default setting, when compared with GPipe, 1F1B, and PipeDream, ZeroLock improves the throughput by 55.8%, 62.8%, and 4.9%, respectively. Second, in Figs. 5 (b) and (d) and Fig. 6 (a), as the increase of the physical batches in a microbatch call and stages, ZeroLock and PipeDream demonstrate more significant increase in throughput, showing the better potentials for reducing bubbles in each call and ex-ploiting additional GPUs, respectively. Finally, Fig. 6 (b) shows the throughput under simulated sender-side communication link: Wi-Fi, 2 ms/1000 Mbps (latency/bandwidth); mobile, 10 ms/200 Mbps; constrained, 30 ms/50 Mbps. ZeroLock is more 0 500 1k         
+
+> S0 S1 S2
+> CUDA kernel Idle
+> 0500 1k
+> S0 S1 S2
+> 0500 1k
+> S0 S1 S2
+> 0500 1k
+> S0 S1 S2
+> Time in one-second interval (ms) Fig. 7. CUDA activity: (a) GPipe; (b) 1F1B; (c) PipeDream; (d) ZeroLock. TABLE I FAILURE RECOVERY .
+
+Method Recovery (ms) Transfer (MiB) Synchronous 1F1B 2381 .2 ± 66 .6 192 ZeroLock 2013 .1 ± 6.4 96 
+
+beneficial when the link is slower. This is because baselines need to send both forward hidden state and backward hidden gradients, while ZeroLock transfers only forward hidden state. Fig. 7 visualizes the CUDA activity traces under b = 8 ,
+
+m = 4 , 512 data samples, and 16 optimizer updates. The plots show a one-second steady-state interval, during which all three GPUs exhibit compute activity; this interval selection was fixed prior to inspecting method-specific behavior to avoid bias. The Kernel and device copy timestamps are measured externally, without injecting device-side synchronization. As shown in the figure, ZeroLock and PipeDream demonstrate more concurrent stage activities and less GPU idle time. Furthermore, when compared with PipeDream, ZeroLock shows a more balanced activity load across stages and a higher active fraction, with an improvement of 13.7%. Note that this active fraction serves as a diagnostic indicator of pipeline scheduling rather than a proxy for throughput, as idle periods also encompass host dispatch and Gloo communication overhead. 
+
+C. E2: Failure Recovery 
+
+We evaluate the outage recovery capability of ZeroLock. It is compared with 1F1B. Specifically, 1F1B recovers via global rollback and full replay. In contrast, ZeroLock enables local recovery by reusing buffered hidden states and retaining com-mitted previous updates, eliminating redundant recomputation. We consider three stages, and set b = 1 and m = 8 . The failure setting is as follows: W0–W3, four prelude windows; W4–W7, four failure windows at Stage 1; W8–W11, four resumed windows. The worker processes and GPU contexts remain alive during the failure. Recovery latency is defined as the during between when Stage 1 resumes and when Stage 2 commits W7. In Table I, ZeroLock reduces the recovery latency by 368 ms and the transfer traffic from 192 to 96 MiB.                          
+
+> TABLE II ON-DEVICE EVALUATION WITH ANDRIOD PHONES .Stage/device PTE Queue Total PSS Temp. S0/NX809J 11.43/13.56 12.44/17.56 38.28/46.90 3423.5 37.0 S1/Lenovo L71091 7.56/8.32 0/0.02 15.61/27.51 3408.2 36.0 S2/Pixel 10 Pro XL 9.53/11.40 0/5.79 10.30/18.99 3824.3 36.7 0510
+> Mean stage time (s)
+> S0 active S0 wait S1 active S1 wait S2 active S2 wait
+> 12.2 8.0 10.0 11.4 0.2 0.9
+> Forward Local backward Optimizer Other local Queued wait 050 100
+> Local optimizer step
+> 0510 15
+> Stage-local loss  S0 S1 S2
+
+(a) (b)  
+
+> Fig. 8. (a) Latency breakdown; (b) Local loss convergence.
+
+D. E3: On-Device Evaluation with Andriod Phones 
+
+For implementation on Android devices, we export three TinyLlama training PTEs containing transformer layers [0,6], [7,13], and [14,21] and deploy them on NX809J, Lenovo L71091, and Pixel 10 Pro XL, respectively. We use 128 data samples for training with sequence length 128, b = 1 , LoRA rank 8, scale 16, and learning rate 10 −4. Each stage commits 128 optimizer steps and writes nine checkpoints. Table II shows the median/95th percentile PTE, queuing, and total duration (in seconds) for a single batch request with the latency break down shown in Fig. 8 (a), the application peak PSS in MiB, and battery temperature in ◦C. The total wall-clock time of the entire fine-tuning is 1644.1 s with a throughput of 0.0779 records/s. Fig. 8 (b) shows the loss convergence. These results indicate the implementation is practically feasible. V. C ONCLUSION 
+
+In this work, we propose a ZeroLock algorithm, which achieves modular update decoupling by local objective construc-tion, for pipeline parallelism in LLM fine-tuning. It effectively removes pipeline bubbles by alleviating the inter-stage waiting and reduces memory usage by mitigating unnecessary activation storage at the algorithm level. We provide the first analytical framework for local objective construction-based approaches under general chunk division and prove that ZeroLock has a convergence rate of ˜O(1 /√T ), comparable to BP training. Meanwhile, we design a system for deploying ZeroLock, incorporating techniques such as early forwarding and failure recovery to improve system throughout and robustness. We build real-world prototype and show that when compared with BP-based baselines, ZeroLock reduces the memory by 26.5% and improves throughput by 4.9%. For future direction, it is meaningful to further incorporate operator-level optimization to further improve throughput and reduce memory usage. VI. U SE OF AI D ISCLOSURE 
+
+ChatGPT was used to assist with code development and experimental setup. Specifically, it was used to configure and troubleshoot the environments required for benchmark repro-duction, run and migrate benchmark implementations across different environments, generate Kotlin code for deploying and executing PTE models on mobile devices, and generate batch experiment scripts using torchrun. The AI-generated code and configuration instructions were reviewed, adapted where necessary, tested, and validated by the author. The author takes full responsibility for the final implementation, experimental results, and their interpretation. REFERENCES [1] A. Tandon, K. Dalal, X. Li, D. Koceja, M. Rød, S. Buchanan, X. Wang, J. Leskovec, S. Koyejo, T. Hashimoto et al. , “End-to-end test-time training for long context,” arXiv preprint arXiv:2512.23675 , 2025. [2] A. M. Alghamdi, M. U. Ashraf, A. A. Bahaddad, K. A. Almarhabi, W. A. Al Shehri, and A. Daraz, “Cross-subject eeg signals-based emotion recognition using contrastive learning,” Scientific Reports , vol. 15, no. 1, p. 28295, 2025. [3] Y. Huang, Y. Cheng, A. Bapna, O. Firat, M. X. Chen, D. Chen, H. Lee, J. Ngiam, Q. V. Le, Y. Wu, and Z. Chen, “GPipe: Efficient training of giant neural networks using pipeline parallelism,” in Proc. NeurIPS ,Vancouver, BC, Canada, Dec. 2019. [4] D. Narayanan, A. Harlap, A. Phanishayee, V. Seshadri, N. R. Devanur, G. R. Ganger, P. B. Gibbons, and M. Zaharia, “PipeDream: Generalized pipeline parallelism for DNN training,” in Proc. ACM SOSP , Huntsville, ON, Canada, Oct. 2019. [5] Y. Chen, Y. Yan, S. Ge, Y. Qin, Y. Zheng, Q. Yang, S. He, Z. Shi, J. Chen, and Y. Shu, “Confidant: Customizing transformer-based llms via collaborative training on mobile devices,” in Proc. ACM MobiCom ,2025. [6] D. Narayanan, A. Phanishayee, K. Shi, X. Chen, and M. Zaharia, “Memory-efficient pipeline-parallel DNN training,” in Proc. ICML , Virtual Conf., Jul. 2021. [7] S. Fan, Y. Rong, C. Meng, Z. Cao, S. Wang, Z. Zheng, C. Wu, G. Long, J. Yang, L. Xia, L. Diao, X. Liu, and W. Lin, “DAPPLE: A pipelined data parallel approach for training large models,” in Proc. ACM PPoPP ,Virtual Conf., Feb.–Mar. 2021. [8] D. Narayanan, M. Shoeybi, J. Casper, P. LeGresley, M. Patwary, V. A. Korthikanti, D. Vainbrand, P. Kashinkunti, J. Bernauer, B. Catanzaro, A. Phanishayee, and M. Zaharia, “Efficient large-scale language model training on GPU clusters using Megatron-LM,” in Proc. ACM/IEEE SC ,St. Louis, MO, USA, Nov. 2021. [9] S. Li and T. Hoefler, “Chimera: Efficiently training large-scale neural networks with bidirectional pipelines,” in Proc. ACM/IEEE SC , St. Louis, MO, USA, Nov. 2021. [10] P. Qi, X. Wan, G. Huang, and M. Lin, “Zero bubble (almost) pipeline parallelism,” in Proc. ICLR , Vienna, Austria, May 2024. [11] X. Lian, S. A. Jacobs, L. Kurilenko, M. Tanaka, S. Bekman, O. Ruwase, and M. Zhang, “Universal checkpointing: A flexible and efficient distributed checkpointing system for large-scale DNN training with reconfigurable parallelism,” in Proc. USENIX ATC , Boston, MA, USA, Jul. 2025. [12] S. Gandhi and C. Kozyrakis, “Sparse checkpointing for fast and reliable MoE training,” in Proc. USENIX NSDI , Renton, WA, USA, May 2026. [13] T. Wu, L. Cao, H. Lu, X. Jiang, Y. Yu, S. Yang, G. Yang, J. Wang, L. Qu, L. Zhang, and W. Wang, “Attack of the bubbles: Straggler-resilient pipeline parallelism for large model training,” in Proc. USENIX NSDI ,Renton, WA, USA, May 2026. [14] J. Chen, X. Deng, Z. Xiong, S. Guo, X. Qiu, P. Wang, and D. Niyato, “CollaPipe: Adaptive segment-optimized pipeline parallelism for collabo-rative LLM training in heterogeneous edge networks,” arXiv:2509.19855 ,Sep. 2025. [15] M. Ryabinin, T. Dettmers, M. Diskin, and A. Borzunov, “SWARM parallelism: Training large models can be surprisingly communication-efficient,” in Proc. ICML , Honolulu, HI, USA, Jul. 2023. [16] A. Borzunov, D. Baranchuk, T. Dettmers, M. Ryabinin, Y. Belkada, A. Chumachenko, P. Samygin, and C. Raffel, “Petals: Collaborative infer-ence and fine-tuning of large models,” in Proc. ACL Syst. Demonstrations ,Toronto, ON, Canada, Jul. 2023. [17] Z. Huo, B. Gu, qian Yang, and H. Huang, “Decoupled parallel backpropagation with convergence guarantee,” in Proc. ICML , Jul. 2018. [18] C. Ye, R. Ye, Y. Zhang, and M. Tang, “Depth-progressive monotonic learning without global backpropagation,” in Proc. ICML , 2026. [19] R. Ye, C. Ye, C. Huang, M. Tang, and Y. Liu, “Beyond-backpropagation training: Methods, applications, and perspectives,” 
+
+TechRxiv , vol. 2026, no. 0103, 2026. [Online]. Available: https: //www.techrxiv.org/doi/abs/10.36227/techrxiv.176740426.63642005/v1 [20] A. Nøkland, “Direct feedback alignment provides learning in deep neural networks,” Proc. NeurIPS , 2016. [21] M. Akrout, C. Wilson, P. Humphreys, T. Lillicrap, and D. B. Tweed, “Deep learning without weight transport,” in Proc. NeurIPS , vol. 32, 2019. [22] S. Malladi, T. Gao, E. Nichani, A. Damian, J. D. Lee, D. Chen, and S. Arora, “Fine-tuning language models with just forward passes,” in 
+
+Proc. NeurIPS , 2023. [23] S. Wang, Z. Chen, and M. Tang, “Curvzo: Adaptive curvature-guided sparse zeroth-order optimization for efficient llm fine-tuning,” in Proc. ICML , 2026. [24] Q. Li, Y. W. Teh, and R. Pascanu, “Noprop: Training neural networks without back-propagation or forward-propagation,” in Conference on Lifelong Learning Agents . PMLR, 2026, pp. 525–544. [25] B. Millidge, A. Tschantz, and C. L. Buckley, “Predictive coding approximates backprop along arbitrary computation graphs,” Neural Computation , vol. 34, no. 6, pp. 1329–1368, 2022. [26] X. Guo, C. Xu, G. Guo, F. Zhu, C. Cai, P. Wang, X. Wei, J. Su, and J. Gao, “Faster multi-GPU training with PPLL: A pipeline parallelism framework leveraging local learning,” arXiv:2411.12780 , Nov. 2024. [27] M. Aljahdali and M. Canini, “Idle no more: Boosting distributed pipeline training via FluidPipe,” in Proc. IEEE ICDCSW , Glasgow, U.K., Jul. 2025. [28] M.-Y. Ho, C.-K. Wang, Y.-T. Lin, and H.-H. Chen, “Scpl: Enhancing neural network training throughput with decoupled local losses and model parallelism,” ACM Trans. Manage. Inf. Syst. , vol. 17, no. 2, Jun. 2026. [29] H. Shi, T. Han, P. Wang, Z. Wang, X. Yang, and J. Su, “Rethinking local learning: A cheaper and faster recipe for LLM post-training,” 
+
+arXiv:2605.04913 , May 2026. [30] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen, “LoRA: Low-rank adaptation of large language models,” in Proc. ICLR , Virtual Conf., Apr. 2022. [31] P. Han, C. Huang, G. Tian, M. Tang, and X. Liu, “Convergence analysis of split federated learning on heterogeneous data,” Advances in Neural Information Processing Systems , vol. 37, pp. 103 476–103 544, 2024.

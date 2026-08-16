@@ -6,101 +6,83 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-08-09
-- 运行时间：2026-08-09 20:59:20 UTC
+- 最新运行日期：2026-08-16
+- 运行时间：2026-08-16 19:50:44 UTC
 - 运行状态：成功
-- 本次总论文数：27
-- 精读区：16
+- 本次总论文数：21
+- 精读区：10
 - 速读区：11
 
 ### 今日简报（AI）
-今日共读27篇论文，其中16篇精读、11篇速读，聚焦系统与模型协同优化。最值得关注的是两篇满分工作：FPGA上低秩Mamba加速的软硬件协同设计，以及具身智能VLA推理的比特级稀疏与投机推理方案。建议读者优先精读这两篇，并顺带浏览云端协同VLA及异构路由等速读文章以扩展视野。
-- 详情：[/202608/09/README](/202608/09/README)
+今日精读10篇，聚焦AI芯片能效与LLM加速；速读覆盖博弈功率控制与边缘推理。最值得精读《Eco-SoC》可持续VLSI架构和《FSGen》稀疏加速器生成器，双双9.0分。建议关注AI硬件从“堆算力”转向“能效比例”与稀疏化设计的方向。
+- 详情：[/202608/16/README](/202608/16/README)
 
 ### 精读区论文标签
-1. [LowRank-SSM: Hardware-Software Co-Design for Rank-Reduced Mamba Acceleration on FPGA](/202608/09/2608.02954v1-lowrank-ssm-hardware-software-co-design-for-rank-reduced-mamba-acceleration-on-fpga)  
-   标签：评分：10.0/10、query:aiot
-   evidence：面向FPGA上低秩Mamba加速的软硬件协同设计框架
-2. [Deltoris: Enabling Real-time VLA Inference in Embodied AI via Bit-level Sparsity and Speculative Inference](/202608/09/2608.04428v1-deltoris-enabling-real-time-vla-inference-in-embodied-ai-via-bit-level-sparsity-and-speculative-inference)  
-   标签：评分：10.0/10、query:aiot
-   evidence：面向边缘设备能效实时的VLA推理的算法硬件协同设计
-3. [A Time-Multiplexed Spiking Neural Network Accelerator with Pipelined Readout for FPGA Inference](/202608/09/2608.00595v1-a-time-multiplexed-spiking-neural-network-accelerator-with-pipelined-readout-for-fpga-inference)  
+1. [Eco-SoC: A Sustainable VLSI Architecture for Energy-Proportional Artificial Intelligence](/202608/16/2608.08761v1-eco-soc-a-sustainable-vlsi-architecture-for-energy-proportional-artificial-intelligence)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于FPGA的时分复用脉冲神经网络加速器，实现低功耗推理
-4. [CascadeLUT: Information-Ordered Streaming Inference for Bandwidth-Constrained FPGAs](/202608/09/2608.00720v1-cascadelut-information-ordered-streaming-inference-for-bandwidth-constrained-fpgas)  
+   evidence：基于稀疏性的动态精度缩放的AI低功耗VLSI加速器
+2. [FSGen: Agile Fused and Sparse Accelerator Generator with Accurate Power Model for LLM Applications](/202608/16/2608.09252v1-fsgen-agile-fused-and-sparse-accelerator-generator-with-accurate-power-model-for-llm-applications)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向带宽受限FPGA的LUT基低功耗神经网络推理
-5. [Opt.Gear Technical Report](/202608/09/2608.01034v1-optgear-technical-report)  
+   evidence：直接面向LLM/AI模型的低功耗硬件加速，提供具有精确功耗模型的加速器生成器。
+3. [MemSpec: Memory-Aware Runtime for Adaptive Draft Scheduling in Speculative Decoding on Edge Devices](/202608/16/2608.10362v1-memspec-memory-aware-runtime-for-adaptive-draft-scheduling-in-speculative-decoding-on-edge-devices)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向设备端高效部署的混合架构基础模型
-6. [DeVIT: Low-Power Vision Transformer Acceleration Using Delta Computation](/202608/09/2608.01343v1-devit-low-power-vision-transformer-acceleration-using-delta-computation)  
+   evidence：面向边缘设备推测解码的自适应草稿调度的内存感知运行时
+4. [You Only Charge Once 2.0 : A End-to-End Analog Computing-in-Memory Architecture with Reconfigurable Switched Capacitors](/202608/16/2608.11116v1-you-only-charge-once-20--a-end-to-end-analog-computing-in-memory-architecture-with-reconfigurable-switched-capacitors)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向资源受限设备，利用量化后的值局部性进行差分计算以加速低功耗视觉Transformer。
-7. [Energy-Efficient LLM Serving via Disaggregated Attention--FFN and Flexible Frequency Scaling](/202608/09/2608.01891v1-energy-efficient-llm-serving-via-disaggregated-attention--ffn-and-flexible-frequency-scaling)  
+   evidence：面向节能DNN加速的模拟存内计算架构
+5. [Uni-SFU: Algorithm-HW Co-Design for Universal SFUs via Mixed-Degree Piecewise Approximation](/202608/16/2608.11577v1-uni-sfu-algorithm-hw-co-design-for-universal-sfus-via-mixed-degree-piecewise-approximation)  
    标签：评分：9.0/10、query:aiot
-   evidence：满足SLO约束下通过GPU频率调节实现能效型大模型服务
-8. [Structured Memory for Edge Language Models: Persistent Context and Corpus Retrieval via O(1) SSM State Injection](/202608/09/2608.02560v1-structured-memory-for-edge-language-models-persistent-context-and-corpus-retrieval-via-o1-ssm-state-injection)  
+   evidence：通过分段逼近算法-硬件协同设计通用特殊函数单元
+6. [APEX: Adaptive Expert Prefetching for Memory-Efficient Edge MoE Inference](/202608/16/2608.11688v1-apex-adaptive-expert-prefetching-for-memory-efficient-edge-moe-inference)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向边缘语言模型的状态注入检索机制，消除预填充成本与KV缓存增长
-9. [NANQ: Noise-Floor-Aware Mixed-Precision Non-Uniform Quantization for Analog Compute-in-Memory](/202608/09/2608.02700v1-nanq-noise-floor-aware-mixed-precision-non-uniform-quantization-for-analog-compute-in-memory)  
+   evidence：边缘MoE推理优化；直接面向嵌入式设备上的能效型神经网络推理
+7. [Achieving Near-Zero-Overhead Multi-Model Hierarchical Classification in Real-Time Detection Pipelines](/202608/16/2608.11770v1-achieving-near-zero-overhead-multi-model-hierarchical-classification-in-real-time-detection-pipelines)  
    标签：评分：9.0/10、query:aiot
-   evidence：面向低功耗模拟存内计算AI加速器的噪声底线感知量化方法
-10. [CAMTA: A Reconfigurable Multi-Region Activation Unit for Nonlinear Function Approximation](/202608/09/2608.02988v1-camta-a-reconfigurable-multi-region-activation-unit-for-nonlinear-function-approximation)  
+   evidence：面向实时层次推理的边缘NPU/DLA并发执行
+8. [FQTree: Fine-grained Quantization and Hardware Generation of Boosted Decision Trees](/202608/16/2608.12140v1-fqtree-fine-grained-quantization-and-hardware-generation-of-boosted-decision-trees)  
    标签：评分：9.0/10、query:aiot
-   evidence：在FPGA和ASIC加速器中实现可重构多区域激活单元，用于非线性函数逼近
-11. [Interpolation of Non-Linear Functions for LLMs using Partial Reconfiguration in FPGAs](/202608/09/2608.03033v1-interpolation-of-non-linear-functions-for-llms-using-partial-reconfiguration-in-fpgas)  
+   evidence：面向高效BDT部署的量化感知训练与自动硬件生成
+9. [Lonic: Algorithm-Hardware Co-Design for Energy-Efficient Fully Local Online SNN Training with INT4 Precision](/202608/16/2608.12500v1-lonic-algorithm-hardware-co-design-for-energy-efficient-fully-local-online-snn-training-with-int4-precision)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于部分重配置的分段线性插值框架，用于FPGA上LLM加速中非线性函数的高效实现
-12. [LPV Control for Dynamic Power Capping in High-Performance Computing under Mixed Workloads](/202608/09/2608.03367v1-lpv-control-for-dynamic-power-capping-in-high-performance-computing-under-mixed-workloads)  
+   evidence：面向嵌入式SNN训练的算法-硬件协同设计
+10. [NAS-Driven Hardware Accelerator Exploration for Edge AI and Quantization Effects on the Pareto Space](/202608/16/2608.13293v1-nas-driven-hardware-accelerator-exploration-for-edge-ai-and-quantization-effects-on-the-pareto-space)  
    标签：评分：9.0/10、query:aiot
-   evidence：基于线性参数变化控制的动态功耗上限调节与能耗-性能权衡
-13. [Beyond Peak TOPS/W: A System-Level Perspective on Hybrid Digital, Analogue and Neuromorphic Computing](/202608/09/2608.03514v1-beyond-peak-topsw-a-system-level-perspective-on-hybrid-digital-analogue-and-neuromorphic-computing)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向高能效AI加速的混合数字、模拟与神经形态计算系统级视角
-14. [Design-Time Optimization of Deep Neural Networks for Intermittent Learning on Microcontrollers](/202608/09/2608.03589v1-design-time-optimization-of-deep-neural-networks-for-intermittent-learning-on-microcontrollers)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向微控制器间歇学习的DNN设计期能效优化，结合硬件感知能耗预测
-15. [EdgeXpert: An Edge Device for Memory-Efficient LLM Inference with Mixture-of-Experts and Speculative Decoding](/202608/09/2608.05303v1-edgexpert-an-edge-device-for-memory-efficient-llm-inference-with-mixture-of-experts-and-speculative-decoding)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向边缘设备的软硬件协同LLM加速器，解决投机解码与MoE不兼容问题
-16. [Near-sensor Computing for Rapid Visuotactile Perception](/202608/09/2608.05725v1-near-sensor-computing-for-rapid-visuotactile-perception)  
-   标签：评分：9.0/10、query:aiot
-   evidence：面向视触觉感知的近传感流式硬件流水线，功耗347mW，确定性时延
+   evidence：面向边缘AI的硬件感知NAS与加速器探索，直接关联低功耗AI硬件加速需求
 
 ### 速读区论文标签
-1. [Latency-Tolerant Cloud-Edge Collaborative Vision-Language-Action Models via Emergent Representational Specialization](/202608/09/2608.00569v1-latency-tolerant-cloud-edge-collaborative-vision-language-action-models-via-emergent-representational-specialization)  
+1. [EBGT: Epistemology-aided Bayesian Game Theory for Uplink Power Control in Stochastically Distributed IoT Tiers](/202608/16/2608.07745v1-ebgt-epistemology-aided-bayesian-game-theory-for-uplink-power-control-in-stochastically-distributed-iot-tiers)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向移动机器人边缘部署的云边协同VLA模型时延容忍方法
-2. [HetRoute Heterogeneous and Cost-aware Collaborative Routing Framework for Distributed Edge MoE Inference](/202608/09/2608.00577v1-hetroute-heterogeneous-and-cost-aware-collaborative-routing-framework-for-distributed-edge-moe-inference)  
+   evidence：面向低SWaP物联网设备的去中心化上行功率最小化
+2. [The Neural Division of Labor: Biologically-Inspired Modular Architectures for Robust Neuromorphic Computing](/202608/16/2608.08317v1-the-neural-division-of-labor-biologically-inspired-modular-architectures-for-robust-neuromorphic-computing)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向分布式边缘MoE推理的异构成本感知协同路由，直接针对边缘AI优化
-3. [Opt.Gear Technical Report](/202608/09/2608.01034v2-optgear-technical-report)  
+   evidence：模块化脉冲神经网络，参数效率高；与嵌入式AI架构和高效推理相关
+3. [Uplink-Completion-Triggered Edge-GPU Inference for Multi-Agent Cooperative Perception](/202608/16/2608.08330v1-uplink-completion-triggered-edge-gpu-inference-for-multi-agent-cooperative-perception)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向端侧高效部署的基础模型，混合架构降低KV缓存并加速NPU推理
-4. [Spatial Prefix Caching for Wireless Edge LLM Inference: A Stochastic-Geometry and Queueing Framework](/202608/09/2608.01126v1-spatial-prefix-caching-for-wireless-edge-llm-inference-a-stochastic-geometry-and-queueing-framework)  
+   evidence：通过完成触发重叠优化多智能体协同感知的边缘GPU深度推理
+4. [IoXT: The Internet of Explainable Things. Why Explainability in IoT Requires a New System-Level Paradigm and Protocol Design](/202608/16/2608.08556v1-ioxt-the-internet-of-explainable-things-why-explainability-in-iot-requires-a-new-system-level-paradigm-and-protocol-design)  
    标签：评分：8.0/10、query:aiot
-   evidence：面向无线边缘网络的LLM推理前缀缓存优化
-5. [Partially-Observable Transmission Control for UAV-Enabled Federated Learning in IoT Networks](/202608/09/2608.00855v1-partially-observable-transmission-control-for-uav-enabled-federated-learning-in-iot-networks)  
+   evidence：面向智能物联网的系统级可解释性范式
+5. [CARB: A Characterization-Guided Framework for CNN Inference Cost Prediction and Deployment Screening](/202608/16/2608.10506v1-carb-a-characterization-guided-framework-for-cnn-inference-cost-prediction-and-deployment-screening)  
+   标签：评分：8.0/10、query:aiot
+   evidence：直接预测资源受限平台上CNN推理的能耗、延迟与内存，支持能效部署。
+6. [ZeroLock: Concurrent Memory-Efficient LLM Training via Modular Update Decoupling](/202608/16/2608.07974v1-zerolock-concurrent-memory-efficient-llm-training-via-modular-update-decoupling)  
    标签：评分：7.0/10、query:aiot
-   evidence：无人机使能联邦学习用于物联网边缘智能
-6. [Rethinking Agentic Kernel Generation for Emerging Accelerators](/202608/09/2608.00894v1-rethinking-agentic-kernel-generation-for-emerging-accelerators)  
+   evidence：通过无反向传播模块化更新实现边缘设备内存高效的大模型微调
+7. [ReVolt: Power Delivery Network-Aware Voltage Droop Control for 2.5D PIM Chiplet Architectures](/202608/16/2608.08496v1-revolt-power-delivery-network-aware-voltage-droop-control-for-25d-pim-chiplet-architectures)  
    标签：评分：7.0/10、query:aiot
-   evidence：面向新兴加速器的编译器中介智能内核生成，体现硬件-软件协同设计思想
-7. [Gram-Space: Structure-Preserving Codebook Compression for Memory-Efficient Neuro-Symbolic AI](/202608/09/2608.01528v1-gram-space-structure-preserving-codebook-compression-for-memory-efficient-neuro-symbolic-ai)  
+   evidence：面向PIM多芯粒系统的供电网络感知电压跌落控制，直接关联功耗感知系统设计
+8. [Physically Constrained Agentic AI for Energy Scheduling](/202608/16/2608.09029v1-physically-constrained-agentic-ai-for-energy-scheduling)  
    标签：评分：7.0/10、query:aiot
-   evidence：通过Gram-Schmidt正交化压缩码本，降低神经符号AI的内存占用，有助于边缘部署。
-8. [LEAP: A Self-Supervised Per-Cycle Toggle Propagation Model Supports Fast, Transferable, and Early Analysis of Layout Power](/202608/09/2608.01946v1-leap-a-self-supervised-per-cycle-toggle-propagation-model-supports-fast-transferable-and-early-analysis-of-layout-power)  
+   evidence：面向电器、电动汽车充电与热控的AI能源调度，属于AIoT应用
+9. [Abstractions for Network Intelligence: A Reference Architecture for AI at the Wireless Edge](/202608/16/2608.09640v1-abstractions-for-network-intelligence-a-reference-architecture-for-ai-at-the-wireless-edge)  
    标签：评分：7.0/10、query:aiot
-   evidence：基于机器学习的快速每周期翻转传播预测，支持版图功耗早期分析优化
-9. [GraphIR: Architecture-Level Search States for LLM-Guided Neural Architecture Evolution](/202608/09/2608.01633v1-graphir-architecture-level-search-states-for-llm-guided-neural-architecture-evolution)  
+   evidence：无线边缘AI参考架构；支持AIoT集成与应用
+10. [Lingjing: A Simulation Testbed for Multi-Agent Embodied Tasks in Open-Ended Cities](/202608/16/2608.08045v1-lingjing-a-simulation-testbed-for-multi-agent-embodied-tasks-in-open-ended-cities)  
    标签：评分：6.0/10、query:aiot
-   evidence：面向神经网络架构搜索的架构感知中间表示，可为边缘AI模型优化提供可迁移的搜索状态。
-10. [Multimodal Embeddings for 3D Similarity Search in Semantic Web-of-Things Digital-Twin Platforms](/202608/09/2608.01852v1-multimodal-embeddings-for-3d-similarity-search-in-semantic-web-of-things-digital-twin-platforms)  
+   evidence：面向城市异构多智能体具身智能的仿真平台，可用于AIoT应用研究
+11. [Can We Optimize the Performance-Carbon Emission Break-Even Point?: The Quest for Greener LLMs](/202608/16/2608.08744v1-can-we-optimize-the-performance-carbon-emission-break-even-point-the-quest-for-greener-llms)  
    标签：评分：6.0/10、query:aiot
-   evidence：面向AIoT数字孪生相似性搜索的多模态嵌入层
-11. [Understanding Fault Tolerance of Adversarially Robust Pruned Models](/202608/09/2608.04173v1-understanding-fault-tolerance-of-adversarially-robust-pruned-models)  
-   标签：评分：6.0/10、query:aiot
-   evidence：在资源受限神经形态硬件上研究剪枝、对抗训练与硬件故障对DNN可靠性的交互影响。
+   evidence：基于硬件能耗建模的碳感知微调，面向大模型推理能效优化
 
 
 <div class="dpr-home-promo-card">
