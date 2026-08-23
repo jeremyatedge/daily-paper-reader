@@ -1,0 +1,353 @@
+Title: Cacheable by Design? Training Mixture-of-Experts Routers for Locality Against the Edge Memory-Bandwidth Wall: A Pre-Registered Negative Result with a Systems Measurement Study
+
+URL Source: https://arxiv.org/pdf/2608.18261v1
+
+Published Time: Thu, 20 Aug 2026 00:08:11 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Cacheable by Design? Training Mixture-of-Experts Routers for Locality Against the Edge Memory-Bandwidth Wall 
+
+A Pre-Registered Negative Result, with a Systems Measurement Study Shriniwas Ramesh Suram ∗
+
+University of Cumberlands, Williamsburg, USA 
+
+ssuram36954@ucumberlands.edu 
+
+August 2026 
+
+Abstract 
+
+Serving a 235B-parameter Mixture-of-Experts (MoE) model on a single commodity GPU (8 GB VRAM) is bottlenecked not by compute but by memory bandwidth : autoregressive decode must stream each token’s active expert weights out of whichever memory tier holds them, and on consumer hardware most experts live on an SSD an order of magnitude slower than RAM. We first quantify this bandwidth wall empirically on Qwen3-235B-A22B (Q4 K M, 134 GB): measured decode is 0 .44 tok/s warm, in exact agreement with a bytes-per-token ÷ bandwidth model, and a plausible request-batching scheme that should amortize one disk sweep over many streams instead collapses at batch 32 due to paging thrash. We then build llama-moe-trace , a zero-model-surgery router-telemetry tool, and measure MoE routing structure on Qwen3-30B-A3B: expert reuse between adjacent tokens is 2 .0× chance, 95% of traffic flows through 52.5% of experts, and code-domain routing is nearly orthogonal to prose/math/medical. A least-recently-used cache holding only 13.4% of experts already serves 66% of requests. Motivated by this, we ask whether routing cacheability is a trainable property: we pre-register an experiment training 137M-parameter MoE language models with auxiliary locality and domain router losses, with joint success criteria on both cache-miss reduction and language-modeling quality. The mecha-nism works—locality training cuts cache misses up to 60% and domain training reaches a 99% static-pin hit rate—but every configuration fails the pre-registered ≤ 1% perplexity gate : miss reduction and perplexity cost are tightly coupled, and no loss weight threads the joint bar at this scale. Concurrent work (StickyMoE; Kayyam, 2026) proposes the same adjacent-token routing-consistency loss and reports it as nearly free—even improving perplexity (up to −4.1%)—on single-domain (WikiText-2), sub-25M-parameter models. On a harder multi-domain corpus at 137M we instead find the locality tax real and the ≤ 1% gate unmet; our contribution is this pre-registered, stricter-criterion, multi-domain evaluation, a domain-partitioning arm, and the edge-serving measurements above. We report this negative result in full. A 340M rung tests whether the tax shrinks with scale: it does not (it rises slightly), though undertraining at a matched budget leaves this suggestive. We further show that training-free cache-aware rerouting stacks with trained locality—together reaching ∼80% cache-miss reduction at ≤ 3.4% perplexity at both sizes, far cheaper than either alone— while domain-primed prefetching does not help. All code, traces, and the pre-registration are released. 
+
+> ∗
+
+ORCID: 0009-0009-0452-9407. Work conducted independently on personal hardware (single RTX 3070). 
+
+1arXiv:2608.18261v1 [cs.AI] 18 Aug 2026 1 Introduction 
+
+Mixture-of-Experts (MoE) architectures decouple a model’s total parameter count from the pa-rameters active per token: a router sends each token to a small top-k subset of many experts [Shazeer et al., 2017, Fedus et al., 2022]. This sparsity is what makes frontier open models such as DeepSeek-V3 [DeepSeek-AI, 2024] and Qwen3 [Yang et al., 2025] runnable at all outside a datacenter: Qwen3-235B-A22B stores 235 B parameters but activates only ∼22 B per token. Yet “runnable” and “fast” are different claims. On a commodity desktop—the setting of this paper, an 8 GB RTX 3070 with 32 GB of system RAM and a consumer NVMe SSD—the 4-bit model is 134 GB and cannot fit the fast memory tiers, so most experts are streamed from disk on demand. Our central observation, developed in §3, is that autoregressive decode is memory-bandwidth-bound : the arithmetic units spend most of their time waiting for weights to arrive, so throughput is governed by bytes touched per token divided by bandwidth to those bytes [Sheng et al., 2023, Xiao et al., 2024]. Every intervention available—batching, caching, placement, or changing the model— attacks one of those two terms and nothing else. This paper works through them, empirically, on real hardware, and ends with an original attempt to attack the bytes term at training time. 
+
+Contributions. 
+
+1. A quantified bandwidth wall (§3): measurements on Qwen3-235B-A22B matching a first-principles model to within 6%, and a measured negative result—request batching, which should amortize disk sweeps, collapses at batch 32 in llama.cpp .2. A routing-telemetry instrument and profile (§4): llama-moe-trace captures router decisions with weights untouched; on Qwen3-30B-A3B we measure 2 .0× temporal locality, a 52.5% working set, and near-orthogonal per-domain expert sets, and simulate cache hit rates. 3. Path-Mapped Serving and its ceiling (§5): a placement policy that improves decode 2–7 × at full accuracy but provably cannot reach interactive speed on this hardware. 4. A pre-registered, stricter-criterion test of training-time locality (§6–7): the adjacent-token routing-consistency loss was introduced concurrently by StickyMoE [Kayyam, 2026], which reports it as nearly free (even improving perplexity) on single-domain, sub-25M-parameter models. We independently and pre-registrably evaluate it (plus a new domain-partitioning loss) under joint miss-and-quality criteria on a multi-domain corpus and find it fails a strict ≤ 1% perplexity bar at 137M scale—in tension with StickyMoE’s near-free result—and we chart the full dose-response and a scale study that probes the reconciliation. We deliberately hold accuracy fixed throughout: we never quantize below the model’s shipped 4-bit weights nor distill, so “same accuracy” means bit-exact with the served model. 
+
+# 2 Background 
+
+Transformer decode. A decoder LM maps tokens to embeddings and applies a stack of blocks, each an attention sub-layer (token mixing) followed by a feed-forward network (FFN) applied per token. The FFN holds the majority of parameters. During decode the model emits one token at a time; each step reads the active weights once and does an O(d2) matrix–vector product per layer—low arithmetic intensity, so the step is bound by weight-read bandwidth, not FLOPs. 2Table 1: Memory hierarchy on the test machine (i9-12900, RTX 3070 8 GB, 32 GB DDR4, WD SN530 NVMe). The 4-bit 235B model is 134 GB; only ∼40 GB fits the fast tiers.                         
+
+> Tier Bandwidth Capacity Share of 134 GB model VRAM (GDDR6) ∼448 GB/s 8 GB 6% System RAM (DDR4) ∼50 GB/s 32 GB 24% NVMe SSD (PCIe 3, DRAM-less) ∼2.4 GB/s ≫∼70% token router (top-2) E1 ✓
+> E5 ✓
+> E2 E6
+> · · · E128
+> store Eexperts →235 B total compute kexperts →22 B active
+
+Figure 1: An MoE layer. The router activates k=2 of E=128 experts per token (Qwen3 uses top-8). Idle experts (grey) cost storage but not per-token bandwidth—the sparsity that makes edge serving conceivable. 
+
+Mixture-of-Experts. An MoE layer replaces the single FFN with E expert FFNs and a router that, per token, selects the top-k by a learned gate [Shazeer et al., 2017, Fedus et al., 2022, Lepikhin et al., 2020]. Storage scales with E; per-token cost scales with k. A load-balancing auxiliary loss prevents expert collapse [Fedus et al., 2022]. Fine-grained variants raise E and lower the activation ratio [Dai et al., 2024]. Figure 1 contrasts dense and MoE layers. 
+
+The memory hierarchy. Table 1 gives the three tiers on our machine. Bandwidth falls ∼180 ×
+
+from VRAM to SSD while capacity rises; a model that overflows the fast tiers is served at the speed of the slow one. This is the same constraint that motivates offloaded-inference systems [Sheng et al., 2023, Xue et al., 2024b,a]. 
+
+# 3 The Bandwidth Wall 
+
+Baseline. We serve Qwen3-235B-A22B (Q4 K M, 3-part GGUF, 134 GB) with llama.cpp (-ngl 99 -ncmoe 94 ), streaming experts from NVMe. Each token activates ∼22 B parameters ≈ 12 GB of 4-bit expert reads. Table 2 reports measured throughput. Decode is 0 .44 tok/s warm; dividing the 12 GB/token read by the measured rate recovers ∼2.4 GB/s, exactly the SSD’s cold sequential ceiling. The first-principles model tok/s = bandwidth /bytes-per-token predicts 0 .20 tok/s from cold disk; the machine is disk-bandwidth-bound and already optimally configured. 
+
+The 50 × gap. A usable 10 tok/s at 12 GB/token requires 120 GB/s sustained to the weights. The SSD delivers 2.4 GB/s—a 50 × shortfall that no software removes (Figure 2 left). This frames the rest of the paper: to go faster we must either cut bytes-per-token or raise bandwidth-to-bytes. 
+
+A measured negative result: batching. Reading all 134 GB once takes ∼56 s. If many decode streams share that sweep, aggregate throughput should scale with batch, since at high concurrency the union of experts needed approaches the whole model. The union model matches measurement to 3Table 2: Serving measurements, Qwen3-235B-A22B Q4 K M. Aggregate throughput at batch B
+
+across concurrent streams. The union-of-experts model predicts aggregate rate should rise with B;it does to B=8 then collapses.                     
+
+> Condition Measured Model Decode, single stream (warm) 0.441 tok/s —Decode, single stream (cold) 0.128 tok/s 0.20 tok/s Prefill 0.25 tok/s —Aggregate, B=1 0.128 tok/s 0.112 Aggregate, B=8 0.189 tok/s 0.20 Aggregate, B=32 0.087 tok/s 0.35
+> SSD DDR4 target VRAM
+
+10 0
+
+10 1
+
+10 2 
+
+> 0.88 3.91 4.79
+> GB/s (log)
+> (a) Bandwidth vs. the 120 GB/s needed for 10 tok/s. SSD is 50 ×short.
+
+B=1 B=8 B=32 00.10.20.30.4aggregate tok/s  measured predicted   
+
+> (b) Batching collapse: prediction tracks to B=8, then paging thrash.
+
+Figure 2: The bandwidth wall (left) and the batching collapse (right). within 6% at B=1 , 8 (Table 2) but at B=32 throughput falls to 0.087 tok/s: 32 concurrent streams’ page-fault storms push the OS memory manager into thrash (effective IO ∼0.35 GB/s). The idea is sound; llama.cpp cannot express it above B ≈ 8. Realising it would require a purpose-built sequential-sweep engine—future work. 
+
+# 4 Measuring Routing Structure 
+
+To do better than blind streaming we need to know which experts fire, for what text. No serving en-gine exposes this, so we built llama-moe-trace , a ∼120-line addition to llama.cpp ’s eval-callback that records the router’s top-k selection ( ffn moe topk ) for every layer and token, with weights untouched . A subtlety cost us a false start: this tensor is a non-contiguous view (the top-k slice of a 128-wide argsort), so a flat copy read whole argsort rows and produced perfectly uniform garbage—every expert appearing exactly k times, with sub-chance reuse. We detected this from those anomalies before drawing any conclusion and fixed it with a stride-honoring copy (logged in our corrections record). We trace Qwen3-30B-A3B (48 layers, 128 experts, top-8) over 8,000 tokens each of prose, code, math, and medical text. Table 3 summarizes. Expert reuse between adjacent tokens is 2 .0× chance (temporal locality); 95% of traffic flows through 52.5% of experts; and per-domain expert sets are structured—code overlaps the others by only 0.11–0.16 (Jaccard-style similarity) versus 0.33–0.42 among prose/math/medical (Table 4), consistent with measured Qwen3 specialization [Dai et al., 2024]. Replaying traces through a simulated per-layer expert cache (Figure 3), a least-recently-used policy holding just 13.4% of experts—the fraction our 18 GB fast-memory budget represents of the 4Table 3: Routing profile of Qwen3-30B-A3B ( llama-moe-trace , 8k tokens × 4 domains). Cache hit rates at the 235B’s 13.4% fast-memory budget (layer 24, code domain).          
+
+> Metric Value
+> P(expert reused at next token) 0.444 (chance 0.223, 2 .0×)Working set (95% of traffic) 52.5% of experts LRU hit rate @ 13.4% budget 65.9% LFU hit rate @ 13.4% budget 60.1% Static-pin hit rate @ 13.4% budget 59.2% Belady oracle @ 13.4% budget 79.1%
+
+Table 4: Cross-domain expert-usage similarity (Qwen3-30B-A3B). Code’s expert set is nearly dis-joint from the others.                    
+
+> code general math medical code 1.00 0.16 0.14 0.11 general 0.16 1.00 0.33 0.42 math 0.14 0.33 1.00 0.35 medical 0.11 0.42 0.35 1.00
+
+235B— already serves 65.9% of requests, beating static pinning (59.2%) because the exploitable signal is temporal; a clairvoyant Belady oracle reaches 79.1%. 
+
+# 5 Path-Mapped Serving and Its Ceiling 
+
+Path-Mapped Serving (PMS) holds the currently-hot experts in fast memory and streams cold misses from disk, leaving the model file untouched (bit-exact accuracy; a rare input costs a wait, never a wrong answer). Related offloading systems predict and prefetch experts across tiers [Xue et al., 2024b,a, Tang et al., 2024, Yi et al., 2023, Zhong et al., 2024]; PMS uses our measured heat-maps as the placement policy. Projected to the 235B (94 MoE layers, ∼10.6 MB/expert, 18 GB fast memory, 2.4 GB/s IO), miss traffic falls to ∼2.7 GB/token at LRU rates, giving ∼0.9 tok/s single-stream—a 2–7 × improvement over baseline at full accuracy. The ceiling is hard: single-stream 10 tok/s needs ∼95% hit rate, which Figure 3 shows requires 
+
+∼52% of experts ( ∼70 GB) resident—4 × this machine’s fast memory. Placement alone cannot reach interactive speed here. This exhausts the “raise bandwidth-to-bytes” attack on fixed hardware and motivates attacking bytes-per-token at the source: the architecture. 
+
+# 6 Training Routers for Cacheability 
+
+The 2 .0× locality that makes LRU work ( §4) is accidental —no production router is trained for it. We ask: is cacheability a trainable property obtainable at no accuracy cost ? We pre-registered the design (hypotheses, arms, metrics, and pass/fail thresholds frozen before any run) to make a null result meaningful. 
+
+Relation to concurrent work. Independently and concurrently, StickyMoE [Kayyam, 2026] proposed the same adjacent-token routing-consistency loss ( §D, Lloc ) and reports it as a favorable, quality-improving technique: on small (8 .8M) and medium (22M) MoE LMs on the single-domain 510 20 30 40 50 60 70 0.40.60.81fast-memory budget (% of experts) cache hit rate Belady (oracle) LRU static pin Figure 3: Expert-cache hit rate vs. fast-memory budget (Qwen3-30B, layer 24, code). At the 235B’s 13.4% budget (dashed), LRU already achieves 66% and beats static pinning—the signal is temporal, favouring a dynamic resident set.           
+
+> LLM +αLbalance +λLloc +μLdom higher hit rate @ equal PPL
+
+Figure 4: The sticky-moe objective. Arm A uses only Lbalance ; arm B adds λLloc ; arm C adds 
+
+μLdom . The claim under test is the box on the right at no perplexity cost .WikiText-2 corpus, its soft loss cuts the expert switch rate up to 59% and reduces cache misses up to 3 .92 × while perplexity improves on the medium ( 22 M) model (up to −4.1% at λ=0 .05) and is essentially preserved on the small (8 .8M) model (+0 .1% at that λ; best −0.5%). Our study differs in the corpus (a harder 3-domain prose/code/math mix), the criterion (a pre-registered strict joint miss/quality bar), and a domain-confinement arm they do not consider—and in conclusion: at 137M on multi-domain data we do not clear the strict bar (see §7). We read the two as complementary but in tension: StickyMoE shows the mechanism can be quality-preserving on single-domain, sub-25M models; we show it is not free on a harder multi-domain 137M setting, and flag the corpus and scale dependence that would reconcile them. 
+
+Losses. All arms use the Switch load-balance loss. We add two differentiable statements of what a cache wants, where pt ∈ ∆E is the router’s softmax distribution at token t:
+
+Lloc = 1
+
+> L
+
+X
+
+> ℓ
+
+mean 
+
+> t
+
+ 1 − ⟨ pℓt , p ℓt−1⟩ (temporal reuse) (1) 
+
+Ldom = 1
+
+> L
+
+X
+
+> ℓ
+
+mean 
+
+> t
+
+P 
+
+> e / ∈S (dt)
+
+pℓt,e (domain confinement) (2) where S(d) is the expert slice allowed for domain d (4 exclusive + 4 shared of 16). Lloc rewards routing the same experts to adjacent tokens; Ldom rewards keeping a domain within its slice so a single slice can be pinned and served at full speed (Figure 4). 
+
+Setup. A 137M-parameter decoder MoE ( dmodel =384, 8 layers, E=16, top-2, expert dff =768, GPT-2 BPE), the largest that trains comfortably in 8 GB. Data: 300M tokens, 100M each of prose (WikiText-103), code (codeparrot-clean), and math (OpenWebMath), SHA-256 manifested. Arms: 
+
+A (balance only), B (+ Lloc , λ swept), C (+ Ldom , μ=0 .1). Router traces are exported in the format of §4 and scored by the same cache simulator—one instrument from frontier model to toy. Amended budgets (below): 200M tokens per main arm, two seeds on A and the chosen B. 6Table 5: Main results (200M tokens/arm). Metrics averaged over prose/code/math. “hit” is the fraction of expert-loads already resident.                                                 
+
+> run arm λPPL reuse LRU hit@25% static hit@50% a-main (s1) A—32.0 0.336 0.494 0.747 a-main (s2) A—31.9 0.312 0.480 0.734 b-l02 B0.02 32.0 0.407 0.564 0.794 b-l03 B0.03 32.5 0.451 0.608 0.817 b-main (s1) B0.05 32.6 0.634 0.788 0.930 b-main (s2) B0.05 32.9 0.635 0.796 0.933 c-main C—32.9 0.470 0.733 0.991
+
+Pre-registered criteria. RQ1 (locality): ≥30% reduction in LRU miss/token at 25% capacity 
+
+and validation perplexity within +1% of arm A. RQ2 (domain): ≥90% static-pin hit@50% within-domain and perplexity within +2%. The joint (metric and quality) form is deliberate: a cacheability gain that costs accuracy does not count. 
+
+Engineering notes (for reproducibility). Three issues were logged as amendments before any results were unblinded: (i) an N (0 , 1) embedding init made the tied-logit loss start at 373 instead of ∼10.8 (fixed to std 0.02); (ii) a padded-batched-GEMM expert dispatch ran 2 .8× slower 
+
+than a per-expert loop under early-training imbalance and was reverted (parity test retained); (iii) consequently token budgets were trimmed from 300M to 200M per arm to keep wall-clock feasible on one GPU. Throughput was 7,000–8,900 tok/s on the RTX 3070. 
+
+# 7 Results 
+
+Table 5 gives all arms. The baseline (arm A, two seeds) has perplexity 31.9, LRU miss/token@25% of 8.21, and static hit@50% of 0.741. 
+
+RQ1 is refuted. The locality loss produces a clean, monotonic, seed-stable dose-response (Fig-ure 5): larger λ yields larger miss reduction and larger perplexity cost, tightly coupled. No weight satisfies both gates. λ=0 .02 preserves quality (+0.3% PPL) but cuts misses only 15% ( <30%); 
+
+λ=0 .05 cuts misses 59–60% (two seeds) but costs +2.1–3.1% PPL ( >1%); λ=0 .03, the predicted crossover, lands in the dead zone at +24% / +1.8%, failing both. The two objectives trade at a rate that excludes the {≥ 30% , ≤1% } corner at this scale. 
+
+RQ2 is refuted on quality. Domain confinement drives the static-pin hit rate to a near-perfect 0.991 (easily clearing 0.90)—one domain slice can be pinned and served almost miss-free—but at +3.1% perplexity, over the +2% gate. 
+
+7.1 Training-free rerouting, and its complementarity with trained locality 
+
+The dose-response above trains the router for locality. A cache can also be helped at inference time only , with no retraining: when a token’s top-ranked expert is not resident but a cached expert scores within a relative tolerance τ of it, we route to the cached expert instead—the training-free strategy of Skliar et al. [2025], trading a controlled slice of routing fidelity for cache hits. Sweeping τ traces a 70 0.5 1 1.5 2 2.5 3 3.5 4 4.5 5 5.5
+
+·10 −2
+
+020 40 60 miss red. 
+
+> RQ1 floor 30%
+
+locality weight λ
+
+> miss reduction (%)
+
+0123
+
+> PPL cost
+> RQ1 gate 1%
+> PPL cost (%)
+
+Figure 5: Dose-response of the locality loss (200M tokens). Miss reduction (left, blue) and perplexity cost (right, red) rise together. The RQ1 pass region needs miss reduction above 30% and PPL cost below 1%—the curves never satisfy both simultaneously. (Two axes shown only to display the coupling; they are not a dual-scale claim about one series.) perplexity-versus-miss frontier from any fixed checkpoint. Numbers here use an independent held-out multi-domain stream with the same per-layer LRU cache (25% of experts); we report relative effects, and absolute perplexities differ slightly from Table 5’s 500k-token evaluation. First, on the baseline model (arm A, never trained for locality) training-free rerouting reaches 
+
+∼30% miss reduction at +0.8% perplexity on one seed (+2.0% on the other—this low-τ regime is seed-sensitive), at zero training cost; but pushed harder it degrades fast on both seeds (50% reduc-tion costs +4.0–5.8%; 74% costs +25%), because rerouting an untrained router forces genuinely worse experts. Second, and the main point: the two mechanisms are complementary , and this holds across both seeds. Applying the same τ sweep on top of the locality-trained model ( λ=0 .05) is nearly free. Training-time locality alone gives 58–61% miss reduction at +1.4–2.2% PPL; adding τ =0 .5raises this to 80–82% reduction at +1.9–3.1% , and τ =0 .7 to 86–88% (Figure 6; ranges are the two seeds). The identical τ =0 →0.5 intervention that costs +4.0–5.8% PPL on the baseline costs only +0.5–0.9% on the trained model—a 5–8 × smaller marginal cost. Training for locality co-adapts experts into mutually substitutable neighbourhoods (expert redundancy and mergeability are well documented—similar experts can be merged with little loss [Li et al., 2024a]—and routing specialisation strengthens over training [Mouzouni, 2026]), so inference-time substitution within a neighbourhood barely perturbs the output. Neither mechanism alone threads a high-reduction, low-cost point; together they reach ∼80% fewer misses at an operating point that no single setting in Table 5 attains. This complementarity replicates at 340M (Table 6): the τ 0→0.5 intervention costs +0 .9% perplexity on the trained model versus +7 .7% on the baseline, and stacking reaches 82% miss reduction at +3 .4%—so it is not a single-scale artifact. As a preliminary third case, the same locality training makes the second expert’s load frequently omittable : eliding it whenever its renormalised gate falls below ϵ=0 .02 (a resident, load-free test) drops ∼12% of expert loads (prose/code/math 12 .6/18 .5/3.8%) at a near-lossless ≤0.05% perplexity change on the trained model, versus essentially none on the baseline. We also tested a domain-primed variant (cf. data-aware offloading, Zhang et al., 2025)— prefetching a domain’s experts into the cache at each boundary of a mixed prose/code/math stream—and found no measurable benefit: an LRU cache re-warms within O(cap) tokens of a switch, so the boundary miss burst amortises to nothing over realistic ( ≥1k-token) domain runs (mixed-stream miss/token equals the single-domain value to within noise). The domain-switch 80 10 20 30 40 50 60 70 80 90 100 010 20 
+
+> ≤1% gate
+
+expert-cache miss reduction vs baseline (%) perplexity cost (%)  training-free (baseline model) stacked (trained + reroute) training-time ( τ =0) 
+
+Figure 6: Complementarity of trained and inference-time locality. Training-free rerouting on the baseline (blue) is cheap only up to ∼30% miss reduction, then diverges. On the locality-trained model the same rerouting (green) stays flat and low, reaching 80% miss reduction at +2.4% perplexity—far beyond training-time alone (squares, max 59%) or training-free alone. The ex-perts’ co-adaptation makes inference-time substitution nearly free. cache penalty, plausible a priori, is negligible; multi-domain difficulty is a training phenomenon (the tax above), not a serving-time caching one. 
+
+# 8 Discussion 
+
+The mechanism is real: training changes routing exactly as intended, with large ( ≤60% fewer misses; 99% static hit), monotonic, seed-stable effects. But it is not free at 137M parameters—a genuine perplexity tax breaks the pre-registered bars everywhere. We take the joint-criterion refutation at face value; pre-registration is what stops a large-but-costly effect from being reported as a win by choosing a favourable metric post hoc. 
+
+Does the tax shrink with scale? A 340M rung says not yet. A 16-expert, 137M model has little spare capacity: forcing the router to reuse or confine experts removes representational freedom the model was using for language modelling, so quality drops. Sparsity scaling suggests the tax should shrink with E and total parameters [Dai et al., 2024, DeepSeek-AI, 2024], giving a sharp, pre-registered hypothesis: the perplexity cost of a fixed cacheability gain decreases with model scale .We tested it directly with a 340M rung (Table 6), matched to the 137M runs at the same 200M-token budget and λ=0 .05. It does not shrink: at a fixed ∼58% cache-miss reduction the locality tax rises from +2 .0% (137M) to +2 .5% (340M). Two caveats keep this suggestive rather than decisive: at a matched token budget the 340M model is more undertrained (its baseline perplexity is higher, §9), and the ladder has only two rungs. A compute-optimal and a ≥ 1B run are the definitive test. Concurrent work is consistent with a scale effect existing in principle—Oracle-MoE [Zhou et al., 2025] trains for locality across a 200M–2B ladder without task-performance loss—but on standard, not multi-domain strict-bar, evaluation. Crucially, the complementarity result ( §7.1) 
+
+does replicate at 340M: training-free rerouting stays ∼9× cheaper on the locality-trained model and stacking reaches 82% miss reduction at +3 .4% perplexity—so the cheapest-when-trained-and-rerouted finding is not a 137M artifact. 9Table 6: Scale rung. Locality tax (arm A baseline vs arm B λ=0 .05 at τ =0) and the stacked training-free rerouting point ( τ =0 .5 on arm B), at 137M and 340M; same 200M-token budget, cap=25% experts, LRU, seed 1. The tax does not shrink with scale; the stacking advantage persists.                
+
+> locality tax ( τ=0) stacked ( τ=0 .5) size ∆PPL miss red. ∆PPL miss red. 137M +2 .0% 59% +2 .4% 80% 340M +2 .5% 57% +3 .4% 82%
+
+# 9 Limitations 
+
+(i) Scale : two rungs (137M, 340M), both below compute-optimal; the 340M locality tax did not shrink (Table 6), but a ≥ 1B rung and a compute-optimal run remain the definitive test. (ii) 
+
+Proxy : the routing profile ( §4) is Qwen3-30B, a same-family proxy for the 235B; a same-artifact trace on the 235B GGUF is future work. (iii) Undertraining : 200M tokens is far below compute-optimal, so absolute perplexities are high—comparisons are fair (identical budgets across arms) but absolute quality is not the claim. (iv) Single hardware : bf16, one consumer GPU. (v) The batched-serving and PMS speed projections are modelled from measured IO and cache rates, not end-to-end deployed. 
+
+# 10 Related Work 
+
+MoE and routing. Sparsely-gated MoE [Shazeer et al., 2017], Switch [Fedus et al., 2022], GShard [Lepikhin et al., 2020], and fine-grained DeepSeekMoE [Dai et al., 2024] establish the total/active split and load balancing; routing analyses [Dai et al., 2024] document the specialization we exploit. 
+
+Training-time routing locality (closest prior/concurrent work). StickyMoE [Kayyam, 2026] introduces the adjacent-token routing-consistency loss we study here and reports it favor-ably; Oracle-MoE [Zhou et al., 2025] likewise trains for locality—routing in an attention-derived “oracle space”—and reports gains across a 200M–2B size ladder without task-performance loss, while post-hoc router fine-tuning (ReMoE [Zhu et al., 2026], +26% reuse; MELINOE [Raje et al., 2026], up to 3 × fewer transfers) adapts a pretrained router for reuse rather than co-adapting experts and routing from step one. Cache-conditional routing [Skliar et al., 2025] is a training-free, cache-aware routing strategy that cuts mobile cache misses >50% at 0.1–3% PPL (surpassing the oracle cache bound), and expert-locality decode routing [Choi et al., 2026] exploits locality at serving time; and Liang et al. [2026] measure this “local routing consistency” across 20 MoE models, finding it trades off against load balance—corroborating why a locality intervention carries a capacity cost. Our contribution relative to these is the pre-registered, strict-criterion evaluation, the domain-confinement arm, a 137M →340M scale rung (the tax does not shrink), and the training-time ×
+
+training-free stacking result. Edge MoE and expert offloading. PowerInfer/PowerInfer-2 [Song et al., 2024, Xue et al., 2024b], EdgeMoE [Yi et al., 2023], MoE-Infinity [Xue et al., 2024a], HOBBIT [Tang et al., 2024], AdapMoE [Zhong et al., 2024], Fiddler [Kamahori et al., 2025], cross-layer gate prediction (Fate; Fang et al., 2025), predictive caching with token scheduling (ExpertFlow, pre-dating cache-conditional routing; He et al., 2026), and related systems predict, prefetch, cache, or CPU-GPU-orchestrate experts across the hierarchy—the lineage of PMS; MoE-Infinity’s activation tracing is the direct ancestor of our tracer, and Fiddler’s CPU-side expert execution is an alter-native to the disk-streaming regime we measure; see Liu et al. [2025] for a system-stack survey of 10 MoE inference optimisation. Offloaded inference and the bandwidth bound. FlexGen [Sheng et al., 2023] and ZeRO-Inference characterise memory-bound generation. Complementary axes we hold fixed. Quantization [Frantar et al., 2023, Lin et al., 2024, Ma et al., 2024] and KV-cache compression [Xiao et al., 2024] attack bytes-per-token by changing precision or state; speculative decoding [Leviathan et al., 2023, Li et al., 2024b] trades compute for bandwidth—orthogonal to training-time routing and deliberately out of scope here. A full, PDF-verified bibliography accom-panies this draft. 
+
+# 11 Conclusion 
+
+On commodity hardware, serving a 235B MoE is a memory-bandwidth problem, and the speed ceiling is set by bytes-per-token over bandwidth-to-bytes. We measured the wall, built an instru-ment to see the routing structure inside it, and tested whether that structure can be trained to be more cacheable. It can—but not for free at small scale, and our pre-registered joint criteria are not met by any configuration. We publish the negative result in full because it converts a vague hope (“train routers to be cache-friendly”) into a precise, falsifiable scaling claim, and because the discipline of reporting it is the point. 
+
+Reproducibility. Pre-registration, training/analysis code, the llama-moe-trace tool, all router traces, and per-run configs, seeds, and data hashes are released at https://github.com/Shriniwas410/ cacheable-by-design .
+
+Use of AI assistance. The author used an AI coding assistant to help implement the exper-imental harness and to draft and edit the manuscript. All experimental design decisions, the pre-registration, the runs, and the interpretation are the author’s, who takes full responsibility for the content and has verified every reported number against the released artifacts. 
+
+# A Per-Domain Results 
+
+Table 5 averages over domains; Table 7 breaks the baseline (arm A, two seeds) and the λ=0 .05 locality arm (two seeds) out by domain. The perplexity tax is not uniform: it is concentrated in the hardest domain (prose, +3.0%) and is essentially zero for the most predictable one (code, PPL ≈4.7 both arms), while the cacheability gain is large and consistent everywhere ( ∼0.30 reuse gain in every domain). A model with almost no perplexity headroom on prose pays for the routing constraint there; where the task is easy (code) the router can be made sticky for free. This domain-dependence is itself evidence for the small-capacity explanation in §9. 
+
+# B All Runs 
+
+Table 8 lists every training run, including the 50M-token sanity and λ-triage runs used to size the main study. The sanity/triage rows were run before the 200M main arms and are not used in the verdict. 11 Table 7: Per-domain metrics, baseline (A) vs. locality ( λ=0 .05), each averaged over 2 seeds. “hit@25%” is LRU; “static@50%” is static-pin. 
+
+arm domain PPL ∆PPL reuse hit@25% static@50% A ( λ=0) prose 63.9 — 0.285 0.432 0.765 A ( λ=0) code 4.7 — 0.384 0.544 0.722 A ( λ=0) math 27.3 — 0.303 0.486 0.738 B ( λ=0 .05) prose 65.8 +3.0% 0.619 0.777 0.930 B ( λ=0 .05) code 4.7 +0.0% 0.685 0.829 0.954 B ( λ=0 .05) math 27.8 +1.8% 0.599 0.771 0.912 
+
+Table 8: Complete run log. Metrics averaged over prose/code/math. 
+
+run arm λ tokens PPL reuse LRU hit@25% static@50% a-sanity A — 50M 69.3 0.307 0.469 0.731 b-l05 B 0.05 50M 69.5 0.644 0.809 0.957 b-l01 B 0.01 50M 67.7 0.354 0.518 0.779 b-l20 B 0.20 50M 70.1 0.861 0.855 0.977 a-main s1 A — 200M 32.0 0.336 0.494 0.747 a-main s2 A — 200M 31.9 0.312 0.480 0.734 b-l02 B 0.02 200M 32.0 0.407 0.564 0.794 b-l03 B 0.03 200M 32.5 0.451 0.608 0.817 b-main s1 B 0.05 200M 32.6 0.634 0.788 0.930 b-main s2 B 0.05 200M 32.9 0.635 0.796 0.933 c-main C — 200M 32.9 0.470 0.733 0.991 
+
+# C Hyperparameters D Router Losses (exact form) 
+
+For a batch of routing distributions pℓt ∈ ∆E at token t, layer ℓ, with top-k indicator zℓt ∈ { 0, 1}E :
+
+Lbalance = 1
+
+> L
+
+X
+
+> ℓ
+
+E X
+
+> e
+
+f ℓe P ℓe , f ℓe = 1
+
+> kT
+
+X
+
+> t
+
+zℓt,e , P ℓe = 1
+
+> T
+
+X
+
+> t
+
+pℓt,e (Switch) 
+
+Lloc = 1
+
+> L
+
+X 
+
+> ℓ
+> 1
+> T−1
+
+X
+
+> t≥2
+
+ 1 − ⟨ pℓt , p ℓt−1⟩ (reuse) 
+
+Ldom = 1
+
+> L
+
+X
+
+> ℓ
+> 1
+> T
+
+X
+
+> t
+
+X
+
+> e / ∈S (dt)
+
+pℓt,e (confinement) Total loss: L = LLM + αLbalance + λLloc + μLdom . The domain slice S(d) for domain d (of 3) is 4 exclusive experts plus 4 shared, of E=16. 
+
+# E Cache Simulation 
+
+We replay each router trace (per layer, an ( T, k ) array of expert ids) through an independent per-layer cache of capacity c = ⌈cap · E⌉ and count demand misses; reported miss/token sums over layers and normalises by L · k expert-loads. Policies: LRU (evict least-recently-used), LFU (least-frequently-used over cumulative counts), static (pin the top-c experts by frequency in a warmup 12 Model Optimization                                       
+
+> dmodel 384 optimizer AdamW ( β=0 .9,0.95) layers 8weight decay 0.1 attention heads 6peak LR 6×10 −4
+> experts E16 schedule one-cycle, 2% warmup top-k2grad clip 1.0 expert dff 768 precision bf16 autocast vocab (GPT-2 BPE) 50257 batch ×seq 8×1024 total / active params 137M / 38M balance weight α0.01 context length 1024 domain weight μ0.1
+
+Table 9: Hyperparameters (identical across arms; only the router-loss weights λ, μ differ). prefix, no eviction), and Belady (clairvoyant: evict the resident expert whose next use is farthest in the future—an unachievable upper bound). The same simulator scores the frontier-model traces of §4 and the trained-model traces of §7, so a single instrument spans both. 
+
+# F Corrections Log 
+
+We record every error caught during the study, per the reproducibility stance: 1. “5.3 GB/s NVMe” was warm page-cache inflation; the cold sequential rate is 2.4 GB/s (used throughout). 2. Batching throughput prediction held to B=8 then broke at B=32 (paging thrash); reported as a negative result, not tuned away. 3. ffn moe topk is a non-contiguous argsort view; a flat copy read garbage (every expert ap-pearing exactly k times, sub-chance reuse). Fixed with a stride-honoring copy; a first profiling run was discarded. 4. Embedding init N (0 , 1) made the tied-logit loss start at 373 instead of ∼10.8; fixed to std 0.02. 5. A padded-batched-GEMM expert dispatch ran 2 .8× slower than a per-expert loop under early-training imbalance; reverted (parity test kept), budgets trimmed 300M →200M/arm. Logged before any results were unblinded. 6. The analysis hit-rate was initially miscomputed (summed misses over all layers but normalised by one layer’s slots, giving negative rates); fixed to ÷(L · k). 
+
+# G Reproducibility Artifacts 
+
+Released: the frozen pre-registration ( DESIGN.md ); training, analysis, and orchestration code; the 
+
+llama-moe-trace tool; 7 unit tests covering loss shapes, gradient flow, the constant-routing limits of Lloc and Ldom , the domain-mask layout, determinism, and grouped-vs-loop dispatch parity; all router traces ( .npz ); and per-run config.json with seed, loss weights, token budget, and data-shard SHA-256 hashes. Every number in this paper is regenerable from these. Code and artifacts: 
+
+https://github.com/Shriniwas410/cacheable-by-design .13 References 
+
+Sangjin Choi, Sukmin Cho, Yifan Xiong, Ziyue Yang, Youngjin Kwon, and Peng Cheng. ELDR: Expert-locality-aware decode routing for PD-disaggregated MoE serving. arXiv preprint arXiv:2607.00466 , 2026. URL https://arxiv.org/abs/2607.00466 .Damai Dai, Chengqi Deng, Chenggang Zhao, R. X. Xu, Huazuo Gao, Deli Chen, Jiashi Li, Wangding Zeng, Xingkai Yu, Y. Wu, Zhenda Xie, Y. K. Li, Panpan Huang, Fuli Luo, Chong Ruan, Zhifang Sui, and Wenfeng Liang. Deepseekmoe: Towards ultimate expert specialization in mixture-of-experts language models. arXiv preprint arXiv:2401.06066 , 2024. URL https://arxiv.org/abs/2401.06066 .DeepSeek-AI. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 , 2024. URL https://arxiv. org/abs/2412.19437 .Zhiyuan Fang, Zicong Hong, Yuegui Huang, Yufeng Lyu, Wuhui Chen, Yue Yu, Fan Yu, and Zibin Zheng. Fate: Fast edge inference of mixture-of-experts models via cross-layer gate. arXiv preprint arXiv:2502.12224 , 2025. URL https://arxiv.org/abs/2502.12224 .William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research (JMLR) , 23(120):1–39, 2022. URL https://arxiv.org/abs/2101.03961 .Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. Gptq: Accurate post-training quantization for generative pre-trained transformers. In International Conference on Learning Representations (ICLR) ,2023. URL https://arxiv.org/abs/2210.17323 .Xin He, Shunkang Zhang, Kaijie Tang, Shaohuai Shi, Yuxin Wang, Zihao Zeng, Zhenheng Tang, Xiaowen Chu, Haiyan Yin, Ivor W. Tsang, and Yew Soon Ong. ExpertFlow: Efficient mixture-of-experts infer-ence via predictive expert caching and token scheduling. In Proceedings of the 63rd ACM/IEEE Design Automation Conference (DAC) , 2026. URL https://arxiv.org/abs/2410.17954 .Keisuke Kamahori, Tian Tang, Yile Gu, Kan Zhu, and Baris Kasikci. Fiddler: Cpu-gpu orchestration for fast inference of mixture-of-experts models. In International Conference on Learning Representations (ICLR) ,2025. URL https://arxiv.org/abs/2402.07033 .Ali Kayyam. Sticky routing: Training MoE models for memory-efficient inference. arXiv preprint arXiv:2607.08780 , 2026. URL https://arxiv.org/abs/2607.08780 .Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668 , 2020. URL https://arxiv.org/abs/2006.16668 .Yaniv Leviathan, Matan Kalman, and Yossi Matias. Fast inference from transformers via speculative de-coding. In Proceedings of the 40th International Conference on Machine Learning (ICML) , 2023. URL 
+
+https://arxiv.org/abs/2211.17192 .Pingzhi Li, Zhenyu Zhang, Prateek Yadav, Yi-Lin Sung, Yu Cheng, Mohit Bansal, and Tianlong Chen. Merge, then compress: Demystify efficient SMoE with hints from its routing policy. In International Conference on Learning Representations (ICLR) , 2024a. URL https://arxiv.org/abs/2310.01334 .Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. Eagle: Speculative sampling requires rethinking feature uncertainty. arXiv preprint arXiv:2401.15077 , 2024b. URL https://arxiv.org/abs/2401.15077 .Jingcong Liang, Siyuan Wang, Miren Tian, Yitong Li, Duyu Tang, and Zhongyu Wei. Not all models suit expert offloading: On local routing consistency of mixture-of-expert models. In International Conference on Learning Representations (ICLR) , 2026. URL https://arxiv.org/abs/2505.16056 .
+
+14 Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. Awq: Activation-aware weight quantization for llm com-pression and acceleration. In Proceedings of Machine Learning and Systems (MLSys) , 2024. URL 
+
+https://arxiv.org/abs/2306.00978 .Jiacheng Liu, Peng Tang, Wenfeng Wang, Yuhang Ren, Xiaofeng Hou, Pheng-Ann Heng, Minyi Guo, and Chao Li. A survey on inference optimization techniques for mixture of experts models. ACM Computing Surveys , 2025. URL https://arxiv.org/abs/2412.14219 .Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan Huang, Li Dong, Ruiping Wang, Jilong Xue, and Furu Wei. The era of 1-bit llms: All large language models are in 1.58 bits. arXiv preprint arXiv:2402.17764 , 2024. URL https://arxiv.org/abs/2402.17764 .Charafeddine Mouzouni. Three phases of expert routing: How load balance evolves during mixture-of-experts training. arXiv preprint arXiv:2604.04230 , 2026. URL https://arxiv.org/abs/2604.04230 .Arian Raje, Anupam Nayak, and Gauri Joshi. MELINOE: Fine-tuning enables memory-efficient inference for mixture-of-experts models. arXiv preprint arXiv:2602.11192 , 2026. URL https://arxiv.org/abs/ 2602.11192 .Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 , 2017. URL https://arxiv.org/abs/1701.06538 .Ying Sheng, Lianmin Zheng, Binhang Yuan, Zhuohan Li, Max Ryabinin, Daniel Y. Fu, Zhiqiang Xie, Beidi Chen, Clark Barrett, Joseph E. Gonzalez, Percy Liang, Christopher R´ e, Ion Stoica, and Ce Zhang. Flexgen: High-throughput generative inference of large language models with a single gpu. arXiv preprint arXiv:2303.06865 , 2023. URL https://arxiv.org/abs/2303.06865 .Andrii Skliar, Ties van Rozendaal, Romain Lepert, Todor Boinovski, Mart van Baalen, Markus Nagel, Paul Whatmough, and Babak Ehteshami Bejnordi. Mixture of cache-conditional experts for efficient mobile device inference. Transactions on Machine Learning Research (TMLR) , 2025. URL https://arxiv.org/ abs/2412.00099 .Yixin Song, Zeyu Mi, Haotong Xie, and Haibo Chen. Powerinfer: Fast large language model serving with a consumer-grade gpu. In Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles (SOSP) , 2024. URL https://arxiv.org/abs/2312.12456 .Peng Tang, Jiacheng Liu, Xiaofeng Hou, Yifei Pu, Jing Wang, Pheng-Ann Heng, Chao Li, and Minyi Guo. Hobbit: A mixed precision expert offloading system for fast moe inference. arXiv preprint arXiv:2411.01433 , 2024. URL https://arxiv.org/abs/2411.01433 .Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. In International Conference on Learning Representations (ICLR) , 2024. URL 
+
+https://arxiv.org/abs/2309.17453 .Leyang Xue, Yao Fu, Zhan Lu, Luo Mai, and Mahesh Marina. Moe-infinity: Efficient moe inference on personal machines with sparsity-aware expert cache. arXiv preprint arXiv:2401.14361 , 2024a. URL 
+
+https://arxiv.org/abs/2401.14361 .Zhenliang Xue, Yixin Song, Zeyu Mi, Xinrui Zheng, Yubin Xia, and Haibo Chen. Powerinfer-2: Fast large language model inference on a smartphone. arXiv preprint arXiv:2406.06282 , 2024b. URL https: //arxiv.org/abs/2406.06282 .An Yang et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. URL https://arxiv.org/ abs/2505.09388 .
+
+15 Rongjie Yi, Liwei Guo, Shiyun Wei, Ao Zhou, Shangguang Wang, and Mengwei Xu. Edgemoe: Empowering sparse large language models on mobile devices. arXiv preprint arXiv:2308.14352 , 2023. URL https: //arxiv.org/abs/2308.14352 .Yujie Zhang, Shivam Aggarwal, and Tulika Mitra. DAOP: Data-aware offloading and predictive pre-calculation for efficient moe inference. arXiv preprint arXiv:2501.10375 , 2025. URL https://arxiv. org/abs/2501.10375 .Shuzhang Zhong, Ling Liang, Yuan Wang, Runsheng Wang, Ru Huang, and Meng Li. Adapmoe: Adaptive sensitivity-based expert gating and management for efficient moe inference. arXiv preprint arXiv:2408.10284 , 2024. URL https://arxiv.org/abs/2408.10284 .Jixian Zhou, Fang Dong, Ruijun Huang, Hengjie Cao, Mengyi Chen, Yifeng Yang, Anrui Chen, Mingzhi Dong, Yujiang Wang, Dongsheng Li, David A. Clifton, Qin Lv, Rui Zhu, Chun Zhang, Fan Yang, Tun Lu, Ning Gu, and Li Shang. Oracle-MoE: Locality-preserving routing in the oracle space for memory-constrained large language model inference. In Proceedings of the 42nd International Conference on Machine Learning (ICML) , volume 267 of PMLR , 2025. URL https://proceedings.mlr.press/v267/ zhou25b.html .Xiongwei Zhu, Xiaojian Liao, Tianyang Jiang, Yusen Zhang, Liang Wang, and Limin Xiao. ReMoE: Boost-ing expert reuse through router fine-tuning in memory-constrained moe llm inference. arXiv preprint arXiv:2605.27081 , 2026. URL https://arxiv.org/abs/2605.27081 .
+
+16

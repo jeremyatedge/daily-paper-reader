@@ -1,0 +1,1284 @@
+Title: COBALT: Column-swapping Optimized Bit-serial Accelerator for LSTM Tasks
+
+URL Source: https://arxiv.org/pdf/2608.19363v1
+
+Published Time: Fri, 21 Aug 2026 00:07:28 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+> 1
+
+# COBALT: Column-swapping Optimized Bit-serial Accelerator for LSTM Tasks 
+
+Mohd Tasleem Khan, Senior Member, IEEE 
+
+Abstract —Long Short-Term Memory (LSTM) networks con-tinue to be widely deployed for real-time sequential tasks on edge devices—yet their computational demands challenge deploy-ment on resource-constrained hardware. This work introduces COBALT, a bit-serial compressed LSTM accelerator built on a matrix (input)–vector (weight) reformulation of the standard circulant matrix-vector multiplication (MVM) with offset-binary coding. A novel column-swapping scheme operates on partial products at the bit level when generated in pairs, systematically exposing redundancy across output rows to reduce the number of PP generators and selectors. This redundancy is further exploited using a lightweight correction unit that derives a row’s output directly from its paired row. Additionally, for block-circulant MVMs, relocating the shift-accumulate and correction units of each sub-MVM further reduces resource usage. The compressed network achieves weight compression of up to 93.6% while maintaining accuracy on the TIMIT and LibriSpeech-100h benchmarks. On a field-programmable gate array, COBALT achieves superior overall efficiency relative to state-of-the-art LSTM accelerators. 
+
+Index Terms —Field-Programmable Gate Array (FPGA), Long Short-Term Memory (LSTM), Matrix-Vector Multiplication (MVM), Offset-Binary Coding (OBC). 
+
+I. I NTRODUCTION 
+
+# THE growing deployment of machine learning on embed-ded and Internet-of-Things (IoT) platforms has exposed a persistent mismatch between the computational demands of neural network (NN) inference and the strict budgets (e.g., power and/or latency) of edge hardware [1]. Meeting real-time inference targets under these constraints typically requires dedicated, application-specific hardware acceleration rather than general-purpose processing [2]. Recurrent NNs (RNNs) are widely used for real-time sequential learning tasks, such as speech recognition and machine translation, due to their ability to model temporal dependencies [3]. Standard RNNs, however, suffer from the vanishing gradient problem, which limits their effectiveness on long sequences. Long Short-Term Memory (LSTM) networks address this through gating mechanisms that capture long-range dependencies [4]. Transformer-based architectures now dominate large-scale sequence modeling, often outperforming LSTMs when compute and memory are abundant [5]. On resource-constrained edge and IoT devices, however, LSTMs remain preferred for streaming, latency-critical inference: their constant per-step memory footprint and linear complexity with sequence length avoid the growing cost that quadratic-complexity attention incurs under tight power and latency budgets [1], [5], [6]. This is particularly acute on field-programmable gate arrays (FPGAs) and microcontrollers with only kilobytes-to-low-megabytes of on-chip memory, where a growing key-value cache is often undeployable, while an LSTM’s hidden and cell state stay fixed regardless of se-quence length. This continued relevance is reflected in recent RNN hardware accelerators and behavioral models for real-time edge and RF applications [1], [7], [8], and in TinyML deployments of LSTM-based models on microcontroller-class hardware for time-series and sensor tasks [9]. As mobile and IoT devices increasingly demand low-latency, always-on infer-ence, exclusive reliance on cloud processing is unsustainable, motivating the shift of LSTM computation onto resource-limited devices. LSTM networks have been widely implemented on special-ized hardware to enable efficient edge computation. FPGAs are particularly well suited for LSTM inference due to their inherent parallelism and efficient use of on-chip memory and DSPs [7], [10]–[19]. Nevertheless, LSTM inference remains challenging due to large parameter counts and several matrix– vector multiplications (MVMs) and element-wise multiplica-tions (EWMs), which place high demands on memory and computation. Large models often exceed on-chip capacity, re-quiring external DRAM access that increases power consump-tion [20], whereas on-chip SRAM offers faster, more energy-efficient storage [21]. To alleviate these memory constraints, compression techniques such as parameter sharing [20], block-circulant weight matrices with hardware co-design [12], and pruning [14], [17] have been explored, though often at the cost of some accuracy relative to unconstrained models [22]. For instance, Spartus [7] leverages spatio-temporal sparsity for ultra-low-latency inference, while structured top-k pruning [14] and Viterbi-based pruning [17] further reduce memory usage on embedded devices. Although compression techniques reduce the memory foot-print of deep NNs, structured parameterizations based on low-displacement-rank matrices—particularly circulant and block-circulant matrices—offer an effective alternative for parameter-efficient learning [21]. Their algebraic structure eliminates weight redundancy, cuts storage complexity from quadratic to linear, and enables FFT-based matrix operations [23]. Block-circulant adapters recently achieved competitive parameter-efficient fine-tuning for large language models with far fewer parameters and operations than low-rank adaptation [24]–[26]. Larger block sizes trade accuracy for compression, making block-wise designs a practical efficiency–performance balance well suited to scalable FPGA-based NN accelerators. In LSTMs, computational complexity is dominated by resource-heavy MVMs and EWMs, both of which rely on bulky multipliers. Prior work has explored circulant weight matrices to reduce memory accesses and optimize MVMs via time-multiplexing [21]. Multiplier complexity has been arXiv:2608.19363v1 [eess.SP] 19 Aug 2026 2
+
+further reduced through multiplierless optimizations based on distributed arithmetic (DA) in bit-serial form [16], [27], [28]. DA computes an inner product (IP) bit-serially: at each cycle, a bit-slice of one vector addresses a look-up table (LUT) pre-loaded with the partial-product (PP) sums of the other vector, and the LUT output is accumulated by a shift-accumulate (SA) unit, which combines the PP sums over a number of clock cycles. It applies either two’s complement (TC), which treats the sign bit-slice separately via a conditional adder/subtractor in the SA unit, or offset-binary coding (OBC), sign handling is folded into a single constant offset loaded once at the start of accumulation, allowing every bit slice to use uniform addition and halving the LUT size. Unlike TC, OBC’s PPs are symmetric, enabling more efficient implementation. Hardware LUTs with PP generators (PPGs) and selectors (PPSs) enable efficient LSTM accelerators [16], [27], [28]. In [16], TC-DA LUTs generate full or partial parallel PPs via a separate PPGs across all four LSTM gates, causing adder and register counts to grow exponentially with model size. Its DA-based MVM formulation is confined to circulant weight matrices, with PPGs, PPSs, and adders instantiated independently for each row pair and one SA unit per sub-MVM. To curb this growth, two pipelined high-radix OBC-DA serial-LUT architectures were proposed [27], [28], but at the cost of additional clock-cycle latency in tapped-delay units that likewise scale with model size. Across these designs, pipelin-ing and unfolding trade hardware complexity for latency, while registers persist throughout the circular shifters, tapped-delay units, and LUT pipelines, with no specific optimization for block-circulant structures. Existing efforts have reduced MVM and EWM cost using circulant weight matrices, employing them as sub-MVMs for block-circulant MVMs. However, none has reformulated this multiplication into an equivalent input-matrix–weight-vector product, which reduces the number of distinct PPGs required to realize LSTM networks with minimal hardware cost. To address this gap, this work adopts the input-matrix–weight-vector product, structurally eliminating the hardware overhead common to these designs. Building on this approach, COBALT is proposed as a highly efficient bit-serial LSTM accelerator for compressed-matrix inference, with key contributions as:  
+
+> •
+
+The weight–input MVM is reformulated as an in-put–weight product and analyzed using the OBC scheme for training.  
+
+> •
+
+PPs are generated from input pairs using PPGs and selected through PPSs, achieving the lowest cost.  
+
+> •
+
+Pairwise column-swapping of PPs exposes redundancy across output rows, reducing the PPGs, PPSs, and adders needed by sharing them across row pairs.  
+
+> •
+
+A lightweight correction scheme that reuses the paired row’s PPs sum, eliminating the need for a dedicated adder when generating redundant rows.  
+
+> •
+
+Relocating the SA unit of each sub-MVM in block-circulant MVMs further reduces adders and registers. The remainder of this paper is organized as follows. Sec-tion II briefly introduces COBALT and the circulant and block-circulant MVM reformulation, followed by the OBC analysis. Forget Gate Input Gate Block Gate Output Gate                     
+
+> ct−1ct
+> ftitztot
+> xt
+> yt−1
+> yt
+> yt
+> tanh tanh ∑Inputs (ui)Weights (· · · 0110) 0·u1+ 1 ·u2... + 0 ·uN
+> ... 1·uN+ 0 ·u1
+> ∑∑
+> Activations
+> Fig. 1. Concept of the COBALT with a standard LSTM layer.
+
+Section III presents the hardware optimization and proposed accelerator for the compressed LSTM. Section IV presents the results and discussion, and Section V concludes the paper. II. LSTM R EFORMULATION , OBC A NALYSIS AND 
+
+TRAINING STRATEGY 
+
+At time-step t ∈ (1 , 2, ..., T ), the following equations capture the operation of a standard LSTM layer [4]: 
+
+st = ϕ(Wsxt + Rsyt−1 + bs) (s = i, f, o, z ) (1) 
+
+ct = zt ⊙ it + ct−1 ⊙ f t memory cell (2) 
+
+yt = tanh (ct) ⊙ ot hidden state (3) Let Ws and Rs represent the parameter matrices of dimen-sions N2×N1 and N2×N2, corresponding to the input weights and recurrent connections, respectively. The input vector xt
+
+and the recurrent vector yt−1 are of size N1 × 1 and N2 × 1
+
+respectively. The vector bs denotes the bias terms. The non-linear activation function ϕ(·) is sigmoid σ(·) for the forget (f t), input ( it), and output ( ot) gates, while the block gate ( zt)uses the hyperbolic tangent tanh (·). For any input x, σ(·) and tanh (·) are, respectively, defined as 
+
+σ(x) = 11 + e−x ∈ [0 , 1] , and tanh (x) = 1 − e−x
+
+1 + e−x ∈ [−1, 1] 
+
+(4) Based on (1), COBALT is motivated by the high computational cost of the MVMs, Wsxt and Rsyt−1, which dominate the execution time and energy consumption of a standard LSTM. COBALT exploits bit-level redundancy in the weight matri-ces to reformulate MVMs as bit-serial operations, reducing computational complexity. Fig. 1 provides an overview of the proposed COBALT architecture. 
+
+A. MVM Reformulation with Circulant Matrices 
+
+For given N1 and N2 dimensions, the total number of parameters required for an LSTM layer, as per (1), is 
+
+4( N1N2 + N 22 + N2). When N1 = N2 = N , this simplifies to 8N 2 + 4 N . Circulant matrices efficiently reduce LSTM memory requirements [21]. Here, the weight matrices in the MVMs of (1) are replaced with circulant matrices, except for the block gate ( s̸ = z), which is more sensitive to numerical errors [21]. This replacement reduces the number of parameters to 2N 2 + 6 N , while the biases remain at 4N ,resulting in a total of 2N 2 + 10 N parameters. Overall, this 3
+
+achieves a reduction of approximately 4× in the number of parameters. However, this change requires additional steps, since circulant matrices are typically square while LSTM pa-rameter matrices are not necessarily so. The structure typically depends on the ratio of N1/N 2 (or N2/N 1). When this ratio is an integer multiple, the matrix can be decomposed into sub-circulant blocks [23]. If the dimensions differ slightly (i.e., the ratio is close to 1), the input vector xt can be padded or truncated with minimal impact on accuracy, owing to the resilience of structured representations [21]. Thus, a normal square matrix W = [wmn ], where 1 ≤ m, n ≤ N , can be transformed by a circulant matrix generated from its first column, known as the primitive vector w1 = {wm}Nm=1 . The remaining columns of W are generated by cyclically shifting the elements of w1 to the right. Thus, each column vector 
+
+wn of W can be expressed as wn = [ w1n, w 2n, . . . , w N n ]T ,where mn = ( m − n)mod (N ) + 1 . Consequently, the MVMs in (1), can be formulated as 
+
+v = Wu ⇒
+
+
+
+v1
+
+v2
+
+v3
+
+...
+
+vN
+
+
+
+=
+
+
+
+w1 wN . . . w2
+
+w2 w1 . . . w3
+
+w3 w2 . . . w4
+
+... ... . . . ...
+
+wN wN −1 . . . w1
+
+
+
+u1
+
+u2
+
+u3
+
+...
+
+uN
+
+
+
+(5) where W is the N × N circulant matrix, u = {un}Nn=1 and 
+
+v = {vm}Nm=1 are the input and output vectors, respectively. Similar to (5), the circulant MVM can be reformulated by redistributing the elements of the input vector across all rows such that the first row of the parameter matrix remains fixed. In this reformulation, the circulant structure is assigned to the input matrix rather than the weight matrix, transforming the weight matrix W into a weight vector w and the input vector 
+
+u into an input matrix U, expressed as 
+
+v = Uw ⇒
+
+
+
+v1
+
+v2
+
+v3
+
+...
+
+vN
+
+
+
+=
+
+
+
+u1 u2 . . . uN
+
+u2 u3 . . . u1
+
+u3 u4 . . . u2
+
+... ... . . . ...
+
+uN u1 . . . uN −1
+
+
+
+w1
+
+wN
+
+wN −1
+
+...
+
+w2
+
+
+
+(6) where the elements of U are given by umn with subscript is expressed as mn = ( m+n−2) mod ( N )+1 , and the elements of w are wrn with subscript is given by, rn = (1 − n) mod (N ) + 1 . Unlike W, U is constructed by left cyclic shifts of a primitive vector u = {un}Nn=1 , making each row a circular shift of the previous one. Re-writing (6) as IPs results in 
+
+vm = XNn=1 umn wrn , (7) which leads to the following transformation of (1): 
+
+st = ϕ(Xtws + Yt−1rs + bs) (8) This shifts the computational load to just two circulant input and recurrent matrices, instead of eight separate weight matri-ces as in (1), enabling more efficient inference optimization, as discussed in the next Section. For large N , an N × N circulant matrix can be partitioned into p2 smaller q ×q circulant matrices, where q = N/p , using a block circulant structure [23]. This ensures that the smaller circulant sub-matrices are evenly distributed across all rows and columns. Consequently, primitive vectors p are generated by splitting the primitive input vector u into segments, denoted 
+
+u1, u2, . . . , up, where up = {ulpn }qn=1 , with the subscript given by lpn = ( p − 1) q + n. Each sub-circulant matrix Up can be expressed in terms of up elements as Up = {ulpmn }qm,n =1 ,where the subscript lpmn is defined as 
+
+lpmn = ( p − 1) q + ( m + n − 2) mod ( q) + 1 
+
+and (m, n ) ∈ { 1, 2, ..., q } refers to the (row, column) indices of Up respectively. Similarly, the weight vector w is split into 
+
+p smaller vectors, w1, wp, . . . , w2, where wp = wrpn
+
+> qn=1
+
+,with subscript rpn is defined as 
+
+rpn =  1 − (p − 1) q − n mod ( q) + 1 .
+
+Likewise, the output vector v is partitioned into p smaller vectors, v1, v2, . . . , vp, where vp = {vlpm }qm=1 with subscript given by lpm = ( p − 1) q + m. Thus, the block-circulant MVM is given by 
+
+
+
+v1
+
+v2
+
+v3
+
+...
+
+vp
+
+
+
+=
+
+
+
+U1 ΨU 2 ΨU 3 . . . ΨU p
+
+U2 U3 ΨU 4 . . . ΨU 1
+
+U3 U4 U5 . . . ΨU 2
+
+... ... ... . . . ...
+
+Up U1 U2 . . . Up−1
+
+
+
+w1
+
+wp
+
+wp−1
+
+...
+
+w2
+
+
+
+. (9) Here, Ψ is the circular-shifter matrix with elements either 0 or 
+
+1. Its elements are defined by ψmn = δ[( m − n)mod (q) − 1] ,where δ[·] is the Kronecker delta function. The purpose of 
+
+Ψ is to rotate the elements of Up. Like block-circulant weight matrices [21], Ψ in block-circulant input matrices appears in anti-lower triangular. It is evident from (9) that the computation of each output vector vp involves p weight vectors wp and p input sub-matrices Up. Thus, each vp can be calculated sequentially over p clock cycles, as per 
+
+v1 = U1w1 + Ψ U2wp + · · · + Ψ p−1Upw2
+
+= Xpk=1 Ψ k−1 Uk w((1 −k+p) mod p)+1 , (Ψ 0 = I). (10) As per (10), the sub-MVM operation for any p can be computed in parallel, thereby allowing (9) to be completed in p clock cycles. In scalar form, (10) can be expressed as 
+
+vlim = Xpj=1 
+
+Xqn=1 ul(i−j)
+
+> mn
+
+wrjn = Xpj=1 vij m (11) where the subscripts lim, rjn and l(i−j) 
+
+> mn
+
+are defined as 
+
+lim = ( i − 1) q + m, r jn =  1 − (j − 1) q − n mod ( q) + 1 ,l(i−j) 
+
+> mn
+
+= q(( i − j) mod ( p)) + ( m + n − 2) mod ( q) + 1 
+
+respectively, and (i, j ) ∈ {1, 2, ..., p } refers to the (row, column) indices of U respectively. Thus, vij m is defined as 
+
+vij m = Xqn=1 ul(i−j)
+
+> mn
+
+wrjn (12) 4LUT Content                                                                   
+
+> 0 0 1 0 1 0 0 1 1 1 0 0 1 0 1 1 1 0 1 1 1
+> u2,k
+> u3,k
+> u4,k
+> 12[w1+w4+w3−w2]
+> S1dot
+> Addr.
+> SA
+> 1
+> 12[w1+w4+w3+w2]0 0 0
+> S2=
+> S1=
+> 1010
+> if k=B−1otherwise if k= 0 otherwise
+> D
+> u1,k
+> 12[w1+w4−w3+w2]
+> 12[w1+w4−w3−w2]
+> 12[w1−w4+w3−w2]
+> 12[w1−w4+w3+w2]
+> 12[w1−w4−w3+w2]
+> 12[w1−w4−w3−w2]
+> S2
+> v1
+> 1001
+> (u1,B −1...u 1,0)(u2,B −1...u 2,0)(u3,B −1...u 3,0)(u4,B −1...u 4,0)
+
+Fig. 2. Traditional IP realization using OBC-DA for N = 4 .
+
+B. OBC-DA Analysis 
+
+The OBC equivalent of (12) is derived starting from the standard TC form of the input as follows. Any B-bit input 
+
+ul(i−j)
+
+> mn
+
+in TC form can be expressed as 
+
+ul(i−j)
+
+> mn
+
+= −ul(i−j)  
+
+> mn ,B −1
+
++ XB−2 
+
+> k=0
+
+ul(i−j) 
+
+> mn ,k
+
+2−(B−1−k) (13) where ul(i−j)  
+
+> mn ,k
+
+is the kth-bit of ul(i−j)
+
+> mn
+
+, with k = 0 denot-ing the LSB and k = B − 1 the sign bit (MSB). Using OBC, each magnitude bit can be represented as ul(i−j)  
+
+> mn ,k
+
+=
+
+> 12
+
+1 + ∆ ul(i−j) 
+
+> mn ,k
+
+ for k = 0 , . . . , B − 2, and the sign bit as 
+
+ul(i−j)  
+
+> mn ,B −1
+
+= 12
+
+1 − ∆ul(i−j) 
+
+> mn ,B −1
+
+, leading (13) to 
+
+ul(i−j)
+
+> mn
+
+= 12
+
+ XB−1 
+
+> k=0
+
+∆ul(i−j) 
+
+> mn ,k
+
+2−(B−1−k) − 2−(B−1) 
+
+
+
+(14) where 
+
+∆ul(i−j)  
+
+> mn ,k
+
+= ( −1) ⌊k/ (B−1) ⌋ 
+
+ul(i−j)  
+
+> mn ,k
+
+− ul(i−j) 
+
+> mn ,k
+
+
+
+(15) where ul(i−j)  
+
+> mn ,k
+
+is the ones complement of ul(i−j)  
+
+> mn ,k
+
+and ⌊·⌋ 
+
+is the floor function. Substituting (15) and (14) into (12) and simplifying the terms, we obtain 
+
+vij m =
+
+> B−1
+
+X
+
+> k=0
+> q
+
+X
+
+> n=1
+
+ 12 wrjn ∆ul(i−j) 
+
+> mn ,k
+
+
+
+2−Bk −
+
+ qX
+
+> n=1
+
+12 wrjn
+
+
+
+2−B0
+
+(16) where Bk = B − 1 − k. Define 
+
+dij m,k =
+
+> q
+
+X
+
+> n=1
+
+ 12 wrjn ∆ul(i−j) 
+
+> mn ,k
+
+
+
+, dot =
+
+> q
+
+X
+
+> n=1
+
+12 wrjn (17) Note that although rjn is notated with superscript j for consistency with (12), it is in fact independent of j: since 
+
+(j − 1) q mod q = 0 , rjn = (1 − n) mod q + 1 for every 
+
+j. Consequently, dot is a constant offset, independent of j.Finally, (16) simplifies to 
+
+vij m = XB−1 
+
+> k=0
+
+dij m,k 2−(B−1−k) − dot 2−(B−1) (18) From (18), it is evident that the term dij m,k can take one of 
+
+2q−1 possible combinations, since ∆ul(i−j)  
+
+> mn ,k
+
+∈ {− 1, 1} for 
+
+1 ≤ m, n ≤ q and 1 ≤ i, j ≤ p. These combinations can be pre-computed and stored in a LUT, as shown for q = N = 4 
+
+in Fig. 2. These LUT contents correspond to the first row of the circulant MVM matrix and are accessed using the input bit-slices (un,B −1, . . . , u n, 0; 1 ≤ n ≤ N ) as addresses, with bit-slices supplied in order from the least significant bit (LSB) uts ← ws − zts + ut−1         
+
+> s
+> zts←ws+uts
+> ˜input ←input loss ← M (input )
+> (20)
+> loss ←loss +
+
+∑ 12 || ws − zts + ut−1        
+
+> s|| 2
+> Backpropagate loss , update ws
+> Each batch
+> z0
+> s=wsu0
+> s= 0 or rs,
+> ADMM Update STE
+> ˜M ← M{  ˜ws}
+> (20)
+> ˜M, QB,α (·),
+> (20)
+> Each epoch Initials Inputs Return
+
+Fig. 3. Illustration of the FxP training strategy for the compressed LSTM. 
+
+to the most significant bit (MSB). During each access, the LUT output undergoes an SA operation, and this process continues for B clock cycles to produce the output v1, where S1 and 
+
+S2 are the control signals used to load dot and negate the LUT output, corresponding to the MSB and LSB of the inputs, respectively. Note that, as shown in (17), and since each row of the circulant matrix contains the same set of weights, only cyclically reordered, this offset dot takes the same value for every row. 
+
+C. Training Strategy for Reformulated LSTM 
+
+Quantization complicates backpropagation, as discrete val-ues can make gradients undefined [21]. This is addressed using STE [29], which treats the quantizer as the identity during backpropagation, and ADMM [30], which formulates quantization as a constrained optimization problem and avoids backpropagating through the quantizer by decoupling con-straints via auxiliary variables and projection. ADMM is adopted to quantize the parameter vectors, as it enforces the quantization constraint more rigorously and yields improved accuracy retention for weights, while STE is used to quantize the activations. This produces the quantized LSTM model, as shown in Fig. 3, achieving effective compression while preserving accuracy. During the training phase, ws, rs, and bs are learned. The LSTM model outlined in (8), (2)–(3) was initially trained using 32-bit floating-point (FlP) model (M). This ensures that, after training, the LSTM can be efficiently executed with a lower fixed-point (FxP) model ( ˜M) on the FPGA. The relevant parameters, including ws, rs, and bs, are quantized to a target bit-width B. Under FxP quantization, the values are scaled by a factor α, and the quantized form is 
+
+QB,α (x) = α′ · round  x · (2 B−1 − 1)  (19) where α′ = α/ (2 B−1 − 1) is the normalized α. Consider the 
+
+B-bit weight ˜wrn , projected from M{ wrn }, as per 
+
+˜wrn = α · round (max( −1, min( wrn /α, 1))) (20) This step combines two processes: clipping and rounding. First, wrn is clipped to the range [−α, α ] to prevent values from exceeding the FxP limits. The clipped value is then scaled by the factor for a chosen B, rounded to the nearest integer, and rescaled back to the original range by α.LSTMs typically have limited tolerance to numerical error, primarily due to their reliance on approximating the nonlinear activation function ϕ(·) ∈ {σ(·), tanh( ·)} with piecewise linear functions. Despite their nonlinearity, these functions can 5
+
+TABLE I TRAINING CONFIGURATIONS AND ACCURACY -C OMPRESSION 
+
+TRADEOFF : TIMIT VS . L IBRI SPEECH -100 H                                                                                                            
+
+> Case Precision TIMIT LibriSpeech-100h CR (%) PER (%) ∆PER (%) WER (%) ∆WER (%) TIMIT LibriSpeech a) Baseline FlP32 23.54 0.00 12.84 0.00 ––b) Circulant FlP32 ∗24.67 +1.13 13.58 +0.74 ––c) Circulant ◦FxP8 ∗∗ 21.64 –1.90 11.45 –1.39 93.64 93.72
+> q= 1 FxP8 22.05 –1.49 12.09 –0.75 75.00 75.00
+> q= 2 FxP8 22.05 –1.49 12.08 –0.76 84.36 84.36
+> q= 4 FxP8 22.05 –1.49 12.06 –0.78 89.03 89.03
+> q= 8 FxP8 22.02 –1.52 12.04 –0.80 91.37 91.40
+> q= 16 FxP8 21.97 –1.57 11.99 –0.85 92.54 92.57
+> q= 32 FxP8 21.91 –1.63 11.93 –0.91 93.13 93.16
+> q= 64 FxP8 21.84 –1.70 11.86 –0.98 93.42 93.45 LEGEND: ◦retrained from b); ∗circulant weight matrices; ∗∗ weight vectors; Block-circulant ( q-sweep) rows are independently retrained from case b), varying circulant block size q, under the same FxP8/ADMM/STE procedure as case c). CR: 1−B(3 N/q +N+2) 64(2 N+1) for the q-sweep, and 1−B(N+5) 64(2 N+1) for case c); ∆PER/ ∆WER are relative to case a). TIMIT uses N= 256 ; LibriSpeech-100h uses N= 1024 .
+
+be implemented efficiently using combinational logic gates and an LUT, e.g., tanh( ·), similar to [31]; the same approach is extended to σ(·) using the identity σ(x) = (1+tanh( x/ 2)) /2.The forward pass uses these piecewise linear approximations, while the backward pass computes gradients using the original nonlinear functions, as in (4). 
+
+1) Validation on TIMIT and LibriSpeech: The training strategy is validated on two speech recognition benchmarks, TIMIT [32] and LibriSpeech [33], to confirm the accuracy-compression tradeoff generalizes beyond a single, small cor-pus. TIMIT comprises 630 speakers across eight American English dialects, each reading ten phonetically rich sentences, totaling roughly 500 hours of training, 50 hours of valida-tion, and 5 hours of test data. Raw audio is converted to spectrograms using a Hamming window with 50% overlap. The acoustic model is implemented in PyTorch, comprising convolutional layers, an LSTM layer, and a fully connected layer, with batch size set to the kernel size. Performance is measured by phone error rate (PER) [23], with a unidirectional 
+
+N = 256 LSTM layer used throughout Table I. LibriSpeech is a substantially larger audiobook-speech cor-pus totaling 1000 hours; the standard 100-hour training subset is used here, following the training and evaluation protocol of the PyTorch-Kaldi baseline [22]. Acoustic features are 40-dimensional fMLLR features extracted with the Kaldi toolkit [34], and decoding uses a Viterbi decoder with a 4-gram language model. Performance is measured by word error rate (WER). LibriSpeech uses a N = 1024 LSTM layer, four times larger than TIMIT, matching layer dimensions used in large-vocabulary LSTM accelerators [7], [12]–[15], [17], [18], testing whether the accuracy-compression relationship established at N = 256 holds at a scale where each circulant block spans a much larger portion of the weight matrix. A uni-directional LSTM is used for both datasets, consistent with the low-latency, streaming target of the circulant/block-circulant hardware accelerator, since a bidirectional layer requires the complete utterance before producing any output – a known accuracy cost [35] (as also noted in [7]) necessary for real-time deployment, so results here are not directly comparable to bidirectional baselines such as [22]. This work’s objective is to isolate the accuracy cost of the block-circulant constraint against a matched, consistently trained baseline, rather than to pursue state-of-the-art absolute accuracy. In both cases, an initialization similar to [21] preserves the variance of the original weights when constructing circulant matrices, stabilizing training under the structural constraint. FxP training combines ADMM for parameter quantization and STE for activation quantization, with re-training used to mitigate random-initialization effects; the block-circulant parameterization (9) follows standard backpropagation [23] in both cases. Both parameters and activations are quantized to FxP8 in each dataset, as lower bit-widths worsen performance, isolating the effect of dataset scale and block size q from numerical precision. The training schedules differ, however: TIMIT pretrains for 100 epochs before FxP retraining, while LibriSpeech-100h pretrains for 20 epochs, with FxP retraining under each q converging in only 10 epochs, reflecting faster convergence from a better-conditioned FlP32 initialization and the curriculum warm-start from the previous block size’s converged weights. For TIMIT, Table I reports three training cases: a) a floating-point (FlP32) baseline with standard square weight matrices and exact nonlinear activations, as in (4); b) FlP32 with circu-lant weight matrices (5) and approximate nonlinear activations [31]; and c) FxP8 parameters and activations with circulant matrices as in (6), retrained from b). The same cases are reported for LibriSpeech under identical precision settings. This retraining in c) achieves a 1.90% PER improvement over baseline a) on TIMIT, motivating the choice of FxP8 for hardware execution (compression ratio of 93.64%). Block-circulant retraining follows a curriculum schedule: each block size q is warm-started from the converged weights of the previous, smaller q, with an increased number of ADMM iterations relative to case c), progressively enforcing the structural constraint rather than imposing it in one step. Since q=N is structurally equivalent to full-circulant, both CR and PER converge to case c)’s values as q → N , consistent with q=64 ’s CR (93.42%) and PER (21.84%) approaching case c)’s CR (93.64%) and PER (21.64%) at q=N =256 .As Table I shows, this convergence pattern holds for both datasets despite LibriSpeech-100h providing roughly 5× less training data than TIMIT (100h versus 500h) and using a fourfold larger layer ( N = 1024 versus N = 256 ). That comparable stability persists despite less data and a larger layer suggests the block-circulant structure’s own regularizing effect, rather than dataset scale, is the dominant factor in the observed accuracy-compression tradeoff. The LibriSpeech evaluation, using a pipeline directly derived from [22], thus exhibits the same qualitative accuracy-compression relation-ship as TIMIT, supporting the conclusion that this accuracy cost is not tied to the particular baseline architecture used in the TIMIT experiments. Using FxP8 at N = 1024 is a controlled but nontrivial choice: larger hidden-state dimensions typically accumulate wider-dynamic-range activations per gate (particularly the cell state ct) than the 256-unit TIMIT configuration, so FxP8 may quantize LibriSpeech activations more coarsely relative to their true range. LibriSpeech WER indeed degrades roughly twice as fast, in relative terms, as TIMIT PER across the q-sweep, consistent with this activation-precision effect compounding the block-circulant structural cost at larger scale, rather than 6PPS 1                     
+
+> PPS 2
+> PPS 3
+> PPS 4
+> u1,k u2,k u3,k u4,k
+> w1w4
+> PISO
+> u1
+> u2
+> u3
+> u4
+> w3w2
+> u2,k u3,k u4,k u1,k
+> u3,k u4,k u1,k u2,k
+> u4,k u1,k u2,k u3,k
+> PPG 14 PPG 32
+> PP 1,214 PP 1,232
+> PP 3,414 PP 3,432
+> a/ 2
+> b/ 2(a+b)/2(a−b)/2
+> Uw(k)
+
+Fig. 4. Proposed initial scheme for circulant MVM with N = 4 .SA       
+
+> 1
+> 1PPG 32
+> 0
+> 1
+> 0
+> 1
+> u1,k
+> u2,k
+> 1
+> 1
+> 0
+> 1
+> 0
+> 1
+> 0
+> 1
+> 0
+> 1
+> u4,k
+> u1,k
+> u3,k
+> u4,k
+> PP 132
+> PP 232
+> 0
+> 1
+> 0
+> 1
+> 0
+> 1
+> 0
+> 1
+> u2,k
+> u3,k
+> u1,k
+> u2,k
+> PP 114
+> PP 214
+> 00
+> 1
+> 0
+> 1
+> u3,k
+> u4,k
+> SA SA SA
+> S2S1
+> dot
+> v1
+> v2
+> v3
+> v4
+> w3
+> w2
+> w1
+> w4
+> PPG 14
+> B−1
+> B−1
+> BBBBB
+
+Fig. 5. Proposed initial circulant MVM architecture with N = 4 .
+
+indicating a genuine weakness of the block-circulant structure itself. The ADMM/STE retraining procedure, which adapts the network to the reduced-precision representation rather than quantizing post hoc, partially mitigates this effect. III. H ARDWARE OPTIMIZATION AND ACCELERATOR 
+
+A. Initial Scheme and Architecture 
+
+The proposed scheme leverages OBC to generate and select PPs in pairs. For instance, a pair of weights a and b forms the PPs (±a ± b)/2, which possess the anti-symmetry property, i.e., −(a + b)/2 ↔ (a + b)/2 and −(a − b)/2 ↔ (a − b)/2
+
+are anti-symmetric pairs. This means that only half of the combinations need to be generated, while the other half can be obtained through negation. Fig. 4 illustrates the proposed scheme with two PPGs, PPG 14 and PPG 32 , for N = 4,corresponding to weight pairs {w1, w 4} and {w3, w 2}. The subscripts denote their associated weight pairs. The archi-tecture uses the circulant input matrix U = {umn }Nm,n =1 ,where mn = ( m + n − 2) mod ( N ) + 1 . Each B-bit input 
+
+umn is bit-sliced into umn,k (0 ≤ k ≤ B − 1) via a PISO converter (13), serving as select signals in Uw(k) for PPG 14 
+
+and PPG 32 . Here, the superscript w indicates PPs formed from the weight vector and input slices, and k denotes the index of input bit-slice. The PPGs/PPSs generate a 2 × 2 chessboard pattern in Uw(k), dividing PPSs into two vertical groups. White regions contain PP m
+
+> 14
+
+|m=1 ,2 and PP m
+
+> 32
+
+|m=3 ,4, while gray regions contain PP m
+
+> 32
+
+|m=1 ,2 and PP m
+
+> 14
+
+|m=3 ,4. Although elements in each division appear identical, they cannot be shared, as each selects a different PP depending on its position. The initial hardware LUT architecture for N = 4 , employ-ing PPGs/PPSs to compute the circulant MVM, is shown in u1,k u2,k u3,k u4,k u5,k u6,k u7,k u8,k                                                         
+
+> w1w8w7w6w5w4w3w2
+> u2,k u3,k u4,k u5,k u6,k u7,k u8,k u1,k
+> u3,k u4,k u5,k u6,k u7,k u8,k u1,k u2,k
+> u4,k u5,k u6,k u7,k u8,k u1,k u2,k u3,k
+> u5,k u6,k u7,k u8,k u1,k u2,k u3,k u4,k
+> u6,k u7,k u8,k u1,k u2,k u3,k u4,k u5,k
+> u7,k u8,k u1,k u2,k u3,k u4,k u5,k u6,k
+> u8,k u1,k u2,k u3,k u4,k u5,k u6,k u7,k
+
+Fig. 6. Proposed initial scheme for circulant MVM with N = 8 .
+
+Fig. 5. The first-row output v1 is computed using PP 114 and PP 132 from Uw(k). For PP 132 , PPG 32 generates (w3 ± w2)/2,selected through two 2-to-1 multiplexers: the first controlled by u4,k and the second by u3,k , which applies a TC operation when required. Similarly, PPG 14 produces (w1 ± w4)/2 in PP 114 with its own two-stage selection. Outputs from PP 114 
+
+and PP 132 are summed and processed by the SA unit to yield 
+
+v1. Multiplexers of the same color correspond to chessboard divisions. The same principle extends to compute other row outputs vm using the PP m 
+
+> 14
+
+and PP m
+
+> 32
+
+.The design scales to larger N by extending the chessboard pattern. For N = 8 , pairing weights in groups of N/ 2 yields 
+
+2 × 2 divisions of size 4 × 4, which increases PPG/PPS complexity. Each PPG must generate 16 combinations of 
+
+(±a ± b ± c ± d)/2, of which only half are required, using 12 adders/subtractors and two PPS units, each with eight 8-to-1 multiplexers. A more efficient alternative is pairing by N/ 4,which preserves the N = 4 structure, as shown in Fig. 6. This requires only four PPGs (one adder/subtractor each) and four PPSs (each with four two-level 2-to-1 multiplexers). In general, an N × N circulant MVM scales into 2 × 2
+
+chessboard divisions, requiring N/ 2 PPGs (each containing an adder/subtractor) and (N/ 2) 2 PPSs (each containing 4 2-to-1 multiplexers). A natural question arises: why use circulant input ma-trices for the MVM instead of circulant weight matrices? In LSTMs, this choice is advantageous for PPG/PPS-based designs because PP generation is independent of selection, enabling bit-level optimizations. Because an LSTM requires 
+
+8N weight parameters but only 2N inputs, input-circulant MVMs reduce hardware cost significantly. Weight/recurrent-weight circulant MVMs need 8( N/ 2) PPGs and 8( N/ 2) 2
+
+PPSs, whereas input-circulant MVMs require only 2( N/ 2) 
+
+PPGs (for inputs and recurrent inputs), cutting PPG count by 
+
+4× and reducing PPS demand. Since a PPG with a conditional adder is costlier than a PPS multiplexer, this motivated refor-mulating circulant MVM into matrix (input)–vector (weight) MVM. Moreover, the input ( Xtws) and recurrent ( Yt−1rs)circulant MVMs share the same computational structure and are time-multiplexed, reusing the same PPG/PPS set rather than duplicating hardware for each. 
+
+B. PPG/PPS Optimization through PPs Column Swapping 
+
+As noted earlier, PPG and PPS complexities scale linearly and quadratically with N/ 2, respectively, with PPSs becoming 7u1 u2 u3 u4                               
+
+> w1,k w4,k w3,k w2,k
+> u2u3u4u1
+> u3u4u1u2
+> u4u1u2u3
+> PPG 1
+> PPG 2
+> PPG 3
+> PPG 4
+> PPS 14 PPS 32
+> u1u3u2u4
+> w1,k w3,k w4,k w2,k
+> u2u4u3u1
+> u3u1u4u2
+> u4u2u1u3
+> PPG 1
+> PPG 2
+> PPG 3
+> PPG 4
+> PPS 13 PPS 42
+> PP 1,214 PP 1,232
+> PP 3,432 PP 3,414
+> diagonally symmetric diagonally antisymmetric
+> PP 1,213
+> 1
+> Uw(k)ˆUw(k)
+> PP 3,413
+> PP 1,242
+> PP 3,442
+> k
+
+Fig. 7. PPG/PPS optimization for N = 4 circulant MVM via one-time input-PP column swapping. 
+
+the main bottleneck for compressed LSTMs at larger N . Re-ducing PPS complexity is therefore critical. One approach is to apply bit-slice operations via PISO to the weights rather than the inputs, modifying the PPs matrix from Uw(k) to Uw(k)
+
+with elements PP mrnrn+1 , where rn = (1 − n) mod ( N ) + 1 .This enables interchange of PPGs and PPSs, as shown for 
+
+N = 4 in Fig. 7. In this scheme, PPs are generated by PPGs, requiring two sets of four PPGs, with bit-sliced weight pairs selected in the PPSs. Unlike the initial scheme, which shares two PPGs across all PPSs, this approach applies the chessboard division to PP generation rather than PP selection. However, it doubles the PPG count to four due to diagonal symmetry, motivating further structural reformulation to reduce hardware cost. The four PPGs in this approach result from element repeti-tion within each chessboard division. For instance, PP 114 and PP 214 duplicate u2 along the anti-diagonal, limiting PPG/PPS optimization. To address this, the chessboard pattern of the PP-matrix Uw(k) is altered by a one-time column swap of the input PPs for the unpaired bit-slices w4,k (Col 2) and 
+
+w3,k (Col 3), as shown in step 1 of Fig. 7, yielding a new PPs matrix ˆUw(k). This swapping of PPs is possible since summation is order-independent and thus does not affect the output, as per (17). Re-pairing the swapped bit-sliced weights into {w1,k , w 3,k } and {w4,k , w 2,k } forms new PPG/PPS sets. Consequently, only (±u1 ± u3)/2 and (±u2 ± u4)/2 need to be generated for Row 1, while the corresponding combinations for Row 3, (±u3 ± u1)/2 and (±u4 ± u2)/2, are redundant due to diagonal symmetry or anti-symmetry. For example, bit combination 00 produces the same value, (u1 + u3)/2, for both (±u1 ± u3)/2 and (±u3 ± u1)/2, whereas 01 yields their anti-symmetric counterpart, ±(u1 − u3)/2. Similar behavior occurs for combinations 10 and 11 . Consequently, a bit-level XOR of the 01 and 10 cases can serve as the select signal for a 2-to-1 multiplexer to obtain the TC versions of the PPs. This reduces the PPG count to two (PPG 114 and PPG 132 ), as in the initial scheme. Distinct PPG inputs are marked with a single underline in Fig. 7, while diagonally anti-symmetric elements use a double underline. The new architecture uses PPG 142 to generate (u2 ±u4)/2, selected by w2,k , and PPG 113 to generate (u1 ± u3)/2, selected by w3,k . The column-swapped architecture of circulant MVM for N = 4 , shown in Fig. 8, halves the PPS count, with minor added cost from a few 2-B − 1    
+
+> B−1
+> SA
+> 1
+> 1
+> PPG 142
+> PPG 113
+> 1
+> 1
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> SA SA SA
+> S2S1
+> dot
+> v1
+> v2
+> v3
+> v4
+> u2
+> u4
+> u1
+> u3
+> 0
+> 1
+> 1
+> 0
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> 0
+> 1
+> 1
+> 0
+> PP 142
+> w2,k
+> w4,k
+> w3,k w1,k
+> w2,k
+> w4,k
+> PP 242
+> PP 213
+> PP 113
+> BBBB
+
+Fig. 8. Column-swapped circulant MVM architecture for N = 4 .u1 u5 u2 u6 u3 u7 u4 u8                                                        
+
+> w1,k w5,k w7,k w3,k w8,k w4,k w6,k w2,k
+> u2u6u3u7u4u8u5u1
+> u3u7u4u8u5u1u6u2
+> u4u8u5u1u6u2u7u3
+> u5u1u6u2u7u3u8u4
+> u6u2u7u3u8u4u1u5
+> u7u3u8u4u1u5u2u6
+> u8u4u1u5u2u6u3u7
+> Uw(k)ˆUw(k)
+> 122
+
+Fig. 9. PPG/PPS optimization for N = 4 circulant MVM via two-times input-PP column swapping. 
+
+to-1 multiplexers handling anti-diagonal symmetric PPs. It is observed that each pair of PPs and their corresponding TC versions requires a dedicated adder to compute the PPs sum for a desired row prior to the SA unit. For N = 8, only four PPGs are needed to generate 
+
+(±u1 ±u5)/2, (±u2 ±u6)/2, (±u3 ±u7)/2, and (±u4 ±u8)/2,while the remaining components (double underlined) are re-dundant. This yields an optimized circulant MVM architecture for N = 8 , similar to Fig. 8. Unlike N = 4 , where the column swap occurs only once at N/ 2, for N = 8 the process unfolds in two steps, requiring two swaps. In step 1 , columns are swapped at N/ 2 between adjacent left/right groups with swap width (SW) N/ 4. In step 2 , two smaller swaps occur at 
+
+N/ 4 (= N/ 2 − N/ 4) and 3N/ 4 (= N/ 2 + N/ 4) with SW 
+
+N/ 8, as shown in Fig. 9. Extending this approach reveals a regular pattern: column-swapping permutations depend on step level, SW, number of swaps (NOS), and swap positions (POS). The elements of ˆUw(k), i.e., PP rπ(n)rπ(n)+1  
+
+> m
+
+, with permutations 
+
+rπ(n), are obtained using Algorithm 1. Any N × N circulant MVM can thus be implemented with the optimized LUT-based architecture using 2 × 2 chessboard divisions, requiring 
+
+N/ 2 PPGs and 2( N/ 4) 2 PPSs. While the PPG count remains unchanged, the optimized scheme reduces the total PPS re-quirement for ws/rs to (N/ 2) 2 + 3 · 2( N/ 4) 2 (with circulant MVM each now containing 6 2-to-1 multiplexers), yielding a 8
+
+Algorithm 1 PPs Column-Swapping for Circulant MVMs  
+
+> 1:
+
+Input: PPs matrix Uw(k), rn = (1 − n) mod ( N ) + 1  
+
+> 2:
+
+Output: Permuted PPs ˆUw(k), rπ(n) 
+
+> 3:
+
+Initialize ˆUw(k) ← Uw(k), rπ(n) ← rn 
+
+> 4:
+
+for s = 1 to log 2 N − 1 do  
+
+> 5:
+
+SW ← N/ 2s+1 , NOS ← 2s−1 
+
+> 6:
+
+for i = 1 to NOS do  
+
+> 7:
+
+POS ← ((2 i − 1) N )/2s 
+
+> 8:
+
+left ← POS − SW + 1 : POS  
+
+> 9:
+
+right ← POS + 1 : POS + SW  
+
+> 10:
+
+Swap columns: ˆUw(k)[: , left ] ↔ ˆUw(k)[: , right ] 
+
+> 11:
+
+Swap indices: rπ(n)[left ] ↔ rπ(n)[right ] 
+
+> 12:
+
+end for  
+
+> 13:
+
+end for  
+
+> 14:
+
+return ( ˆUw(k), r π(n))
+
+37.5% reduction compared to the initial design. 
+
+C. Optimized-Complexity Design of Circulant MVM 
+
+As shown in Fig. 10, analysis of input PPs in pairs for a circulant MVM at N = 4 reveals redundancy between Rows 1 and 3. Each row’s PPs sum is formed from two PPs in a pair, denoted (A,B ) below, yielding 16 combinations, of which only 8 are antisymmetric. Comparing Row 1 and Row 3 entry-by-entry, three cases emerge: some addresses (e.g., 0000, 0011) give identical (A,B ) pairs; others (e.g., 0101, 0110) give exact negations; and the rest (e.g., 0001, 0010, 0100, 0111) match neither, since the two terms in (A,B )
+
+diverge independently. Only the first two cases permit reuse of Row 1’s already-computed PPs in pair through negation alone; the remaining cases require an explicit correction. For simplicity, only the half-combination pair A h = ( u1 ± u3)/2
+
+and B h = ( u2 ± u4)/2 is considered here, where subscript ‘h’ denotes this half-set. Row 1’s per-cycle PPs sum, Su 1, together with its antisymmetric version, is accumulated over B bit-slice cycles by its SA unit, SA 1[k] = Su 1[k] ± 12 SA 1[k − 1] , SA 1[−1] = dot , (21) where k denotes the clock cycle index of the SA unit and ‘ −’in ± corresponds to the MSB of the weights. This operation is identical to the SA unit shown in Fig. 2. Row 3’s PP sum (Su 3)requires an explicit adder for Ah = ( u3 ± u1)/2 and Bh =(u4 ± u2)/2, which are Row 1’s terms with signs exchanged for 01 and 10 cases, as shown in Fig. 8. Therefore, Row 3’s PPs sum can be expressed relative to Row 1’s as Su 3[k] = Su 1[k] − ∆3[k], (22) where ∆3[k] is the correction factor that obtains Su 3[k] from Su 1[k]. It is 0 when the weight-bit pair governing Row 1 and Row 3 agree at clock cycle k. In this case, Row 3’s PPs sum is tapped directly (or negated) before entering Row 1’s SA feedback, and is combined with ∆3[k] = 0 to form Su 3[k].Otherwise, ∆3[k] ∈ (u1 − u3), (u2 − u4) is nothing but a left-shift on the generated input PPs, obtained directly by comparing Row 3’s pair of PPs with Row 1’s pair of PPs. +1 +1                                                                                                         
+
+> −1
+> −1
+> 12[+ u1+u3]0 0 0 0 12[+ u2+u4]
+> 12[+ u1+u3]
+> 12[+ u1+u3]
+> 12[+ u1+u3]
+> 12[+ u2−u4]
+> 12[−u2+u4]
+> 12[−u2−u4]
+> 0 0 0 1 0 0 1 0 0 0 1 1
+> 12[+ u1−u3]
+> 12[+ u1−u3]
+> 12[+ u1−u3]
+> 12[+ u1−u3]
+> 12[+ u2+u4]
+> 12[+ u2−u4]
+> 12[−u2+u4]
+> 12[−u2−u4]
+> 0 1 0 0 0 1 0 1 0 1 1 0 0 1 1 1
+> Row 1
+> 12[+ u3+u1]12[+ u4+u2]
+> 12[+ u3+u1]
+> 12[+ u3+u1]
+> 12[+ u3+u1]
+> 12[+ u4−u2]
+> 12[−u4+u2]
+> 12[−u4−u2]
+> 12[+ u3−u1]
+> 12[+ u3−u1]
+> 12[+ u3−u1]
+> 12[+ u3−u1]
+> 12[+ u4+u2]
+> 12[+ u4−u2]
+> 12[−u4+u2]
+> 12[−u4−u2]
+> Row 3
+> ABABa1a2a3a4
+> 0 0 0 0 0 0 0 1 0 0 1 0 0 0 1 1 0 1 0 0 0 1 0 1 0 1 1 0 0 1 1 1
+> a1a2a3a4
+> Fig. 10. Mapping of Row 1 PPs in pair to Row 3 PPs in pair for N= 4 .
+
+Because Row 1’s SA accumulates recursively via (21) as per (17), Row 3’s accumulated output must satisfy the same recursion with Su 3 in place of Su 1. The running correction to Row 1’s accumulation, CB 3 ≜ SA 1 − SA 3, is realised by a lightweight correction unit termed a Correction Buffer (CB), and therefore obeys the same recursive form, CB 3[k] = ∆ 3[k] + 12 CB 3[k − 1] , (23) so a feedback-free register holding only the current correc-tion cannot reproduce this recursive decay, and is therefore insufficient once mismatches occur more than once. The CB retains the shift-feedback structure of an SA unit but requires no dedicated adder to produce Su 3, since its input is drawn entirely from the correction factor ∆3[k].The equal (EQ) and correction-select (CS) control signals for the correction factors are derived from the weight bits at negligible cost: EQ = 1 ⊕ w1,k ⊕ w3,k ⊕ w4,k ⊕ w2,k , CS = w1,k ⊕ w3,k .
+
+where ‘ ⊕’ exclusive OR (XOR) operator. EQ = 1 indicates agreement, so ∆3[k] = 0 and Row 1’s tapped operand passes through unmodified. When EQ = 0 , the two pair-terms are forced into disagreement with one another, so a single XOR suffices to identify which term needs correcting: since EQ = 0 
+
+implies w1,k ⊕ w3,k and w4,k ⊕ w2,k are complementary, the mismatch is confined to exactly one of the two pair-terms, and testing w1,k ⊕ w3,k alone identifies which one it is. CS selects 
+
+∆3[k] = ( u1 −u3) if CS = 1 , or ∆3[k] = ( u2 −u4) if CS = 0 .At the B-th (final) clock edge, SA 1[B−1] and CB 3[B−1] 
+
+– computed during cycle k = B−1 – are available on their respective registers. (This contrasts with the preload SA 1[−1] = dot in (21), set before accumulation starts, i.e., before k = 0.) Unlike SA 1, CB 3 carries no offset, since the offset cancels in the difference CB 3 = SA 1 − SA 3;this leaves its adder free for reuse. Once cycle k = B−1
+
+completes, the control signal S3 switches, at the falling clock edge, the CB unit’s adder input away from the correction term ∆3 and onto the tapped operand SA 1[B−1] , so the same adder that accumulates CB 3 during correction now forms SA 1[B−1] − CB 3[B−1] ahead of the register’s (rising-edge) capture: 
+
+v3 = SA 1[B−1] − CB 3[B−1] (24) with S3 deasserted again at the start of the next sample, returning the adder to its correction-accumulation role – no preload is required here, in contrast to SA 1’s dot load. Fig. 11 9SA SA CB CB                         
+
+> B−1
+> B−1
+> 1
+> 1
+> PPG 142
+> PPG 113
+> 1
+> 1
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> u2
+> u4
+> u1
+> u3
+> 0
+> 1
+> 0
+> 1
+> 1
+> 0
+> 1
+> 0
+> PP 142
+> w2,k w4,k
+> w3,k w1,k
+> w2,k w4,k
+> PP 242
+> PP 213
+> PP 113
+> S2
+> 10
+> S1
+> dot
+> v1
+> SA 1
+> SA 2v2
+> D
+> 1
+> v3
+> CB 3
+> D
+> 10101010
+> v1
+> 0
+> S3EQ CS
+> 111
+> CB 4v4
+> Fig. 11. Optimized-complexity circulant MVM architecture for N= 4 with its pictograph, where ×:u2−u4and ◦:u1−u3.
+
+shows the resulting datapath. Two 2-to-1 multiplexers, con-trolled by EQ and CS, select ∆3[k] for k = 0 , . . . , B −1.The identical approach, applied with the complementary term assignment, produces Row 4 from Row 2 via its own CB 4.Row 4’s correction factor is likewise 0 when the weight-bit pair governing Row 2 and Row 4 agree, and otherwise 
+
+∆4[k] ∈ (u4 − u2), (u3 − u1) i.e., the negatives of Row 3’s nonzero correction values; Row 4’s CB therefore reuses the same magnitudes already generated from the input PPs as Row 3, requiring only an inverted sign selection. This optimized version of circulant MVM, shown in Fig. 11, has two fewer adders for the PPs sum, and each PPS contains only 4 2-to-1 multiplexers, compared to Fig. 8. 
+
+D. Optimized-Complexity Design for Higher Model Size 
+
+For N = 8 , Row 1’s sum is formed from four PP pairs, Ah = ( u1 ±u5)/2, B h = ( u2 ±u6)/2, C h = ( u3 ±u7)/2, D h =(u4 ± u8)/2, shared across all rows. Fig. 10 shows Row 5’s terms, (±u5 ± u1)/2, (±u6 ± u2)/2, (±u7 ± u3)/2, (±u8 ±
+
+u4)/2, are Row 1’s four terms with each pair’s roles and signs independently exchanged. Up to two of {Ah, B h, C h, D h} can therefore diverge from Row 1 to Row 5 on the same cycle, so a single mux-selected correction no longer suffices. Grouping the terms as Ph = Ah + Bh, Qh = Ch + Dh gives Su 1[k] = P [k] + Q[k], accumulated by Row 1’s SA unit as in (21), and isolates two independent sub-pairs, each governed by its own equal/select signals in exactly the form of N = 4 .Row 5’s correction is therefore ∆5 = ∆ (P )5 + ∆ (Q)5 , each part 0 on agreement and otherwise selected by its own mux from ∆(P )5 ∈ (u1 − u5), (u2 − u6) and ∆(Q)5 ∈ (u1 −
+
+u5), (u2 −u6) . Because (Ah, B h) and (Ch, D h) are governed by disjoint weight bits, their agreement states are independent, so each requires its own equal/select pair: EQ P = 1 ⊕ w1,k ⊕ w5,k ⊕ w2,k ⊕ w6,k , CS P = w1,k ⊕ w5,k ,
+
+EQ Q= 1 ⊕ w3,k ⊕ w7,k ⊕ w4,k ⊕ w8,k , CS Q= w3,k ⊕ w7,k ,
+
+EQ P and EQ Q need not agree, so ∆(P )5 and ∆(Q)5 can both be nonzero on the same cycle, and combining them requires a real addition rather than a further mux. U1w1                                                            
+
+> U2w1
+> ΨU 2w2
+> U1w2
+> w5,k w4,k w3,k w2,k
+> 1
+> u8u6u4u2
+> u2u8u6u4
+> u4u2u8u6
+> u6u4u2u8
+> u1u7u5u3
+> u3u1u7u5
+> u5u3u1u7
+> u7u5u3u1
+> w5,k w4,k w3,k w2,k
+> u2u6u4u8
+> u4u8u6u2
+> u6u2u8u4
+> u8u4u2u6
+> u3u7u5u1
+> u5u1u7u3
+> u7u3u1u5
+> u1u5u3u7
+> Fig. 12. PPG/PPS optimization of block-circulant MVM with N= 8 and
+> p= 2 via one-time input-PP column swapping performed at the edges.
+
+A single CB is retained by summing the two mux outputs ahead of its feedback add: CB [k] =  ∆(P )5 [k] + ∆ (Q)5 [k] + 12 CB [k − 1] . (25) This merge adder is the only per-cycle arithmetic cost beyond the mux-only selection stage; it can be realized as one three-operand adder or two cascaded two-operand adders in the same stage. Merging into a single CB saves one narrow register relative to two separate CBs, and the final combine remains a plain two-operand subtract: 
+
+v5 = SA 1[B−1] − CB [B−1] , (26) identical in form to (24). CB carries no per-sample offset – it cancels in (26) – so its adder is free at the cycle where SA 1, SA 2, . . . load dot , provided the controller enforces EQ P [0] = EQ Q[0] = 1 at the start of every sample; that same adder then realizes (26) in subtract mode, with no dedicated final-combine adder or holding register. This trades a wider, three-operand correction-path add every cycle for one fewer register and a simpler final combine, compared with retaining two independent narrow, mux-only CBs. The same construction extends to the remaining row pairs, Row 2/Row 6, Row 3/Row 7, Row 4/Row 8, with Ah, B h, C h, D h relabeled by the circulant shift. Each row-pair’s ∆(P ), ∆(Q) draws a two-element subset of the same four elementary magnitude differences, 
+
+(u1−u5), (u2−u6), (u3−u7), (u4−u8), with sign selected independently per pair. Row 6’s correction relative to Row 2, for instance, reuses (u2−u6) and (u4−u8) directly from Row 5’s magnitude set and reuses (u1−u5) with inverted sign. Consequently, no additional subtractor is required for any row-pair beyond these four elementary differences; each subsequent pair’s EQ/CS logic only selects and sign-adjusts among the same four shared magnitudes. In general, for row pairs  i, (( i − 1 + N/ 2) mod N ) + 1 ,the first row uses a full SA unit and the second uses a CB. For N = 8 , this yields four full SA units (Rows 1–4) and four CBs (Rows 5–8), each CB reusing the PPs sum of its paired row rather than requiring a dedicated adder. More generally, for N = 2 m, each row pair decomposes into N/ 4 independent sub-corrections under repeated column swapping, consolidated into one CB per pair via an (N/ 4) -operand merge adder. 10 U1 w1                  
+
+> · · · U2,ΨU 2wp
+> · · · U3,ΨU pw2
+> · · · ΨU 1,
+> U1w1
+> · · · U2,ΨU 2wp
+> · · · U3,ΨU pw2
+> · · · ΨU 1,
+> v1
+> v1
+> (a) (b)
+> SA SA CB CB SA SA CB CB SA SA CB CB SA SA CB CB
+> Fig. 13. Block-circulant MVM architecture for N= 4 p: (a) Initial, (b) Optimized.
+
+E. Optimized-Complexity Design for Block-Circulant MVM 
+
+Although previous optimizations apply to circulant MVMs, extending them to block-circulant MVMs requires care, as sub-input matrices Up rotated by Ψ (as in (9)) disrupt the chessboard division pattern. Consider N = 8 , p = 2 , forming four sub-MVMs: U1w1, U2w1, ΨU 2w2, and U1w2. While 
+
+U1w1, U2w1, and U1w2 preserve the circulant chessboard pattern, ΨU 2w2 is altered by the rotation, as shown in Fig. 12. This prevents direct application of the column-swapping scheme. Instead of initiating column swaps at the midpoint of the PP-matrix, column swaps for the affected sub-MVMs start at the edges (see Step 1 in Fig. 12). For 
+
+q = 4 , column swapping occurs at two positions, q/ 4 and q,equivalently (q/ 2 − q/ 4) and (3 q/ 4 + q/ 4) . In general, input pairs generating identical PPs can still be identified, and the scheme extends to higher q by adjusting SW, NOS, and POS, following Algorithm 1. From (10), p parallel sub-circulant MVMs can compute an 
+
+N ×N circulant MVM in p clock cycles via time-multiplexing. Combining this with (11) and (18), the block-circulant MVM architecture for q = 4 with N = 4 p extends naturally from the optimized circulant MVM architecture for N = 4 shown in Fig. 11, and generalizes to arbitrary q × q configurations. The summation order in (11), together with the OBC-formulated sub-MVM in (18), reduces the number of SA/CB units from 
+
+qp to q: q/ 2 full SA units (Rows 1 through q/ 2) and q/ 2 CB units (their paired rows), each a physical accumulator reused across the p time-multiplexed sub-blocks, yielding substantial hardware savings. The optimized PPGs and PPSs, together with a lightweight correction scheme that reuses the paired row’s PP sum to eliminate a dedicated adder for redundant-row generation, further benefit an N × N LSTM layer with block-circulant MVMs, where N = p × q, particularly for q > 4. Specifically, 
+
+q is scaled by a factor α, such that q = 4 α, with p = N/ (4 α);this allows the design to scale to higher N . For α ≥ 1, column swapping of PPs together with the correction scheme requires 
+
+3·2( q/ 4) 2 = 6 α2 terms, each containing 4 2-to-1 multiplexers (24 α2 total), across the three compressed gates. Meanwhile, the number of PPGs remains pq/ 2 = 2 pα , corresponding to 
+
+4pα adders/subtractors for generating PPs across all rows, shared across the compressed gates. Each compressed gate has its own dedicated SA/CB units, time-multiplexed across the p sub-MVMs. Each gate has 2α CB/SA units, each containing 1 adder, 1 register, and 1 2-to-1 multiplexer, giving 
+
+6α registers and 6α multiplexers across all three gates; the EWM   
+
+> xt
+> Controller
+> yt−1
+> I/O Interface
+> EWM
+> BUF x
+> FSM
+> bs
+> yRAM
+> rsws
+> OBC-MVM
+> AU
+> yt
+> EWM
+> bRAM rRAM wRAM cRAM
+> FPGA
+> Controller PCIe
+> CPU+External M/m
+> DMA
+> Data Bus
+> φRAM
+> φRAM
+> φRAM
+> φRAM
+> φRAM
+> it
+> zt
+> ft
+> ot
+> BUF y
+> :B-bits wide
+> Fig. 14. System-level diagram of the COBALT on FPGA.
+
+2α CB units additionally require 2p(α − 1) correction adders per gate, and the rows feeding the SA units contribute a further 2α(p − 1) adders per gate. Summing the correction, row-feeding, and loading adders across the three gates gives 
+
+6pα (α − 1) + 6 α(p − 1) + 6 α = 6 pα 2 adders in total. The block gate uses (N/ 2) 2 PPS units, each with 4 2-to-1 multiplexers, and N SA units, each with 1 adder, 1 register, and 1 multiplexer. Time-multiplexed over p clock cycles, its footprint reduces to one row-group of size N/p = q: q adders, 
+
+q registers, and q + pq 2 multiplexers. Each CB unit also uses 
+
+α CS-gated multiplexers for correction selection, contributing 
+
+2pα 2 per gate ( 6pα 2 across three gates), plus two fixed S3-gated and one fixed EQ-gated multiplexer per unit ( 18 α total), and 6α SA-selection multiplexers across the three gates. For the bit-level CS logic, each sub-pair requires three XOR gates and one XNOR gate; with 2pα sub-pairs, normalized to a word length of B bits, this gives 18 pα/B XOR and 6pα/B 
+
+XNOR gates, or 24 pα/B in total. The block gate requires no CB logic, so its XOR/XNOR and correction-related terms are zero. Thus, the overall hardware complexity is 4pα +6 pα 2 +q
+
+adders, 6pα 2 + 24 α2 + 24 α + q + pq 2 2-to-1 multiplexers, 
+
+24 pα/B XOR/XNOR gates, and 12 α + q registers. 
+
+F. Proposed Hardware Accelerator: COBALT 
+
+The COBALT workflow consists of model development, architectural design and optimization, and hardware deploy-ment. The compressed LSTM model is constructed based on the OBC scheme, followed by architecture optimization for efficient FPGA implementation, as discussed in the preceding subsections. This subsection focuses on the hardware deploy-ment stage, which uses an AXI-based interface on the Xilinx ZCU104 platform: an AXI DMA engine transfers inputs, weights, and activations between external memory and on-chip buffers, while AXI-Lite registers handle control and synchro-nization with the processing system. All on-chip buffers use distributed RAM (built from slice LUTs) rather than dedicated BRAM, which reduces resource contention and keeps buffer access latency deterministic for the fine-grained, register-free datapath described earlier. The optimized model was coded in VHDL, functionally verified through simulation, then syn-thesized, placed, and routed in Vivado. Post-implementation power was estimated using the Xilinx Power Analyzer in 11 DA 1c                          
+
+> DA 1d
+> DA 2a
+> DA 2b
+> DA 3a
+> DA 3b
+> COBALT 10 2
+> 10 3
+> 10 4
+> 10 5
+> Adders
+> N= 256 ; q = 4 ;,= 1
+> N= 256 ; q = 8 ;,= 2
+> N= 1024 ; q = 4 ;,= 1
+> N= 1024 ; q = 8 ;,= 2
+> DA 1c
+> DA 1d
+> DA 2a
+> DA 2b
+> DA 3a
+> DA 3b
+> COBALT 10 2
+> 10 3
+> 10 4
+> 10 5
+> Registers
+> DA 1c
+> DA 1d
+> DA 2a
+> DA 2b
+> DA 3a
+> DA 3b
+> COBALT 10 3
+> 10 4
+> 10 5
+> 10 6
+> Muxes
+> Fig. 15. Illustration of the number of adders, registers, and multiplexers in different DA-based LSTM accelerators with N= 256 ,1024 for q= 4 ( α=1) ,8 ( α= 2) . Note XOR/XNOR gates are expressed in NAND-equivalents and included with multiplexer count in the same plot (right).
+
+vector-based (simulation-driven) mode rather than its default vectorless mode: post-implementation timing simulation is run with representative input stimuli from the TIMIT dataset [32], and the resulting switching activity is captured in a .saif file and back-annotated into the power analysis tool together with the P&R timing data. This captures the actual toggle rates of nets and registers under real data, giving conservative power estimates using a similar methodology to [36]. Fixed-point adders, multiplexers, and registers were implemented using slice LUTs and FFs, with compressed weights, biases, and activations held in the distributed-RAM buffers. The overall system, including on-chip buffers (wRAM, rRAM, bRAM, ϕRAM, cRAM, yRAM, BUF x, BUF y ), COBALT, and the FSM controller, is shown in Fig. 14. The FSM sequences data movement, gate computations, and state updates, manages memory reads/writes, and loads bias terms 
+
+b = [ b1, . . . , b N ] via the accumulator unit (AU) to produce 
+
+v =
+
+(
+
+v + RT t, if RST = 0 
+
+v + b, otherwise (27) where RT t = XT w or YT r. The OBC-MVM performs the most resource-intensive computations. Multiple LUTs fol-lowed by SA units accelerate the OBC-MVMs in parallel. It processes the circulant input Xt and recurrent output Yt−1
+
+with parameters ws and rs (s ∈ { i, o, f, z }). Weights and recurrent weights are stored in wRAM and rRAM, biases in bRAM, and activations—including xt and the initial hidden state y0—are buffered in BUF x and BUF y . OBC-MVM outputs, after bias addition, pass through nonlinear functions 
+
+ϕ(·) ∈ { σ(·), tanh( ·)} implemented via ϕRAM to generate gate outputs it, f t, ot, and zt. EWMs are applied to ct and yt
+
+as in (2)–(3), implemented as a 1-column OBC-MVM. Partial products ±(·)/2 are accumulated via SA units to produce EWM outputs. The previous cell state ct−1 is read from cRAM, updated to ct, and written back, while yt−1 is stored in BUF y and yt in yRAM for the next time step. IV. R ESULTS AND DISCUSSION 
+
+A. Comparison of Different DA-based LSTM baselines 
+
+For clarity, the existing DA-based LSTM accelerators [16], [27], [28] are denoted as DA 1a–DA 1d (four variants), DA 2a–DA 1c 
+
+> DA 1d
+> DA 2a
+> DA 2b
+> DA 3a
+> DA 3b
+> COBALT 02000 4000 6000 8000 10000 Latency (per sample)
+> Fig. 16. Illustration of the latency involved in different DA-based LSTM accelerators, where the legend used is the same as in Fig. 15.
+
+DA 2b (two variants), and DA 3a–DA 3b (two variants). All use circulant/block-circulant weight matrices but differ in LUT topology (parallel vs. serial, TC vs. OBC). DA 1 adopts full or partial parallel PPs for hardware LUTs, while DA 2a and DA 3a
+
+use serial hardware LUTs in OBC and TC form, reducing complexity at the expense of higher latency, whereas DA 2b
+
+and DA 3b improve clock rate through high-radix DA, SA unfolding, and fine-grained pipelining. In contrast, COBALT reformulates the circulant/block-circulant MVM into its input-matrix–weight-vector form, generating PPs directly from the fewer inputs in pairs rather than the more numerous weight parameters via column-swapping on the PPs matrix, which avoids the registers that circular shifters and tapped-delay units impose on DA 2 and DA 3. COBALT further avoids the fine-grained pipelining stages employed by DA 1d, DA 2b, and DA 3b,which contributes to the hardware savings shown in Fig. 15. For a fair comparison, only the radix-2 variants of DA 2/DA 3
+
+are considered, along with DA 1c and DA 1d, while DA 1a and DA 1b are omitted due to their substantial hardware cost. In terms of hardware complexity, PPs in DA 1–DA 3 are generated from unoptimized structures, so the LUT size and register cost both grow with the weight matrix dimension, and the gap widens continuously as the matrix dimension increases. In COBALT, the sharing of PPGs and the fewer SA units, along with correction units required for block-12                                                                        
+
+> TABLE II FPGA RESULTS OF DIFFERENT DA-BASED LSTM ACCELERATORS WITH N= 256 FOR q= 4 AT 200 MH Z
+> Design DSPs LUTs FFs Power (W) TP (Msps) EPS (nJ/Sa)
+> DA 1c[16] 12 22.38K 19.98K 2.72 3.125 0.870
+> DA 1d[16] 12 21.32K 17.21K 2.55 1.56 1.635
+> DA 2a[27] 035.23K 26.26K 3.48 0.520 6.692
+> DA 2b[27] 048.92K 35.51K 4.85 4.690 1.034
+> DA 3a[28] 028.08K 19.85K 3.06 0.520 5.885
+> DA 3b[28] 033.64K 23.88K 3.98 2.605 1.528
+> COBALT 07.69K 4.98K 0.22 1.565 0.141 Throughput: TP = (q/pB )fclk = (16 α2/N B )fclk ; EPS (nJ/Sample) = Power / TP.
+
+circulant MVM, reduce hardware complexity significantly across all three cost categories. At N = 256 and q = 4 ,COBALT requires 67.6% fewer adders, 94.8% fewer registers, and 53.6% fewer multiplexers than DA 3a. At N = 1024 ,these savings increase slightly to 68.5%, 95.1%, and 54.9%, respectively. Against DA 1d, COBALT achieves savings of 73.9% in adders, 91.5% in registers, and 73.0% in multiplex-ers at N = 256 , increasing to 74.7%, 92.1%, and 73.7%, respectively, at N = 1024 . As shown in Fig. 15, the DA 2
+
+and DA 3 variants generally incur higher hardware costs than the DA 1 variants, particularly in adders and multiplexers, due to the additional logic associated with their radix-2 and shift-and-add EWM structures. COBALT remains below the compared designs across all three metrics. The dispropor-tionately large register and multiplexer savings against both DA 3a and DA 1d reflect COBALT’s register-free PPG/PPS structure, which eliminates the FIFO/tapped-delay units and pipeline-register overhead that DA 3a’s SA unit and DA 1d’s parallel PP realization both incur. These savings are not fixed quantities: as N or q grows, the weight-indexed cost terms in DA 1–DA 3 scale with p = N/q , while COBALT’s register cost stays near-constant due to block-circulant optimization. Consequently, the register and multiplexer advantages widen slightly with N , a trend confirmed by the plots, while the adder savings remain comparatively flat since both COBALT’s and the baselines’ adder costs scale similarly with p. In terms of latency, DA 2 and DA 3 incur high delay owing to their serial design, and the additional clock cycles required per sub-MVM further worsen the overall latency, as shown in Fig. 16. All designs’ latencies scale linearly with p = N/q , since sub-MVM optimizations have not been explored for DA 1–DA 3; COBALT’s latency is additionally scaled down by the parallelism factor α = q/ 4, so it still grows with N but far more slowly than the others, whereas DA 2 and DA 3 see their unfolded latency grow proportionally, with no compensating factor. Table II compares FPGA implementations for N = 256 ,
+
+q = 4 on the ZCU104 platform at 200 MHz, reporting LUTs, FFs, power, throughput (TP), and energy per sample (EPS). COBALT achieves the lowest EPS: 81.2% better than DA 1c
+
+and 84.5% better than DA 2b. DA 1c’s parallel PP generation and DA 2b’s fine-grained pipelining both trade additional logic and register switching activity for higher clock rate—reducing latency per output but increasing dynamic power and footprint simultaneously. COBALT’s register-free path reduces both together. 
+
+B. Comparison with State-of-the-Art LSTM Accelerators 
+
+Several state-of-the-art LSTM accelerators on FPGA were also considered for the comparison, including DeltaRNN [10], C-LSTM [11], E-RNN [12], BBS [13], E-LSTM [14], Spartus [7], CVM [15], V-LSTM [17], and ABS [18]. Some retain their original names, while others are simplified for clarity. Key metrics—including model size, bit precision, PER, FPGA platform, resource utilization, clock frequency, TP, and power—are summarized in Table III. To compare hardware efficiency across heterogeneous FPGA platforms, the equivalent number of slices (ENS) metric [37] is used, converting DSPs and BRAMs into slice equivalents and adding LUT-derived slices for a unified, family-independent measure. The power figures follow the methodology reported in the respective works. DeltaRNN, C-LSTM, E-RNN, Spartus, and V-LSTM report physically measured power, while BBS and ABS report vendor-estimated power using Quartus Prime post-fit and Xilinx Power Estimator, respectively; E-LSTM and CVM do not specify their methodology. The compared designs also span different process nodes, from 16 nm (e.g., ABS) to 28 nm (e.g., C-LSTM and E-RNN), which can affect cross-node energy-efficiency comparisons [10], [12]. These details are provided in the table footnotes for completeness. DeltaRNN exploits temporal sparsity in GRUs to skip redundant computation but is limited in scalability due to its small model size. C-LSTM and E-RNN leverage struc-tured (block-circulant) matrices for efficient inference; the DSP/BRAM/LUT/FF figures reported here for C-LSTM are derived from the percentage utilization values in [11] against the ADM-PCIE-7V3’s known resource totals, as absolute counts are not stated in the source, and should therefore be treated as estimated rather than directly reported. E-LSTM and BBS apply structured pruning to reduce model size and power while maintaining accuracy; both are implemented on Intel Arria 10 devices, therefore the DSP/BRAM/LUT/FF figures in Table III are approximate Xilinx-equivalent conversions rather than native ALM/M20K counts, as indicated in the table footnotes. Spartus introduces a scalable architecture with hybrid sparsity and low-precision computation for high TP. CVM and V-LSTM both prioritize single-sample (batch-1) latency and on-chip memory footprint over batched through-put—CVM through a configurable MVM engine for variable-length sequences and mixed precision, and V-LSTM through bit-serial processing with flexible precision scaling and aViterbi-based pruning scheme that minimizes DRAM band-width. This design emphasis accounts for their comparatively low TP figures (0.08 and 0.02 Msps, respectively) relative to throughput-oriented designs such as E-RNN and Spartus, reflecting a different operating point rather than a difference in design quality. ABS applies automated block-structured pruning with hardware co-design for balanced accuracy and resource usage. 
+
+1) Resource Utilization: In terms of accuracy, COBALT achieves a PER of 20.4–22.2%, comparable to the top-performing designs in Table III—Spartus (21.8 ±0.3%) and CVM (21.29%)—and better than C-LSTM (24.6%), BBS (23.6%), and V-LSTM (24.11%). This range comes from an 13 
+
+TABLE III PERFORMANCE COMPARISON OF THE DIFFERENT STATE -OF -THE -A RT FPGA-BASED LSTM A CCELERATORS                                                                                                                                                                                                              
+
+> Design DeltaRNN [10] C-LSTM [11] E-RNN [12] BBS [13] E-LSTM [14] Spartus [7] CVM [15] V-LSTM [17] ABS [18] COBALT Model size ( N)128 512 1024 1024 1024 1024 1024 1024 1024 1024 ( q= 64 )
+> Precision INT16/16 INT16/16 INT16/16 INT16/16 INT8/8 INT16/8 INT12/12 INT16/4 INT16/16 INT8/8
+> PER (%) –24.6 20.3 f23.6 23.2 21.8 ±0.3 21.29 24.11 –20.3-22.2
+> FPGA Platform XC7Z100 7V3 XC/VX690T GX1150 SX660 XC7Z100 ZCU102 VC709 XCKU115 ZCU104
+> DSP 768 2.8K d2.9K 6.8K e10 e65 1457 24 3.9K 0
+> BRAM 457.5 931 d1.4K 2.1K e828 e185 610 97 1.77K 0
+> LUT 261.4K 475.2K d257.2K 724.3K e490.3K e49.9K 187.1K 350.5K 396.1K 32.47K
+> FF 119.3K 206.6K d479.2K –e173.3K e39.6K 289.8K 172.4K 529.7K 21.57K
+> Freq. (MHz) 125 200 200 200 200 200 200 200 150 200
+> TP (Msps) 192 51.2 1638.4 51.2 282.2 204.8 0.08 0.02 307.2 100 ∗
+> Power (W) 5.5 a23 b25 b19.1 c15.9 8.4 15.0 20.2 9.674 c1.33
+> EPS (nJ/Sample) ∗∗ 28.65 449.22 15.26 373.05 56.34 41.0 181180 961910 31.49 13.3
+> ENS 197.14K 512.28K d523.94K 1120.41K 219.81K 40.63K 266.85K 101.35K 705.36K 8.12K
+> TP/ENS (Msps/K) 0.97 0.10 3.13 0.05 1.28 5.04 0.0003 0.0002 0.44 12.32
+> EPE (TP/ENS ÷PER) –0.0041 0.1541 0.0019 0.0553 0.2282 1.4×10 −58.3×10 −6–0.56
+> EPE (norm. to Spartus) –0.02 ×0.68 ×0.01 ×0.24 ×1.00 ×∼0×∼0×–2.43 ×
+> DSPs and BRAMs are converted into ENS and add LUT-derived slices. Assumptions are based on [37]: 1 DSP = 102.4 slices, 1 BRAM (assume 18K) = 116.2 slices, 1 slice = 4 LUTs ⇒slices from LUT = LUT / 4, ENS = (LUT / 4) + DSP ×102.4 + BRAM ×116.2. DeltaRNN is a variant of RNNs, Spartus exploits spatio-temporal sparsity. ∗,∗∗ : Calculated based on the TP and EPS formulae listed in the footnote of Table II, respectively. EPE (efficiency-per-error) = (TP/ENS)/PER worst , normalizing hardware efficiency by worst-case reported accuracy; designs without reported PER (DeltaRNN, ABS) are excluded. EPE (norm.) is relative to the best prior baseline (Spartus). aDeltaRNN’s on-chip FPGA power (5.5 W) is cross-validated against the Xilinx Power Analyzer estimate (5.503 W) in [10]; board-level power is 7.3 W. bPower for C-LSTM and E-RNN is physically measured on the ADM-PCIE-7V3 platform using TI Fusion Power monitoring devices; no power figure is available for the KU060 platform. cPower for BBS and ABS is estimated via vendor tools (Quartus Prime post-fit analysis and Xilinx Power Estimator, respectively) rather than measured on hardware. dC-LSTM’s [11] reports only percentage utilization, not absolute DSP/BRAM/LUT/FF counts; values shown are derived from these percentages against the ADM-PCIE-7V3’s known resource totals (DSP=3600, BRAM=1470, LUT=859.2K, FF=429.6K), using the FFT16 (block size 16), 7V3 column, which matches the reported 23 W power. eBBS and E-LSTM are implemented on Intel Arria 10 (ALM/M20K architecture), not Xilinx LUT/FF/BRAM; reported figures are approximate Xilinx-equivalent conversions. fE-RNN’s PER is not reported in [12]; the 20.3% figure is Spartus’s own reproduction [7], not the original E-RNN.
+
+independent TIMIT hardware-validation run at N = 1024 ,separate from the N = 256 training-strategy sweep de-scribed earlier. It uses the same curriculum retraining and FxP8 ADMM/STE quantization strategy at the block-circulant 
+
+q = 64 operating point selected for hardware evaluation. The resulting PER is modestly lower range observed at N = 256 ,consistent with the expected capacity benefit of the larger hid-den layer. In terms of hardware efficiency, COBALT requires substantially fewer LUTs and FFs than the highest-throughput designs: 32.47K LUTs and 21.57K FFs versus 49.9K/39.6K for Spartus and 396.1K/529.7K for ABS. This is most clearly reflected in ENS, where COBALT’s 8.12K slices is the low-est among all compared designs—markedly below Spartus (40.63K), C-LSTM ( ∼512K, estimated), ABS ( ∼705K), E-RNN (523.94K), and BBS (1120.41K), the last of which relies on 6.8K DSPs and 2.1K BRAMs (Arria 10-equivalent) to reach its throughput. This underscores COBALT’s suitability for resource-constrained or lower-end FPGA platforms where DSP and BRAM blocks are scarce, oversubscribed by other system components, or unavailable altogether. 
+
+2) Power and Energy Efficiency Trade-offs: Table III shows that COBALT has the lowest resource footprint, although it does not achieve the highest throughput. COBALT oper-ates at 200 MHz, reaching 100 Msps at 1.33 W, using zero DSPs and zero BRAMs, with 32.47K LUTs and 21.57K FFs. Despite its lower throughput relative to Spartus (100 vs. 204.8 Msps), COBALT achieves a substantially lower energy per sample: 13.3 nJ/sample versus 41.0 nJ/sample for Spartus, a 3.1× improvement, driven by an approximately 6.3× lower power draw (1.33 W vs. 8.4 W) that more than offsets its lower throughput. This trade-off–sacrificing raw throughput for a disproportionately larger reduction in power–is en-abled by COBALT’s DSP/BRAM-free, LUT-only architecture. ABS and E-RNN similarly achieve higher throughput than COBALT, reaching 307.2 Msps at 9.674 W and 1638.4 Msps at 25 W, respectively. However, both rely heavily on dedicated DSP and memory resources. Thus, COBALT targets a different point in the throughput–resource trade-off. Designs such as Spartus, ABS, and E-RNN are preferable when throughput is the primary constraint and DSP/BRAM resources are avail-able, while COBALT is attractive for resource-constrained or lower-end FPGA deployments where low absolute power and DSP/BRAM-free operation are important. Raw efficiency metrics such as EPS do not account for accu-racy, so a design could appear efficient simply by tolerating a higher PER. TP/ENS (throughput per unit hardware cost) and EPE (TP/ENS normalized by worst-case PER) address this: COBALT reaches 12.32 Msps/K-ENS, over 2.4× Spartus’s 5.04 Msps/K-ENS and well above E-RNN (3.13) and E-LSTM (1.28). Once accuracy is accounted for through EPE, COBALT still leads with 0.56, representing a 2.43 × improvement over Spartus, while maintaining comparable accuracy. V. C ONCLUSION 
+
+This paper presented COBALT, a bit-serial LSTM accelera-tor that reformulates circulant MVM as a matrix (input)–vector (weight) product under offset-binary coding, and demon-strated how bit-level redundancy across output rows can be systematically exposed and removed. The column-swapping scheme and paired-row correction unit together cut the number of PP generators, selectors, and adders required for both circulant and block-circulant MVM, while relocation of the shift-accumulate unit yields further savings in the block-circulant case. On FPGA, these choices exceed the efficiency of the state-of-the-art accelerator in [7]. As MVM is a core, increasingly dominant operation across edge AI workloads beyond LSTMs, COBALT’s redundancy-exploitation principle offers a structure-agnostic building block for future resource-constrained accelerators. REFERENCES [1] M. T. Khan, Y. Ding, and G. Goussetis, “Next-gen digital predistortion from hardware acceleration of neural networks: Trends, challenges, and 14 
+
+future,” IEEE Transactions on Neural Networks and Learning Systems ,2026. [2] E. Nurvitadhi, D. Sheffield, J. Sim, A. Mishra, G. Venkatesh, and D. Marr, “Accelerating binarized neural networks: Comparison of fpga, cpu, gpu, and asic,” in 2016 international conference on Field-Programmable technology (FPT) . IEEE, 2016, pp. 77–84. [3] S. Yang, Y. Wang, and X. Chu, “A survey of deep learning techniques for neural machine translation,” arXiv preprint arXiv:2002.07526 , 2020. [4] S. Hochreiter, “Long short-term memory,” Neural Computation MIT-Press , 1997. [5] Y. Tay, M. Dehghani, D. Bahri, and D. Metzler, “Efficient transformers: A survey,” ACM Computing Surveys , vol. 55, no. 6, pp. 1–28, 2022. [6] A. R. Ansari, S. A. A. Faizi, and P. Meel, “Beyond transformers: A survey on alternative architectures for sequence modeling across ai domains,” in International Conference on Computational Intelligence in Communications and Business Analytics . Springer, 2025, pp. 287–299. [7] C. Gao, T. Delbruck, and S.-C. Liu, “Spartus: A 9.4 TOP/s FPGA-based LSTM accelerator exploiting spatio-temporal sparsity,” IEEE Transactions on Neural Networks and Learning Systems , 2022. [8] Q. Zhang, C. Jiang, G. Yang, R. Han, and F. Liu, “Block-oriented recurrent neural network for digital predistortion of rf power amplifiers,” 
+
+IEEE Transactions on Microwave Theory and Techniques , vol. 72, no. 7, pp. 3875–3885, 2023. [9] “Tiny machine learning on the edge: A framework for transfer learning empowered unmanned aerial vehicle assisted smart farming,” IET Smart Cities , 2023, lSTM-based soil moisture forecasting deployed on ESP32 microcontroller. [10] C. Gao, D. Neil, E. Ceolini, S.-C. Liu, and T. Delbruck, “DeltaRNN: A power-efficient recurrent neural network accelerator,” in Proceedings of the 2018 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays , 2018, pp. 21–30. [11] S. Wang, Z. Li, C. Ding, B. Yuan, Q. Qiu, Y. Wang, and Y. Liang, “C-LSTM: Enabling efficient LSTM using structured compression tech-niques on FPGAs,” in Proceedings of the 2018 ACM/SIGDA Interna-tional Symposium on Field-Programmable Gate Arrays , 2018, pp. 11– 20. [12] Z. Li, C. Ding, S. Wang, W. Wen, Y. Zhuo, C. Liu, Q. Qiu, W. Xu, X. Lin, X. Qian, and Y. Wang, “E-RNN: Design optimization for efficient recurrent neural networks in FPGAs,” in 2019 IEEE Interna-tional Symposium on High Performance Computer Architecture (HPCA) .IEEE, 2019, pp. 69–80. [13] S. Cao, C. Zhang, Z. Yao, W. Xiao, L. Nie, D. Zhan, Y. Liu, M. Wu, and L. Zhang, “Efficient and effective sparse LSTM on FPGA with bank-balanced sparsity,” in Proceedings of the 2019 ACM/SIGDA In-ternational Symposium on Field-Programmable Gate Arrays , 2019, pp. 63–72. [14] M. Wang, Z. Wang, J. Lu, J. Lin, and Z. Wang, “E-LSTM: an efficient hardware architecture for long short-term memory,” IEEE Journal on Emerging and Selected Topics in Circuits and Systems , vol. 9, no. 2, pp. 280–291, 2019. [15] T. Li and S. Gu, “FPGA Hardware Implementation of Efficient Long Short-Term Memory Network Based on Construction Vector Method,” 
+
+IEEE Access , vol. 11, pp. 122 357–122 367, 2023. [16] M. A. Alhartomi, M. T. Khan, S. Alzahrani, A. Alzahmi, R. A. Shaik, J. Hazarika, R. Alsulami, A. Alotaibi, and M. Al-Harthi, “Low-area and low-power VLSI architectures for long short-term memory networks,” 
+
+IEEE Journal on Emerging and Selected Topics in Circuits and Systems ,vol. 13, no. 4, pp. 1000–1014, 2023. [17] T. Kim, D. Ahn, D. Lee, and J.-J. Kim, “V-LSTM: An efficient LSTM accelerator using fixed nonzero-ratio viterbi-based pruning,” 
+
+IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 42, no. 10, pp. 3327–3337, 2023. [18] B. J. Kim and E.-Y. Chung, “Auto Batching Scheme for Optimizing LSTM Inference on FPGA Platforms,” IEEE Access , 2024. [19] K. Sun, M. Koch, Z. Wang, S. Jovanovic, H. Rabah, and S. Simon, “An FPGA-based residual recurrent neural network for real-time video super-resolution,” IEEE Transactions on Circuits and Systems for Video Technology , vol. 32, no. 4, pp. 1739–1750, 2021. [20] S. Han, X. Liu, H. Mao, J. Pu, A. Pedram, M. A. Horowitz, and W. J. Dally, “EIE: efficient inference engine on compressed deep neural network,” ACM SIGARCH Computer Architecture News , vol. 44, no. 3, pp. 243–254, 2016. [21] Z. Wang, J. Lin, and Z. Wang, “Accelerating recurrent neural networks: A memory-efficient approach,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 25, no. 10, pp. 2763–2775, 2017. [22] M. Ravanelli, T. Parcollet, and Y. Bengio, “The pytorch-kaldi speech recognition toolkit,” in ICASSP 2019-2019 IEEE international confer-ence on acoustics, speech and signal processing (ICASSP) . IEEE, 2019, pp. 6465–6469. [23] Z. Li, S. Wang, C. Ding, Q. Qiu, Y. Wang, and Y. Liang, “Efficient recurrent neural networks using structured matrices in FPGAs,” arXiv preprint arXiv:1803.07661 , 2018. [24] X. Chen, H. Cai, F. Liu, and J. Zhao, “Correlating time series with interpretable convolutional kernels,” IEEE Transactions on Knowledge and Data Engineering , 2025. [25] X. Ding, M. Wang, S. Liao, and Z. Wang, “Block circulant adapter for large language models,” arXiv preprint arXiv:2505.00582 , 2025. [26] X. Ding, L. Chen, S. Liao, and Z. Wang, “Parameter-efficient fine-tuning with circulant and diagonal vectors,” arXiv preprint arXiv:2505.00580 ,2025. [27] M. T. Khan, H. E. Yantır, K. N. Salama, and A. M. Eltawil, “Archi-tectural trade-off analysis for accelerating LSTM network using radix-r OBC scheme,” IEEE Transactions on Circuits and Systems I: Regular Papers , vol. 70, no. 1, pp. 266–279, 2022. [28] M. T. Khan and M. A. Alhartomi, “Digit-serial DA-based fixed-point RNNs: A unified approach for enhancing architectural efficiency,” IEEE Transactions on Neural Networks and Learning Systems , 2024. [29] S.-E. Chang, Y. Li, M. Sun, R. Shi, H. K.-H. So, X. Qian, Y. Wang, and X. Lin, “Mix and match: A novel FPGA-centric deep neural network quantization framework,” in 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA) . IEEE, 2021, pp. 208–220. [30] C. Leng, Z. Dou, H. Li, S. Zhu, and R. Jin, “Extremely low bit neural network: Squeeze the last bit out with ADMM,” in Thirty-Second AAAI Conference on Artificial Intelligence , 2018. [31] B. Zamanlooy and M. Mirhassani, “Efficient VLSI implementation of neural networks with hyperbolic tangent activation function,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 22, no. 1, pp. 39–48, 2013. [32] J. S. Garofolo, L. F. Lamel, W. M. Fisher, J. G. Fiscus, and D. S. Pallett, “DARPA TIMIT acoustic-phonetic continous speech corpus CD-ROM. NIST speech disc 1-1.1,” NASA STI/Recon technical report n , vol. 93, p. 27403, 1993. [33] V. Panayotov, G. Chen, D. Povey, and S. Khudanpur, “Librispeech: an asr corpus based on public domain audio books,” in 2015 IEEE international conference on acoustics, speech and signal processing (ICASSP) . IEEE, 2015, pp. 5206–5210. [34] D. Povey, A. Ghoshal, G. Boulianne, L. Burget, O. Glembek, N. Goel, M. Hannemann, P. Motlicek, Y. Qian, P. Schwarz et al. , “The Kaldi speech recognition toolkit,” in IEEE 2011 workshop on automatic speech recognition and understanding . IEEE Signal Processing Society, 2011. [35] A. Graves and J. Schmidhuber, “Framewise phoneme classification with bidirectional LSTM and other neural network architectures,” in Neural Networks , vol. 18, no. 5–6, 2005, pp. 602–610. [36] S. Yan, K. Huang, K. Zhao, and Z. Lin, “Accurate, Efficient and Scalable Power Modeling for FPGA HLS,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , 2025. [37] W. Liu, S. Fan, A. Khalid, C. Rafferty, and M. O’Neill, “Optimized schoolbook polynomial multiplication for compact lattice-based cryp-tography on FPGA,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 27, no. 10, pp. 2459–2463, 2019. 
+
+Mohd. Tasleem Khan (Senior Member, IEEE) re-ceived his B.Tech in Electronics from AMU, India, in 2013, and his Ph.D. in VLSI from IIT Guwa-hati, India, in 2019. He was a Principal Engineer at TSMC, Taiwan, and an Assistant Professor at IIT Dhanbad, India. From 2021 to 2024, he was a Postdoctoral Research Associate at Link¨ oping University, Sweden. He is currently an Assistant Professor at Heriot-Watt University, Edinburgh, UK. His research focuses on algorithms and architectures for VLSI implementation in Machine Learning/AI, Signal Processing, and Communication Systems. He serves as Associate Editor for IEEE Signal Processing Letters, IEEE TNNLS, and IEEE TASE, is on the Editorial Board of IEEE Embedded Systems Letters, is currently a Guest Editor for IEEE Transactions on Circuits and Systems II, and reviews for IEEE TCAS-I, II, TVLSI, and related journals. He is a member of the IEEE Signal Processing and Circuits and Systems Societies, and has served as Area Chair for IEEE ICASSP’26, IEEE ICJNN’25, and TPC member for ISVLSI’25, ICDCS’25, and SaTC’25.
