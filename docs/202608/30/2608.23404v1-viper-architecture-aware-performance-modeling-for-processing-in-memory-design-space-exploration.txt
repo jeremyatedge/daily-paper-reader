@@ -1,0 +1,498 @@
+Title: VIPER: Architecture-Aware Performance Modeling for Processing-in-Memory Design-Space Exploration
+
+URL Source: https://arxiv.org/pdf/2608.23404v1
+
+Published Time: Tue, 25 Aug 2026 02:17:44 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# VIPER: Architecture-Aware Performance Modeling for Processing-in-Memory Design-Space Exploration 
+
+Haoran Geng †,∗, Tomas Sousa Pereira †,∗, Xiaoyang Lu ‡, Xian-He Sun ‡, Michael Niemier †, and X. Sharon Hu †
+
+> †
+
+University of Notre Dame, Notre Dame, IN, USA 
+
+> ‡
+
+Illinois Institute of Technology, Chicago, IL, USA 
+
+> ∗
+
+Equal contribution 
+
+{hgeng, tsousape, mniemier, shu }@nd.edu, {xlu40, sun }@illinoistech.edu 
+
+Abstract —Processing-in-Memory (PIM) promises to reduce data movement overhead by executing computation in or near memory, but its realized application speedup remains highly design-dependent. Non-offloadable host execution, host-PIM transfers, limited PIM capacity, and device programming latency can limit end-to-end speedup, making fast early-stage design-space exploration (DSE) essential. However, existing PIM evaluation methods remain limited: circuit- and device-level tools cannot capture these end-to-end PIM performance factors, while cycle-accurate simulation is too slow for iterative DSE. To address this gap, we present VIPER, a unified, lightweight, and architecture-aware performance evaluation framework for PIM DSE. VIPER profiles host execution once and combines the measured host behavior with a PIM-aware analytical engine that sweeps PIM-side parameters across candidate designs. It supports both Processing Near Memory (PNM) and Processing Using Memory (PUM) under task-offloading and data-triggered execution by capturing host-PIM transfer, array access, in-memory computation, device programming latency, and capacity-induced partitioning, providing rapid architecture-aware per-formance estimates for iterative DSE without repeated cycle-accurate simulation. We validate VIPER against a commercial UPMEM system and more than 400 cycle-accurate gem5 con-figurations. VIPER predicts the UPMEM offloading decision and break-even region a priori, and, with a refined transfer model, captures the measured peak-and-rolloff behavior with 12% mean speedup error across the DPU sweep (6% up to the 256-DPU peak). Against gem5, VIPER achieves less than 10% error while reducing evaluation time from hours to under one minute. Case studies of UPMEM, ReRAM/FeFET crossbars, and IMCRYPTO show that architecture-aware DSE reveals key performance trade-offs that device-level evaluation misses. 
+
+I. I NTRODUCTION 
+
+Before a Processing-in-Memory (PIM) design is committed to silicon, the architect must determine whether its system-level benefits justify its capacity, technology, and processing resources. How much on-chip capacity should be provisioned, and what does falling short cost? Which memory technology should host the computation, when NVM programming is 10 –
+
+50 × slower than reading [50], [74]? How many processing units pay for themselves before host-side data movement erases the gains? These are architecture-level questions, must be answered at the earliest design stage, when the only artifacts that exist are device parameters and a workload. Our case studies on real PIM designs (Section VII) show that early design decisions produce cliffs, not slopes: acrossbar array with almost enough capacity for its workload performs strictly worse than one four times smaller, and missing the residency threshold costs two orders of magnitude of speedup; a commercial near-memory system benefits from its first few hundred processing units, then beyond the sweet spot, each additional unit reduces end-to-end speedup; and for the same in-memory AES engine design, changing only the memory technology that hosts its arrays decides viability: CMOS and FeFET keep the encryption overhead acceptable, while slower-programming RRAM and PCM do not. None of these outcomes is visible at the circuit or device level, where PIM proposals are typically evaluated. They arise from cross-layer design parameter interactions such as, the architecture-level data transfer between host and PIM, the device-physics programming latency of NVM cells, capacity-driven partition-ing of the working set, and non-offloadable host execution. Such interactions can only be studied when the PIM device is placed inside a full memory hierarchy and driven by a real workload [26], [27], [47], [48], [70], [77]. Investigating these interactions essentially requires answer the following question: 
+
+what design parameters determine whether a PIM design delivers real performance benefit, and how can a designer quantify them before committing to silicon? 
+
+Given the huge design space, answering this question re-quires fast early-stage design-space exploration (DSE) across both PIM paradigms: Processing Near Memory (PNM), which places processing elements adjacent to memory arrays [2], [10], [17], [20], [33], [38], and Processing Using Mem-ory (PUM), which computes in situ within the memory cells themselves [14], [28], [43], [46], [57], [63]–[65], [70]. As Figure 1 illustrates, existing tool families each sacrifice a dimension a PIM designer cannot do without. Interface-level models such as LogCA and Gables [6], [29] evaluate in seconds, but reduce the host and memory system to a few interface costs, missing in-memory computation, capacity partitioning, and programming latency. Circuit- and device-level tools such as IMAC-Sim and Eva-CAM [7], [44] are accurate at the array boundary but model neither the work-arXiv:2608.23404v1 [cs.AR] 24 Aug 2026 Fig. 1: PIM evaluation tools across six dimensions. VIPER pairs architecture-level modeling and PNM/PUM support with evaluation in seconds, within 10% of gem5. load nor its interaction with the host and memory hierarchy; application-level simulators such as NeuroSim, MNSIM, and CAMASim [8], [13], [36], [71], [79] are tied to narrow appli-cation domains; memory-system simulators such as Ramulator, DRAMsim3, and Sim2PIM [34], [35], [40], [54], [60] detail the memory but omit host execution and barely support PUM; and cycle-accurate full-system simulators such as gem5-X, gem5-SALAM, and PIMSim [12], [16], [41], [56], [66], [75] model the whole system but need 6–30 hours per configuration and heavy engineering per design, making iterative exploration of hundreds of points impractical. No existing tool provides fast, accurate, architecture-level modeling for PIM DSE across both PNM and PUM. We present VIPER, 1, an analytical PIM DSE framework that fills this gap. VIPER’s key insight is to model PIM as a component of the memory hierarchy rather than as a conventional host-attached accelerator, so every PIM cost, from device physics to host interaction, enters the memory ac-cess path directly. Building on the classical Average Memory Access Time (AMAT) formulation, VIPER derives a cross-layer PIM performance model with explicit terms for host– PIM data transfer, data movement between memory arrays and PIM processing units, NVM cell programming latency, and capacity-driven partitioning. This single formulation spans PNM and PUM under both task-offloading and data-triggered execution, and evaluates a design point in seconds, letting a designer sweep hundreds of configurations before any hard-ware or simulator exists. In summary, this paper makes the following contributions:  
+
+> •
+
+A cross-layer analytical performance model for PIM. 
+
+We derive a analytical model that embeds PIM in the memory access path, capturing device-, architecture-, and execution-level latency for PNM and PUM under task-offloading and data-triggered execution, including data transfer overhead, array access latency, device program-ming overhead, and the partitioning overhead when the working set exceeds PIM capacity, providing a unified analytical foundation for DSE.  
+
+> 1VIPER is open source and available at https://github.com/Notre-Dame-HW-SW-Codesign-Lab/VIPER.
+> •
+
+An open-source tool for PIM DSE. We build the above cross-layer model into VIPER, which profiles the host application once to fix all CPU-side parameters and then allows the designer to explore PIM designs through dedicated task-offloading and data-triggering flows, each exposing the design parameters relevant to its execution model. This removes simulation from the DSE loop: VIPER evaluates in seconds what requires 6–30 hours per configuration in gem5. The VIPER framework, including source code and evaluation scripts, is publicly available at https://github.com/Notre-Dame-HW-SW-Codesign-Lab/VIPER.  
+
+> •
+
+Validated performance estimation on commercial PIM hardware and cycle-accurate simulation. Across 400+ gem5 runs spanning diverse PIM configurations, bench-marks, and CPU types, VIPER achieves below 10% mean estimation error, with 97% of task-offloading predictions falling within a ±10% envelope. On a 2,560-DPU UP-MEM server [17], the first commercial PNM system, VIPER’s a-priori prediction of a Llama2 matmul offload, built entirely from host profiling and published UPMEM parameters, correctly anticipated the measured Amdahl ceiling, break-even DPU range, and offload decision before a single line of DPU code had been ported.  
+
+> •
+
+Design-space insights on real PIM designs. We apply VIPER to crossbar arrays on two beyond-CMOS devices (ReRAM, FeFET) and an in-memory AES accelerator to identify pre-silicon limits: end-to-end speedup is limited by the work that stays on the CPU and by CPU–PIM data transfer, not by how fast the PIM device computes; an array slightly too small for its workload performs worse than a far smaller one, because the workload must be repeatedly split and reloaded; and the same PIM design can be fast enough in one memory technology yet too slow in another. II. B ACKGROUND 
+
+A. Processing-in-Memory 
+
+PIM integrates the computation directly into or near mem-ory devices to mitigate the data movement bottleneck [26], [48]. PIM architectures are categorized into two main ap-proaches: PNM , which places processing units adjacent to memory arrays, and PUM , which exploits the analog prop-erties of memory cells to perform computation [27]. Fig-ure 2 illustrates the architectural distinction between these two paradigms. 
+
+Processing Near Memory (PNM). PNM integrates pro-cessing elements such as general-purpose cores, SIMD units, and application-specific accelerators adjacent to or within the peripheral circuitry of standard memory devices, including SRAM, DRAM, and NAND Flash [2], [20], [27], [48]. Rep-resentative real-world implementations include the UPMEM architecture, which places general-purpose cores alongside each DRAM bank on a standard DDR4 DIMM [17], [27], and Samsung’s HBM-PIM, which embeds FP16 SIMD units within an HBM2 stack [33], [38]. Processing-in-Memory (PIM) (a) Processing Near Memory (PNM)             
+
+> Host CPU off-chip bus
+> Memory Chip
+> Processing Element Memory Array
+> data mvmt.
+> UPMEM, HBM-PIM (DRAM, HBM)
+> (b) Processing Using Memory (PUM)
+> Host CPU off-chip bus
+> Memory Chip
+> ffffffffffff
+> Memory Array (compute in-cell)
+> Ambit, ISAAC, RowClone (RRAM, FeFET, PCM)
+
+Fig. 2: PIM taxonomy. (a) PNM : PEs adjacent to the array, with residual data movement. (b) PUM : computation in situ 
+
+within cells, no internal transfers. PNM offers greater flexibility than PUM, with processing elements ranging from programmable cores to specialized accelerators, enabling support for diverse workloads [9], [48]. However, PNM does not eliminate data movement, as transfers between memory arrays and processing units remain neces-sary [27]. Consequently, PNM is best suited for memory-bound, data-parallel workloads with low arithmetic intensity and limited data reuse [10], [27], [38]. 
+
+Processing Using Memory (PUM) PUM exploits the existing memory architecture and the operational principles of memory cells and circuitry to perform operations directly within each memory chip at low cost [48], [63], [64]. Prior works have proposed PUM mechanisms by modifying the ba-sic circuitry of SRAM [1], [24], [42], [57], DRAM [21], [28], [46], [63], [64], NAND Flash [22], [51], and CAM [45], [50]. Beyond conventional memory technologies, PUM has attracted significant attention for its potential with emerging non-volatile memory (NVM) devices, which offer unique physical properties that naturally support in-situ computation. These include RRAM/memristive devices [14], [39], [65], [70], [73], [76], ferroelectric FETs (FeFETs) [30], [31], [37], [43], [58], [77], and phase-change memory (PCM) and MRAM [47], [73]. PUM offers a fundamental advantage over PNM by per-forming computation entirely within memory arrays, eliminat-ing data movement overheads that PNM cannot fully avoid. Emerging NVM-based PUM designs, such as RRAM and FeFET crossbars, can achieve exceptional energy efficiency and throughput for targeted workloads, sometimes surpassing custom ASICs [14], [31], [70]. However, PUM remains con-strained by narrow, operation-specific compute models, inter-ference with conventional memory accesses when deployed as main memory, and high write costs in emerging NVM devices [45]–[47], [50], [65], [70], [76]. 
+
+B. PIM Triggering Model 
+
+We categorize PIM architectures into two fundamental mod-els based on how the host core initiates computation. Figure 3 illustrates the architectural difference between the two models. 
+
+Task Offloading is the dominant PIM paradigm, where the host CPU explicitly delegates computation to the PIM unit via dedicated ISA instructions [1], [2], [14], [20]–[22], [24], [27], [28], [30], [31], [37], [39], [42], [43], [45]–[48], [50], [51], [58], [63]–[65], [70], [73], [76], [77]. PIM executes large tasks directly where data resides, reducing data movement but requiring new ISA extensions and explicit CPU synchroniza-tion. The offload is synchronous: after dispatching a task, the CPU waits at the synchronization point until the PIM device completes. 
+
+Data-Triggering activates PIM automatically in response to hardware memory events such as cache misses or DRAM accesses, requiring no explicit CPU instruction [3]–[5], [19], [23], [52], [53], [57], [61], [62], [68], [69], [78]. This model is primarily used in narrow domains such as compression, prefetching, and secure memory operations. Because PIM execution lies on the critical memory access path, it is suitable only for small, low-latency tasks. III. M OTIVATIONS 
+
+PIM designers face two recurring challenges that are dif-ficult to address without a fast, architecture-aware modeling tool. First, cross-layer costs such as architecture-level data transfer overhead, device-physics programming latency, and capacity constraints are often invisible at the circuit and device level. Second, no existing tool is fast enough to support iterative DSE that captures these costs across both PNM and PUM paradigms. 
+
+A. Circuit- and Device-Level Evaluation Cannot Quantify End-to-End PIM Benefit 
+
+PIM proposals are typically evaluated at the circuit and device level, reporting latency, energy, and throughput at the array boundary. End-to-end speedup, however, is determined by cross-layer costs outside that boundary: host–PIM transfer, array access overhead, device programming latency, capacity constraints, and non-offloadable host execution. A device-level metric alone cannot tell a designer whether a PIM design delivers real benefit once integrated with a host and driven by a real workload. To illustrate, we sweep the tile size T ∈{16 , 32 , 64 , 128 , 256 , 512 } for a fixed N =512 GEMM offloaded to a SALAM-generated accelerator in gem5 [12], where the CPU stages T ×T sub-tiles into the accelerator scratchpad via DMA and accumulates partial results back into DRAM. At the device level, every configuration is identical: the same datapath performs the same N 3 work. Yet Figure 4 reveals a sweet spot at T =256 (0.844 s), with runtime rising at smaller T due to excessive CPU staging and at T =512 due to data-transfer cost in the accelerator’s dataflow pipeline. The breakdown explains why: compute is constant, data transfer is U-shaped (bytes scale as N 3/T ,while large unrolled dataflow graphs lose pipeline efficiency at T =512 ), and CPU staging time drops sharply as dispatches L3 Cache DRAM                 
+
+> a) Data Trigger Data Miss Triggers the PIM Data is returned Required data for the computation
+> PUM
+> fffffffffMC / PE
+> PNM
+> L3 Cache DRAM
+> b) Task of fl oading Task Of fl oading Triggers the PIM Data is returned Required data for the computation
+> PUM
+> fffffffffMC / PE
+> PNM
+> OR
+> Control Unit Instruction Pipeline L2 Cache
+> CPU
+> L1-I L1-D Control Unit Instruction Pipeline L2 Cache
+> CPU
+> L1-I L1-D
+> OR
+
+Fig. 3: PIM trigger models with different types of PIM. 
+
+Fig. 4: Tile-size sweep showing the breakdown of simulated time into accelerator compute, data transfer, and CPU compo-nents. fall from 64 to 8. The optimum is set entirely by cross-layer costs that no array-boundary evaluation can expose. Device programming latency introduces another cost, de-termined by device physics but paid at the architecture level. Writing an NVM cell requires a physical switching process, such as filament formation in RRAM, a phase transition in PCM, or ferroelectric domain switching in FeFET, which can take orders of magnitude longer than a CMOS write [47], [70], [77]. Cell-level characterization reports this latency, but not how often a system pays it: in a PUM deployment, every operand written into the array, and every reload forced by limited capacity, places this latency on the critical memory-access path. Slow programming can thus become a memory wall inside the PIM device itself, an effect that appears only when the device is evaluated within the memory hierarchy under a real workload. 
+
+Motivation 1: Early-stage PIM DSE must be architecture-aware. Designers need to evaluate host–memory–PIM in-tegration factors, including host–PIM transfer, array access overhead, device programming latency, and capacity con-straints, to determine whether a PIM design can deliver end-to-end speedup. 
+
+B. No Existing Tool Bridges the Gap 
+
+A PIM designer navigating the existing tool landscape faces a fundamental trade-off at every level of abstraction. Fig. 1 summarizes each tool family across six dimensions: evaluation speed, modeling accuracy, PNM and PUM coverage, system-level scope, and early-stage usability. Circuit and array level tools such as IMAC-Sim [7] and EFSim [55] automatically generate SPICE netlists or Verilog circuits to evaluate accuracy, power, and latency at the device level, and EvaCAM [44] extends this to CAM-based designs. While these tools deliver high device-level accuracy, they are fundamentally scoped to the array itself, providing no visi-bility into host CPU interaction, data movement overhead, or capacity sufficiency. Application-level simulators such as Neu-roSim [13], PUMA [8], and CAMASim [36] bridge the gap to workload behavior, but are scoped to narrow application do-mains and specific architectures, with simulation times ranging from minutes to hours per configuration. DRAM and memory-system simulators such as Ramulator [34], NVMain [54], and Sim2PIM [60] bring the simulation closer to real system conditions but treat the host CPU as a black box and offer limited or no PUM support. gem5-based frameworks such as gem5-X [56], PIMSys [16], and gem5-Aladdin [66] provide the most complete system-level view, but each configuration requires hours to days of simulation time, and extending these frameworks to support new PIM designs requires significant modification of the simulator source code. 
+
+Existing tools do not combine fast architecture-aware modeling with support for both PNM and PUM. Motivation 2: We aim to design a fast, accurate, architecture-aware modeling framework for PIM designers, one that captures full-system behavior across both PNM and PUM paradigms without sacrificing simulation speed. 
+
+C. AMAT-Based Modeling Is All You Need 
+
+The AMAT model provides a useful balance between accu-racy and evaluation speed for early-stage PIM DSE. AMAT models the average time to complete a memory access as a weighted sum of hit latencies and miss penalties across the cache hierarchy. Unlike general performance models, AMAT is uniquely suited to PIM because PIM is fundamentally a memory device that sits in the memory hierarchy and whose cost is paid on every memory access that reaches it. Introduc-ing PIM overhead directly into the AMAT model is therefore intuitive rather than approximate, naturally capturing near-memory processing cost, data transfer overhead, and capacity partitioning within the same familiar framework [25]. Analytical performance models have a long history of guiding early design decisions at exactly this stage. Roofline models [72] bound achievable throughput, Gables [29] ex-tends them to heterogeneous SoCs, and LogCA [6] models accelerator offloading with five parameters that expose break-even granularities and speedup bounds before any hardware is built. VIPER follows this lineage but targets what these models cannot express: PIM is not an accelerator attached to the host, it is a device inside the memory hierarchy. LogCA abstracts the host and memory system into flat interface costs, and therefore cannot capture data-triggered execution, capacity partitioning, or device programming latency. Grounding the model in AMAT rather than an interface-cost abstraction is what makes these PIM-specific costs first-class terms. AMAT models memory access time as a sequential stall cost and does not capture memory-level parallelism (MLP) or concurrent overlapping of PIM device costs. For early-stage PIM DSE, this is appropriate for three reasons. First, AMAT has been the standard foundation for memory hierarchy analysis precisely because sequential stall cost captures the dominant first-order effect on execution time, even under out-of-order execution where MLP exists. Second, at early PIM design stages, the memory scheduler, bank interleaving policy, and DMA overlap strategy are not yet fixed, so assuming sequential costs gives a conservative, architecture-independent baseline that a designer can refine as these decisions are made. Third, MLP and overlap depend primarily on the memory scheduler and system architecture. Our validation in Section VI-B confirms that this assumption produces reliable trend prediction even under out-of-order execution. 
+
+Solution: VIPER extends AMAT with PIM-specific timing and capacity terms to estimate architecture-level perfor-mance without cycle-accurate simulation. IV. A RCHITECTURE -AWARE ANALYTICAL PERFORMANCE 
+
+MODEL 
+
+In this section we present an AMAT-based analytical perfor-mance model for PIM architectures. Table I summarizes the notation used throughout this section, and the meaning of the notation will be discussed when they are first used. 
+
+A. Task Offloading Model 
+
+In the task offloading model, the host CPU explicitly delegates a portion of the program to the PIM device. The CPU memory access time follows the standard cache-hierarchy AMAT: AMAT CP U = tL1 + mL1 [tL2 + mL2 (tL3 + mL3 · tDRAM )] 
+
+(1) The total execution time is the sum of CPU and PIM execution time: 
+
+T = ICP U × (CPI CP U, exec + mCP U × AMAT CP U ) × CC CP U 
+
++ IP IM × (CPI P IM, exec + mP IM × tP IM, mem ) × CC P IM 
+
+(2) where tP IM, mem captures the latency of a the PIM unit as a whole, and is expanded into PNM and PUM device parameters in Section IV-C. TABLE I: Summary of notation used in the analytical perfor-mance model. 
+
+Symbol Description 
+
+Execution Time 
+
+T Total program execution time CC CP U Clock cycle time on the CPU CC P IM Clock cycle time on the PIM device 
+
+Instructions 
+
+ICP U Number of instructions executed on the CPU 
+
+IP IM Number of instructions executed on the PIM device CPI CP U, exec Cycles per instruction on the CPU CPI P IM, exec Effective cycles per instruction on the PIM device 
+
+Memory Access 
+
+mCP U Average memory accesses per instruction on the CPU 
+
+mP IM Number of PIM invocations determined by capacity 
+
+mL1, m L2, m L3 Miss rates at L1, L2, and L3 cache levels 
+
+Latency 
+
+tL1, t L2, t L3 Hit latency at L1, L2, and L3 cache levels (cycles) 
+
+tDRAM DRAM access latency (cycles) 
+
+tP IM, mem Effective PIM access latency (cycles) 
+
+PIM Device 
+
+tin Data transfer time from host to PIM (s) 
+
+tcomp Computation time on the PIM device (s) 
+
+tarray Data movement from memory array to process-ing element (s) 
+
+tout Data transfer time from PIM to host (s) 
+
+tprog Cell programming latency for NVM-based PUM devices (s) 
+
+CP IM PIM device capacity constraint 
+
+DP IM Data size of the offloaded or triggered PIM task 
+
+AMAT 
+
+AMAT CP U Average memory access time for the CPU AMAT P IM Average memory access time for the PIM device 
+
+B. Data-Triggered Execution Model 
+
+In the data-triggered model, PIM execution is activated automatically by a memory access event rather than an explicit CPU instruction. When a triggering event occurs, tDRAM in the standard AMAT is replaced by tP IM, mem , giving the PIM-aware AMAT: AMAT P IM = tL1+mL1 [tL2 + mL2 (tL3 + mL3 · tP IM, mem )] 
+
+(3) Accesses that hit in the cache hierarchy do not invoke the PIM and retain their ordinary latencies; Equation 3 assumes every main-memory access triggers the PIM, which matches always-on data-triggered designs such as in-memory encryp-tion. The total execution time then becomes: 
+
+T = ICP U ×(CPI CP U, exec + mCP U × AMAT P IM )×CC CP U 
+
+(4) The expansion of tP IM, mem into PNM and PUM device parameters is presented in Section IV-C. C. PIM Timing Model 
+
+We now derive the components of tP IM, mem for both triggering models across PNM and PUM paradigms. PNM pays for data movement from the memory array to the processing element; PUM eliminates this cost but may incur cell programming latency instead. When the working set exceeds the PIM unit’s capacity, the task must be partitioned into multiple invocations. The capacity partitioning model uses a ⌈DP IM /C P IM ⌉ multiplier that captures the dominant first-order effect; bank-level parallelism and non-uniform data layout are second-order refinements that designers can incor-porate by setting CP IM to the effective per-partition capacity of the target device. 
+
+1) Task Offloading: PNM: In PNM task offloading, the host CPU explicitly offloads a computation to the PIM processing element (PE). Four costs are incurred: input data transfer from host to PIM ( tin ), data movement from the memory array to the PE ( tarray ), output transfer back to host ( tout ), and capacity partitioning overhead ( mP IM ). The PIM memory access term, normalized to PIM clock cycles, is: 
+
+tP IM, mem = tin + tarray + tout 
+
+CC P IM 
+
+(5) 
+
+mP IM =
+
+
+
+1 if DP IM ≤ CP IM 
+
+ DP IM 
+
+CP IM 
+
+
+
+if DP IM > C P IM 
+
+(6) 
+
+2) Task Offloading: PUM: In PUM task offloading, com-putation occurs directly within the memory cells, eliminating 
+
+tarray . Instead, the model includes tprog before in-cell com-putation. This programming latency is inherent to NVM tech-nologies such as RRAM and FeFET and cannot be eliminated by architectural optimization alone. 
+
+tP IM, mem = tin + tprog + tout 
+
+CC P IM 
+
+(7) In both paradigms, mP IM follows the same capacity parti-tioning model as Equation 6. 
+
+3) Data Triggering: PNM: In data triggering, the entire PIM execution cost is absorbed into the memory access latency. The cost additionally includes tcomp , since the com-putation sits directly on the critical memory access path. As in task offloading, the device times are normalized to clock cycles, here by the CPU clock CC CP U , because tP IM, mem 
+
+replaces tDRAM in the CPU-side AMAT (Equation 3). When 
+
+DP IM > C P IM , the entire pipeline repeats for each partition, multiplying all cost terms: 
+
+tP IM, mem =
+
+ DP IM 
+
+CP IM 
+
+
+
+× tin + tarray + tcomp + tout 
+
+CC CP U 
+
+(8) where the ceiling factor reduces to one when the working set fits ( DP IM ≤ CP IM ). TABLE II: VIPER design-space exploration summary. Fixed 
+
+parameters are obtained once by profiling; swept parameters define the PIM design space.                                                  
+
+> Task Offloading Data Triggering CPU-side (profiled via perf , fixed)
+> Instructions ICP U (retired instructions) ICP U
+> Exec. CPI CPI CP U, exec CPI CP U, exec
+> Memory access rate mCP U (L1 loads / instructions) mCP U
+> Cache hierarchy AMAT CP U (mL1, m L3,mL1, m L2, m L3
+> tL1, t L3, t DRAM )tL1, t L2, t L3
+> Clock period CC CP U CC CP U
+> PIM-side (designer-swept)
+> Instruction count IP IM (offloaded work) —Compute efficiency CPI P IM, exec —PIM memory latency tP IM, mem tP IM, mem
+> PNM: (tin +tarray +tout )/CC P IM (replaces tDRAM in AMAT) PUM: (tin +tprog +tout )/CC P IM
+> Device capacity CP IM (→mP IM via Eq. 6) CP IM (→partitioning) Clock period CC P IM —
+> DSE outputs
+> Primary metric End-to-end execution time T
+> Derived insights Speedup vs. baseline, break-even point (e.g. min. DPUs), Amdahl ceiling, sensitivity to tprog /tarray /CP IM ,capacity wall threshold, technology trade-offs
+
+4) Data Triggering: PUM: In PUM data triggering, tarray 
+
+is eliminated since computation occurs in-cell, and tprog 
+
+replaces it on the critical path: 
+
+tP IM, mem =
+
+ DP IM 
+
+CP IM 
+
+
+
+× tin + tprog + tcomp + tout 
+
+CC CP U 
+
+(9) V. VIPER: D ESIGN SPACE EXPLORATION FRAMEWORK 
+
+VIPER turns the model of Section IV into a DSE tool (Ta-ble II) by exploiting one structural property of PIM execution: an application’s host-side behavior, including its instruction mix, cache behavior, and non-offloadable work, does not depend on which PIM design is attached. CPU-side quantities are therefore measured once and reused, while only the PIM-side terms of Equations 2 to 4 change per design point, removing simulation from the DSE loop entirely. 
+
+A. Profiling Stage: Fixing the CPU Baseline 
+
+Both execution models begin with the same profiling step. VIPER uses Linux perf to collect hardware-counter data, including a single instrumentation pass, the retired instruction count ( ICP U ), total cycles, L1/LLC cache loads and misses. From these counters VIPER derives the quantities listed in the 
+
+CPU-side rows of Table II:  
+
+> •
+
+Execution-only CPI. CPI CP U, exec is isolated by subtracting estimated memory-stall cycles from the measured CPI, using a hierarchical cache model with configurable penalties ( tL3
+
+and tDRAM ; VIPER defaults are 10 and 100 cycles).  
+
+> •
+
+Memory access rate. mCP U is the ratio of L1 data-cache loads to retired instructions.  
+
+> •
+
+AMAT. AMAT CP U is computed from per-level miss rates (mL1, m L2, m L3) and hit latencies ( tL1, t L2, t L3, t DRAM )via Equation (1).  
+
+> •
+
+Clock period. CC CP U is the ratio of wall-clock time to total cycles. Once measured, all CPU-side quantities are treated as fixed constants for the remainder of the exploration. (a) Normal CPU Application profile (e.g. perf )          
+
+> CPI CP U, exec
+> +mCP U ×AMAT CP U
+> PIM designer
+> CPI P IM, exec
+> +mP IM ×tP IM, mem
+> T
+> offload fixed swept
+> ICP U (· · · )CC CP U IP IM (· · · )tP IM, clk
+
+(b) Normal CPU Application profile (e.g. perf )  
+
+> mL1, m L2, m L3,tL1, t L2, t L3
+> PIM designer
+> tP IM, mem , C P IM
+> T
+> trigger fixed swept
+> AMAT CP U replace tDRAM
+
+Fig. 5: VIPER flow for (a) task offloading and (b) data triggering. Yellow = profiled (fixed); purple = designer-swept. 
+
+B. Sweeping Stage: Exploring the PIM Design Space 
+
+With the CPU baseline fixed, the designer sweeps the PIM-side parameters listed in Table II. The two execution models differ in which parameters are exposed and how PIM cost enters the total execution time; we describe each in turn. 
+
+1) Task Offloading: Figure 5(a) illustrates the task-offloading flow. The fixed/swept partition corresponds directly to the two terms of Equation (2): the CPU term is held constant while the PIM term defines the design space (see Table II). Each swept parameter (Table II) maps to a design decision: 
+
+IP IM and CPI P IM, exec set how much work is offloaded and how efficiently it runs, CC P IM and tP IM, mem encode the device technology, and CP IM encodes capacity provisioning. The sweep therefore covers the design space itself rather than abstract model inputs. By sweeping them against the fixed baseline, VIPER identifies which changes yield the greatest reduction in end-to-end execution time and identifies break-even points and Amdahl ceilings that device-level models do not capture. 
+
+2) Data Triggering: Figure 5(b) illustrates the data-triggering flow. Here the CPU still executes the full program, but every memory access that reaches the PIM device pays 
+
+tP IM, mem instead of tDRAM (Equation (3)). Only two param-eters are swept because a triggered design has no offloading decision: the trigger is architectural, so the entire design freedom is what the device costs per access ( tP IM, mem ) and whether it avoids partitioning ( CP IM ). This two-dimensional sweep identifies the minimum capacity required to a avoid capacity-induced slowdown and the maximum tP IM, mem that still yields a net benefit over baseline DRAM latency. TABLE III: Task offloading validation parameter sweep. 
+
+Parameter Values 
+
+GEMM tile size (ROW=COL) 8, 16, 32, 64, 128, 256 PIM compute latency c (cycles) 5, 9, 14, 18, 50, 500, 5000 Scratchpad latency m (ns) 0, 2, 4, 8, 16, 32, 64, 128 
+
+VI. VIPER V ALIDATION 
+
+We validate VIPER at two tiers. In this section, we compare against cycle-accurate gem5-SALAM [12] across the full design space, verifying the task offloading and data triggering models separately; in Section VII-A, we validate VIPER’s predictions against measurements on real PIM silicon. Sim-ulation is the reference for breadth: the design points in Tables III and IV span SRAM, DRAM, HBM, NVM, and storage-class PIM at arbitrary latencies and capacities, a space no silicon implementation covers, and gem5 is the standard pre-silicon reference, itself extensively validated against real hardware [11], [56]. 
+
+A. Task Offloading Validation 
+
+To validate the task offloading model, we use gem5-SALAM [12], a full-system extension of gem5 that models hardware accelerators at the LLVM-IR level alongside a gem5 CPU and memory hierarchy. gem5-SALAM exposes per-LLVM-instruction latency through a YAML configuration, which lets us sweep accelerator compute and memory pa-rameters without modifying the accelerator model itself. The simulated platform is a single in-order ARM MinorCPU with the default L1/L2 cache hierarchy and an 8 GB DDR4-2400 main memory. The accelerator under test is a GEMM cluster composed of a top controller, a compute engine modeled from the LLVM-IR of a GEMM kernel, three operand scratch-pads ( MATRIX1/2/3 ), and a non-coherent DMA engine that streams operands between DDR and the scratchpads. By vary-ing the scratchpad access latency m, this cluster can represent both PIM paradigms: a high m models a PNM accelerator where every dispatched tile must first move operand data from the memory array into the scratchpads ( tarray ) before compute begins, while m=0 models a PUM accelerator where operands reside in place and no array-to-PE transfer is required. The benchmark is a single-layer Llama2 transformer prefill pass with dim = 128 , hidden dim = 256 , 8 heads, vocabulary size 256, and a batch of B = 128 tokens per forward pass. The pipeline runs the standard Llama2 stack (embedding, RMSNorm, RoPE, multi-head attention, SwiGLU FFN, and classifier head), and every matmul is dispatched to the accel-erator as a sequence of tile-sized sub-matmuls. For each sub-matmul the CPU issues a DMA into the scratchpads, triggers the compute kernel, waits for completion, and DMAs the result back. This dispatch loop reproduces the per-instruction array-to-PE transfer that characterizes PNM task offloading. We sweep three accelerator design knobs, summarized in Table III: the GEMM tile size, the per-FPU compute latency 
+
+c (where c ∈ { 5, 9, 14 , 18 } correspond to realistic pipelined-FPU MAC depths and c ∈ { 50 , 500 , 5000 } are stress values that push the accelerator into a compute-bound regime), and Fig. 6: gem5-SALAM end-to-end latency across the 336-point sweep by tile size. Memory-bound regime (low c): runtime scales with m; compute-bound regime (high c): m has no effect. 
+
+Fig. 7: Predicted vs. simulated end-to-end latency (log–log, 336 points). Dotted red band: ±10% envelope. the scratchpad access latency m (m = 0 : PUM, no array-to-PE transfer; m > 0: PNM with increasing data-movement cost). The full grid covers 6 × 7 × 8 = 336 configurations. Figure 6 shows the measured end-to-end latency across the full sweep, broken down per tile size. The heatmaps confirm the two regimes that the VIPER task offloading model predicts. In the compute-bound regime ( c = 500 , 5000 ), runtime is essentially flat across m, the accelerator spends all its time in the compute engine and the scratchpad latency is fully hidden, matching VIPER’s prediction that CPI P IM,exec dominates. In the memory-bound regime ( c ≤ 50 ), runtime grows monotoni-cally with m, with the largest tiles (size 64, 128, 256) showing up to a 3.5× slowdown between m = 0 and m = 128 . The quantitative agreement between VIPER’s predictions and the simulated runtimes is established in Figure 7. Figure 7 provides a predicted-vs-simulated scatter over the entire sweep. The points sit tightly along the y = x diagonal TABLE IV: Data triggering validation configurations.                                                 
+
+> ID Configuration CPU Trigger Level Represents
+> C1 5ns, 1MB In-order After L1 SRAM PNM C2 5ns, 1MB OoO After L1 SRAM PNM C3 50ns, 1MB In-order After LLC DRAM PNM C4 50ns, 1MB OoO After LLC DRAM PNM C5 500ns, 1MB In-order In DRAM NVM PUM C6 500ns, 1MB OoO In DRAM NVM PUM C7 50ns, 64MB In-order After LLC SRAM PUM C8 50ns, 256MB In-order After LLC HBM PNM C9 50ns, 4GB In-order After LLC DRAM PNM C10 500ns, 100GB In-order In DRAM Storage PNM C11 500ns, 100GB OoO In DRAM Storage PNM
+
+across all three decades of execution time, with ∼ 326 of 
+
+336 points (97.0%) falling inside the ±10% envelope. The analytical model captures scaling with tile size T : neither the small-time cluster (size 8, low c) nor the large-time cluster (size 256, high c) drifts off the diagonal as a group, so there is no size- or compute-dependent bias the model fails to capture. 
+
+B. Data Triggering Validation 
+
+To validate the data triggering model, we extend gem5-SALAM [12] to model PIM behavior directly within the memory hierarchy. Specifically, we modify the cache and memory controller to inject a configurable computation delay when a data triggering event occurs at a given memory level. When the PIM device has sufficient capacity, it processes the data locally. When capacity is exceeded, the PIM device falls through to the DRAM to fetch the remaining data. We compare the gem5 execution results against VIPER predictions, where PIM-side parameters are set to match the gem5 configuration and CPU-side parameters are collected from our server using Linux perf . For simplicity, we use a single aggregate com-putation latency tP IM, mem without decomposing it into tarray 
+
+and tprog , as the goal here is to validate the architecture-aware timing model. We evaluate across 11 configurations representing a broad range of PIM design points, as summarized in Table IV, using 12 benchmarks drawn from SPEC2017 [67] CPU and GraphBig [49] with a GitHub developer social network dataset [59]. We test both in-order and out-of-order (OoO) CPUs since VIPER does not model memory-level parallelism (MLP). In-order CPUs stall sequentially, so VIPER predictions are expected to be highly accurate. OoO CPUs overlap multiple memory requests, which VIPER cannot capture, so we expect and quantify higher prediction error under OoO execution. To evaluate VIPER’s accuracy, we compare the normalized latency trend of each benchmark under PIM against the no-PIM baseline. Directly comparing execution times would be misleading because gem5 and VIPER operate at fundamentally different abstraction levels and use different ISAs. There-fore, we focus on relative performance changes and evaluate whether VIPER correctly captures the trends introduced by PIM. Figure 8 shows the normalized latency trend across all 11 configurations for each benchmark. Overall, VIPER closely Fig. 8: Normalized latency (relative to no-PIM baseline) across all 11 configurations (Table IV) and 12 benchmarks. Solid: gem5; dashed: VIPER. tracks the gem5 trend across both SPEC and GraphBig bench-marks. For in-order CPU results, VIPER and gem5 follow sim-ilar trends across all configurations. The dashed and solid lines are visually indistinguishable for most SPEC benchmarks, such as 625.x264_s and 638.imagick_s , which are compute-bound and exhibit low memory sensitivity. Memory-bound SPEC benchmarks such as 462.libquantum and 
+
+619.lbm_s show larger normalized latencies but still track the trend well. GraphBig benchmarks show a slightly larger divergence between VIPER and gem5, particularly under OoO execution, due to their highly irregular memory access patterns that exhibit stronger MLP effects. For OoO results, VIPER consistently overestimates the normalized latency relative to gem5, as expected since the analytical model does not ac-count for memory request overlapping. Despite this, the trend direction is preserved in all cases. Figure 9 provides a quantitative view of VIPER prediction accuracy. For in-order CPU, VIPER achieves a Pearson corre-lation of r = 0 .995 and a mean absolute error of MAE =0.114 , which corresponds to 2.4% of the full ratio range. Points from the tP IM sweep and capacity sweep configura-tions cluster tightly along the diagonal, indicating consistent accuracy across both timing and capacity dimensions. Notably, VIPER correctly predicts the capacity wall behavior across C7, C8, and C9, confirming that the partitioning model ac-
+
+Fig. 9: VIPER vs. gem5 normalized latency (latency P IM /latency baseline ) for all benchmark–configuration pairs (Table IV). Diagonal: perfect agreement. Each panel reports Pearson r, mean absolute error, and point count 
+
+n over its own configuration set; the near-identical MAEs (0.11404 vs. 0.11397 ) are coincidental. curately captures the performance impact of exceeding device capacity. For OoO CPU, the Pearson correlation remains high at r = 0 .994 with MAE = 0 .114 , but points shift above the diagonal, reflecting systematic overestimation caused by unmodeled MLP. The most notable outliers correspond to GraphBig benchmarks under high-latency configurations (C5, C6, C10, C11), where irregular memory access patterns am-plify the modeling error. Overall, VIPER achieves a mean prediction error of 4.4% on in-order regular memory access (SPEC), 7.3% on in-order irregular access (GraphBig), 4.9% on OoO regular access, and 5.5% on OoO irregular access, demonstrating reliable trend prediction across all evaluated configurations. In summary, VIPER tracks gem5’s normalized-latency trends while completing the analysis in under one minute, versus 6-10 hours per benchmark in gem5 VII. R EAL PIM S TUDY 
+
+We apply VIPER to UPMEM [17], [27], ReRAM/FeFET crossbars [18], and IMCRYPTO [57] to study task-offloading and data-triggered PIM designs 
+
+A. PNM Case Study: UPMEM for LLM Inference 
+
+UPMEM [17], [27] is the first commercially available PNM system, integrating 2,560 in-order DPUs at 350 MHz directly inside DRAM ranks. Each DPU has a small WRAM scratch-pad backed by its local MRAM bank. We model UPMEM as a task-offloading PNM accelerator and use VIPER in two stages: we first predict the end-to-end speedup of a single-layer Llama2 prefill (dim = 128 , hidden dim = 256 , 8 heads, B = 128 ) when all eight matmuls per forward pass are offloaded to the DPUs, without running the workload on UPMEM hardware , and we then validate the prediction on a real 2,560-DPU UPMEM server. The a-priori VIPER inputs come from two independent sources: measured CPU perf counters for the non-offloaded term, and published UPMEM constants for the offloaded term. 
+
+A priori prediction. To isolate the host work we build the forward pass twice in Q16.16: a full version and a stub that replaces matmul_batch with a same-shape memset Fig. 10: Predicted vs. measured UPMEM speedup for single-layer Llama2 matmul offload. The fixed-transfer prediction climbs monotonically, but both refined VIPER and hardware peak near 256 DPUs and roll off as host-mediated transfer grows with DPU count. (RMSNorm, RoPE, softmax, SwiGLU remain). We measure 
+
+Tfull = 20 .37 and Tstub = 3 .10 ms, so the matmuls are 84.8% of runtime and Tfull /T stub = 6 .57 × is the Amdahl ceiling on matmul offload. The offloaded term uses published UPMEM constants: per-DPU INT32 throughput of 45 MOPS [15], CPU ↔DPU bandwidths of 2.5/2.0 GB/s [27], and 0.1 ms per-call launch overhead [32]. Across the eight matmuls the workload per-forms 25.2 M MACs and transfers 1.28 MB of activations. With weights resident in MRAM, tarray collapses to a local access, so the PIM memory term of Equation 5 reduces to the host ↔DPU transfers tin + tout plus launch overhead, about 1.40 ms total. The per-DPU kernel time is Tkernel (1) = 25 .17 M/45 MOPS = 559 .24 ms. In the task-offloading model (Equation 2), the CPU term is 
+
+Tstub = 3 .10 ms and the PIM term combines the parallelized kernel Tkernel (1) /N with the 1.40 ms transfer-plus-launch cost; the working set fits in MRAM, so mP IM = 1 . The prediction is Ttotal (N ) = 3 .10 + 559 .24 /N + 1 .40 ms. Sweeping N ,VIPER predicts break-even at N ≈ 35 DPUs and a speedup climbing monotonically toward ∼4.5× (reaching 4.3× on the full 2,560-DPU server), held below the 6.57 × Amdahl ceiling only by the fixed 1.40 ms transfer floor. 
+
+Validation on real hardware. We implement the offload on a 2,560-DPU UPMEM server (350 MHz, SDK 2025.1.0, Intel Xeon Silver 4215 host, the same CPU used for the a-priori profile; best-of-5 with one warmup). The eight matmuls run as INT8 GEMM tiles with INT32 accumulation, weights resident in MRAM and fused into five dispatches per pass; output matches the Q16.16 reference to 3.3% relative L2 error. Hardware confirms the compute side: measured per-DPU throughput is 48.0 MOPS, within 7% of the assumed 45; the kernel follows Tkernel (1) /N to within ∼2% up to 512 DPUs; and break-even lands at N ≈ 40 –49 DPUs, close to the predicted 35. The measured break-even range and speedup bound confirm the a priori offload decision. The a-priori miss is confined to a single term. VIPER 10 4 10 5  
+
+> Provisioned crossbar capacity (cells)
+> 10 1
+> 10 0
+> 10 1
+> 10 2
+> Speedup over CPU
+> Weight swapping (VIPER projection) Weights resident (NeuroSim measured)
+> Amdahl ceiling: 3.05× Break-even Residency threshold
+> DPIM = 196, 608 cells
+> NeuroSim kernel only VIPER E2E, resident ReRAM, batched ( B=128) FeFET, batched ( B=128) ReRAM, single-query ( B=1) FeFET, single-query ( B=1)
+
+Fig. 11: XBA case study for an eight-layer DNN. Squares and circles show kernel-only and VIPER end-to-end speedups for resident weights, respectively. predicted 4.3× on the full server; instead the speedup peaks at 
+
+2.46 × at 256 DPUs and then declines , yielding only 1.75 × at 2,560 DPUs (Figure 10). The cause is the aggregate transfer 
+
+tin + tout , which the a-priori model held constant at 1.40 ms: the measured value stays near it below ∼64 DPUs but grows to ∼5.9 ms at 2,560 DPUs, because with no inter-DPU communication path every activation scatter and partial-sum gather routes through the host over a shared transfer path, and each additional DPU increases descriptor-setup, transfer-programming, and synchronization overhead. Refining that one input, letting the aggregate tin + tout grow with DPU count as 
+
+1.82 + 0 .00168 N ms, turns the monotone climb into a peak-and-rolloff: the workload stays host-work-bound at moderate DPU counts, as predicted, but becomes transfer-bound at high counts, so an optimal DPU count replaces monotonic saturation. A single measured input is enough to bring VIPER into agreement with hardware: swapping the constant transfer for the affine tin + tout reproduces the peak-and-rolloff the fixed model cannot, holds the prediction within the same 2–
+
+3× band as the measurements, and peaks at ∼3.0× near ∼570 
+
+DPUs against the measured 2.46 × at 256 (Figure 10). More importantly, VIPER now exposes the design-critical fact no datasheet reveals: past a few hundred DPUs, adding more 
+
+lowers end-to-end speedup. The remaining error arises because the affine fit slightly understates the transfer at intermediate 
+
+N , and the kernel departs from 1/N scaling past 512 DPUs. 
+
+Observation from UPMEM case study: For PNM accel-erators that offload one operator class, VIPER exposes the Amdahl ceiling set by non-offloadable host work before any code is ported. Hardware then reveals the binding limit is tighter still: host-mediated transfer and per-dispatch over-head cap the achievable speedup well below that ceiling and create an optimal DPU count, rather than monotonic saturation. VIPER captures this limit by refining a single transfer input. B. PUM Case Study: XBAs with a Circuit-Accurate Simulator 
+
+Crossbar arrays (XBAs) are the flagship PUM substrate: an N ×N array of resistive cells stores a weight tile in cell conductances and performs a matrix–vector multiplication in a single O(1) analog read [14], [65]. Weights live in device state, and NVM programming is far slower than reading [50], [74], so any weight that does not fit in provisioned capacity must be reprogrammed on the critical path. We use VIPER to quantify how host execution, capacity limits, and pro-gramming latency change circuit-level speedup estimates. 
+
+The workload offloads eight DNN weight matmuls (DP IM = 196 ,608 cells); the host baseline is profiled on our desktop CPU with a stub binary that removes the matmuls (Tfull =18 .92 ms, Tstub =6 .21 ms, B=128 ), bound-ing any offload by a 3.05 × Amdahl ceiling. We run DNN+NeuroSim [13] (8-bit, 22 nm) on this network for every subarray size it supports (32–256): NeuroSim instantiates as many arrays as the tiled mapping requires, so each run is a complete resident chip, e.g., 192 arrays of 32 2 (2.41 μs per inference), 12 of 128 2 (1.97 μs), or 8 of 256 2 (1.75 μs). In Fig. 11, each such chip is placed at its total capacity, arrays ×N 2 cells (x-axis), against speedup over the CPU (y-axis, log): squares divide the CPU matmul time by NeuroSim’s latency alone (kernel view), circles feed the same latency into Equation 2 as tcomp with the profiled host term. The gap between the two is the first result: a 41 –70 × kernel never delivers more than 2.96 × end to end, because host work dominates once the accelerator is fast. Left of the threshold, VIPER models what NeuroSim structurally cannot: with only 
+
+A of the 12 arrays provisioned, the missing tiles must be reprogrammed on every pass through the weights ( N rows at a write-verified pulse of 0.1/0.3 μs for ReRAM/FeFET [50], [74]); batched inference shares each pass across B=128 
+
+queries and retains 1.8–2.9×, while single-query inference makes a full pass per query and collapses to 0.04 –0.1×.NeuroSim assigns identical latency to the two technologies because it omits write latency; VIPER predicts a 3 × difference once programming is included.. 
+
+Observation from XBAs case study: For resident weights, VIPER agrees with the circuit-level estimate and extends the analysis to capacity-limited configurations. A 41 –70 ×
+
+kernel yields at most 2.96 × end to end; below the residency threshold, single-query serving collapses while batching survives; and the ReRAM/FeFET choice matters only where programming enters the critical path. None of this is visible from a circuit-accurate inference simulator alone. 
+
+C. PUM Case Study: IMCRYPTO in Secure Memory 
+
+IMCRYPTO [57] implements the full AES-128 pipeline inside SRAM arrays: post-layout results at 22 nm show en-cryption in 30 cycles at 1 GHz on a 3 KB dual-port array. We model it as a data-triggered PUM gateway on the CPU–DRAM path, the one case study exercising VIPER’s data-triggering model (Equations 3): unlike offloading, a triggered design lies on the critical memory path and adds latency to every DRAM 0 20 40 60 80 100 120 140 160     
+
+> Gateway programming latency tprog (cycles)
+> 1.00 1.05 1.10 1.15 1.20 1.25 1.30
+> Normalized AMAT vs. unsecured DRAM
+> 10% budget
+> t*
+> prog 21 cyc
+> CMOS FeFET RRAM PCM
+> range (12 benchmarks) worst case (462.libquantum) geometric mean
+
+Fig. 12: Normalized AMAT vs. gateway programming latency 
+
+tprog on measured host profiles; CMOS, FeFET, RRAM, and PCM sit at their respective values, and a 10% worst-case budget admits only tprog ≲ 21 cycles. access. We ask: what does in-memory encryption cost the memory system, and which device technologies can afford to host it? 
+
+We model IMCRYPTO as a data-triggered PUM gateway on the CPU–DRAM path, such that every DRAM access reaching the gateway incurs in-memory AES encryption or decryption. For each SPEC2017 [67] and GraphBig [49] benchmark, we profile an Intel Xeon E-2388G using Linux perf to obtain the cache miss rates ( mL1, mL2, mL3) and construct the unsecured baseline AMAT from the corresponding cache and DRAM latencies. The IMCRYPTO timing parameters come from post-layout and gem5 results: tin = tout = 10 ,
+
+tcomp = 30 , and tprog = 1 ns for data transfer, AES-128 computation, and SRAM programming, giving tP IM,mem =
+
+tin + tprog + tcomp + tout = 51 ns. VIPER substitutes this latency for tDRAM in Equation 3 and normalizes the resulting AMAT to the unsecured DRAM baseline. Across all 12 bench-marks and gateway capacities of 64 MB, 256 MB, and 4 GB, VIPER reproduces the gem5-measured normalized AMAT to within 0.2% . The limited sensitivity to capacity indicates that the overhead is dominated by data transfer and computation rather than capacity constraints. Overall, securing all DRAM traffic increases AMAT by 1.5% on geometric mean and by 
+
+6.2% in the worst case ( 462.libquantum ). VIPER then answers what the post-layout numbers cannot: Fig. 12 sweeps the array programming latency tprog , placing CMOS, FeFET, RRAM, and PCM at their respective values. Keeping worst-case overhead below 10% budget requires 
+
+tprog ≲ 21 cycles: CMOS ( 6.2% ) and FeFET ( 9.8% ) qual-ify as gateway substrates, while RRAM ( 13 .6% ) and PCM (25 .0% ) do not, despite their density and non-volatility advan-tages. This sweep provides a quantitative screening criterion for critical-path PIM technologies. Observation from IMCRYPTO case study: A data-triggered PIM lies on the memory critical path and adds latency to every access. Measured on real profiles, always-on in-memory encryption costs only 1.5% mean AMAT, and VIPER matches the gem5-measured cost within 0.2% ;sweeping tprog then shows only CMOS and FeFET stay within a 10% worst-case budget, a substrate decision invis-ible from post-layout numbers alone. VIII. C ONCLUSION 
+
+We present VIPER, a lightweight, cross-layer analytical framework for PNM and PUM design-space exploration, achieving below 10% mean error across more than 400 cycle-accurate gem5 configurations. Measurements on a 2,560-DPU UPMEM system further validate the predicted break-even behavior and end-to-end bottlenecks. Case studies on real designs show that cross-layer costs invisible at the circuit level, such as programming latency, capacity limits, and non-offloadable host work, fundamentally determine whether a PIM design delivers real benefit. This work addresses per-formance; extending the formulation with per-access energy terms for joint performance and energy DSE is future work. VIPER is open-sourced at [URL redacted for blind review]. REFERENCES [1] S. Aga, S. Jeloka, A. Subramaniyan, S. Narayanasamy, D. Blaauw, and R. Das, “Compute caches,” in Proceedings of the 23rd IEEE International Symposium on High Performance Computer Architecture (HPCA) . Austin, TX: IEEE, 2017, pp. 481–492. [2] J. Ahn, S. Hong, S. Yoo, O. Mutlu, and K. Choi, “A scalable processing-in-memory accelerator for parallel graph processing,” in Proceedings of the 42nd Annual International Symposium on Computer Architecture (ISCA) . Portland, OR: ACM, 2015, pp. 105–117. [3] S. Ainsworth and T. M. Jones, “Graph prefetching using data structure knowledge,” in Proceedings of the 2016 International Conference on Supercomputing (ICS) , 2016, pp. 1–11. [4] S. Ainsworth and T. M. Jones, “An event-triggered programmable prefetcher for irregular workloads,” in Proceedings of the 23rd Interna-tional Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2018, pp. 578–592. [5] A. R. Alameldeen and D. A. Wood, “Adaptive cache compression for high-performance processors,” in Proceedings of the 31st Annual International Symposium on Computer Architecture (ISCA) , 2004, pp. 212–223. [6] M. S. B. Altaf and D. A. Wood, “Logca: A high-level performance model for hardware accelerators,” ACM SIGARCH Computer Architecture News , vol. 45, no. 2, pp. 375–388, 2017. [7] M. H. Amin, M. E. Elbtity, and R. Zand, “A python framework for spice circuit simulation of in-memory analog computing circuits,” arXiv preprint arXiv:2209.11306 , 2022. [8] A. Ankit, I. El Hajj, S. R. Chalamalasetti, G. Ndu, M. Foltin, R. S. Williams, P. Faraboschi, W.-m. W. Hwu, J. P. Strachan, and K. Roy, “Puma: A programmable ultra-efficient memristor-based accelerator for machine learning inference,” in Proceedings of the 24th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2019, pp. 715–731. [9] K. Asifuzzaman, N. R. Miniskar, A. R. Young, F. Liu, and J. S. Vetter, “A survey on processing-in-memory techniques: Advances and challenges,” 
+
+Memories – Materials, Devices, Circuits and Systems , vol. 4, p. 100022, 2023. [10] A. Boroumand, S. Ghose, Y. Kim et al. , “Google workloads for con-sumer devices: Mitigating data movement bottlenecks,” in Proceedings of the 23rd International Conference on Architectural Support for Pro-gramming Languages and Operating Systems (ASPLOS) . Williamsburg, VA: ACM, 2018, pp. 316–331. [11] A. Butko, R. Garibotti, L. Ost, and G. Sassatelli, “Accuracy evaluation of gem5 simulator system,” in 7th International Workshop on Reconfig-urable and Communication-Centric Systems-on-Chip (ReCoSoC) , 2012, pp. 1–7. [12] J. Ceary, M. M. u. Alam, and H. Tabkhi, “gem5-salam: A system architecture for llvm-based accelerator modeling,” in 2020 53rd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) .IEEE, 2020, pp. 1–14. [13] P.-Y. Chen, X. Peng, and S. Yu, “Neurosim: A circuit-level macro model for benchmarking neuro-inspired architectures in online learning,” 
+
+IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 37, no. 12, pp. 3067–3080, 2018. [14] P. Chi, S. Li, C. Xu, T. Zhang, J. Zhao, Y. Liu, Y. Wang, and Y. Xie, “PRIME: A novel processing-in-memory architecture for neural network computation in ReRAM-based main memory,” in Proceedings of the 43rd Annual International Symposium on Computer Architecture (ISCA) .Seoul, Korea: IEEE, 2016, pp. 27–39. [15] K. Chmielewski, J. Ławnicki, U. Lukyanau, T. Kobus, and M. Maciejewski, “Upmem unleashed: Software secrets for speed,” 2025. [Online]. Available: https://arxiv.org/abs/2510.15927 [16] D. Christ et al. , “Pimsys: A virtual prototype for processing in memory,” in Proceedings of the International Symposium on Memory Systems (MEMSYS) . ACM, 2023. [17] F. Devaux, “The true processing in memory accelerator,” in IEEE Hot Chips Symposium . Cupertino, CA: IEEE, 2019, pp. 1–24. [18] X. Dong, C. Xu, Y. Xie, and N. P. Jouppi, “Nvsim: A circuit-level performance, energy, and area model for emerging nonvolatile memory,” 
+
+IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 31, no. 7, pp. 994–1007, 2012. [19] M. Ekman and P. Stenstrom, “A robust main-memory compression scheme,” in Proceedings of the 32nd Annual International Symposium on Computer Architecture (ISCA) , 2005, pp. 74–85. [20] A. Farmahini-Farahani, J. H. Ahn, K. Morrow, and N. S. Kim, “NDA: Near-DRAM acceleration architecture,” in Proceedings of the 21st IEEE International Symposium on High Performance Computer Architecture (HPCA) . Burlingame, CA: IEEE, 2015, pp. 631–642. [21] J. D. Ferreira, G. Falcao, J. G´ omez-Luna, M. Alser, L. Orosa, M. Sadrosadati, J. S. Kim, G. F. Oliveira, T. Shahroodi, A. Nori 
+
+et al. , “pluto: Enabling massively parallel computation in dram via lookup tables,” in 2022 55th IEEE/ACM International Symposium on Microarchitecture (MICRO) . Chicago, IL: IEEE, 2022, pp. 900–919. [22] C. Gao, J. Park, L. Orosa, J. G´ omez-Luna, Y. Tao, M. Ghafouri, M.-S. Kim, H. Sarbazi-Azad, and O. Mutlu, “ParaBit: Processing parallel bitwise operations in NAND flash memory,” in Proceedings of the ACM/IEEE Design Automation Conference (DAC) . San Francisco, CA: IEEE, 2021, pp. 1–6. [23] H. Geng, X. Lu, Y. Che, Z. Tian, D. Cheng, X.-H. Sun, M. Niemier, and X. S. Hu, “Cosmos: Rl-enhanced locality-aware counter cache optimization for secure memory,” in Proceedings of the 58th IEEE/ACM International Symposium on Microarchitecture , 2025, pp. 1073–1086. [24] H. Geng, J. Mo, D. Reis, J. Takeshita, T. Jung, B. Reagen, M. Niemier, and X. Hu, “Ppimce: An in-memory computing fabric for privacy preserving computing,” Journal of Computer Science and Technology ,vol. 38, no. 6, pp. 1234–1251, 2023. [25] S. Ghose, A. Boroumand, J. S. Kim, J. G´ omez-Luna, and O. Mutlu, “Processing-in-memory: A workload-driven perspective,” in IBM Jour-nal of Research and Development , 2019. [26] S. Ghose, A. Boroumand, J. S. Kim, J. G´ omez-Luna, and O. Mutlu, “Processing-in-memory: A workload-driven perspective,” IBM Journal of Research and Development , vol. 63, no. 6, pp. 3–1, 2019. [27] J. G´ omez-Luna, I. El Hajj, I. Fernandez, C. Giannoula, G. F. Oliveira, and O. Mutlu, “Benchmarking a new paradigm: An experimental anal-ysis of a real processing-in-memory architecture,” in arXiv preprint arXiv:2105.03814 . Ithaca, NY: arXiv, 2021, pp. 1–17. [28] N. Hajinazar, G. F. Oliveira, S. Gregorio, J. D. Ferreira, N. M. Ghiasi, M. Patel, M. Sadrosadati, S. Ghose, J. G´ omez-Luna, and O. Mutlu, “SIMDRAM: A framework for bit-serial SIMD processing us-ing DRAM,” in Proceedings of the 26th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) . Virtual: ACM, 2021, pp. 329–345. [29] M. Hill and V. J. Reddi, “Gables: A roofline model for mobile socs,” in 2019 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2019, pp. 317–330. [30] Q. Huang, D. Reis, C. Li, D. Gao, M. T. Niemier, X. S. Hu, M. Imani, X. Yin, and C. Zhuo, “Computing-in-memory using ferroelectrics: From single- to multi-input logic,” IEEE Design & Test , vol. 39, no. 2, pp. 56–64, 2022. [31] A. Kazemi, F. M¨ uller, M. M. Sharifi, H. Errahmouni, G. Gerlach, T. K¨ ampfe, M. Imani, X. S. Hu, and M. Niemier, “Achieving software-equivalent accuracy for hyperdimensional computing with ferroelectric-based in-memory computing,” Scientific Reports , vol. 12, p. 19201, 2022. [32] H. Kim, T. Kim, T. Park, D. Kim, Y. Yu, H. Kim, and Y. Park, “Acceler-ating llms using an efficient gemm library and target-aware optimizations on real-world pim devices,” in Proceedings of the 23rd ACM/IEEE International Symposium on Code Generation and Optimization , ser. CGO ’25. Association for Computing Machinery, 2025, pp. 225–240. [33] J. H. Kim, S.-H. Kang, S. Lee et al. , “Aquabolt-XL: HBM2-PIM with in-memory processing,” IEEE Micro , vol. 42, no. 3, pp. 22–30, 2022. [34] Y. Kim, W. Yang, and O. Mutlu, “Ramulator: A fast and extensible dram simulator,” IEEE Computer Architecture Letters , vol. 15, no. 1, pp. 45–49, 2015. [35] Y.-C. Kwon et al. , “A 20nm 6gb function-in-memory dram, based on hbm2 with a 1.2 tflops programmable computing unit using bank-level parallelism, for machine learning applications,” in 2021 IEEE International Solid-State Circuits Conference (ISSCC) , vol. 64. IEEE, 2021, pp. 350–352, primary reference for Samsung’s HBM-PIM and associated simulation modeling methodology. [36] H.-S. C. Lab, “Camasim: A comprehensive simulation framework for content-addressable memory based accelerators,” University of Notre Dame Tools Release , 2023, https://codesignlab.nd.edu/tools/. [37] A. F. Laguna, M. M. Sharifi, D. Reis, L. Liu, A. Hennessee, C. O’Dell, I. O’Connor, M. Niemier, and X. S. Hu, “Invited paper: Algo-rithm/hardware co-design for few-shot learning at the edge,” in Pro-ceedings of the IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . San Francisco, CA: IEEE, 2023, pp. 1–9. [38] S. Lee, S. haeng Kang, J. Lee et al. , “Hardware architecture and software stack for PIM based on commercial DRAM technology: Industrial product,” in Proceedings of the 48th Annual International Symposium on Computer Architecture (ISCA) . Valencia, Spain: IEEE, 2021, pp. 43–56. [39] M. Li, H. Geng, M. Niemier, and X. S. Hu, “Accelerating polynomial modular multiplication with crossbar-based compute-in-memory,” in 
+
+2023 IEEE/ACM International Conference on Computer Aided Design (ICCAD) . San Francisco, CA: IEEE, 2023, pp. 1–9. [40] S. Li, Z. Yang, D. Reddy, A. Srivastava, and B. Jacob, “Dramsim3: a cycle-accurate, thermal-capable dram simulator,” IEEE Computer Architecture Letters , vol. 19, no. 2, pp. 106–109, 2020. [41] J. P. C. d. Lima, “Pim-gem5: a system simulator for processing-in-memory design space exploration,” Master’s thesis, Universidade Federal do Rio Grande do Sul, 2019. [42] Z. Lin, Z. Tong, J. Zhang, F. N. Wang, T. Xu, Y. Zhao, X. Wu, C. Peng, W. Lu, Q. Zhao, and J. Chen, “A review on SRAM-based computing in-memory: Circuits, functions, and applications,” Journal of Semiconductors , vol. 43, no. 3, p. 031401, 2022. [43] C.-K. Liu, H. Chen, M. Imani, K. Ni, A. Kazemi, A. F. Laguna, M. T. Niemier, X. S. Hu, L. Zhao, C. Zhuo, and X. Yin, “COSIME: FeFET based associative memory for in-memory cosine similarity search,” in 
+
+Proceedings of the IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . San Diego, CA: ACM, 2022, pp. 1–9. [44] L. Liu et al. , “Eva-cam: A circuit/architecture-level evaluation tool for general content addressable memories,” in 2022 Design, Automation & Test in Europe Conference & Exhibition (DATE) . IEEE, 2022, pp. 1–6. [45] L. Liu, A. F. Laguna, R. Rajaei, M. M. Sharifi, A. Kazemi, X. Yin, M. T. Niemier, and X. S. Hu, “A reconfigurable FeFET content addressable memory for multi-state Hamming distance,” IEEE Transactions on Circuits and Systems I: Regular Papers , vol. 70, no. 6, pp. 2356–2369, 2023. [46] A. Mamdouh, H. Geng, M. Niemier, X. S. Hu, and D. Reis, “Shared-pim: enabling concurrent computation and data flow for faster processing-in-dram,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems , vol. 44, no. 4, pp. 1234–1247, 2025. [47] P. Mannocci, M. Farronato, N. Lepri, L. Cattaneo, A. Glukhov, Z. Sun, and D. Ielmini, “In-memory computing with emerging memory devices: Status and outlook,” APL Machine Learning , vol. 1, no. 1, p. 010902, 2023. [48] O. Mutlu, S. Ghose, J. G´ omez-Luna, and R. Ausavarungnirun, “A modern primer on processing in memory,” in Emerging Computing: From Devices to Systems . Cham: Springer, 2021, pp. 171–243. [49] L. Nai, Y. Xia, I. G. Tanase, H. Kim, and C.-Y. Lin, “Graphbig: understanding graph computing in the context of industrial solutions,” in Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , 2015, pp. 1–12. [50] K. Ni, X. Yin, A. F. Laguna, S. Datta, S. D¨ unkel, M. Trentzsch 
+
+et al. , “Ferroelectric ternary content-addressable memory for one-shot learning,” Nature Electronics , vol. 2, no. 11, pp. 521–529, 2019. [51] J. Park, R. Azizi, G. F. Oliveira, M. Sadrosadati, R. Nadig, D. Novo, J. G´ omez-Luna, M. Kim, and O. Mutlu, “Flash-cosmos: In-flash bulk bitwise operations using inherent computation capability of nand flash memory,” in 2022 55th IEEE/ACM International Symposium on Mi-croarchitecture (MICRO) . Chicago, IL: IEEE, 2022, pp. 937–955. [52] G. Pekhimenko, V. Seshadri, Y. Kim, H. Xin, O. Mutlu, P. B. Gibbons, M. A. Kozuch, and T. C. Mowry, “Linearly compressed pages: A low-complexity, low-latency main memory compression framework,” in 
+
+Proceedings of the 46th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2013, pp. 172–184. [53] G. Pekhimenko, V. Seshadri, O. Mutlu, P. B. Gibbons, M. A. Kozuch, and T. C. Mowry, “Base-delta-immediate compression: Practical data compression for on-chip caches,” in Proceedings of the 21st Interna-tional Conference on Parallel Architectures and Compilation Techniques (PACT) , 2012, pp. 377–388. [54] M. Poremba and Y. Xie, “Nvmain: An architectural-level main memory simulator for emerging non-volatile memories,” in 2012 IEEE Computer Society Annual Symposium on VLSI . IEEE, 2012, pp. 392–397. [55] e. a. Qi, “Efsim: An efficient and flexible simulation framework for digital in-memory computing,” in IEEE International Symposium on Circuits and Systems (ISCAS) . IEEE, 2024. [56] Y. M. Qureshi, W. A. Simon, M. Zapater, K. Olcoz, and D. Atienza, “gem5-x: A gem5-based system level simulation framework to opti-mize many-core platforms,” in 2019 31st International Symposium on Computer Architecture and High Performance Computing (SBAC-PAD) .IEEE, 2019, pp. 144–151. [57] D. Reis, H. Geng, M. Niemier, and X. S. Hu, “Imcrypto: An in-memory computing fabric for aes encryption and decryption,” IEEE Transactions on Very Large Scale Integration (VLSI) Systems , vol. 30, no. 5, pp. 553– 565, 2022. [58] D. Reis, M. Niemier, and X. S. Hu, “Computing in-memory with FeFETs,” in Proceedings of the International Symposium on Low Power Electronics and Design (ISLPED) . Seattle, WA: ACM, 2018, pp. 1–6. [59] B. Rozemberczki, C. Allen, and R. Sarkar, “Multi-scale attributed node embedding,” 2019. [60] P. C. Santos, B. E. Forlin, and L. Carro, “Sim2pim: A complete simulation framework for processing-in-memory,” Journal of Systems Architecture , vol. 128, p. 102528, 2022. [61] S. Sardashti and D. A. Wood, “Decoupled compressed cache: Ex-ploiting spatial locality for energy-optimized compressed caching,” in 
+
+Proceedings of the 46th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2013, pp. 62–73. [62] B. C. Schwedock, P. Yoovidhya, J. Seibert, and N. Beckmann, “t¨ ak¯ o: A polymorphic cache hierarchy for general-purpose optimization of data movement,” in Proceedings of the 49th Annual International Symposium on Computer Architecture . New York, NY: ACM, 2022, pp. 42–58. [63] V. Seshadri, Y. Kim, C. Fallin, D. Lee, R. Ausavarungnirun, G. Pekhi-menko, Y. Luo, O. Mutlu, P. B. Gibbons, M. A. Kozuch, and T. C. Mowry, “RowClone: Fast and energy-efficient in-DRAM bulk data copy and initialization,” in Proceedings of the 46th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . Davis, CA: ACM, 2013, pp. 185–197. [64] V. Seshadri, D. Lee, T. Mullins, H. Hassan, A. Boroumand, J. Kim, M. A. Kozuch, O. Mutlu, P. B. Gibbons, and T. C. Mowry, “Ambit: In-memory accelerator for bulk bitwise operations using commodity DRAM technology,” in Proceedings of the 50th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . Cambridge, MA: ACM, 2017, pp. 273–287. [65] A. Shafiee, A. Nag, N. Muralimanohar, R. Balasubramonian, J. P. Stra-chan, M. Hu, R. S. Williams, and V. Srikumar, “ISAAC: A convolutional neural network accelerator with in-situ analog arithmetic in crossbars,” in 
+
+Proceedings of the 43rd Annual International Symposium on Computer Architecture (ISCA) . Seoul, Korea: IEEE, 2016, pp. 14–26. [66] Y. S. Shao, S. L. Xi, V. Srinivasan, G.-Y. Wei, and D. Brooks, “Co-designing accelerators and soc interfaces using gem5-aladdin,” in 2016 49th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 2016, pp. 1–12. [67] Standard Performance Evaluation Corporation, “SPEC CPU2017 Benchmark Suite,” 2017. [Online]. Available: https://www.spec.org/ cpu2017/ [68] N. Talati, K. May, A. Behroozi, Y. Yang, K. Kaszyk, C. Vasiladiotis, T. Virk, L. Li, B. Nguyen, J. Sun, M. O’Boyle, T. Mudge, and R. Dreslin-ski, “Prodigy: Improving the memory latency of data-indirect irregular workloads using hardware-software co-design,” in Proceedings of the 27th IEEE International Symposium on High Performance Computer Architecture (HPCA) , 2021. [69] P.-A. Tsai and D. Sanchez, “Compress objects, not cache lines: An object-based compressed memory hierarchy,” in Proceedings of the 24th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2019, pp. 229–242. [70] W. Wan, R. Kubendran, C. Schaefer, S. B. Eryilmaz, W. Zhang, D. Wu 
+
+et al. , “A compute-in-memory chip based on resistive random-access memory,” Nature , vol. 608, pp. 504–512, 2022. [71] X. Wang, X. Sun, Y. Han, and X. Chen, “Pimsim-nn: An isa-based simulation framework for processing-in-memory accelerators,” in 2024 Design, Automation & Test in Europe Conference & Exhibition (DATE) .IEEE, 2024, pp. 1–6. [72] S. Williams, A. Waterman, and D. Patterson, “Roofline: an insightful visual performance model for multicore architectures,” Communications of the ACM , vol. 52, no. 4, pp. 65–76, 2009. [73] B. Wu, H. Zhu, D. Reis, Z. Wang, Y. Wang, K. Chen, W. Liu, F. Lombardi, and X. S. Hu, “An energy-efficient computing-in-memory (CiM) scheme using field-free spin-orbit torque (SOT) magnetic RAMs,” 
+
+IEEE Transactions on Emerging Topics in Computing , vol. 11, no. 2, pp. 331–342, 2023. [74] C. Xu, D. Niu, N. Muralimanohar, R. Balasubramonian, T. Zhang, S. Yu, and Y. Xie, “Overcoming the challenges of crossbar resistive memory architectures,” in 2015 IEEE 21st international symposium on high performance computer architecture (HPCA) . IEEE, 2015, pp. 476–488. [75] S. Xu, X. Chen, Y. Wang, Y. Han, D. Qian, and J. Li, “Pimsim: A flexible and detailed processing-in-memory simulator,” IEEE Computer Architecture Letters , vol. 18, no. 1, pp. 6–9, 2019. [76] Z. Yan, X. S. Hu, and Y. Shi, “Compute-in-memory based neural network accelerators for safety-critical systems: Worst-case scenarios and protections,” arXiv preprint arXiv:2312.06137 , vol. abs/2312.06137, no. 1, pp. 1–12, 2023. [77] X. Yin, F. M¨ uller, A. F. Laguna, C. Li, Q. Huang, Z. Shi, M. Lederer, N. Laleni, S. Deng, M. Imani, Y. Shi, M. Niemier, X. S. Hu, C. Zhuo, T. K¨ ampfe, and K. Ni, “Deep random forest with ferroelectric analog content addressable memory,” Proceedings of the National Academy of Sciences , vol. 121, no. 16, p. e2311573121, 2024. [78] X. Yu, C. J. Hughes, N. Satish, and S. Devadas, “IMP: Indirect memory prefetcher,” in Proceedings of the 48th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) , 2015, pp. 178–190. [79] Z. Zhu, H. Sun, T. Xie, Y. Zhu, G. Dai, L. Xia, D. Niu, and X. Chen, “Mnsim 2.0: A behavior-level modeling tool for processing-in-memory architectures,” IEEE Transactions on Computer-Aided Design of Inte-grated Circuits and Systems , vol. 42, no. 11, pp. 3660–3673, 2023.

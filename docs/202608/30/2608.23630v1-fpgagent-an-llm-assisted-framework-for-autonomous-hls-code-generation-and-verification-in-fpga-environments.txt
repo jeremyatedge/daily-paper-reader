@@ -1,0 +1,356 @@
+Title: FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments
+
+URL Source: https://arxiv.org/pdf/2608.23630v1
+
+Published Time: Wed, 26 Aug 2026 00:08:09 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments 
+
+# Tianyu Wang 
+
+Shanghai Key Laboratory of Scalable Computing and Systems School of Computer Science, Shanghai Jiao Tong University Shanghai, China 
+
+# Wenjie Wang 
+
+Shanghai Key Laboratory of Scalable Computing and Systems School of Computer Science, Shanghai Jiao Tong University Shanghai, China 
+
+# Jianguo Yao 
+
+Shanghai Key Laboratory of Scalable Computing and Systems School of Computer Science, Shanghai Jiao Tong University Shanghai, China 
+
+# Haibing Guan 
+
+Shanghai Key Laboratory of Scalable Computing and Systems School of Computer Science, Shanghai Jiao Tong University Shanghai, China 
+
+# Xijun Li ∗
+
+Shanghai Key Laboratory of Scalable Computing and Systems School of Computer Science, Shanghai Jiao Tong University Shanghai, China lixijun@sjtu.edu.cn 
+
+## Abstract 
+
+Large language models (LLMs) have shown substantial promise for high-level synthesis (HLS) code generation. How-ever, most existing approaches focus primarily on validation at the simulation or synthesis stage. Due to inherent tim-ing and place-and-route constraints in hardware environ-ments, HLS code that passes simulation and synthesis does not necessarily translate into deployable, runnable designs on real FPGA platforms . In addition, the lack of publicly available benchmarks has led many methods to be evalu-ated only on small, self-curated test suites, making their effectiveness difficult to validate. To address these issues, we propose FPGAgent, a multi-agent framework tailored to real FPGA environments, which targets autonomous HLS cod-ing with end-to-end executability validation. To the best of our knowledge, FPGAgent is the first task-specification-to-executable HLS generation framework that has been experi-mentally validated on a well-established benchmark . Given a natural-language task specification, FPGAgent first injects HLS-specific knowledge into the model, and employs evolu-tionary search to iteratively derive HLS kernel implemen-tations with reliable performance. It then generates a C++ validation program to verify the functional correctness of the produced kernel, analyzes potential functional defects, and guides the model to apply targeted repairs. Finally, it synthesizes host code to enable compilation and board-level execution on FPGA hardware. We comprehensively evaluate FPGAgent using five well-established models on HLS-Eval, a benchmark comprising 78 tasks across multiple domains, and verify board-level executability on real FPGA platform. Compared with existing baselines, FPGAgent improves syn-thesizable rate by 16.9% on average, executability by 26.7%, and functional correctness by 30.6%. These results indicate that FPGAgent substantially enhances the practical usability 
+
+> ∗Corresponding author.
+
+of LLM-based HLS generation, demonstrating the practical utility of end-to-end LLM-assisted HLS generation. 
+
+## 1 Introduction 
+
+Large language models (LLMs) have recently demonstrated strong performance across a wide spectrum of code-centric tasks, includ-ing code generation, completion, and repair. In parallel, there is growing interest in leveraging LLMs as a foundation for automating design workflows. In the hardware design domain, this trend has spurred extensive research on LLM-based code generation and ver-ification [3, 4, 9], with the overarching goal of reducing the human effort required to write, optimize, and validate hardware implemen-tations [14, 28, 31, 39, 40]. Early efforts in this area primarily focused on HDL (Hardware Description Language) code generation and benchmarking, leading to the development of influential datasets, models, and evaluation protocols [5, 8, 16, 20, 27, 30]. Subsequent studies have further advanced benchmarking and survey works for larger-scale RTL (Register Transfer Level) designs [2, 23]. Although the above studies have helped delineate the initial problem space for applying LLMs to hardware design, recent research increasingly suggests that, compared to directly generating RTL, high-level syn-thesis (HLS) may serve as a more suitable interface for LLM-driven design automation [2, 17, 18, 23, 32]. The shift toward HLS is motivated by both representation and tooling considerations. Compared with RTL, HLS code is closer to software-style programming abstractions, making it easier for LLMs to map from natural language task descriptions or C/C++ programs to synthesizable hardware-oriented code [6, 10, 33]. At the same time, HLS toolchains (e.g., Vitis HLS) provide structured compiler, simulation, and synthesis feedback that can be directly incorpo-rated into iterative optimization and repair loops [1, 21, 22]. This combination makes HLS an attractive intermediate layer for LLM-based hardware generation: it lowers the semantic gap between specification and implementation while preserving a practical path to hardware realization [10, 14, 26]. Recent work (especially from 2025 onward) has significantly ad-vanced the LLM-for-HLS landscape along several complementary arXiv:2608.23630v1 [cs.SE] 23 Aug 2026 Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+Figure 1: We present a motivating example regarding FPGA kernel code generation: while the code successfully passes simulation tests, its improper pipelining and overly aggressive loop unrolling result in an excessively long critical path within a single clock cycle, consequently leading to routing failures during the generation of the FPGA executable. 
+
+directions [35]. One line of research focuses on HLS code generation, refactoring, and repair, aiming to bridge the software-hardware gap by converting natural language or general-purpose C/C++ code into HLS-compatible implementations. Representative examples include HLSPilot [33], C2HLSC [6], HLSRewriter [37], and LLM-based HLS program repair methods [36 ? ], which collectively improve HLS compatibility and reduce the burden of manual rewriting. Another line targets directive/pragma optimization and QoR (Quality of Re-sults) enhancement, where LLMs are integrated with graph-based learning, retrieval augmentation, and design-space exploration to improve timing, resource usage, and performance [21, 24, 25, 34, 38]. In parallel, benchmark and infrastructure efforts such as HLS-Eval and Bench4HLS provide standardized pipelines for evaluating gen-eration quality through parsing, compilation, simulation, synthesis, and analysis [1, 10, 12]. More recently, agentic HLS has emerged as a promising paradigm, where multiple agents or tool-aware itera-tive loops leverage compiler/synthesis feedback to refine code and optimization decisions over multiple rounds [7, 22, 41]. Despite these advances, existing approaches primarily concen-trate on kernel generation and validation within the HLS toolchain (e.g., compilation, co-simulation, and synthesis) [1, 12, 22], while paying comparatively less attention to whether the resulting designs can be successfully compiled, deployed, and executed on real FPGA platforms . Given the inherent constraints of hardware environ-ments—particularly those related to timing closure, place-and-route, and resource utilization—passing simulation and synthesis alone does not guarantee that a design is runnable on physical hard-ware. Moreover, many methods are evaluated only on a small set of self-curated benchmarks, with limited empirical validation on medium- to large-scale benchmarks [13, 21]. Taken together, exist-ing approaches exhibit multiple limitations: (1) The generated HLS code is not executed and validated on real hardware plat-forms; (2) Evaluation on well-established benchmark suites is often missing, making it difficult to assess generalization; (3) Some methods focus on optimizing or translating from exist-ing C/C++ implementations, which prevents direct HLS gen-eration from task-level specifications. These limitations hinder their applicability to practical HLS development, posing substantial challenges to leveraging LLMs for assisting FPGA engineers. This motivates the need for a more practical end-to-end framework for HLS generation and validation. To address this gap, we propose FPGAgent, a multi-agent end-to-end framework for autonomous HLS code generation and ver-ification targeting real FPGA platforms. Given a high-level task description in natural language, FPGAgent automatically generates HLS kernel code and invokes the industry-standard toolchain to perform simulation, synthesis, and executable construction. In a word, this paper makes the following contributions. (1) We propose a multi-agent, end-to-end HLS code generation and verification framework that maps task design to FPGA executa-bles, and further validate the executability of the generated designs on real hardware. It is the first time to verify an end-to-end HLS generation framework on a well-established benchmark. (2) We develop an iterative, evolutionary HLS code generation module that integrates domain priors with online learning during FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments Conference’17, July 2017, Washington, DC, USA 
+
+the design process, and incorporates a multi-level feedback struc-ture to enable parallel exploration of performance optimizations across multiple candidate directions. (3) We propose a module for verifying and repairing the func-tional correctness of HLS code. This module validates functional behavior at C/C++ level, diagnoses potential functional defects, and drives the model to apply targeted repairs. (4) We conduct comprehensive comparative and ablation studies on HLS-Eval [1]. We establish multiple evaluation metrics to quan-tify the effectiveness of the FPGAgent framework and provide an in-depth analysis of the contributions of its individual components. The structure of this paper is as follows. Section 2 presents our motivating example. In Section 3, we provide a detailed exposition of FPGAgent. The experimental setup and results are detailed in Sections 4 and 5. Threats to Validity are discussed in Section 6. Related work is introduced in Section 7. Finally, the paper concludes in Section 8 with an overview of future work. 
+
+## 2 Motivating Example 
+
+Recent LLM-based research for HLS has made steady progress in assessing whether generated HLS code can be compiled, simu-lated, and synthesized under standard toolchains [1, 12]. Emerging agent-based workflows further integrate co-simulation and synthe-sis feedback to iteratively refine and optimize FPGA kernels [21, 22]. However, from the perspective of FPGA deployment, these “front-end” metrics provide only a partial proxy: even if a design passes simulation, it may still fail to produce a deployable FPGA executable, or it may encounter runtime failures during board-level execution. Using a concrete FPGA kernel case study on the Xilinx U200 plat-form, this section aims to make this gap explicit and to demonstrate the motivation behind FPGAgent. Figure 1 illustrates an FPGA kernel that passes simulation-based validation but fails when being compiled into an FPGA executable. As shown, the kernel adopts a simple yet aggressive optimization strategy—enforcing a pipeline initiation interval (II) of 1 and fully unrolling all loops. This results in excessive transactional paral-lelism within a single kernel cycle, which in turn either lengthens the critical path or induces an overly large number of long-distance, cross-region interconnects. The former leads to timing-closure fail-ures, whereas the latter typically causes routing congestion or unroutable designs (as observed in Figure 1). This case study indicates that, for HLS designs, being “simu-latable/synthesizable” is a necessary condition for “executability on an FPGA with correct board-level behavior,” but it is not suf-ficient. If LLMs are to effectively assist FPGA engineers—i.e., to rapidly produce HLS implementations that are both functionally correct and reasonably performant—validation confined to simula-tion environments is far from adequate. Instead, a more low-level, end-to-end framework for generating and validating FPGA executa-bles is required to bridge the gap between task-level specifications and board-level verification. 
+
+## 3 Methodology 
+
+This section introduces an automated HLS code generation and validation method composed of multiple context-aware agentic modules informed by expert experience and error-driven analysis. As illustrated in Figure 2, the FPGAgent framework consists of three main stages: (a) generating syntactically correct FPGA kernel code with reliable performance under an evolutionary program search paradigm guided by domain-specific expertise; (b) verifying the functional correctness of the FPGA kernel and repairing it based on verification feedback and analyses of historical failure cases; (c) generating task-oriented FPGA host-side code, followed by joint compilation and execution of the kernel and host code, with validation performed on real FPGA hardware. 
+
+## 3.1 Kernel Code Implementation 
+
+Kernel Code Implementation is one of the core modules for FP-GAgent. Its design is inspired by the heuristic EoH proposed by Liu et al. [15], which introduces an evolutionary algorithm–based program search paradigm into HLS design, thereby establishing a solution for generating and performance-optimizing kernel-side HLS code targeting Xilinx FPGAs. The key idea is to leverage (1) prior knowledge of Vitis HLS design and (2) design experience accumulated by the model during the code-generation process. The framework consists of an assistant and a coder. Algorithm 1 outlines the overall workflow: 
+
+Initialization. Receiving the task description, the initial pool of kernel code is constructed. During module initialization, a set of HLS code optimization strategies extracted from the official AMD Vitis documentation are maintained, where each strategy specifies the optimization rationale, the applicable scope, and several repre-sentative examples. Given an HLS design task described in natural language, the assistant retrieves relevant strategies and selects an appropriate sequence of optimizations as contextual information, prompting the coder to generate FPGA kernel HLS code as well as the corresponding kernel design thought. Obtaining the candidate kernel, Vitis HLS tools are invoked to perform hardware simulation, checking syntactic correctness and synthesizability. If the simula-tion succeeds, the kernel is added to the Kernel Pool. This iterative process continues until the Kernel Pool reaches a size of 𝑐𝑜 × 𝑃 size 
+
+(to enlarge the search space, we set an init factor 𝑐𝑜 to increase the pool size in the first evolutionary round, which was set to 2 in the experiment). Finally, based on the simulation performance (latency and resource usage), the 𝑃 size best-performing kernel codes are selected from the kernel pool to form the initial kernel pool. 
+
+Iterative Optimization. After obtaining the initial kernel pool, iterative evolutionary optimizations are performed over the pool, where each generation conducts parallel searches via multiple heuristic evolution procedures. Specifically, we employ two heuris-tic operators, namely Exploration and Modification. 
+
+1) Exploration: First, several kernel codes are selected from the current kernel pool. The assistant then infers new kernel design ideas that are consistent with the task description by analyzing these kernels and their associated design thoughts, and prompts the coder to synthesize new kernel implementations accordingly. 
+
+2) Modification: In this process, a single kernel code is randomly sampled from the pool. Under the constraint that the kernel’s func-tionality and interface remain unchanged, the assistant proposes FPGA-oriented optimization strategies, after which the coder ap-plies these strategies to revise the selected kernel code and produce a new candidate kernel. Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+Figure 2: FPGAgent aims to construct an end-to-end framework for HLS code generation and verification, spanning the entire process from design requirements to FPGA-executable programs. (a) Kernel Code Implementation module generates kernel code by employing an optimization framework based on evolutionary algorithms, integrated with a multi-level error feedback mechanism. (b) Functional Reflection module verifies the functional correctness of generated kernel code, analyzes the causes of errors, and iteratively rectifies functional defects encountered. (c) Compilation & Execution module generates FPGA host code, compiles the code into an FPGA-executable program, and performs verification testing on real hardware environment. 
+
+For each newly generated kernel, Vitis HLS tools are invoked to perform hardware simulation and adds only the candidates that pass simulation to the Kernel Pool. Once the Kernel Pool reaches a size of double 𝑃 size , best-performing kernel codes are selected from the Kernel Pool, which used as the initial pool for the next evolutionary generation. This iterative process continues until the number of generations reaches max generation 𝐼 max . Finally, kernel code with the best performance is selected from the Kernel Pool to serve as the final FPGA kernel-side HLS code generated by Kernel Code Implementation framework. 
+
+Multi-level Error Reflection. Error Reflection mechanism is designed to ensure the syntactic validity of generated kernel code. After the coder completes a kernel implementation, the system se-quentially invokes the Vitis HLS toolchain to perform C-simulation and synthesizability checks. If any step fails, the system collects the corresponding error logs and instructs the coder to revise the kernel accordingly. If the revised code still fails, the assistant ana-lyzes the failure by jointly considering the kernel implementation and the error logs. The system then records the syntactically in-valid kernel together with the diagnosed root cause in an Error Pool, thereby maintaining a history of mistakes encountered during HLS generation. In subsequent HLS generation iterations, these error exemplars are explicitly incorporated into the prompt context, helping prevent the coder from repeating the same errors. 
+
+## 3.2 Functional Reflection 
+
+Kernel Code Implementation completes FPGA kernel-side HLS code generation from a high-level task description, producing im-plementations that are syntactically correct and exhibit reasonable performance. However, the functional correctness of the generated kernels haven’t been explicitly validated, which implies that a ker-nel may compile successfully and execute in an FPGA environment while still producing incorrect outputs. To address this limitation, we propose a Functional Reflection module, which aims to verify functional correctness and repair potential functional defects in the generated kernel code. The Functional Reflection framework com-prises a Verifier, a Debugger and a Coder, and its overall workflow is illustrated in Figure 3. 
+
+Verification. Functional Reflection performs C/C++-level func-tional verification for generated kernel codes. First, the Verify As-sistant constructs appropriate input data from the task specification and computes the corresponding expected outputs. Next, the Verify Assistant de-HLSifies the kernel by removing HLS optimization pragmas and directives, yielding C kernel (i.e., the pure C/C++ por-tion of the kernel). Based on this, the Verify Assistant writes a kernel validation program whose main function is responsible for (1) ingesting the inputs, (2) invoking C kernel, and (3) checking whether the produced outputs match the expected results. Finally, system compiles and executes the validation program using g++ to determine whether the kernel’s output is correct. FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments Conference’17, July 2017, Washington, DC, USA 
+
+Figure 3: Functional Reflection module verifies the functional correctness of generated kernel code: (a) Verify Assistant generates C++ code and corresponding test cases for functional verification; (b) Debug Assistant analyzes errors in code exhibiting functional faults; (c) Coder performs functional repairs to the code based on the identified root causes of the errors. Error Analysis. For kernels that fail functional verification, error analysis is performed. The Debug Assistant proceeds by (1) identifying what the major computational stages of the kernel are and what functional modules are required at each stage, as dictated by the task specification; (2) determining where the fault resides and why it occurs through joint analysis of the validation inputs, expected outputs, and observed outputs; and (3) formulating repair strategies that are feasible in practice and recording the functionally incorrect kernel–repair strategy pairs in an Error Pool. 
+
+Iterative Fix. After registering these errors, the Error Pool is incorporated into the prompt context to guide the Coder in gen-erating revised kernel implementations by referencing previously observed failure cases and their corresponding fixes. The updated kernel is then submitted to the Verify Assistant for functional vali-dation. This procedure iterates until a kernel passes the functional correctness check. 
+
+## 3.3 Compilation & Execution 
+
+Existing LLM-based HLS/HDL code generation approaches pre-dominantly focus on simulation-level validation, e.g., checking syn-thesizability and functional correctness in a simulated environment. However, substantial discrepancies remain between simulation and real hardware, particularly in terms of data movement, resource management, and runtime orchestration. Consequently, designs that pass simulation may still fail when deployed on physical FPGA platforms. To address this gap, we develop a Compilation & Execu-tion module. The overall workflow is illustrated in Figure 4. After obtaining a functionally correct kernel, the Compilation & Execution module proceeds as follows: (1) Host code implementation. Prompts the Coder to implement the FPGA host-side code. Specifically, the Coder first derives suit-able test cases from the task specification, then instantiates data objects according to the parameter types of the kernel top func-tion, and finally invokes the kernel and checks whether the outputs satisfy the test cases. (2) Code compilation. Invokes the Vitis toolchain to compile HLS code into an FPGA executable. If compilation fails, the Assistant analyzes the compiler logs, derives actionable fixes, and guides the Coder to regenerate an updated host implementation accordingly. (3) Program execution. Deploys and executes the resulting pro-gram on a physical FPGA platform and verifies that the runtime output meets the requirements. (4) Error feedback. If runtime execution fails (i.e., the program does not execute correctly on FPGA), the Compilation & Execution module forwards the error logs to the Assistant. The module main-tains an experience-driven database that maps FPGA runtime error logs to root-cause analyses. The Assistant queries this database to diagnose the failure and instructs the Coder to repair the host code. This process iterates until the generated program executes successfully on the FPGA board. 
+
+## 4 Experiment Setup 4.1 Research Questions 
+
+To evaluate the effectiveness of the proposed FPGAgent frame-work, we conduct a comprehensive study designed to answer the following research questions: Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+Figure 4: Compilation & Execution module completes: (a) FPGA host code generation; (b) compilation of kernel and host code; and (c) execution and verification of the FPGA program. Table 1: Comparison of zero-shot (pass@10) and FPGAgent across different base models. FPGAgent delivers consistent im-provements across all backbone models, and attaining the highest functional correctness of 92.3% with Gemini 3.1 Pro. 
+
+Base Model Method Synthesizable Rate Executable Rate Functional Correctness Rate Qwen3-Coder-30B-A3B zero-shot 59.0% (pass@10) 42.3% (pass@10) 30.8% (pass@10) DeepSeek V3.2 zero-shot 74.4% (pass@10) 61.5% (pass@10) 48.7% (pass@10) ChatGPT 5.2 zero-shot 75.6% (pass@10) 64.1% (pass@10) 55.1% (pass@10) Claude Sonnet 4.5 zero-shot 84.6% (pass@10) 71.7% (pass@10) 60.3% (pass@10) Gemini 3.1 Pro zero-shot 82.1% (pass@10) 67.9% (pass@10) 56.4% (pass@10) Qwen3-Coder-30B-A3B FPGAgent 83.3% 75.6% 66.7% DeepSeek V3.2 FPGAgent 93.6% 91.0% 78.2% ChatGPT 5.2 FPGAgent 91.0% 87.2% 80.8% Claude Sonnet 4.5 FPGAgent 93.6% 89.7% 84.6% Gemini 3.1 Pro FPGAgent 98.7% 97.4% 92.3% 
+
+Research Questions RQ1: Can FPGAgent effectively improve the end-to-end success rate of HLS code generation, from task specification to FPGA executable genera-tion and board-level execution? This question assesses FPGAgent’s capability to produce HLS im-plementations that run correctly on real FPGA hard-ware. (Main Results) RQ2: How much do FPGAgent’s design choices con-tribute to the overall end-to-end success rate? 
+
+This question investigates how the kernel implemen-tation module and the functional reflection module affect the framework’s overall HLS code generation performance. (Ablation Study) RQ3: What are the primary sources of end-to-end failures? Which failure can FPGAgent mitigate, and which remain challenging? This question an-alyzes how FPGAgent improves HLS generation ac-curacy and motivates directions for future research. 
+
+(Failure Analysis and Discussion) 
+
+## 4.2 Benchmark 
+
+Our evaluation is conducted using the HLS-Eval dataset con-structed by Stefan et al. [1]. We use it as our primary benchmark because publicly available benchmarks for HLS code generation are still limited, while HLS-Eval offers a relatively large and well-specified evaluation benchmark (further discussion is deferred to the Threats to Validity section). The dataset contains 94 HLS de-sign benchmarks, each accompanied by a task description, a kernel header file, and an interface specification for the kernel code. These benchmarks span a wide range of application domains, including scientific computing/high-performance computing kernels, digital signal processing, cryptography, floating-point computation, and deep learning acceleration. Since the generated HLS designs must ultimately run on Xilinx FPGA hardware in our experiments, we filtered the HLS-Eval benchmarks and made minor adjustments to certain interface definitions, retaining 78 instances that conform to the Vitis HLS design conventions. 
+
+## 4.3 Implementation 
+
+We evaluate five representative general-purpose code generation models, spanning mainstream closed-source and open-source fami-lies with different parameter scales, to reflect model choices that are likely to be adopted in practical engineering settings: ChatGPT 5.2, Gemini 3.1 Pro, Claude Sonnet 4.5, DeepSeek V3.2, and Qwen3-Coder-30B-A3B. For inference configuration, given model-specific sensitivity to sampling stochasticity and their recommended set-tings, we set the temperature to 0.0 for Claude Sonnet 4.5 and DeepSeek V3.2, while using the default temperature for the other models. Except for temperature, all other sampling parameters were kept at platform defaults to better approximate real-world usage and to avoid bias introduced by extensive hyperparameter tuning. FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments Conference’17, July 2017, Washington, DC, USA 
+
+Algorithm 1 Kernel Code Implementation 
+
+Require: Task description 𝑇 𝑎𝑠𝑘 , max iterations 𝐼 max , pool size 𝑃 size ,init factor 𝑐𝑜 
+
+Ensure: Best kernel code by performance in the final kernel pool  
+
+> 1:
+
+𝑖 ← 0 // iteration counter  
+
+> 2:
+
+𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← ∅  
+
+> 3:
+
+𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ← ∅  
+
+> 4:
+
+while 𝑖 < 𝐼 max do  
+
+> 5:
+
+𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← ∅  
+
+> 6:
+
+if 𝑖 = 0 then // initial pool generation  
+
+> 7:
+
+𝑝𝑙𝑎𝑛𝑠 ← Assistant.opt_plan_selection  
+
+> 8:
+
+while |𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 | < 𝑐𝑜 · 𝑃 size do  
+
+> 9:
+
+𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒 ← Coder.kernel_generate (
+
+𝑝𝑙𝑎𝑛𝑠, 𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ) 
+
+> 10:
+
+(𝑝𝑎𝑠𝑠, 𝑙𝑜𝑔𝑠, 𝑝𝑒𝑟 𝑓 ) ←
+
+Vitis_Simulate (𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒 ) 
+
+> 11:
+
+if not 𝑝𝑎𝑠𝑠 then  
+
+> 12:
+
+𝑐𝑎𝑢𝑠𝑒 ← Assistant.analyze (𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑙𝑜𝑔𝑠 ) 
+
+> 13:
+
+𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ← 𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ∪{( 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑐𝑎𝑢𝑠𝑒 )}  
+
+> 14:
+
+end if  
+
+> 15:
+
+𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← 𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ∪{( 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑝𝑒𝑟 𝑓 )}  
+
+> 16:
+
+end while  
+
+> 17:
+
+else // evolutionary iteration  
+
+> 18:
+
+while |𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 | < 𝑃 size do  
+
+> 19:
+
+𝑝𝑎𝑟𝑒𝑛𝑡𝑠 _𝑘𝑒𝑟𝑛𝑒𝑙 ← Select (𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ) 
+
+> 20:
+
+𝑜𝑝𝑡 _𝑝𝑙𝑎𝑛𝑠 ← Explore/Modifiy (𝑝𝑎𝑟𝑒𝑛𝑡𝑠 _𝑘𝑒𝑟𝑛𝑒𝑙,𝑇 𝑎𝑠𝑘 ) 
+
+> 21:
+
+𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒 ← Coder.kernel_generate (
+
+𝑜𝑝𝑡 _𝑝𝑙𝑎𝑛𝑠, 𝑝𝑎𝑟𝑒𝑛𝑡𝑠 _𝑘𝑒𝑟𝑛𝑒𝑙 ) 
+
+> 22:
+
+(𝑝𝑎𝑠𝑠, 𝑙𝑜𝑔𝑠, 𝑝𝑒𝑟 𝑓 ) ←
+
+Vitis_Simulate (𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒 ) 
+
+> 23:
+
+if not 𝑝𝑎𝑠𝑠 then  
+
+> 24:
+
+𝑐𝑎𝑢𝑠𝑒 ← Assistant.analyise (𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑙𝑜𝑔𝑠 ) 
+
+> 25:
+
+𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ← 𝐸𝑟𝑟𝑜𝑟𝑃𝑜𝑜𝑙 ∪{( 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑐𝑎𝑢𝑠𝑒 )}  
+
+> 26:
+
+end if  
+
+> 27:
+
+𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← 𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ∪{( 𝑘𝑒𝑟𝑛𝑒𝑙 _𝑐𝑜𝑑𝑒, 𝑝𝑒𝑟 𝑓 )}  
+
+> 28:
+
+end while  
+
+> 29:
+
+end if  
+
+> 30:
+
+𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← 𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ∪ 𝑇 𝑒𝑚𝑝𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙  
+
+> 31:
+
+𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 ← Top_Psize_By_Performance (𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙, 𝑃 size ) 
+
+> 32:
+
+𝑖 ← 𝑖 + 1 
+
+> 33:
+
+end while  
+
+> 34:
+
+return Top_1_By_Performance (𝐾𝑒𝑟𝑛𝑒𝑙𝑃𝑜𝑜𝑙 )
+
+All candidate HLS kernels are compiled and synthesized using the Vitis HLS 2022.2 toolchain, which performs HLS C/C++ compi-lation, checking, and synthesis, and produces intermediate artifacts required for subsequent FPGA deployment. To validate end-to-end executability, we conduct hardware-side experiments on a Xilinx U200 FPGA platform with a target clock frequency of 200 MHz. Under this configuration, the evaluation treats the generated FPGA executable as the final deliverable. 
+
+## 5 Evaluation 5.1 RQ1: Main Results 
+
+The main experiments report the end-to-end HLS code genera-tion performance of FPGAgent across multiple models, and com-pare it against zero-shot generation. Our primary objective is to determine whether, under varying model capabilities and inference characteristics, FPGAgent can consistently improve end-to-end outcomes in terms of synthesizability, executability, and the final functional correctness. We evaluate FPGAgent with different closed-source and open-source models. To disentangle the backbone model’s inherent gener-ation ability from the systematic gains introduced by the FPGAgent framework, we consider two evaluation modes for each model: (1) Zero-shot, where the task specification is directly provided to the model to generate both the HLS kernel and host code, followed by compilation and execution of the generated design; and (2) FP-GAgent, where the same task specification is used but the full generation and verification workflow of FPGAgent is enabled. To cover different stages from HLS code to FPGA executable verification, we set three progressive metrics:(1) Synthesizable Rate: The generated code can be correctly synthesized by the toolchain, reflecting its implementability at the HLS level; (2) Executable Rate: The generated code can be compiled into an FPGA executable file (xclbin) and executed successfully, reflecting its engineering feasibility in the end-to-end build chain; (3) Functional Correctness Rate: Under the premise of execution, the executable file output meets the input task specifications, reflecting the final end-to-end functional satisfaction. In the experiment, the kernel pool size in the FPGAgent kernel code implementation was set to 2 (the initial kernel pool size was 4), and the number of iteration rounds was set to 3. To ensure fairness at the sampling level, we calculated the pass@10 success rate of the above metrics for zero-shot generation. Table 1 shows our experimental results. Overall, despite being a training-free framework, FPGAgent achieves consistent and robust performance improvements across all backbone models. Compared with the zero-shot baseline, FPGA-gent improves synthesizability by 16.9% on average, executability by 26.7%, and functional correctness by 30.6%. Notably, while FPGA-gent yields gains for both closed-source and open-source models of different scales, the magnitude of improvement varies by model. With Gemini 3.1 Pro, FPGAgent achieves the highest functional correctness of 92.3%; for other large-scale models, the functional correctness reaches 78–85%; and for the medium-sized open-source model Qwen3-Coder-30B-A3B, FPGAgent still attains 66.7% func-tional correctness. These results indicate that the framework is not only effective for high-capability proprietary models, but also sub-stantially enhances the practicality and feasibility of medium-sized open-source models for HLS generation. Meanwhile, we observe that zero-shot HLS generation exhibits substantial variability in performance: it may occasionally produce implementations comparable to human-written code, but can also yield designs with excessive latency or resource consumption. In contrast, FPGAgent improves generation stability—over successive iterations, the resulting HLS designs tend to progressively improve and eventually converge to a reasonable performance regime. This Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+Table 2: Ablation study of different components in FPGAgent. 
+
+Variants Kernel Evolution Optimization Functional Reflection Synthesizable Rate Executable Rate Functional Correctness Rate FPGAgent_base ✗ ✗ 59.0% 47.4% 37.2% FPGAgent_eoh ✓ ✗ 80.1% (+17) 66.7% (+15) 48.7% (+9) FPGAgent_reflect ✗ ✓ 57.7% (-1) 50.0% (+2) 46.2% (+7) FPGAgent_full ✓ ✓ 83.3% (+19) 75.6% (+22) 66.7% (+23) 
+
+observation partially explains why FPGAgent increases both syn-thesizability and executability. In summary, FPGAgent significantly improves end-to-end HLS generation quality under diverse model configurations: it increases the proportion of synthesizable designs, improves the likelihood of successfully building xclbin artifacts and executing them on hardware, and ultimately yields higher functional correctness. This demonstrates that FPGAgent’s end-to-end workflow effectively advances HLS code generation beyond simulation and synthesis validation toward runnable deployment in real FPGA environments. 
+
+## 5.2 RQ2: Ablation Study 
+
+In the ablation experiment, we analyze the contribution of each key module of the FPGAgent to the end-to-end HLS code generation effect. We constructed four variants to isolate two key components of FPGAgent: the kernel evolution optimization module (Eoh) and the kernel functional reflection module (Reflect). FPGAgent_base: Serving as an ablation baseline, removes Eoh and Reflect, retaining only the zero-shot kernel generation with RAG (containing HLS optimization instructions/official documenta-tion snippets in the context), and the subsequent host code genera-tion and FPGA program execution modules; FPGAgent_eoh: Adds Eoh to FPGAgent_base. This module employs an optimization strategy based on evolutionary algorithms and utilizes a multi-level feedback mechanism to guide the model in learning design exper-tise; FPGAgent_reflect: Adds Reflect to FPGAgent_base. This module verifies the functional correctness of the kernel, locates potential errors and derives repair strategies; FPGAgent_full: The complete method, enabling both Eoh and Reflect. The ablation experiment used Qwen3-Coder-30B-A3B as the base model. Since Eoh triggers multiple kernel generation, to en-sure fair comparisons between different variants, we used pass@10 as the primary evaluation metric for FPGAgent_base and FPGA-gent_reflect to match the multi-candidate search characteristics introduced by Eoh. (1) Basic Capability of the Agentless Workflow: FPGAgent_base successfully solves 29 instances in the test set, outperforming pure zero-shot generation. This result suggests that incorporating de-sign guidelines and pragma-based optimization directives from the official Vitis HLS documentation as contextual information can improve HLS generation success to a certain extent. (2) Improved Capability of the Kernel Evolution Optimization Component: After introducing Eoh, FPGAgent_eoh exhibits sub-stantial gains in synthesizability, executability, and functional cor-rectness. Specifically, it solves 9 more instances than FPGAgent_base (a relative improvement of 31.0%), indicating that iterative evolu-tionary refinement is crucial for improving the quality of generated HLS code (as shown in Table 2). (3) Improved Capability of the Kernel Functional Reflection Com-ponent: With Reflect enabled, FPGAgent_reflect effectively increases the functional correctness of generated kernels without degrading synthesizability or executability. In particular, it solves 8 more instances than FPGAgent_base (a relative improvement of 27.6%) (see Table 2). This aligns with the module’s design intent: by localizing and repairing functional defects, Reflect helps the model overcome the common failure mode where code is runnable but produces incorrect results. (4) Full Capability of the Complete Workflow: Although Eoh and Reflect each provide significant improvements, the results indicate that relying on a single component is insufficient to fully realize FPGAgent’s potential. Using Eoh only (FPGAgent_eoh): without strong feedback on functional correctness during optimiza-tion, the system may produce kernels that compile and perform well but are functionally incorrect, which limits end-to-end perfor-mance. Using Reflect only (FPGAgent_reflect): its verification is primarily conducted at the C/C++ level and is not tightly cou-pled to the semantics of the backend hardware implementation, making it difficult to ensure hardware-level correctness and, conse-quently, end-to-end executability. In contrast, the complete system FPGAgent_full solves 52 benchmark instances, substantially out-performing all other variants. Overall, the ablation results indicate that: (1) adding design guide-lines and pragma-based optimization directives to the prompt con-text improves HLS generation success; (2) kernel evolution opti-mization module (Eoh) is a key driver for synthesizability, exe-cutability, and build robustness; (3) kernel functional reflection module (Reflect) primarily improves functional correctness; (4) both modules are indispensable and act synergistically in FPGAgent, yielding the highest end-to-end success rate. 
+
+## 5.3 RQ3: Failure Analysis and Discussion 
+
+To further investigate the root causes of HLS generation fail-ures and to provide a principled explanation for why FPGAgent improves generation accuracy, we perform a statistical analysis of end-to-end failures in producing FPGA executables (i.e., xclbin + host executable) observed during the experiments. We catego-rize these failures into three types—Error_Kernel, Error_Functional, and Error_Host—and summarize their distributions across different backbone models in Figure 5. 
+
+1) Error_Kernel: Refers to errors/non-compliance in the gener-ated kernel code, causing the end-to-end process to fail. It manifests in two typical scenarios: (1) All candidate kernels in the kernel pool fail the simulation test (i.e., Vitis HLS hw_emu mode), indicating de-fects at the syntactic or functional level; (2) The selected best kernel can pass hw_emu simulation but cannot be successfully compiled into an FPGA executable (xclbin), suggesting unreasonable design FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments Conference’17, July 2017, Washington, DC, USA 
+
+Figure 5: Error Distribution Across Different Models 
+
+choices at the timing, micro-architectural, or implementation level. For the latter case, the dominant cause is not syntax errors but inef-ficient kernel implementations, which may trigger timing-closure failures or resource exhaustion during the hardware build stage, ultimately preventing deployment. 
+
+Causes of the "Error_Kernel" 
+
+Insufficient task understanding and programming capabil-ity of the backbone model is a major cause to Error_Kernel, and the gap across models is pronounced. Our statistics indicate that when using Qwen3-Coder-30B-A3B as the kernel-generation model, 18 instances fail due to Error_Kernel; in contrast, for stronger frontier LLMs (DeepSeek V3.2, ChatGPT 5.2, Gemini 3.1 Pro, and Claude Sonnet 4.5), the numbers decrease to 7, 7, 2, and 5, respectively (Figure 5). This disparity suggests that, for HLS generation, the backbone model’s fundamental capabil-ity substantially affects the synthesizability/implementability of generated kernels. Moreover, we observe that the evolutionary kernel-optimization component in FPGAgent markedly reduces the incidence of Er-ror_Kernel. Under zero-shot generation with Qwen3-Coder-30B-A3B, Error_Kernel occurs 29 times; when enabling FPGAgent_eoh, the count drops to 17 (see Table 3). This result indicates that, for open-source models with weaker base capabilities, iterative re-finement and optimization strategies can effectively improve the synthesizability/implementability of generated kernels. 
+
+2) Error_Functional: Denotes cases where the generated HLS design can be compiled into an xclbin and executed on FPGA hard-ware, yet the produced outputs deviate from the expected results. 
+
+Notable “Hardware Mismatch” Failure 
+
+Some generated HLS kernels produce correct outputs in simulation but produce inconsistent outputs after deploy-ment on real FPGAs. This failure mode motivates our hardware-aware prompting and reinforces the need for end-to-end executable verification. Our analysis suggests that this discrepancy mainly stems from a semantic gap between software-level code behavior and hardware-level implementation. In particular, stack-allocated arrays and re-lated memory accesses may behave as expected under standard 
+
+Table 3: Error analysis of FPGAgent variants.                     
+
+> Variant Total Kernel Functional Host FPGAgent_base 49 29 15 5FPGAgent_eoh 40 17 19 4FPGAgent_reflect 42 31 56FPGAgent_full 26 16 73
+
+C/C++ semantics, but after HLS inference and optimization into on-chip memories such as BRAM or URAM, the resulting hardware behavior may deviate from simulation. Similarly, some HLS prag-mas, such as dataflow, impose structural constraints that are not fully captured by conventional simulation; when used improperly, they can also trigger hardware-only functional failures. To mitigate such “hardware mismatch” failures, FPGAgent ex-plicitly injects a set of empirically collected canonical error cases into the prompt context during kernel generation, including erro-neous code snippets, root-cause analyses, and corresponding repair strategies, to discourage the model from repeating mistakes. Our statistics indicate that this strategy is effective: for Qwen3-Coder-30B-A3B, after adding these prompts, inconsistency occurs in only one test case, compared to ten before the prompts were introduced. 
+
+Functional Repair Bottleneck 
+
+The Functional Reflection module does not fully repair all failing instances, especially on some complex tasks. Such cases constitute a major bottleneck for further improving end-to-end success rate. We hypothesize that, for more complex benchmarks, the model may be unable to accurately localize the root cause using only input–output discrepancies (e.g., issues involving boundary condi-tions, state dependencies, or subtle data-layout effects), which limits its ability to derive effective fixes. These motivate an important direction for future work: integrating more interpretable and fine-grained feedback mechanisms to enhance the model’s capability to repair functional defects in complex task settings. 
+
+3) Error_Host: Refers to failures that occur during FPGA pro-gram execution due to defects in the host-side code or misconfigura-tions of the runtime. Such errors are tightly coupled to engineering details, including the Vitis runtime, Xilinx platform configuration, and host–kernel interface binding (e.g., the definition of kernel-argument buffer objects and the choice of data-transfer mecha-nisms). These issues typically arise during compilation and runtime execution, and their manifestations are highly dependent on the target deployment environment. To address Error_Host, FPGAgent adopts a combined strategy of contextual constraints and error-feedback-driven repair, including: (1) explicitly injecting canonical failure cases and correct reference implementations into the prompt context to steer the model away from high-risk coding patterns; (2) when execution failures occur, diagnosing root causes from runtime logs and feeding actionable repair suggestions back to the model to iteratively fix the host program. Experimental results demonstrate the effectiveness of this strategy: as shown in Figure 5, we can find that Error_Host becomes rare in the final outcomes. In summary, FPGAgent reduces kernel non-implementability via its evolutionary optimization module, mitigates board-level Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+semantic mismatches through functional error feedback and con-textualized error exemplars, and lowers the platform-dependent integration failures through log-driven host repair. These mecha-nisms provide a principled explanation for the observed improve-ments in end-to-end success rate and functional correctness for HLS code generation. 
+
+## 6 Threats to Validity 
+
+Internal Validity. Our primary experiments are conducted on the HLS-Eval benchmark, which introduces a potential threat to validity: reliance on a single benchmark may bias the reported re-sults. We focus on HLS-Eval because well-established benchmarks for LLM-assisted HLS remain limited; among the available options, HLS-Eval provides a well-specified interface and non-trivial scale, and it spans a broad and diverse set of common HLS application domains—including scientific computing/HPC kernels, digital sig-nal processing, cryptography, floating-point computation, and deep learning acceleration—which partially mitigates the uncertainty induced by a single task distribution. We also note that more re-cently studies have begun to introduce larger-scale benchmarks, or benchmarks that emphasize end-to-end evaluation, specifically for the “LLM-assisted HLS” setting (e.g., Bench4HLS [12]). In future work, we plan to leverage these benchmarks to further validate the performance of FPGAgent. 
+
+External Validity. The end-to-end generation of FPGA exe-cutables may introduce tight coupling between the framework and a particular software/hardware stack: We acknowledge that exe-cutable generation is inherently hardware-dependent—especially for the host-side code, whose implementation patterns often de-pend on the target device and the configuration of the runtime stack. Consequently, when porting to different environments, it may be necessary to adapt the prompting strategy or interface templates used for host-code generation. Meanwhile, we empha-size that a central objective of FPGAgent is to improve the quality of kernel-side HLS generation. The kernel’s functional logic is di-rectly determined by the task specification; accordingly, our kernel-generation procedure strictly adheres to Vitis HLS design principles and synthesizability constraints. As a result, platform dependence is primarily concentrated in the host-code generation/compilation stage, whereas the kernel generation and verification mechanism is broadly applicable across platforms. 
+
+Efficiency and Cost Validity. FPGAgent employs an iterative architecture that combines evolutionary search with multi-level error feedback. Compared to the zero-shot or few-shot generation paradigm commonly used with LLMs, this design may incur higher time overhead: In our end-to-end workflow, we observe that the dominant bottleneck is neither LLM inference nor kernel simula-tion/validation, but rather the hardware build stage for generating the xclbin bitstream. This stage typically takes approximately 3–5 hours, which is substantially longer than the tens of minutes re-quired for kernel synthesizability checks and other lightweight steps. To control the overall time cost, we adopt a one-shot xclbin generation strategy for each test case: before entering the most expensive xclbin build stage, we perform low-cost synthesis and screening at the kernel level to maximize candidate quality and success likelihood, thereby avoiding the prohibitive overhead of repeatedly rebuilding hardware across multiple trials. 
+
+## 7 Related Work 
+
+Benchmark Building. A major line of recent work focuses on benchmarking and evaluation infrastructure for LLM-generated HLS code. HLS-Eval and Bench4HLS [1, 12] establish end-to-end evaluation frameworks that cover parsing, compilation, simulation, and synthesis. These benchmarks are important because they move evaluation beyond text similarity and toward executable correct-ness and synthesizability. However, most evaluations still stop at the toolchain level (e.g., C-simulation/co-simulation/synthesis re-ports), rather than validating the generated designs in a real FPGA deployment workflow [12, 19]. 
+
+Indirect Generation. Another active direction is LLM-driven HLS generation, refactoring, and repair. Prior work has explored converting software-oriented C/C++ into HLS-compatible imple-mentations, refactoring code for HLS friendliness, and repairing non-synthesizable programs via LLM-guided transformations [33, 36, 37]. These methods demonstrate that LLMs can automate a substantial fraction of the manual engineering effort required for HLS adoption. Related efforts also show that HLS can serve as a bridge for downstream RTL generation, where LLMs first gener-ate HLS-friendly C/C++ and then rely on Vitis HLS to produce RTL, improving pass rates over direct RTL generation [11, 14, 29]. A key limitation of these approaches is that they do not support end-to-end code generation: the design specification must first be translated into C/C++ code, which can further introduce additional design and verification overhead. 
+
+Performance Optimization. A complementary research thread targets optimization and directive/pragma generation, which is crucial for HLS quality-of-results (QoR). Recent work uses LLMs (sometimes combined with graph models, retrieval augmentation, or iterative search) to insert or optimize HLS directives such as pipelining, unrolling, and array partitioning [24, 34, 38]. These approaches significantly improve latency/resource tradeoffs, but they are often evaluated primarily on synthesis-level QoR metrics. In contrast, fewer works examine whether QoR-driven transfor-mations remain robust under a stricter correctness criterion that includes executable hardware behavior on a target FPGA platform. 
+
+Agentic Workflow. More recent systems have incorporated agentic workflows into the high-level synthesis (HLS) pipeline. In such workflows, large language models (LLMs) iteratively refine and optimize code by leveraging feedback signals from compilers, simulators, and synthesis logs [21, 22]. These approaches align well with established HLS toolchains (e.g., Vitis HLS) and support multi-round repair and optimization, demonstrating promising potential. Nevertheless, existing work exhibits notable limitations. Timely HLS [21] has been evaluated across multiple FPGA architectures, yet its validation remains confined to the Vivado simulation level, with comparatively limited consideration of board-level execution, deployment readiness, and end-to-end runnability. LAAFD [22] val-idates HLS performance on the xcu250-figd2104-2L FPGA platform; however, it primarily focuses on translating and optimizing HLS from pre-existing C++ implementations, and it lacks experimental validation on well-established benchmark. FPGAgent: An LLM-Assisted Framework for Autonomous HLS Code Generation and Verification in FPGA Environments Conference’17, July 2017, Washington, DC, USA 
+
+## 8 Conclusion and Future Work 
+
+In this paper, we present FPGAgent, an end-to-end framework for generating FPGA executables through the coordinated collabo-ration of multiple AI agents. Given a high-level task specification, FPGAgent can automatically produce HLS code and invoke the industry-standard HLS toolchain to complete simulation, synthesis, and final executable generation. The framework incorporates an evolutionary-search-driven module for FPGA kernel generation, and further introduces an error analysis and feedback module to verify and improve the functional correctness of the generated code. Experimental results demonstrate that FPGAgent substan-tially increases the accuracy of HLS code generation: compared with zero-shot baselines, it achieves an average improvement of 30.6%, and attains up to 92.3% accuracy when using Gemini 3.1 Pro. Future work will primarily focus on improving kernel perfor-mance—specifically, reducing latency and improving resource uti-lization—while preserving executability and functional correct-ness. In addition, we plan to explore task-specific fine-tuning for HLS, with the goal of enabling more accurate, efficient, and high-performance HLS code generation. 
+
+## 9 Data Availability Statement 
+
+The source code, scripts, benchmark instance list, and documenta-tion needed to reproduce the main results will be available upon the acceptance of this paper. Due to hardware/toolchain dependencies (Xilinx FPGA board and Vitis HLS environment), full end-to-end hardware execution may require specialized resources. 
+
+## References 
+
+[1] Stefan Abi-Karam and Cong Hao. 2025. HLS-Eval: A Benchmark and Frame-work for Evaluating LLMs on High-Level Synthesis Design Tasks. In 2025 IEEE International Conference on LLM-Aided Design (ICLAD) . IEEE, 219–226. [2] Ahmed Allam and Mohamed Shalan. 2024. Rtl-repo: A benchmark for evaluating llms on large-scale rtl design projects. In 2024 IEEE LLM Aided Design Workshop (LAD) . IEEE, 1–5. [3] Jason Blocklove, Siddharth Garg, Ramesh Karri, and Hammond Pearce. 2023. Chip-chat: Challenges and opportunities in conversational hardware design. In 
+
+2023 ACM/IEEE 5th Workshop on Machine Learning for CAD (MLCAD) . IEEE, 1–6. [4] Kaiyan Chang, Kun Wang, Nan Yang, Ying Wang, Dantong Jin, Wenlong Zhu, Zhirong Chen, Cangyuan Li, Hao Yan, Yunhao Zhou, et al. 2024. Data is all you need: Finetuning llms for chip design via an automated design-data augmentation framework. In Proceedings of the 61st ACM/IEEE Design Automation Conference .1–6. [5] Kaiyan Chang, Wenlong Zhu, Kun Wang, Xinyang He, Nan Yang, Zhirong Chen, Dantong Jin, Cangyuan Li, Yunhao Zhou, Hao Yan, et al. 2025. A data-centric chip design agent framework for Verilog code generation. ACM Transactions on Design Automation of Electronic Systems 30, 6 (2025), 1–27. [6] Luca Collini, Siddharth Garg, and Ramesh Karri. 2025. C2hlsc: Leveraging large language models to bridge the software-to-hardware design gap. ACM Transac-tions on Design Automation of Electronic Systems 30, 6 (2025), 1–24. [7] Luca Collini, Andrew Hennessee, Ramesh Karri, and Siddharth Garg. 2025. Can reasoning models reason about hardware? an agentic hls perspective. In 2025 IEEE International Conference on LLM-Aided Design (ICLAD) . IEEE, 188–194. [8] Wenji Fang, Wenkai Li, Shang Liu, Yao Lu, Hongce Zhang, and Zhiyao Xie. 2025. Nettag: A multimodal rtl-and-layout-aligned netlist foundation model via text-attributed graph. In 2025 62nd ACM/IEEE Design Automation Conference (DAC) .IEEE, 1–7. [9] Farshad Firouzi, David Z Pan, Jiaqi Gu, Bahar Farahani, Jayeeta Chaudhuri, Ziang Yin, Pingchuan Ma, Peter Domanski, and Krishnendu Chakrabarty. 2025. Chipmnd: Llms for agile chip design. In 2025 IEEE 43rd VLSI Test Symposium (VTS) . IEEE, 1–10. [10] Jiahao Gai, Hao Chen, Zhican Wang, Hongyu Zhou, Wanru Zhao, Nicholas Lane, and Hongxiang Fan. 2025. Exploring code language models for auto-mated hls-based hardware generation: Benchmark, infrastructure and analysis. In Proceedings of the 30th Asia and South Pacific Design Automation Conference .988–994. [11] Hanxian Huang, Zhenghan Lin, Zixuan Wang, Xin Chen, Ke Ding, and Jishen Zhao. 2024. Towards llm-powered verilog rtl assistant: Self-verification and self-correction. arXiv preprint arXiv:2406.00115 (2024). [12] M Khan, Kimia Azar, and Hadi Kamali. 2026. Bench4HLS: End-to-End Evaluation of LLMs in High-Level Synthesis Code Generation. arXiv preprint arXiv:2601.19941 
+
+(2026). [13] M Zafir Sadik Khan, Nowfel Mashnoor, Mohammad Akyash, Kimia Azar, and Hadi Kamali. 2025. Sage-hls: Syntax-aware ast-guided llm for high-level synthesis code generation. In 2025 IEEE 43rd International Conference on Computer Design (ICCD) . IEEE, 574–581. [14] Yuchao Liao, Tosiron Adegbija, and Roman Lysecky. 2024. Are llms any good for high-level synthesis?. In Proceedings of the 43rd IEEE/ACM International Confer-ence on Computer-Aided Design . 1–8. [15] Fei Liu, Xialiang Tong, Mingxuan Yuan, Xi Lin, Fu Luo, Zhenkun Wang, Zhichao Lu, and Qingfu Zhang. 2024. Evolution of heuristics: Towards efficient automatic algorithm design using large language model. arXiv preprint arXiv:2401.02051 
+
+(2024). [16] Mingjie Liu, Nathaniel Pinckney, Brucek Khailany, and Haoxing Ren. 2023. Ver-ilogeval: Evaluating large language models for verilog code generation. In 2023 IEEE/ACM International Conference on Computer Aided Design (ICCAD) . IEEE, 1–8. [17] Shang Liu, Wenji Fang, Yao Lu, Jing Wang, Qijun Zhang, Hongce Zhang, and Zhiyao Xie. 2024. Rtlcoder: Fully open-source and efficient llm-assisted rtl code generation technique. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems 44, 4 (2024), 1448–1461. [18] Shang Liu, Yao Lu, Wenji Fang, Mengming Li, and Zhiyao Xie. 2024. Openllm-rtl: Open dataset and benchmark for llm-aided design rtl generation. In Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design . 1–9. [19] Tianyang Liu, Qi Tian, Jianmin Ye, LikTung Fu, Shengchu Su, Junyan Li, Gwok-Waa Wan, Layton Zhang, Sam-Zaak Wong, Xi Wang, et al. 2024. Chatchisel: Enabling agile hardware design with large language models. In 2024 2nd Interna-tional Symposium of Electronics Design Automation (ISEDA) . IEEE, 710–716. [20] Yao Lu, Shang Liu, Qijun Zhang, and Zhiyao Xie. 2024. Rtllm: An open-source benchmark for design rtl generation with large language model. In 2024 29th Asia and South Pacific Design Automation Conference (ASP-DAC) . IEEE, 722–727. [21] Nowfel Mashnoor, Mohammad Akyash, Hadi Kamali, and Kimia Azar. 2025. Time-lyhls: Llm-based timing-aware and architecture-specific fpga hls optimization. In 2025 IEEE International Conference on Omni-layer Intelligent Systems (COINS) .IEEE, 1–6. [22] Maxim Moraru, Kamalavasan Kamalakkannan, Jered Dominguez-Trujillo, Patrick Diehl, Atanu Barai, Julien Loiseau, Zachary Kent Baker, Howard Pritchard, and Galen M Shipman. 2026. LAAFD: LLM-based Agents for Accelerated FPGA Design. arXiv preprint arXiv:2602.06085 (2026). [23] Nathaniel Pinckney, Chenhui Deng, Chia-Tung Ho, Yun-Da Tsai, Mingjie Liu, Wenfei Zhou, Brucek Khailany, and Haoxing Ren. 2025. Comprehensive Verilog design problems: A next-generation benchmark dataset for evaluating large language models and agents on rtl design and verification. arXiv preprint arXiv:2506.14074 (2025). [24] Neha Prakriya, Zijian Ding, Yizhou Sun, and Jason Cong. 2025. LIFT: LLM-based pragma insertion for HLS via GNN supervised fine-tuning. arXiv preprint arXiv:2504.21187 (2025). [25] E Bhawani Eswar Reddy, Sutirtha Bhattacharyya, Ankur Sarmah, Fedrick Nong-poh, Karthik Maddala, and Chandan Karfa. 2025. Lhs: Llm assisted efficient high-level synthesis of deep learning tasks. ACM Transactions on Design Automa-tion of Electronic Systems 30, 6 (2025), 1–27. [26] Sneha Swaroopa, Rijoy Mukherjee, Anushka Debnath, and Rajat Subhra Chakraborty. 2025. Evaluating Large Language Models for Automatic Register Transfer Logic Generation for Combinational Circuits via High-Level Synthesis. 
+
+Foundatiosn and Trends in Electronic Design Automation 14, 4 (2025), 295–314. [27] Shailja Thakur, Baleegh Ahmad, Hammond Pearce, Benjamin Tan, Brendan Dolan-Gavitt, Ramesh Karri, and Siddharth Garg. 2024. Verigen: A large language model for verilog code generation. ACM Transactions on Design Automation of Electronic Systems 29, 3 (2024), 1–31. [28] Shailja Thakur, Jason Blocklove, Hammond Pearce, Benjamin Tan, Siddharth Garg, and Ramesh Karri. 2023. Autochip: Automating hdl generation using llm feedback. arXiv preprint arXiv:2311.04887 (2023). [29] Prashanth Vijayaraghavan, Apoorva Nitsure, Charles Mackin, Luyao Shi, Stefano Ambrogio, Arvind Haran, Viresh Paruthi, Ali Elzein, Dan Coops, David Beymer, et al. 2024. Chain-of-descriptions: Improving code llms for vhdl code generation and summarization. In Proceedings of the 2024 ACM/IEEE International Symposium on Machine Learning for CAD . 1–10. [30] Paola Vitolo, George Psaltakis, Michael Tomlinson, Gian Domenico Licciardo, and Andreas G Andreou. 2024. Natural language to verilog: Design of a recur-rent spiking neural network using large language models and chatgpt. In 2024 International Conference on Neuromorphic Systems (ICONS) . IEEE, 110–116. [31] Xi Wang, Gwok-Waa Wan, Sam-Zaak Wong, Layton Zhang, Tianyang Liu, Qi Tian, and Jianmin Ye. 2024. Chatcpu: An agile cpu design and verification platform with llm. In Proceedings of the 61st ACM/IEEE Design Automation Conference . 1–6. Conference’17, July 2017, Washington, DC, USA Tianyu Wang, Wenjie Wang, Jianguo Yao, Haibing Guan, and Xijun Li 
+
+[32] Yiting Wang, Guoheng Sun, Wanghao Ye, Gang Qu, and Ang Li. 2025. Verireason: Reinforcement learning with testbench feedback for reasoning-enhanced verilog generation. arXiv preprint arXiv:2505.11849 (2025). [33] Chenwei Xiong, Cheng Liu, Huawei Li, and Xiaowei Li. 2024. Hlspilot: Llm-based high-level synthesis. In Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design . 1–9. [34] Haocheng Xu, Haotian Hu, and Sitao Huang. 2024. Optimizing high-level synthe-sis designs with retrieval-augmented large language models. In 2024 IEEE LLM Aided Design Workshop (LAD) . IEEE, 1–5. [35] Kangwei Xu, Bing Li, Grace Li Zhang, and Ulf Schlichtmann. 2025. HLSTester: Efficient Testing of Behavioral Discrepancies with LLMs for High-Level Synthesis. In 2025 IEEE/ACM International Conference On Computer Aided Design (ICCAD) .IEEE, 1–9. [36] Kangwei Xu, Grace Li Zhang, Xunzhao Yin, Cheng Zhuo, Ulf Schlichtmann, and Bing Li. 2024. Automated c/c++ program repair for high-level synthesis via large language models. In Proceedings of the 2024 ACM/IEEE International Symposium on Machine Learning for CAD . 1–9. [37] Kangwei Xu, Grace Li Zhang, Xunzhao Yin, Cheng Zhuo, Ulf Schlichtmann, and Bing Li. 2025. HLSRewriter: Efficient Refactoring and Optimization of C/C++ Code with LLMs for High-Level Synthesis. ACM Transactions on Design Automation of Electronic Systems (2025). [38] Xufeng Yao, Wenqian Zhao, Qi Sun, Cheng Zhuo, and Bei Yu. 2025. High-level synthesis directives design optimization via large language model. ACM Transactions on Design Automation of Electronic Systems 30, 5 (2025), 1–24. [39] Yuxuan Yin, Yu Wang, Boxun Xu, and Peng Li. 2024. Ado-llm: Analog design bayesian optimization with in-context learning of large language models. In 
+
+Proceedings of the 43rd IEEE/ACM International Conference on Computer-Aided Design . 1–9. [40] Haoyi Zhang, Shizhao Sun, Yibo Lin, Runsheng Wang, and Jiang Bian. 2025. Analogxpert: Automating analog topology synthesis by incorporating circuit design expertise into large language models. In 2025 International Symposium of Electronics Design Automation (ISEDA) . IEEE, 772–777. [41] Niansong Zhang, Sunwoo Kim, Shreesha Srinath, and Zhiru Zhang. 2026. From Pragmas to Partners: A Symbiotic Evolution of Agentic High-Level Synthesis. 
+
+arXiv preprint arXiv:2602.01401 (2026).
