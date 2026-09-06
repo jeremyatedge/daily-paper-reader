@@ -1,0 +1,1161 @@
+Title: A Smallest-Need-First Job Scheduling Framework with Adaptive Optimization of Idle Node Counts for Energy-Efficient HPC Systems
+
+URL Source: https://arxiv.org/pdf/2608.29656v1
+
+Published Time: Tue, 01 Sep 2026 01:33:52 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+> 1
+
+# A Smallest-Need-First Job Scheduling Framework with Adaptive Optimization of Idle Node Counts for Energy-Efficient HPC Systems 
+
+Reza Pulungan, Raka Satya Prasasta, Santana Yuda Pradata, Mursalim, Hiroyuki Takizawa, Muhammad Alfian Amrizal 
+
+Abstract —Power-state management in high-performance com-puting (HPC) clusters must reduce idle energy without excessive wake-up delays for rigid parallel jobs. This paper presents SNF-ICON, an event-driven controller combining smallest-need-first (SNF) gang scheduling, predictive wake timing, and adaptive warm-spare control. At each scheduler invocation, recent interar-rival and completed-service samples are screened for sufficiency, exponential-like variability, low lag-one autocorrelation, and ac-ceptable Kolmogorov–Smirnov distance. Rejected or data-sparse windows use SNF+IPM (Intelligent Power Manager), whereas accepted windows activate release prediction and an exponential next-event model. Warm-spare optimization is applied only when queue, event, and arrival-recency conditions permit, balancing estimated waiting and non-compute energy over a timeout-capped horizon. We evaluate four DAS2 trace segments and a generated Markovian workload on AOBA-derived 64-node models, plus SDSC Blue on an AOBA-derived 1152-node model. SNF-ICON is compared with SNF+IPM and First Come First Served (FCFS) + backfilling with IPM. It reduces average waiting time relative to the FCFS-based baseline in all six cases and remains close to at least one heuristic energy baseline in five. The generated workload spends substantial time in ICON mode, whereas DAS2 workloads operate mainly in fallback. Furthermore, cross-platform results show strong dependence on node-transition and power models. Thus, no single policy or parameter set works best in every case. 
+
+Index Terms —High-performance computing, energy-aware scheduling, gang scheduling, power-state management, smallest-need-first scheduling, stochastic spare capacity, workload screen-ing, runtime prediction, fallback control. 
+
+I. I NTRODUCTION 
+
+# HIGH-performance computing (HPC) systems use large amounts of energy, and a single installation may require 20 MW or more. At the German HPC centers surveyed by Suarez et al. [1], electricity and cooling made up between 12% and 50% of the systems’ total cost of ownership. One source of avoidable energy use is idle compute capacity: nodes may stay powered on for long periods without running jobs. Energy-aware HPC schedulers therefore often use dynamic 
+
+R. Pulungan, S. Y. Pradata, Mursalim, and M. A. Amrizal are with the Department of Computer Science and Electronics, Universitas Gadjah Mada, Yogyakarta, Indonesia. R. S. Prasasta is with the Faculty of Industrial Technology, Universitas Ahmad Dahlan, Yogyakarta, Indonesia. H. Takizawa is with the Cyberscience Center, Tohoku University, Miyagi, Japan. This work has been submitted to the IEEE Transactions on Parallel and Distributed Systems for possible publication. 
+
+power management, such as lowering operating frequencies or switching off idle nodes [2]. Production systems have also shown that idle-node power management can save substantial energy. At the J¨ ulich Su-percomputing Centre, the Slurm workload manager [3] was configured to power down idle nodes. After this change, the annual electricity use of the JUSUF system fell from about 660 MWh in 2022 to 495 MWh in 2023, a reduction of 25% [1]. This result shows the practical value of controlling node power states. It also raises an important question: how many nodes can be switched off without making jobs wait too long? Switching off too many nodes can increase job waiting time because a sleeping node must wake before it can run a job. Keeping too many nodes active reduces this delay but wastes energy while they are idle. This trade-off is especially important for rigid parallel, or gang-scheduled, jobs. A job that requests r nodes can start only when all r nodes are available at the same time. Job order and node power states should therefore be managed together [4]–[6]. Existing methods include idle-timeout rules [7], [8], reinforcement-learning controllers [9], [10], and scheduler– power-manager heuristics [11], [12]. Learning-based con-trollers can learn complex switch-on and switch-off actions, but they have several practical difficulties. Their reward must balance waiting time and energy, training needs a large amount of data and interaction, and the learned policy may work poorly when the workload or data quality changes [13]– [15]. PSAS+IPM [16] avoids offline training by using clear scheduling and power-management rules, but it still uses First Come First Served (FCFS) with Extensible Argonne Schedul-ing sYstem (EASY) backfilling [17], [18]. EASY backfilling is an aggressive backfilling policy in which later jobs may fill gaps in the schedule, provided that they do not delay the reserved start time of the head-of-queue job. The scheduling method matters because power manage-ment cannot remove delays caused by job order. In a large multiserver-job model, Hong and Wang [19], [20] showed that FCFS mean waiting time grows worse than a lower bound that applies to all policies, while Smallest-Need-First (SNF) reaches that lower bound in growth rate. Their theorem does not directly cover EASY backfilling, finite non-preemptive HPC traces, or node wake-up times. Even so, it gives a clear reason to compare an SNF-based scheduler with an FCFS-based scheduler. In this paper, a job’s need is its requested arXiv:2608.29656v1 [cs.DC] 30 Aug 2026 2
+
+node count, and jobs are not preempted. Changing the queue order does not solve the power-state problem by itself. A method such as PSAS+IPM can plan node transitions for queued jobs, but it uses requested runtimes, which may differ greatly from actual runtimes [17], [21]. Planning for queued jobs also does not decide how much capacity should remain ready for future jobs. With perfect fu-ture information, a controller could wake exactly the required nodes so that they become ready when the next job arrives. In practice, future arrival times and node requests are unknown. The controller must therefore choose how many warm spare nodes to keep: too few cause wake-up delay, while too many waste idle energy. This paper proposes SNF-ICON, an event-driven method that combines SNF scheduling, predicted wake times for queued jobs, and adaptive control of warm spare nodes for future jobs. Its main decision is the number of spare nodes to keep ready. The one-step calculation assumes exponential times between arrivals and completions, but real workloads do not follow this model at all times. We therefore check recent interarrival and completed-service data before using the calculation. When the recent data pass the check, the ICON controller predicts job releases and selects a warm-spare target. When the data fail the check, or there are too few samples, the system uses the SNF+IPM fallback. This limits model-based planning to periods when the recent workload fits the model closely enough. Furthermore:  
+
+> •
+
+We compare SNF with FCFS+backfilling-based power-management methods for rigid parallel jobs, motivated by a theoretical result on mean waiting time for multiserver jobs.  
+
+> •
+
+We develop a one-step method for choosing how many warm spare nodes to keep ready.  
+
+> •
+
+We define a fallback rule that uses SNF+IPM when recent data fail the workload check or contain too few samples. ICON-specific release prediction and spare-node selection are used only when the recent data pass the check.  
+
+> •
+
+We predict job runtimes using an adaptive log ratio of actual to requested runtime. For running jobs, we estimate the remaining time with a conditional log-normal model. We combine these predictions with EMA estimates of arrival rate, service rate, and requested-node counts.  
+
+> •
+
+We evaluate the method against FCFS/B+IPM and SNF+IPM, including analyses of the workload check, fallback, arrival-recency gate, platform, workload, param-eters, and large-job waiting time. The rest of the paper reviews related power-management methods, explains the choice of SNF and warm spare nodes, defines the system model and SNF-ICON method, and presents the implementation and evaluation. II. B ACKGROUND AND MOTIVATION 
+
+A. Power management above the batch scheduler 
+
+Switching off an idle node can save energy, but switching it off and waking it later also takes time and energy. A common rule is an idle timeout: a node stays active for a fixed time after becoming idle and is switched off if no job uses it. Benoit et al. [22] studied shutdown policies that consider transition time, transition energy, power limits, and renewable energy. They used measurements from the Taurus cluster to model node transitions. These rules are easy to understand and deploy, but they react only after a node becomes idle. They do not decide how many nodes should stay ready for an unknown future job. Reinforcement-learning (RL) power managers try to learn this decision from past workloads. Khasyah et al. [13] used an advantage actor–critic agent to choose switch-on and switch-off actions, and Budiarjo et al. [14] used curriculum learning to improve training. These methods can learn complex policies, but they are difficult to deploy for the goals studied here. Waiting time and energy must be combined in the reward, training requires substantial data and time, and a policy trained on one system may not work well when the workload changes, events are sparse, user runtime estimates are inaccurate, or the job mix changes. Both methods also keep FCFS with backfilling as the scheduler, so they change the power manager without reconsidering job priority. PSAS+IPM is a rule-based alternative that does not require training [16]. The power-state-aware scheduler (PSAS) in-cludes node power states when dispatching and planning jobs, while the intelligent power manager (IPM) controls wake-up and shutdown actions. It can prepare nodes for queued jobs, but it predicts node release times from requested runtimes. Requested runtimes are useful, but they often differ from actual runtimes, so past execution data may improve the estimates [17], [21]. PSAS+IPM also does not choose a warm-spare target for future jobs. Like the learning-based methods above, its original scheduler uses FCFS with EASY backfilling. 
+
+B. Why reconsider FCFS+backfilling? 
+
+FCFS with backfilling is widely used because it mostly keeps jobs in arrival order while allowing a later job to use idle resources when doing so does not delay a protected earlier job [17], [18], [21]. However, it does not minimize average waiting time for rigid parallel jobs. A rigid job is a multiserver job because it needs several nodes at the same time and cannot start with only part of its requested capacity [23], [24]. Hong and Wang [20] studied a multiserver-job system with 
+
+nHW servers under polynomial scaling. In their setting, the maximum server need is ℓmax = nγHW  
+
+> HW
+
+, the spare capacity is 
+
+δHW = nαHW  
+
+> HW
+
+, and the total arrival rate is Θ( nHW ), where 
+
+0 ≤ γHW < αHW < (1 + γHW )/2. Under their heavy-traffic and maximum-need assumptions, and their commonness assumption for the SNF upper bound, the waiting-time growth rates are 
+
+E[T FCFS wait ] = Θ  nγHW −αHW 
+
+> HW
+
+ ,
+
+E[T π
+
+> wait
+
+] = Ω  n−αHW 
+
+> HW
+
+ for every policy π, (1) and 
+
+E[T SNF wait ] = Θ  n−αHW 
+
+> HW
+
+ . (2) These results show that SNF reaches the lower-bound growth rate, while FCFS has a worse growth rate when γHW > 0,meaning that the largest job size grows with the system. 3
+
+Hong and Wang’s SNF model allows preemption and as-sumes that all servers are always available. Their theorem does not include node power states, EASY backfilling, finite traces, non-preemptive jobs, or node transition delays. We therefore use the theorem only as motivation for testing SNF. We do not claim that SNF is optimal for the system in this paper. The comparison with FCFS/B is based on experiments. 
+
+C. Why future jobs require warm spare nodes? 
+
+SNF decides which queued job is considered first, but it does not decide when sleeping nodes should wake or how many idle nodes should stay ready for future jobs. Queued jobs provide requested node counts and requested runtimes, so the scheduler can plan node releases and wake-ups for them. This plan is not exact because requested and actual runtimes may differ, but it is based on jobs that are already known. The harder problem begins after all queued jobs have been handled. With perfect knowledge of the next job’s arrival time and node request, a controller could wake exactly the required number of sleeping nodes so that they become ready when the job arrives. Waking them too late increases job waiting time, while waking them too early wastes energy. Because the next job is unknown, the controller instead keeps a chosen number of warm spare nodes . These are active-idle nodes that can run a new job without a wake-up delay. The main question is how many warm spare nodes to keep at each decision time. The proposed method estimates whether the next event will be a job arrival or a job completion, then balances wake-up-related waiting time against non-compute energy. Because this calculation uses a Markovian approxi-mation, the controller first checks whether recent workload data fit that approximation closely enough. It prepares warm spare nodes when the data pass the check and uses SNF+IPM otherwise. III. S YSTEM MODEL 
+
+A. Cluster, jobs, and node states 
+
+Definition 1 (Node state partition) . At time t, the node set of a cluster with N ∈ N>0 nodes is partitioned into 
+
+C(t), I(t), U(t), D(t), S(t), (3) representing computing, active-idle, switching-on, switching-off, and sleeping nodes, respectively. The five sets are pairwise disjoint, and their union is the complete node set. Each node i is characterized by nonnegative state-dependent power values P idle  
+
+> i
+
+, P sleep  
+
+> i
+
+, P ↑ 
+
+> i
+
+, and P ↓ 
+
+> i
+
+, and by nonnegative expected transition times L↑ 
+
+> i
+
+and L↓ 
+
+> i
+
+. The superscripts ↑ and 
+
+↓ indicate the switching-on and switching-off states, respec-tively. 
+
+Definition 2 (Rigid job) . A job j is described by an identifier 
+
+zj , a requested node count rj ∈ { 1, . . . , N }, and a requested runtime τj > 0. It may start only when all rj nodes are available simultaneously [23], [24]. The waiting queue at time 
+
+t is denoted by Q(t).
+
+B. Smallest-need-first scheduling 
+
+Definition 3 (Smallest-need-first priority) . For waiting jobs j
+
+and k, write j ≺SNF k when 
+
+(rj , τ j , z j ) <lex (rk, τ k, z k). (4) Jobs are ordered first by requested node count. Requested runtime breaks ties between jobs of the same size, and the identifier breaks any remaining ties. In this study, job identi-fiers are assigned in ascending order based on their arrival. At each scheduling call, the queue is sorted using (4) and checked from the first job. A job starts immediately when at least rj suitable idle nodes are available. The check can stop at the first job that does not fit because every later job requests at least as many nodes and therefore cannot fit during the same call. IV. T HE MARKOVIANITY -G ATED SNF-ICON H EURISTIC 
+
+The proposed method must determine the number of warm spare nodes to prepare for future jobs. The one-step spare objective is tractable when the next arrival and completion are each Markovian. Real-life scenario workloads are not generally Markovian over an entire trace, but shorter recent windows may be sufficiently close to a Markovian system for a time-local decision. We therefore use a recent-window screen to choose between two operating modes at every sched-uler invocation. Accepted windows, those deemed sufficiently similar to Markovian systems, use the proposed SNF-ICON spare calculation. Meanwhile, rejected or data-sparse windows use the SNF+IPM path, which combines SNF scheduling and queued-job wake planning with IPM but omits spare nodes planning. Throughout this section, t denotes the current scheduler time, N is the total number of cluster nodes, | · | denotes the set cardinality, 1{·} is an indicator function, and [y]+ =max {y, 0}. A hat denotes an estimated quantity, while a superscript “+” denotes the value after incorporating the newest observation. Unless otherwise stated, all time quantities use the simulator’s time unit, which is in seconds. 
+
+A. Markovianity of the observed workload 
+
+The spare node objective metric requires a model that takes into account a race between the next job arrival and the next job completion. Consequently, the screen examines the two time series that determine those clocks: interarrival time intervals that describe the arrival process, and completed-job execution times that describe the service process. Meanwhile, requested-node counts are modeled separately through an em-pirical probability mass function, and they need not themselves be exponentially distributed. Screening both temporal series reduces the risk of applying a Markovian next-event model when either exhibits strong non-Markovian behavior. Interarrival intervals are timestamped by their later arrival, and service durations by their completion. In the generic no-tation below, ξi denotes a retained interarrival interval for the arrival process or a retained observed completed-job execution time for the service process. The screen takes into account only 4
+
+samples within the last TM > 0 seconds. Positive integers 
+
+nmin ≤ nmax set the minimum required sample count and cap the sample count during bursts. For a recent series ξ1, . . . , ξ n,the screen first requires nmin ≤ n ≤ nmax . It then computes the coefficient of variation 
+
+CV = 
+
+q
+
+n−1 Pni=1 (ξi − ¯ξ)2
+
+¯ξ (5) and accepts the variability check when 
+
+|CV − 1| ≤ δcv , (6) where δcv ≥ 0 is the tolerance around the exponential-distribution value CV = 1 [25]. Next, define the two lagged subsequences 
+
+ξ− = ( ξ1, . . . , ξ n−1), ξ+ = ( ξ2, . . . , ξ n). (7) The lag-one autocorrelation is estimated as their sample Pear-son correlation [26]: 
+
+bρ1 = dCov ( ξ−, ξ +)
+
+σξ− σξ+
+
+. (8) Here, bρ1 must satisfy 
+
+|bρ1| ≤ δρ, (9) where δρ ≥ 0 is the maximum allowed absolute lag-one autocorrelation. This is motivated by the fact that, for an independent and identically distributed sequence of exponen-tially distributed observations, the population lag-one auto-correlation is zero, while the sample lag-one autocorrelation converges to zero as the sample size increases [27]. Finally, let DKS  
+
+> n
+
+be the two-sided Kolmogorov–Smirnov distance between the empirical cumulative distribution func-tion and the fitted exponential CDF 1 − exp( −ξ/ ¯ξ) [28]. The exponential-fit rule is 
+
+DKS  
+
+> n
+
+≤ κmκ0
+
+√n , (10) where κ0 > 0 is the base acceptance scale and κm > 0 is a configurable multiplier. 
+
+Definition 4 (Series and workload acceptance) . A recent series is accepted when it has at least nmin samples and satisfies every enabled condition in (6)–(10). Let AA(t) and 
+
+AS (t) denote arrival- and service-series acceptance. If service samples are required, then 
+
+A(t) = AA(t) ∧ AS (t). (11) If service samples are optional, then A(t) = AA(t).
+
+Remark 1 (Operational interpretation) . The screen does not prove that the workload is Markovian, and it is not a standard hypothesis test. The data windows may overlap, and the thresholds are chosen settings. The controller checks the screen again at every scheduler call. An accepted result only means that the recent data are close enough to the exponential model for the controller to use it. 
+
+Algorithm 1 SNF-ICON  
+
+> 1:
+
+Refresh node and queue state; consume new arrivals and completions. Update interarrival, service, runtime-ratio, and requested-node statistics.  
+
+> 2:
+
+Evaluate the recent-window screen and obtain A(t). 
+
+> 3:
+
+if A(t) = 0 then  
+
+> 4:
+
+Execute baseline SNF+IPM immediate dispatch and future planning.  
+
+> 5:
+
+Return (go to the end of the algorithm)  
+
+> 6:
+
+end if  
+
+> 7:
+
+Enter the ICON path.  
+
+> 8:
+
+Start every SNF-ordered job that fits immediately.  
+
+> 9:
+
+Predict active-job releases and build a sequential future-SNF plan for the remaining queue.  
+
+> 10:
+
+if the remaining queue is empty and t ∈ E then  
+
+> 11:
+
+if the arrival-recency gate is open then  
+
+> 12:
+
+Compute the optimal number of warm-spare nodes and apply the selected plan.  
+
+> 13:
+
+else if the call contains a completion then  
+
+> 14:
+
+Immediately switch off newly released, unreused nodes.  
+
+> 15:
+
+end if  
+
+> 16:
+
+end if  
+
+> 17:
+
+if the remaining queue is empty then  
+
+> 18:
+
+Apply the hard idle-timeout policy.  
+
+> 19:
+
+end if  
+
+> 20:
+
+Record the mode, screen, gate, predictions, costs, and actions. 
+
+B. Policy and mode switching 
+
+Definition 5 (Invocation, mode, and spare-planning point) . Let 
+
+V denote the set of scheduler invocations, including the initial call, arrival and completion calls, and transition or timeout callbacks. The operating mode is 
+
+M (t) = 
+
+(
+
+1 (SNF+IPM fallback) , A(t) = 0 ,
+
+2 (ICON) , A(t) = 1 . (12) Let E ⊂ V contain the initial call, arrival, and completion calls. A spare-planning point is an invocation time t ∈ E at which no job remains in the queue after immediate dispatch. At every invocation, newly appended monitor records are consumed before A(t) is evaluated. The selected mode applies only to the current call. A rejected window therefore enters fallback only for the current call, and a later window may return to ICON mode. The overview of the SNF-ICON policy is shown in Al-gorithm 1. It separates the handling of queued jobs from the handling of future jobs. Each invocation first updates the state and evaluates A(t). Rejected windows delegate the complete invocation to SNF+IPM, whereas accepted windows use ICON-specific release prediction and future planning. Warm-spare optimization is considered only after all queued jobs have started execution, the invocation is a qualifying decision epoch, and the arrival-recency gate is open. Thus, 5
+
+jobs that have arrived always take precedence over future job preparation. In cases where the arrival-recency gate is closed, the system remains in ICON mode because it suppresses warm spare node preparation but does not select the SNF+IPM fallback. It is important to note that A(t) = 1 does not by itself trigger warm spare optimization. The ICON path must first leave the job queue empty by executing all jobs that have arrived, the invocation must be a qualifying decision epoch, and the arrival-recency gate must be open. 
+
+C. Queued-job handling in the two operating modes 
+
+Both operating modes use SNF scheduling for queued jobs. The main difference is how they predict node release times and plan wake-ups. In SNF+IPM fallback mode, the scheduler uses the baseline SNF+IPM procedure and then returns. In ICON mode, the controller first updates its arrival, service, and requested-node estimates, as described in Section IV-D, and then builds the future plan. In ICON mode, queued jobs are sorted using the SNF key in (4). The scheduler starts each job that fits using the active-idle nodes available at time t. The scan stops at the first job that cannot fit, as described in Section III. For each job left in the queue, the controller estimates the earliest time when enough nodes will be available. It then selects the required nodes using the cost key defined below. 
+
+Definition 6 (Sequential future-SNF plan) . Let the jobs left after immediate dispatch be j1, . . . , j q in SNF order. The scheduler plans their executions one at a time. Before planning job jk, let btrel  
+
+> i,k
+
+be the time when node i is expected to become available, including assignments already planned for earlier jobs. If fewer than rjk nodes can be included in the plan, planning stops. Let bk be the planning barrier , initialized as 
+
+b1 = t. For each job, let btrel (rjk ),k be the rjk th earliest estimated node-release time. The planned execution start time for job jk
+
+is 
+
+sjk = max 
+
+n
+
+bk, btrel (rjk ),k 
+
+o
+
+. (13) Among the nodes expected to be available by sjk , the sched-uler selects the rjk nodes with the lowest estimated non-compute energy before the planned start, followed by node-state priority, remaining idle-timeout priority, and node identi-fier i. Node states are prioritized in the following order: idle, computing, switching on, and sleeping or switching off. For an idle node, the timeout priority is defined as the negative of its remaining idle timeout. Consequently, a longer remaining timeout yields a lower priority value and is selected first, leaving nodes closer to timeout available for power-off. Let the selected node set be Bjk . Next, the planned (estimated) finish time for job jk is 
+
+fjk = sjk + bDjk , (14) where bDjk is the predicted execution time of the queued job (see Appendix A of the supplemental materials). A selected sleeping node i is scheduled to wake at 
+
+ui,j k = sjk − L↑ 
+
+> i
+
+. (15) After job jk is added to the plan, the estimated next-available time of every node in Bjk is changed to fjk . The next job uses bk+1 = sjk , so planned start times do not move backward. Different queued jobs may have the same planned start when they use different nodes. However, a later job in SNF order is never planned to start before an earlier one. If a sleeping node is selected for more than one planned job, the scheduler keeps its earliest wake time: 
+
+t↑ 
+
+> i
+
+= min 
+
+> j:i∈Bj
+
+
+
+sj − L↑
+
+> i
+
+
+
+, i ∈ S (t). (16) If this time has already arrived, the node is switched on immediately. Otherwise, a callback is scheduled for that time. If the node is currently switching off, it is switched on after reaching the sleeping state, as long as this still meets the planned start. The sequential future-SNF plan is illustrated in Fig. 1. Meanwhile, the SNF+IPM fallback mode plans queued jobs and their wake times using the baseline SNF+IPM estimates and procedures [16]. It therefore keeps normal queued-job han-dling while leaving out ICON-specific prediction and warm-spare planning. 
+
+D. Adaptive arrival, service, and resource estimates 
+
+Let ∆A be the newest observed interarrival interval (the newest observation of the arrival-screen series denoted gener-ically by ξi above), let mA be the current exponential moving average (EMA) of interarrival time, and let ρA ∈ (0 , 1] be the arrival smoothing factor [29]. The updated EMA is 
+
+m+ 
+
+> A
+
+= ρA∆A +(1 −ρA)mA, bλ(t) = 1max {ϵ, m +
+
+> A
+
+} . (17) After the update, mA is replaced by m+
+
+> A
+
+. Here, bλ(t) is the estimated arrival rate and ϵ > 0 is a small numerical constant that prevents division by zero. Zero gaps between arrivals at the same simulation timestamp are retained. At initialization, 
+
+mA = 1 /λ 0, where λ0 > 0 is the configured initial arrival rate. Let mS be the EMA of observed completed-job durations. Before a usable completion exists, mreq  
+
+> S
+
+stores an EMA of requested-duration proxies. Both service EMAs use smoothing factor ρS ∈ (0 , 1] . The estimated service rate is 
+
+bμ(t) = 
+
+
+
+1/ max {ϵ, m S }, mS is available ,
+
+1/ max {ϵ, m req  
+
+> S
+
+}, otherwise ,
+
+0, if neither is available .
+
+(18) For each possible requested node count r ∈ { 1, . . . , N }, let 
+
+wr ≥ 0 be its adaptive weight. When the newest job requests 
+
+r′ nodes, the weights are updated using the resource smoothing factor ρR ∈ (0 , 1] :
+
+w+ 
+
+> r
+
+= (1 − ρR)wr + ρR1{r = r′},
+
+bpr (t) = w+
+
+> r
+
+PNk=1 w+
+
+> k
+
+. (19) 6
+
+Fig. 1: Sequential future-SNF plan for the remaining queued jobs, shown as a Gantt chart after immediate dispatch. The current scheduler time is t, and the remaining queue is ordered as j1 ≺SNF j2, with rj1 = rj2 = 2 . Node i3 is instructed to wake immediately at ui3,j 1 = b1 = t, causing job j1 to start after the wake-up transition at sj1 = t + L↑ 
+
+> i3
+
+. After j1 is added to the plan, the release map is updated and the next planning barrier becomes b2 = sj1 . Job j2 is then planned to start at sj2 ,with node i4 scheduled to wake at ui4,j 2 = sj2 − L↑ 
+
+> i4
+
+. The selected node sets are Bj1 = {i1, i 3} and Bj2 = {i2, i 4}, and the planned finish time of each job is fjk = sjk + bDjk .After the update, each wr is replaced by w+ 
+
+> r
+
+. Thus, bpr (t) is the estimated probability that the next job requests r nodes. The weights are initialized to wr0 = 1 and wr = 0 for all 
+
+r̸ = r0, where r0 is the requested node count for the first job in the workload. Hence, the normalizing denominator is positive. Weights below the numerical tolerance are removed and the survivors are renormalized; if numerical pruning removes every weight, the implementation resets to w1 = 1 . Before any request is observed, this gives bpr0 (t) = 1 .
+
+E. Predicting the next event and time window 
+
+For each active job j, let bRj (t) denote the predicted remaining runtime of a running job (derived in Appendix A of the supplemental materials). These job-specific estimates are used both in the predictive release map and in the completion-rate approximation below. 
+
+Assumption 1 (One-step competing-event approximation) . At an ICON decision, the time to the next arrival is modeled as exponential with rate bλ(t), the time to the next completion is approximated as exponential with rate bλC (t), and the two times are treated as independent from each other. For independent exponential clocks, the minimum is expo-nential with a rate equal to the sum of the component rates, and the probability that a component clock occurs first is proportional to its rate [25], [30]. In ICON mode, let nact (t) be the number of distinct active jobs and define the set of usable positive completion predictions as 
+
+Jpred (t) = 
+
+n
+
+j : 0 < bRj (t) < ∞
+
+o
+
+. (20) The earliest predicted remaining runtime is 
+
+dC (t) = min 
+
+> j∈J pred (t)
+
+bRj (t), min ∅ := ∞. (21) The estimated completion-event rate is 
+
+bλC (t) = 
+
+(
+
+1/d C (t), 0 < d C (t) < ∞,nact (t)bμ(t), otherwise . (22) Thus, the first branch uses the nearest job-specific completion prediction, while the second uses the aggregate service-rate approximation. The total next-event rate bλE (t) and the prob-ability πA(t) that the next event is an arrival are 
+
+bλE (t) = bλ(t) + bλC (t),πA(t) = 
+
+(bλ(t)/bλE (t), bλE (t) > 0,
+
+0, bλE (t) = 0 . (23) 7
+
+Let dto ≥ 0 be the time remaining until the earliest future idle-node timeout, or Hmax when no such timeout exists. Here, 
+
+Hmax > 0 is the configured maximum prediction horizon. The capped horizon is 
+
+Hc = min {Hmax , d to }. (24) 
+
+Lemma 1 (Timeout-capped exponential horizon) . Let T de-note the modeled time to the next arrival-or-completion event. If T ∼ Exp( bλE (t)) with bλE (t) > 0 and Hc ≥ 0, then 
+
+H = E[min( T, H c)] = 1 − e−bλE (t)Hc
+
+bλE (t) . (25) 
+
+Proof. Using the tail-integral identity for a nonnegative ran-dom variable, 
+
+E[min( T, H c)] = 
+
+Z Hc
+
+> 0
+
+P(T > u ) d u =
+
+Z Hc
+
+> 0
+
+e−bλE (t)u du, 
+
+(26) which evaluates to (25). 
+
+F. Valid spare-node targets 
+
+The integer target x is the number of non-computing nodes that the plan prepares as warm spare nodes. Let Ie(t) be the set of idle nodes whose timeout has expired: 
+
+Ie(t) = {i ∈ I (t) : node i’s timeout has expired } . (27) These nodes are switched off in every candidate plan. Next, among the remaining idle nodes, let If (t) contain the nodes that cannot currently be switched off: 
+
+If (t) = {i ∈ I (t) \ I e(t) : node i cannot switch off } . (28) When the timeout policy is enabled, this includes idle nodes whose timeout has not yet expired. Hence, these nodes must remain warm. The other idle nodes may remain warm or be switched off depending on the selected target x.The number of nodes that can be used as warm spare nodes is 
+
+xreal = |U (t)| + |I (t) \ I e(t)| + |S (t)|. (29) Let Smin , S max ∈ { 0, . . . , N } be the configured minimum and maximum spare-node targets, where Smin ≤ Smax . Nodes that are already switching on and idle nodes in If (t) must remain part of every candidate plan. Therefore, the feasible target range is 
+
+xmin = max {|U (t)| + |I f (t)|, min {Smin , x real }} ,xmax = max {xmin , min {Smax , x real }} . (30) The value Smax is a preferred limit rather than a strict limit because the number of nodes that must remain warm may already exceed it. These bounds satisfy 
+
+0 ≤ xmin ≤ xmax ≤ xreal , (31) so the candidate set {xmin , . . . , x max } is always nonempty. For each candidate target x, the plan keeps all nodes that are already switching on and all idle nodes in If (t). It then keeps additional idle nodes or wakes sleeping nodes until the target is reached. Nodes in Ie(t) are switched off, and other unused idle nodes may also be switched off. 
+
+G. Power-induced waiting estimate 
+
+Power-induced waiting is the delay caused by non-computing nodes that are not ready to run a newly arriving job. Waiting caused by nodes that are still running jobs is not included because it is the same for every spare-node target and does not affect which target is selected. Let 
+
+K = N − |C (t)| (32) be the number of non-computing nodes at time t. For a candidate target x, let di(x) be the time until non-computing node i becomes ready under that plan. An idle node that remains warm has zero delay. A node that is already switching on, or is instructed to wake immediately, uses the expected remaining transition time ϕ(·; bλE (t)) from (59) in Appendix B of the supplemental materials. A node that remains asleep uses its full wake-up time. A node that is switching off includes both its expected remaining switch-off time and its wake-up time. For K > 0, sort the readiness delays as 
+
+d(1) (x) ≤ · · · ≤ d(K)(x), (33) where d(r)(x) is the estimated time by which the r-th non-computing node becomes ready. The expected request-weighted readiness delay is 
+
+¯d(x) = 
+
+> N
+
+X
+
+> r=1
+
+bpr (t) d(min {r,K })(x), (34) where bpr (t) is the estimated probability that the next job requests r nodes. Next, the power-induced waiting estimate is 
+
+W (x) = 
+
+(
+
+πA(t) ¯d(x), K > 0, π A(t) > 0,
+
+0, K = 0 or πA(t) = 0 . (35) Here, πA(t) is the probability that the next event is an arrival. When r > K , the index is limited to K because any additional waiting is caused by nodes that are still running jobs and is the same for every candidate plan. The estimate W (x) uses the expected remaining transition times before sorting the node delays. It is therefore an approximation of the expected waiting time rather than its exact value. 
+
+H. Estimated energy and spare-node selection 
+
+For each node, the controller estimates the energy used by sleeping, switching, and idle states over the interval [t, t + H].Here, H is the mean capped time until the next event from (25). Compute energy is not included because it is required by running jobs and is not controlled by the spare-node target. For example, an idle node that remains warm uses 
+
+P idle  
+
+> i
+
+H, where P idle  
+
+> i
+
+is the idle power of node i. A node with 
+
+ai units of switch-on time remaining uses 
+
+E↑ 
+
+> i
+
+(H) = P ↑ 
+
+> i
+
+min( ai, H ) + P idle  
+
+> i
+
+[H − ai]+ , (36) where P ↑ 
+
+> i
+
+is its switch-on power. Energy for waking, sleeping, and switching off is calculated in the same way. Let Enc  
+
+> i
+
+(x, H )
+
+be the non-compute energy of node i under candidate target x.8Jobs Manager      
+
+> true
+> false
+> SNF+IPM
+> (Fallback)
+> SNF-ICON Select Spare
+> Decision
+> Nodes Manager
+> SNF+IPM Plan SNF-ICON Plan
+> Machines
+> Markovian?
+> Planner
+> Jobs Nodes Jobs Nodes
+
+Fig. 2: Implementation architecture in SPARS [31]. The estimated total non-compute energy of the whole system is 
+
+E(x) = 
+
+> N
+
+X
+
+> i=1
+
+Enc  
+
+> i
+
+(x, H ). (37) This value is an estimate based on the mean capped horizon 
+
+H, rather than the exact expected energy over a random time period. Next, the set of candidate spare-node targets is 
+
+X (t) = {xmin , . . . , x max }. (38) The total candidate cost and selected target are 
+
+J(x) = αW (x) + βE (x),x⋆ = arg lex min  
+
+> x∈X (t)
+
+ J(x), W (x), E (x), x . (39) where α, β ≥ 0 are the weights for waiting time and wasted energy. The lexicographic minimization first minimizes J(x),then W (x), then E(x), and finally x; hence x⋆ is uniquely and deterministically selected. 
+
+I. Arrival-recency gate, completion shutdown, and idle time-out 
+
+Definition 7 (Arrival-recency gate) . Before the first recorded arrival, the arrival-recency gate is closed. After that, let tA be the time of the latest recorded arrival and let T max  
+
+> A
+
+≥ 0 be the configured recency window. The gate is open at time t when 
+
+t − tA ≤ T max  
+
+> A
+
+. (40) The arrival-recency gate is separate from the fallback rule and is checked only in ICON mode after all queued jobs have been handled. When open, it allows warm-spare planning for future jobs; when closed, ICON remains active but does not prepare spare nodes. Unlike the Markovianity screen, which checks whether recent workload data fit the model, the gate checks whether the latest arrival is recent enough to make that data useful. If a job finishes while the gate is closed, newly released nodes are switched off unless they are needed by a queued or planned job. Other idle nodes follow the normal timeout policy: each is switched off after remaining unused for ∆t,and the next timeout also limits the energy horizon in (24). V. I MPLEMENTATION IN SPARS The implementation for this study extends the SNF+IPM baseline within the SPARS discrete-event simulation frame-work [31]. The source code, experimental configurations, and visualization scripts used in this study are publicly available in the SPARS-ICON repository [32] to facilitate reproducibility. Fig. 2 summarizes the resulting control flow architecture. At each scheduler invocation, the jobs and nodes managers provide the job and node-state information to the Markovianity screen. If the Markovianity check is rejected, the invocation follows the baseline SNF+IPM planner. Otherwise, it follows the SNF-ICON planner and evaluates the warm-spare target. The resulting job schedule and power-state actions are returned to the SPARS managers for execution by the simulated ma-chines. The rest of this section describes the implementation details in SPARS. 
+
+A. Event detection and diagnostics 
+
+At every scheduler invocation, the implementation reeval-uates the screen and records policy_mode as either 
+
+stochastic_spare_capacity or snf_fallback .The forced-ICON no-fallback variant is exposed only as an experimental ablation. The log separately records whether the call is a spare-planning point and whether the arrival-recency gate is open. This separation prevents a closed gate or a nonempty queue from being miscounted as fallback. Diagnostics include rejection reasons, sample counts, means, coefficients of variation, lag-one correlations, KS distances and thresholds, arrival and service rates, runtime-ratio statistics, active-job remaining-time predictions, requested-node PMF, future planned jobs, immediate wakes, future wake callbacks, spare-target candidate costs, timeout actions, and nodes at-tributed to a completion. 9
+
+TABLE I: Implemented default parameters.                                                      
+
+> Parameter Symbol Default Waiting weight α5000
+> Energy weight β1
+> Initial arrival rate λ01/3600 s −1
+> Arrival EMA factor ρA0.2
+> Service/ratio EMA factor ρS0.1
+> Resource EMA factor ρR0.1
+> Log-ratio sigma floor σmin 0.25
+> Minimum spare nodes Smin 1
+> Maximum spare nodes Smax platform size Maximum horizon Hmax 24 hArrival-recency window Tmax
+> A12 hMarkovianity fallback –enabled Screen time window TM2hMinimum screen samples nmin 3
+> Maximum screen samples nmax 1000
+> CV tolerance δcv 0.45
+> Maximum |bρ1|δρ0.65
+> KS multiplier κm1.25
+> KS scale parameter κ03.0
+> Require service samples –enabled Stale-completion shutdown –enabled Respect idle timeout –enabled Timeout duration ∆t2 h
+
+B. Energy-aware node choice and release maps 
+
+The SPARS implementation realizes the sequential future-SNF planner defined in Section IV-C using the simulator’s node lists and release maps. In ICON mode, active com-pute segments are replaced by job-specific predicted finish times, and planned jobs append synthetic compute segments. Fallback mode instead invokes the corresponding SNF+IPM planning routines. Both modes may schedule wakes for queued jobs, but only ICON performs warm spare node planning. 
+
+C. Default parameters 
+
+Unless otherwise stated, the experiments use the default parameter values shown in Table I. They are starting points rather than universally optimal values. 
+
+D. Computational complexity 
+
+Let q be the number of queued jobs, N the number of nodes, n ≤ nmax the number of samples in each screen window, and nact the number of active jobs. For each required series, the screen computes the summary statistics and lag-one autocorrelation in O(n) time. Computing the KS distance requires sorting the samples, giving O(n log n) time per series. Predicting the remaining times of active jobs and updating their node release times takes O(nact + N ) time, assuming each active job and node is visited once. This does not include the cost of copying release maps, which depends on how they are stored. If the queue is not already kept in SNF order, sorting it takes 
+
+O(q log q) time. For each job in the future plan, the controller sorts at most N node release times and at most N node-selection keys. Each planning step therefore takes O(N log N )
+
+time, and planning at most q queued jobs takes O(qN log N ).
+
+Building the plan and its wake-up times requires storage proportional to the total number of assigned job–node pairs, P 
+
+> j
+
+rj .The spare-node optimizer considers at most N + 1 targets. For each target, building the node plan and estimating its energy take O(N ) time, while sorting the node readiness times takes O(N log N ). The complete spare-node optimiza-tion therefore takes O(N 2 log N ). If the candidate targets are evaluated one at a time, the additional working storage is 
+
+O
+
+
+
+n + N + P 
+
+> j
+
+rj
+
+
+
+, excluding the waiting queue, release-map copies, logs, and other simulator state. These are analytical bounds based on the described algo-rithm. The experiments do not measure scheduler execution time, so the actual decision time must be checked through implementation profiling. VI. E XPERIMENTAL METHODOLOGY 
+
+A. Evaluation scope 
+
+The evaluation focuses on average queue waiting time and total wasted energy as the primary outcome metrics, since they directly represent the scheduling-delay and energy-efficiency objectives of the proposed method. The remaining measure-ments, tests, and sensitivity analyses are used to interpret the algorithm’s behavior and explain the observed energy– delay trade-offs. Accordingly, the evaluation addresses three questions supported by the supplied results. First, how do the fixed SNF-ICON configuration’s average queue waiting time and total wasted energy compare with those of FCFS/B+IPM, SNF+IPM, and the available RL controller across the six workload–platform cases? Second, does the Markovianity screen distinguish the generated exponential workload from the DAS2 traces, and how do disabling fallback or the arrival-recency gate affect the resulting operating point? Third, how sensitive is the energy–delay trade-off to the reward weight, Markovianity lookback horizon, and platform model, and do the aggregate results conceal a size-dependent waiting-time penalty? The plotting scripts denote the complete proposed method as SNF-ICON . The NG (No-Gate) suffix disables the arrival-recency gate, the NF (No-Fallback) suffix disables Markovianity-based fallback and therefore forces the ICON path, and NGNF (No-Gate No-Fallback) disables both safe-guards. These four variants are compared with SNF+IPM ,which retains SNF scheduling but uses IPM as the power manager, and FCFS/B+IPM , which is the PSAS+IPM con-figuration from the cited study [16]. 
+
+B. Workloads and platform configurations 
+
+The base evaluation contains six workload–platform cases. Five workloads run on a 64-node AOBA-derived configu-ration: the first 3000 jobs from each of the DAS2 FS1– FS4 traces and a 3000-job generated Markovian workload. The DAS2 traces originate from a multi-cluster production workload described in prior characterization work and are distributed through the Parallel Workloads Archive [33], [34]. The generated workload uses exponential interarrival and service assumptions. For the RL Budiarjo baseline, the subsequent 1000 jobs from each corresponding DAS2 trace are used to train a 10 AOBA-64 DAS2 FS1 AOBA-64 DAS2 FS2 AOBA-64 DAS2 FS3 AOBA-64 DAS2 FS4 AOBA-64 Markovian 3000 AOBA-1152 SDSC Blue 0.0 0.5 1.0 
+
+> EW/max EW (bars)
+> 0.0 0.5 1.0
+> AW/max AW (lines)
+
+Platform & Workload    
+
+> FCFS/B+IPM SNF+IPM SNF-ICON RL Budiarjo
+
+Fig. 3: Base-configuration comparison of energy waste and average waiting, respectively denoted as EW and AW. RL Budiarjo uses a separately trained policy for each dataset; results are reported only for datasets with an available RL experiment. separate policy for that dataset. Training follows the cur-riculum simple → real → complex, where the simple and complex workloads are generated from the characteristics of the corresponding real training segment. The sixth evaluation case maps the SDSC Blue workload to an AOBA-derived 1152-node configuration. The AOBA configurations follow prior digital-twin modeling of Supercomputer AOBA [35]. The Markovianity-window sweep evaluates the five AOBA-64 workloads by varying TM from 1 h to 24 h, whereas the objective-weight sweep varies α from 10 to 20,000 while fixing β = 1 , with all other parameters fixed at their base values in both sweeps. Cross-platform sensitivity evaluates three representative workloads—DAS2 FS2, Markovian 3000, and SDSC Blue—on corresponding AOBA and Taurus mod-els, yielding six workload–platform panels. DAS2 FS2 and Markovian 3000 use 64-node models, whereas SDSC Blue uses 1152-node models. VII. R ESULTS AND DISCUSSION 
+
+A. Base-configuration comparison across workloads 
+
+Fig. 3 compares the fixed base configuration across the six workload-platform cases, with each metric normalized by the worst result within its panel. Relative to FCFS/B+IPM, SNF-ICON reduces mean waiting time in every panel: approxi-mately by 2.2% on DAS2 FS1, 44.8% on DAS2 FS2, 2.4% on DAS2 FS3, 11.6% on DAS2 FS4, 42.4% on the generated Markovian workload, and 16.4% on SDSC Blue. Relative to SNF+IPM, the corresponding changes are improvements of approximately 0.2%, 0.1%, 11.3%, 2.9%, and 26.9% in the first five cases, followed by a 0.15% increase in waiting time on SDSC Blue. The base configuration therefore preserves the main waiting-time benefit of SNF and provides additional reductions on five of the six cases. The energy differences among the heuristic methods are much smaller than the waiting-time differences in most cases. SNF-ICON consumes approximately 9.88 MWh on DAS2 FS3 and 15.6 MWh on DAS2 FS4. It is within about 1% of at least one heuristic baseline in five cases. The exception is the generated Markovian workload, where its 5.94 MWh energy waste is approximately 6.2% above SNF+IPM and 6.9% above FCFS/B+IPM. Thus, the fixed configuration obtains its largest delay reductions without the multi-fold energy increase exhibited by the low-delay RL points, although the generated AW MW AS AR SU EE (a) AOBA-1152 / SDSC Blue    
+
+> AW MW AS AR SU EE (b) AOBA-64 / DAS2 FS1
+> AW MW AS AR SU EE (c) AOBA-64 / DAS2 FS2
+> AW MW AS AR SU EE (d) AOBA-64 / DAS2 FS3
+> AW MW AS AR SU EE (e) AOBA-64 / DAS2 FS4
+> AW MW AS AR SU EE (f) AOBA-64 / Markovian 3000
+> FCFS/B+IPM SNF+IPM SNF-ICON RL Budiarjo
+
+Fig. 4: Normalized multi-metric profiles. AW: average wait, MW: maximum wait, AS: average slowdown, AR: average response, SU: system utilization, EE: energy efficiency. Delay and wasted-energy metrics are converted to efficiency scores so that larger radial values are better. workload shows a measurable rather than negligible energy premium. The dataset-specific RL policies produce more extreme trade-offs. On DAS2 FS1, FS3, and FS4, RL reduces mean waiting time by approximately 32%, 67%, and 76%, respec-11 0 200 400 600 12                  
+
+> 671.49 675.30 12197.88 h 481.88 h
+> 0500 1000 1500 12
+> 1695.76 1696.28 121687.42 h 28.39 h
+> 0500 1000 1500 12
+> 1715.02 1715.85 121824.58 h 23.31 h
+> 0500 1000 1500 12
+> 1667.71 1668.37 121757.35 h 11.91 h
+> 0500 1000 1500 2000 12
+> 1893.54 1895.66 122062.72 h 44.90 h
+> M(t)
+
+Simulation time (hours) 
+
+> Markovian 3000 DAS2 FS1 DAS2 FS2 DAS2 FS3 DAS2 FS4
+
+(a) Mode sequence and accumulated duration. 01            
+
+> cv A
+> −101
+> ˆρ1, A
+> 0100 200 300 400 500 600 0.0 2.5
+> Dn, A
+> 010
+> cv A
+> −101
+> ˆρ1, A
+> 0250 500 750 1000 1250 1500 0.0 2.5
+> Dn, A
+
+Simulation time (hours) 
+
+(b) Interarrival diagnostics for Markovian 3000 and DAS2 FS3. 
+
+Fig. 5: Mode occupancy and recent-window Markovianity diagnostics. Mode 1 is SNF+IPM fallback and mode 2 is ICON. tively, but consumes approximately 4.9, 5.8, and 4.8 times the corresponding SNF-ICON energy. Conversely, on DAS2 FS2 and Markovian 3000, RL reduces energy consumption by approximately 14% and 17%, respectively, but incurs approximately 1.9 and 6.5 times the corresponding SNF-ICON mean waiting time. The available RL policy therefore supplies workload-specific extreme points. 
+
+B. Multi-metric performance profile 
+
+The Kiviat profiles in Fig. 4 confirm the trade-offs observed in Fig. 3. On DAS2 FS2 and Markovian 3000, SNF-ICON reaches or approaches the outer envelope on the delay spokes. On DAS2 FS1, FS3, and FS4, RL performs better on several delay spokes but has the weakest or nearly weakest energy-efficiency score. SNF-ICON and SNF+IPM are nearly identi-628.25 930 940 950 10.1 10.2 10.2 49.51 
+
+(a) AOBA-64 DAS2 FS1   
+
+> 3950 3960 3970 7150.42 7626.5 7.59 8.8 8.9 8.9 9
+
+(b) AOBA-64 DAS2 FS2   
+
+> 100 200 300 9.7 9.8 9.9 57.74
+
+(c) AOBA-64 DAS2 FS3    
+
+> 96.3 400 425 450 15.4 15.5 15.6 75.3
+
+(d) AOBA-64 DAS2 FS4   
+
+> 120 180 240 871.4 55.5 6
+
+(e) AOBA-64 Markovian 3000    
+
+> 720 730 740 886.74 36.2 36.5 36.8 39.83 39.88
+
+(f) AOBA-1152 SDSC Blue Mean waiting time (seconds) Energy waste (MWh) 
+
+> SNF-ICON SNF-ICON-NF SNF-ICON-NG SNF-ICON-NGNF FCFS/B+IPM SNF+IPM RL Budiarjo Pareto frontier Pareto Non-Pareto
+
+Fig. 6: Waiting-time–energy comparison of the complete method and its variants across the six workload–platform cases. cal on SDSC Blue, consistent with their 0.15% waiting-time difference and small energy separation. Overall, SNF-ICON generally matches or improves the delay profile of SNF+IPM while remaining substantially more energy-efficient than the low-delay RL points. Because each spoke is normalized in-dependently, the profiles indicate balanced performance rather than effect size. 
+
+C. Why frequent fallback does not remove the advantage 
+
+In Fig. 5, mode 1 represents SNF+IPM fallback and mode 2 represents ICON. The values on the right side of each panel in Fig. 5a show the total time spent in ICON mode at the top and fallback mode at the bottom. On the Markovian 3000 dataset, the policy spends 70.9% of its simulated time in ICON mode. In contrast, DAS2 FS1–FS4 spend only 0.7–2.1% of 12 10 −1                       
+
+> 10 0
+> 10 1
+> 10 2
+> n=885 n=997 n=176 n=159 n=440 n=284 n=59 AOBA-64 / DAS2 FS1 / ∆ t=2 h / α= 5000 / β= 1 / TM= 2 h
+> FCFS/B+IPM SNF+IPM SNF-ICON SNF-ICON-NG SNF-ICON-NF SNF-ICON-NGNF 123-4 5-8 9-16 17-32 33-64
+> Job size (requested nodes)
+> 10 −1
+> 10 0
+> 10 1
+> n=1063 n=676 n=697 n=472 n=91 n=1 n=0 AOBA-64 / Markovian 3000 / ∆ t=2 h / α= 5000 / β= 1 / TM= 2 h
+> Waiting time (min, log scale)
+
+Fig. 7: Waiting time stratified by requested node count. Boxes show the interquartile range, center lines show medians, and whiskers show the 5th–95th percentiles. Zero waits are displayed at one second on the logarithmic axis. their time in ICON mode and therefore operate mainly in fallback. The diagnostic panels in Fig. 5b explain this difference. Blank intervals indicate that too few recent samples were available, while the shaded regions and KS limits show the acceptance ranges. The DAS2 FS3 workload often enters fall-back because arrivals and completions are sparse or because the observed statistics do not satisfy the workload screen. Despite the frequent fallbacks, many fallback intervals occur during quiet periods with few job arrivals. The scheduling mode during these periods has less effect because only a small number of jobs are affected. ICON is more likely to become active during busier intervals, when enough samples are available and more jobs compete for resources. Its release prediction and warm-spare planning can therefore have a greater effect during these important periods. This helps explain why frequent fallback does not remove the overall benefit of SNF-ICON. The results suggest that short ICON intervals during busier periods contribute to the ob-served waiting-time improvements, although the experiments do not directly measure the performance of each mode within individual intervals. 
+
+D. Variant comparison and empirical Pareto frontier 
+
+Fig. 6 compares the complete method and its gate/fallback variants at the base parameters. Throughout the waiting-time–energy scatter plots, light-gray bands mark compressed portions of the axes containing isolated extreme points, thereby keeping the main data cluster visually distinguishable. The complete SNF-ICON point lies on the empirical Pareto frontier in four of the six panels, on DAS2 FS1, FS2, FS3, and Marko-vian 3000. When all proposed variants are considered, the SNF-ICON family contributes at least one nondominated point in every panel. On DAS2 FS1 and FS2, the complete method and SNF+IPM form closely spaced energy–delay trade-offs. On DAS2 FS3, the complete point supplies the low-delay endpoint, while NGNF supplies the lower-energy endpoint. On DAS2 FS4, the NF point dominates the complete point by approximately 0.06% in waiting time and 0.95% in energy waste. Several proposed points also lie on the Markovian 3000 frontier. SDSC Blue is the exception to the frontier claim. There, SNF+IPM slightly dominates the complete configuration, re-ducing mean waiting time by approximately 0.15% and wasted energy by 0.41%. However, the NF configuration supplies another nondominated operating point, reducing waiting time by approximately 3.1% relative to SNF+IPM while increasing wasted energy by approximately 8.6%. Across the panels, NG usually overlaps or remains very close to the complete method, while NGNF remains close to NF. The visible change from disabling fallback is therefore larger than the visible change from disabling the arrival-recency gate at the base settings. The proposed family broad-ens the available energy–delay trade-off on most workloads, but no single variant is nondominated everywhere. 
+
+E. Starvation and waiting time by requested job size 
+
+Fig. 7 evaluates whether the aggregate advantage hides a size-dependent waiting-time penalty. The upper panels report DAS2 FS1 and the lower panels report Markovian 3000 at base configuration. Waiting-time distributions generally broaden as requested node count increases because larger rigid jobs require more nodes to become available simultaneously. In many small- and medium-size bins, SNF-ICON has lower or comparable medians to FCFS/B+IPM, and the 5th–95th percentile ranges do not show a consistent additional widening relative to FCFS/B. The large-job evidence must be interpreted by sample count. The DAS2 FS1 workload contains 284 jobs requesting 17– 32 nodes and 59 requesting 33–64 nodes. These bins have 13 15.43 15.45 15.48 
+
+> 15.76 15.8 15.81
+> 10.08 10.16 10.24
+
+(a) AOBA-64 DAS2 FS1   
+
+> 65.75 66 66.25 119.17 8.8 8.9 9
+
+(b) AOBA-64 DAS2 FS2   
+
+> 44.4 4.8 9.7 9.8 9.9
+
+(c) AOBA-64 DAS2 FS3   
+
+> 6.8 7.2 7.6 15.44 15.52 15.6
+
+(d) AOBA-64 DAS2 FS4   
+
+> 234
+> 5.56 5.59 5.76 5.94
+> 6.03 6.04 6.05
+
+(e) AOBA-64 Markovian 3000 TM encoding 
+
+> 1 h 8 h 16 h 24 h
+> 24 h 13 h 1 h
+
+Average waiting time (min) Total wasted energy (MWh) 
+
+> FCFS/B+IPM SNF+IPM SNF-ICON SNF-ICON-NF SNF-ICON-NG SNF-ICON-NGNF Pareto frontier Pareto Non-Pareto
+
+Fig. 8: Markovianity lookback sweep. broad waiting-time ranges under all methods, but the proposed variants remain broadly comparable with FCFS/B+IPM and SNF+IPM. The Markovian 3000 workload contains only one 17–32-node job and no 33–64-node jobs, so those panels can-not support a large-job fairness conclusion. The distributions therefore show no obvious additional starvation penalty from SNF-ICON, but they do not establish starvation freedom. 
+
+F. Parameter ablations 
+
+Fig. 8 varies the Markovianity lookback horizon TM from 1 to 24 h. For DAS2 FS1, FS2, and FS4, the points remain close within each method variant. This indicates that changing TM
+
+has a smaller effect than enabling or disabling fallback. DAS2 FS3 shows a clearer difference between the fallback-enabled and forced-ICON variants, but the effect of TM within each variant is still limited. 15.5 16 16.5 10 10.4 10.8 
+
+(a) AOBA-64 DAS2 FS1   
+
+> 65.75 66 66.25 119.17 8.75 99.25
+
+(b) AOBA-64 DAS2 FS2   
+
+> 4.2 4.8 5.4 9.75 9.9 10.05
+
+(c) AOBA-64 DAS2 FS3    
+
+> 6.6 6.75 6.9 7.57 15.45 15.6 15.75
+
+(d) AOBA-64 DAS2 FS4    
+
+> 12345.4 66.6
+
+(e) AOBA-64 Markovian 3000 α encoding    
+
+> 10 50 100 500 2500 5000 7500 10000 12500 15000 17500 20000
+> α= 20000
+> α= 7500
+> α= 10
+
+Average waiting time (min) Total wasted energy (MWh) 
+
+> FCFS/B+IPM SNF+IPM SNF-ICON SNF-ICON-NF SNF-ICON-NG SNF-ICON-NGNF Pareto frontier Pareto Non-Pareto
+
+Fig. 9: Reward-parameter sweep. Markovian 3000 is more sensitive to the lookback horizon. The complete SNF-ICON point moves from approximately 2.9 min and 5.76 MWh at TM = 1 h toward approximately 2.0 min and 6.04 MWh for longer windows. Thus, a longer window can reduce waiting time, but it may also increase energy use. Fig. 9 varies the waiting-time weight α while keeping 
+
+β = 1 . In general, increasing α gives more importance to waiting time, moving the results toward lower waiting and higher energy use. This trend is especially clear for Markovian 3000 and DAS2 FS4. Lower values of α favor energy savings, while higher values favor faster job starts. The best value therefore depends on the desired balance between waiting time and energy, rather than on one setting that works for every workload. 14 3950 3960 3970 7150.42 8.82 8.88 8.94 9
+
+(a) AOBA-64 DAS2 FS2    
+
+> 3716 3717 3718 6908.74 1.16 1.16 1.16 1.29 1.3
+
+(b) Taurus-64 DAS2 FS2   
+
+> 120 180 240 5.5 5.75 6
+
+(c) AOBA-64 Markovian 3000   
+
+> 15 30 45 0.78 0.84 0.9
+
+(d) Taurus-64 Markovian 3000    
+
+> 720 730 740 886.74 36.25 36.5 36.75 39.83 39.88
+
+(e) AOBA-1152 SDSC Blue   
+
+> 676 678 680 856.13 5.22 5.22 5.23
+
+(f) Taurus-1152 SDSC Blue Mean waiting time (seconds) Energy waste (MWh) 
+
+> FCFS/B+IPM SNF+IPM SNF-ICON SNF-ICON-NF SNF-ICON-NG SNF-ICON-NGNF Pareto frontier Pareto Non-Pareto
+
+Fig. 10: Cross-platform waiting-time–energy comparison on AOBA and Taurus configurations for three representative workloads. Dashed segments connect empirically nondomi-nated points. 
+
+G. Cross-platform robustness 
+
+Fig. 10 compares DAS2 FS2, Markovian 3000, and SDSC Blue on the AOBA and Taurus platform models. Changing the platform substantially changes the absolute waiting-time and energy scales. For example, SDSC Blue results use approxi-mately 5.22 MWh on Taurus, compared with approximately 36.3–39.9 MWh on AOBA. Large differences also appear for the other workloads because the two platform models have different power use and node-transition behavior. Even with these scale changes, the SNF-based methods remain in the lower-wait region across all six panels. The Markovian workload also shows a similar general trade-off on both platforms: configurations with lower waiting time tend to use more energy, while configurations with lower energy tend to have longer waits. This suggests that the main waiting-time benefit of SNF is not limited to one platform model. However, the exact nondominated configuration changes across workloads and platforms, particularly for SDSC Blue. A gate or fallback setting that works well on AOBA may not give the same result on Taurus. These results show that SNF-ICON can operate across different platform models, but its parameters and operating variant should be selected using the power and transition characteristics of the target system. VIII. C ONCLUSION 
+
+This paper presented SNF-ICON, a two-mode method for energy-aware gang scheduling. At each scheduler invocation, the method checks recent job-arrival and completed-job data. If there are not enough data, or if the data do not fit the assumed model, the scheduler uses the SNF+IPM fallback. In this mode, queued jobs are still scheduled, nodes are still woken for planned jobs, and idle timeouts remain active. However, ICON-specific runtime predictions, next-event estimates, and warm-spare optimization are not used. The data are checked again at the next scheduler invocation, so the system can move between the two modes as the workload changes. When the recent data pass the check, the scheduler uses ICON mode. Jobs that can run immediately are started first. The remaining queued jobs are then planned in SNF order using predicted node-release times, and sleeping nodes are scheduled to wake close to the predicted job start times. Warm-spare planning is considered only when no jobs remain in the queue and the scheduler is called by an initial, arrival, or completion event. The arrival-recency gate provides an additional check before warm-spare nodes are prepared. When this gate is closed, ICON remains active, but no spare nodes are prepared for future jobs. Completion-based shutdown and idle timeouts also prevent unused nodes from remaining active for too long. The experiments show that SNF-ICON reduces average waiting time compared with FCFS/B+IPM in all six workload– platform cases. Its energy use remains close to the heuristic baselines in most cases, although the generated Markovian workload shows a noticeable energy increase. The workload screen selects ICON for much of the generated Markovian workload, while the DAS2 workloads operate mainly in fall-back mode. The results also show that the best gate and fall-back settings depend on the workload and platform. Therefore, checking recent workload behavior is useful for spare-node planning, but no single configuration gives the best waiting-time–energy trade-off in every case. ACKNOWLEDGMENTS 
+
+This research is funded by the Indonesian Endowment Fund for Education (LPDP) on behalf of the Indone-sian Ministry of Higher Education, Science and Tech-nology and managed under the EQUITY Program (Con-tract Number: 4301/B3/DT.03.08/2025 and 10107/UN1.P/Dit-Keu/HK.08.00/2025). 15 
+
+REFERENCES [1] E. Suarez, H. Bockelmann, N. Eicker, J. Eitzinger, S. El Sayed, T. Fieseler, M. Frank, P. Frech, P. Giesselmann, D. Hackenberg, G. Hager, A. Herten, T. Ilsche, B. Koller, E. Laure, C. Manzano, S. Oeste, M. Ott, K. Reuter, R. Schneider, K. Thust, and B. von St. Vieth, “Energy-aware operation of HPC systems in Germany,” Frontiers in High Performance Computing , vol. 3, 2025. [2] B. Kocot, P. Czarnul, and J. Proficz, “Energy-aware scheduling for high-performance computing systems: A survey,” Energies , vol. 16, no. 2, p. 890, 2023. [3] A. B. Yoo, M. A. Jette, and M. Grondona, “Slurm: Simple linux utility for resource management,” in Workshop on job scheduling strategies for parallel processing . Springer, 2003, pp. 44–60. [4] K. O’Brien, I. Pietri, R. Reddy, A. Lastovetsky, and R. Sakellariou, “A survey of power and energy predictive models in HPC systems and applications,” ACM Computing Surveys , vol. 50, no. 3, pp. 1–38, 2017. [5] M. Maiterth, G. Koenig, K. Pedretti, S. Jana, N. Bates, A. Borghesi, D. Montoya, A. Bartolini, and M. Puzovic, “Energy and power aware job scheduling and resource management: Global survey—initial anal-ysis,” in 2018 IEEE International Parallel and Distributed Processing Symposium Workshops (IPDPSW) , 2018, pp. 685–693. [6] A. Gandhi, S. Doroudi, M. Harchol-Balter, and A. Scheller-Wolf, “Exact analysis of the M/M/k/Setup class of Markov chains via recursive re-newal reward,” in Proceedings of the ACM SIGMETRICS / International Conference on Measurement and Modeling of Computer Systems , 2013, pp. 153–166. [7] F. Hu and J. J. Evans, “Power and environment aware control of Beowulf clusters,” Cluster Computing , vol. 12, no. 3, pp. 299–308, 2009. [8] A. Kammeyer, F. Burger, D. L¨ ubbert, and K. Wolter, “Slurm plugin for HPC operation with time-dependent cluster-wide power capping,” in 
+
+2025 20th Conference on Computer Science and Intelligence Systems (FedCSIS) . IEEE, 2025, pp. 175–183. [9] N. Liu, Z. Li, J. Xu, Z. Xu, S. Lin, Q. Qiu, J. Tang, and Y. Wang, “A hierarchical framework of cloud resource allocation and power management using deep reinforcement learning,” in 2017 IEEE 37th international conference on distributed computing systems (ICDCS) .IEEE, 2017, pp. 372–382. [10] F. Farahnakian, P. Liljeberg, and J. Plosila, “Energy-efficient virtual machines consolidation in cloud data centers using reinforcement learn-ing,” in 2014 22nd Euromicro International Conference on Parallel, Distributed, and Network-Based Processing . IEEE, 2014, pp. 500– 507. [11] B. Dupont, N. Mejri, and G. Da Costa, “Energy-aware scheduling of malleable HPC applications using a particle swarm optimised greedy algorithm,” Sustainable Computing: Informatics and Systems , vol. 28, p. 100447, 2020. [12] J. A. Cast´ an Rocha, A. Santiago, A. H. Garc´ ıa-Ruiz, J. D. Ter´ an-Villanueva, S. I. Mart´ ınez, and M. G. Trevi˜ no Berrones, “Pareto approx-imation empirical results of energy-aware optimization for precedence-constrained task scheduling considering switching off completely idle machines,” Mathematics , vol. 12, no. 23, p. 3733, 2024. [13] F. R. Khasyah, K. G. Santiyuda, G. Kaunang, F. Makhrus, M. A. Am-rizal, and H. Takizawa, “An advantage actor-critic deep reinforcement learning method for power management in HPC systems,” in Interna-tional Conference on Parallel and Distributed Computing: Applications and Technologies . Springer, 2022, pp. 94–107. [14] T. Budiarjo, S. Y. Pradata, K. G. Santiyuda, M. A. Amrizal, R. Pulungan, and H. Takizawa, “Improving the efficiency of a deep reinforcement learning-based power management system for HPC clusters using cur-riculum learning,” in Proceedings of the 2025 Supercomputing Asia Conference , 2025, pp. 1–13. [15] R. S. Sutton and A. G. Barto, Reinforcement Learning: An Introduction .MIT Press, 1998. [16] R. S. Prasasta, S. Y. Pradata, K. G. Santiyuda, M. A. Amrizal, R. Pu-lungan, and H. Takizawa, “Co-design of a power state-aware scheduler and an intelligent power manager for energy-efficient HPC systems,” in 
+
+Proceedings of the Supercomputing Asia and International Conference on High Performance Computing in Asia Pacific Region Workshops ,ser. SCA/HPCAsiaWS ’26. New York, NY, USA: Association for Computing Machinery, 2026, p. 13–21. [17] A. Mu’alem and D. Feitelson, “Utilization, predictability, workloads, and user runtime estimates in scheduling the IBM SP2 with backfilling,” 
+
+IEEE Transactions on Parallel and Distributed Systems , vol. 12, no. 6, pp. 529–543, 2001. [18] D. A. Lifka, “The ANL/IBM SP scheduling system,” in Job Scheduling Strategies for Parallel Processing , D. G. Feitelson and L. Rudolph, Eds. Berlin, Heidelberg: Springer Berlin Heidelberg, 1995, pp. 295–303. [19] Y. Hong and W. Wang, “Sharp waiting-time bounds for multiserver jobs,” Stochastic Systems , vol. 14, no. 4, pp. 455–478, 2024. [20] ——, “Sharp waiting-time bounds for multiserver jobs,” in Proceedings of the Twenty-Third International Symposium on Theory, Algorithmic Foundations, and Protocol Design for Mobile Networks and Mobile Computing , ser. MobiHoc ’22. New York, NY, USA: Association for Computing Machinery, 2022, p. 161–170. [21] D. Tsafrir, Y. Etsion, and D. G. Feitelson, “Backfilling using system-generated predictions rather than user runtime estimates,” IEEE Trans-actions on Parallel and Distributed Systems , vol. 18, no. 6, pp. 789–803, 2007. [22] A. Benoit, L. Lef` evre, A.-C. Orgerie, and I. Ra¨ ıs, “Shutdown policies with power capping for large scale computing systems,” in European Conference on Parallel Processing . Springer, 2017, pp. 134–146. [23] D. G. Feitelson and L. Rudolph, “Gang scheduling performance benefits for fine-grain synchronization,” Journal of Parallel and distributed Computing , vol. 16, no. 4, pp. 306–318, 1992. [24] U. Lublin and D. G. Feitelson, “The workload on parallel supercomput-ers: modeling the characteristics of rigid jobs,” Journal of Parallel and Distributed Computing , vol. 63, no. 11, pp. 1105–1122, 2003. [25] D. Gross, J. F. Shortle, J. M. Thompson, and C. M. Harris, Fundamentals of Queueing Theory , 4th ed. Wiley, 2011. [26] K. Pearson, “VII. Mathematical contributions to the theory of evolu-tion.—III. Regression, heredity, and panmixia,” Philosophical Transac-tions of the Royal Society of London, Series A: Containing Papers of a Mathematical or Physical Character , no. 187, pp. 253–318, 12 1896. [27] M. S. Bartlett, “On the theoretical specification and sampling properties of autocorrelated time-series,” Supplement to the Journal of the Royal Statistical Society , vol. 8, no. 1, pp. 27–41, 1946. [28] H. W. Lilliefors, “On the Kolmogorov-Smirnov test for the exponential distribution with mean unknown,” Journal of the American Statistical Association , vol. 64, no. 325, pp. 387–389, 1969. [29] S. W. Roberts, “Control chart tests based on geometric moving aver-ages,” Technometrics , vol. 42, no. 1, pp. 97–101, 2000. [30] J. R. Norris, Markov Chains . Cambridge University Press, 1997. [31] M. A. Amrizal, R. S. Prasasta, S. Y. Pradata, K. G. Santiyuda, R. Pu-lungan, and H. Takizawa, “SPARS: A reinforcement learning-enabled simulator for power management in HPC job scheduling,” SoftwareX ,vol. 34, p. 102693, 2026. [32] Raka Satya Prasasta, “SPARS-ICON,” https://github.com/RakaSP/ SPARS-ICON, 2026, gitHub repository, accessed August 3, 2026. [33] H. Li, D. Groep, and L. Wolters, “Workload characteristics of a multi-cluster supercomputer,” in Workshop on Job Scheduling Strategies for Parallel Processing . Springer, 2004, pp. 176–193. [34] D. G. Feitelson, D. Tsafrir, and D. Krakov, “Experience with using the parallel workloads archive,” Journal of Parallel and Distributed Computing , vol. 74, no. 10, pp. 2967–2982, 2014. [35] T. Ohmura, Y. Shimomura, R. Egawa, and H. Takizawa, “Toward building a digital twin of job scheduling and power management on an HPC system,” in Workshop on Job Scheduling Strategies for Parallel Processing . Springer, 2022, pp. 47–67. [36] W. J. Corlett, “The lognormal distribution, with special reference to its uses in economics,” Journal of the Royal Statistical Society Series C: Applied Statistics , vol. 6, no. 3, pp. 228–230, 11 1957. 
+
+Reza Pulungan received the bachelor’s degree in computer science from the Universitas Gadjah Mada, Yogyakarta, Indonesia, in 1999, the master’s degree in telematics from the Universiteit Twente, Enschede, The Netherlands, in 2002, and the Ph.D. degree in computer science from the Universit¨ at des Saarlandes, Saarbr¨ ucken, Germany, in 2009. He is currently a Professor with the Department of Computer Science and Electronics, Universitas Gadjah Mada. His research background is in stochas-tic processes, especially Markov processes and phase-type distributions, and modeling and analyzing reactive systems. He is interested in and working on learning algorithms, including reinforcement learning, and their applications in diverse fields. 16 
+
+Raka Satya Prasasta received the bachelor’s degree in informatics from the Universitas Ahmad Dahlan, Yogyakarta, Indonesia, in 2026. His research in-terests include HPC simulation frameworks, as well as optimization techniques in HPC systems, particularly energy-efficient job scheduling and dynamic power-state management. 
+
+Santana Yuda Pradata received the bachelor’s degree in computer science from Universitas Gadjah Mada, Yogyakarta, Indonesia, in 2026. From August 2024 to January 2025, he was a Research Intern with the Research Center for Quantum Physics, National Research and Innovation Agency (BRIN), Indonesia. His research interests include quantum comput-ing, quantum information, theoretical computer science, and optimization in computer science. 
+
+Mursalim received the master’s degree in informatics from the Universitas Dian Nuswantoro, Semarang, Indonesia, in 2020. He is currently working toward the PhD degree in Computer Science with the Universitas Gadjah Mada. His research interests include machine learning and job scheduling on HPC systems. 
+
+Hiroyuki Takizawa is currently a professor and the deputy director of the Cyberscience Center, Tohoku University. His research interests include high-performance computing systems and their applications. His focus is particularly on the productivity in high-performance computing. He received the B.E. Degree in Mechanical Engineering, and the M.S. and Ph.D. Degrees in Information Sciences from Tohoku University in 1995, 1997 and 1999, respectively. He is a member of IEEE CS, ACM SIGHPC, IEICE and IPSJ. 
+
+Muhammad Alfian Amrizal is an Assistant Professor at the Department of Computer Science and Electronics, Universitas Gadjah Mada. He received his Ph.D. degree in Information Science from the Graduate School of Information Sciences, Tohoku University, in 2017. His main research interests are in the area of distributed systems, such as high-performance computing (HPC) systems and wireless sensor networks (WSN), including dependability and energy efficiency, novel fault tolerance techniques, performance modeling, and optimization of such systems. He is also interested in broad topics of optimization problems and AI. 17 
+
+APPENDIX AJOB -S PECIFIC RUNTIME AND RELEASE PREDICTION 
+
+Assumption 2 (Shared multiplicative runtime error) . For job 
+
+j, let τj be its requested runtime and let Dj > 0 be its actual total runtime. The predictor models the ratio Dj /τ j using a distribution shared across the workload. It assumes that this distribution changes slowly enough for its log-scale mean and variance to be tracked using exponential moving averages. For a completed job j, let Dobs  
+
+> j
+
+be its observed runtime (execution time). This value is also used as a sample in the service screen. The predictor uses the log ratio 
+
+Yj = log Dobs 
+
+> j
+
+τj
+
+!
+
+(41) to measure the difference between the actual and requested runtimes. Requested runtimes are standard scheduler inputs, but history-based corrections can improve their accuracy [17], [21]. The estimates are initialized from the first valid completed-job observation by setting mY = Y1 and qY = Y 21 . For each subsequent valid completed-job observation, the first and second moments of the log ratio are updated using the service smoothing factor ρS :
+
+m+ 
+
+> Y
+
+= ρS Yj + (1 − ρS )mY , (42) 
+
+q+ 
+
+> Y
+
+= ρS Y 2 
+
+> j
+
++ (1 − ρS )qY . (43) After each update, mY and qY are replaced by m+ 
+
+> Y
+
+and q+ 
+
+> Y
+
+.The estimated median actual-to-requested runtime ratio is 
+
+bηmed = exp( mY ), (44) and the estimated standard deviation of the log ratio is 
+
+bσY = max 
+
+
+
+σmin ,
+
+q
+
+max {0, q Y − m2 
+
+> Y
+
+}
+
+
+
+, (45) where σmin > 0 prevents the estimated variance from becom-ing zero. For a queued job, the predicted total runtime is 
+
+bDj = τj bηmed . (46) For an active job, let ej (t) ≥ 0 be its elapsed runtime at time 
+
+t. All durations inside logarithms are expressed as positive values in seconds. The total runtime is modeled as log-normal [36]: 
+
+log Dj ∼ N  θj , bσ 2
+
+> Y
+
+ , θj = log τj + mY . (47) For ej (t) > 0, define 
+
+ζj (t) = log ej (t) − θj
+
+bσY
+
+, (48) and let 
+
+Φ( u) = 1 − Φ( u) (49) be the standard-normal survival function. Because an active job has already run for more than ej (t),its predicted remaining runtime is 
+
+bRj (t) = E[Dj − ej (t) | Dj > e j (t)] ,
+
+= exp 
+
+
+
+θj + bσ 2
+
+> Y
+
+2
+
+ Φ( ζj (t) − bσY )Φ( ζj (t)) − ej (t). (50) When ej (t) = 0 , the predictor uses the unconditional mean 
+
+exp 
+
+
+
+θj + bσ 2
+
+> Y
+
+2
+
+
+
+. (51) The queued-job estimate in (46) uses the median of the predicted runtime distribution. The active-job estimate uses the conditional mean after accounting for the time already elapsed. These are different estimates and are used for different cases. To derive (50), first write 
+
+E[Dj | Dj > e j (t)] = E[Dj 1{Dj > e j (t)}]
+
+P(Dj > e j (t)) . (52) Let 
+
+V = log Dj − θj
+
+bσY
+
+∼ N (0 , 1) . (53) The denominator in (52) is 
+
+P(Dj > e j (t)) = Φ( ζj (t)) . (54) The numerator is 
+
+E[Dj 1{Dj > e j (t)}] = 
+
+Z ∞ 
+
+> ζj(t)
+
+exp( θj + bσY v) e−v2/2
+
+√2π dv, 
+
+= exp 
+
+
+
+θj + bσ 2
+
+> Y
+
+2
+
+
+
+×
+
+Z ∞ 
+
+> ζj(t)
+
+e−(v−bσY )2/2
+
+√2π dv, 
+
+= exp 
+
+
+
+θj + bσ 2
+
+> Y
+
+2
+
+
+
+Φ( ζj (t) − bσY ) .
+
+(55) Substituting the numerator and denominator into (52), and then subtracting the elapsed runtime ej (t), gives (50). The implementation computes the survival-function ratio in log space to avoid numerical problems. The predicted finish time of an active job is 
+
+t + bRj (t), (56) while the predicted finish time of a queued job planned to start at sj is 
+
+sj + bDj . (57) These values are used in the release map. 18 
+
+APPENDIX BEXPECTED UNFINISHED TRANSITION TIME 
+
+Lemma 2 (Expected unfinished transition time) . Suppose a node transition has d ≥ 0 units of time remaining. Let the modeled time to the next event be 
+
+T ∼ Exp( bλE (t)) , bλE (t) > 0. (58) 
+
+The expected transition time still remaining when the event occurs is 
+
+ϕ(d; bλE (t)) = E
+
+h
+
+[d − T ]+i
+
+= d − 1 − e−bλE (t)d
+
+bλE (t) . (59) 
+
+Proof. The unfinished transition time is positive only when the next event occurs before the transition finishes, that is, when 
+
+T < d . Using the tail-integral identity, 
+
+E[[ d − T ]+] = 
+
+Z d
+
+> 0
+
+P(d − T > u ) d u, 
+
+=
+
+Z d
+
+> 0
+
+P(T < d − u) d u, 
+
+=
+
+Z d
+
+> 0
+
+
+
+1 − e−bλE (t)( d−u)
+
+du. (60) Using the change of variable v = d − u gives 
+
+E[[ d − T ]+] = 
+
+Z d
+
+> 0
+
+
+
+1 − e−bλE (t)v 
+
+dv, 
+
+= d − 1 − e−bλE (t)d
+
+bλE (t) . (61) This proves (59).
